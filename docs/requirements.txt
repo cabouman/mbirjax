@@ -1,0 +1,7 @@
+# Include requirements for the docs
+sphinx
+sphinxcontrib-bibtex
+sphinx-rtd-theme
+ruamel.yaml
+psutil
+numpy
