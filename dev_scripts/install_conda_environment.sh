@@ -3,7 +3,7 @@
 
 # Create and activate new conda environment
 # First check if the target environment is active and deactivate if so
-NAME=mbirjax_sandbox
+NAME=mbirjax
 if [ "$CONDA_DEFAULT_ENV"==$NAME ]; then
     conda deactivate
 fi

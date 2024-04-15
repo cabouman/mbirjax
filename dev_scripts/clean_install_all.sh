@@ -11,7 +11,6 @@ CPUCLUSTER="brown"
 if [[ "$HOSTNAME" == *"$GPUCLUSTER"* ]]; then
   module load  anaconda/2020.11-py38
   echo "$GPUCLUSTER setting"
-  gcc --version
   conda config --add pkgs_dirs /scratch/$GPUCLUSTER/$USERNAME/.conda/pkgs
   CONDA_ENVS_PATH="/scratch/$GPUCLUSTER/$USERNAME/.conda/envs"
   conda config --add envs_dirs /scratch/$GPUCLUSTER/$USERNAME/.conda/envs
@@ -46,10 +45,6 @@ reset=`tput sgr0`
 
 echo " "
 echo "Use"
-echo "${red}   source get_demo_data_server.sh   ${reset}"
-echo "to download data needed for demos"
-echo " "
-echo "Use"
-echo "${red}   conda activate mbirjax_sandbox   ${reset}"
+echo "${red}   conda activate mbirjax   ${reset}"
 echo "to activate the conda environment."
 echo " "

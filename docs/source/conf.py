@@ -29,9 +29,9 @@ def setup(app):
 
 # -- Project information -----------------------------------------------------
 
-project = 'mbirjax_sandbox'
-copyright = '2023, mbirjax_sandbox Development Team'
-author = 'mbirjax_sandbox Development Team'
+project = 'mbirjax'
+copyright = '2023, mbirjax Development Team'
+author = 'mbirjax Development Team'
 
 # The full version, including alpha/beta/rc tags
 release = '0.1'

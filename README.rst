@@ -1,7 +1,7 @@
 .. docs-include-ref
 
-mbirjax_sandbox
-========
+mbirjax
+=======
 
 ..
     Change the number of = to match the number of characters in the project name.
@@ -17,7 +17,7 @@ Installing
 
     .. code-block::
 
-        git clone git@github.com:bouman/mbirjax_sandbox
+        git clone git@github.com:bouman/mbirjax
 
 2. Install the conda environment and package
 
@@ -36,24 +36,24 @@ Installing
 
         1. *Create conda environment:*
 
-            Create a new conda environment named ``mbirjax_sandbox`` using the following commands:
+            Create a new conda environment named ``mbirjax`` using the following commands:
 
             .. code-block::
 
-                conda create --name mbirjax_sandbox python=3.10
-                conda activate mbirjax_sandbox
+                conda create --name mbirjax python=3.10
+                conda activate mbirjax
                 pip install -r requirements.txt
 
-            Anytime you want to use this package, this ``mbirjax_sandbox`` environment should be activated with the following:
+            Anytime you want to use this package, this ``mbirjax`` environment should be activated with the following:
 
             .. code-block::
 
-                conda activate mbirjax_sandbox
+                conda activate mbirjax
 
 
-        2. *Install mbirjax_sandbox package:*
+        2. *Install mbirjax package:*
 
-            Navigate to the main directory ``mbirjax_sandbox/`` and run the following:
+            Navigate to the main directory ``mbirjax/`` and run the following:
 
             .. code-block::
 

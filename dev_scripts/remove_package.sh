@@ -4,9 +4,9 @@
 cd ..
 /bin/rm -r docs/build
 /bin/rm -r dist
-/bin/rm -r mbirjax_sandbox.egg-info
+/bin/rm -r mbirjax.egg-info
 /bin/rm -r build
 
-pip uninstall mbirjax_sandbox
+pip uninstall mbirjax
 
 cd dev_scripts

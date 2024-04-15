@@ -2,7 +2,7 @@
 Installation 
 ============
 
-The ``mbirjax_sandbox`` package currently is only available to download and install from source through GitHub.
+The ``mbirjax`` package currently is only available to download and install from source through GitHub.
 
 
 Downloading and installing from source
@@ -13,7 +13,7 @@ Downloading and installing from source
   In order to download the python code, move to a directory of your choice and run the following two commands.
 
     | ``git clone https://github.com/cabouman/mbirjax_sandbox.git``
-    | ``cd mbirjax_sandbox``
+    | ``cd mbirjax``
 
 
 2. Create a Virtual Environment:
@@ -21,8 +21,8 @@ Downloading and installing from source
   It is recommended that you install to a virtual environment.
   If you have Anaconda installed, you can run the following:
 
-    | ``conda create --name mbirjax_sandbox python=mbirjax_sandbox``
-    | ``conda activate mbirjax_sandbox``
+    | ``conda create --name mbirjax_sandbox python=mbirjax``
+    | ``conda activate mbirjax``
 
   Install the dependencies using:
 
@@ -36,11 +36,11 @@ Downloading and installing from source
 
     ``pip install -e .``
 
-  Now to use the package, this ``mbirjax_sandbox`` environment needs to be activated.
+  Now to use the package, this ``mbirjax`` environment needs to be activated.
 
 
 3. Install:
 
-You can verify the installation by running ``pip show mbirjax_sandbox``, which should display a brief summary of the packages installed in the ``mbirjax_sandbox`` environment.
-Now you will be able to use the ``mbirjax_sandbox`` python commands from any directory by running the python command ``import mbirjax_sandbox``.
+You can verify the installation by running ``pip show mbirjax``, which should display a brief summary of the packages installed in the ``mbirjax`` environment.
+Now you will be able to use the ``mbirjax`` python commands from any directory by running the python command ``import mbirjax``.
 
