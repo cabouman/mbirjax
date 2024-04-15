@@ -2,11 +2,9 @@
 
 mbirjax
 =======
-
-..
-    Change the number of = to match the number of characters in the project name.
-
 Project for creating a JAX version of MBIR
+
+Full documentation is available at https://mbirjax.readthedocs.io .
 
 ..
     Include more detailed description here.
