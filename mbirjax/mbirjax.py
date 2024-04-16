@@ -434,6 +434,7 @@ class TomographyModel:
     def recon( self, sinogram, weights = 1.0 ):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
+        This function takes care of generating its own partitions and partition sequence.
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
@@ -457,7 +458,8 @@ class TomographyModel:
 
     def vcd_recon( self, sinogram, partitions, partition_sequence, weights = 1.0 ):
         """
-        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
+        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
+        for a given set of partitions and a prescribed partition sequence.
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
@@ -494,9 +496,12 @@ class TomographyModel:
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
 
-        Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
+        Each iteration of the algorithm should return a better reconstructed recon.
+        The combination of (error_sinogram, recon) form a overcomplete state that make computation efficient.
+        However, it is important that at each application the state should meet the constraint that:
                 error_sinogram = measured_sinogram - forward_proj(recon)
-        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+        where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
+
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             indices (int array): (N_indices) integer index array of voxels to be updated in a flattened recon.
