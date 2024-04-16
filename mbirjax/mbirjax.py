@@ -336,6 +336,31 @@ class TomographyModel:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
 
+
+    def get_voxels_at_indices(self, recon, indices):
+        """
+        Get voxels at the specified indices.
+        Args:
+            recon:
+            indices:
+        Returns:
+        """
+        # Get number of rows in detector
+        shape = self.sinogram_shape
+
+        # To Do: Bug: This doesn't work.
+        # Either we need to implement self.params.sinogram_shape or we need to add this functionality to self.get_params().
+        #shape = self.get_params('sinogram_shape')
+
+        # Set number of detector rows
+        num_det_rows = shape[1]
+
+        # Retrieve values of recon at the indices locations
+        voxel_values = recon.reshape((-1, num_det_rows))[indices]
+
+        return voxel_values
+
+
     @staticmethod
     def get_cos_sin_angles(angles):
         """
@@ -605,29 +630,6 @@ class TomographyModel:
         """
         phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
         return phantom
-
-    def get_voxels_at_indices(self, recon, indices):
-        """
-        Get voxels at the specified indices.
-        Args:
-            recon:
-            indices:
-        Returns:
-        """
-        # Get number of rows in detector
-        shape = self.sinogram_shape
-
-        # To Do: Bug: This doesn't work.
-        # Either we need to implement self.params.sinogram_shape or we need to add this functionality to self.get_params().
-        #shape = self.get_params('sinogram_shape')
-
-        # Set number of detector rows
-        num_det_rows = shape[1]
-
-        # Retrieve values of recon at the indices locations
-        voxel_values = recon.reshape((-1, num_det_rows))[indices]
-
-        return voxel_values
 
     def reshape_recon(self, recon):
         """
