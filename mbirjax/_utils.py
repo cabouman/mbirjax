@@ -14,7 +14,6 @@ _forward_model_defaults_dict = {
 }
 
 _recon_model_defaults_dict = {
-    'init_recon': None,
     'prox_recon': None,
     'num_recon_rows': None,
     'num_recon_cols': None,
