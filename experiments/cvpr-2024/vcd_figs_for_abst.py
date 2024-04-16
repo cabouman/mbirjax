@@ -178,8 +178,8 @@ if __name__ == "__main__":
     # Run each partition once to finish compiling
     print('Compiling ...')
     for i in range(len(granularity)):
-        error_sinogram, recon = parallel_model.vcd_iteration(error_sinogram, recon, partitions[i], hessian,
-                                                             weights=weights)
+        error_sinogram, recon = parallel_model.vcd_partition_iteration(error_sinogram, recon, partitions[i], hessian,
+                                                                       weights=weights)
     print('Done compiling.')
     # ##########################
 

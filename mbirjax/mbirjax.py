@@ -389,29 +389,6 @@ class TomographyModel:
 
         return weights
 
-    def vcd_iteration(self, error_sinogram, recon, partition, fm_hessian, weights = 1.0):
-        """
-        Calculate an iteration of the VCD algorithm on a single subset of the partition
-
-        Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
-                error_sinogram = measured_sinogram - forward_proj(recon)
-        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
-        Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            partition (int array): (K, N_indices) an integer index arrays that partitions
-                the voxels into K arrays, each of which indexes into a flattened recon.
-            recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
-            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
-        Returns:
-            [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
-        """
-        for subset in np.random.permutation(partition.shape[0]):
-            error_sinogram, recon = self.vcd_subset_iteration(error_sinogram, recon, partition[subset], fm_hessian,
-                                                              weights=weights)
-
-        return error_sinogram, recon
-
 
     def recon( self, sinogram, weights = 1.0 ):
         """
@@ -466,12 +443,36 @@ class TomographyModel:
         fm_rmse = np.zeros(num_iters)
 
         for i in range(num_iters):
-            error_sinogram, recon = self.vcd_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
+            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
             fm_rmse[i] = self.forward_model_loss(error_sinogram)
             if self.params.verbose>=1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
+
+
+    def vcd_partition_iteration( self, error_sinogram, recon, partition, fm_hessian, weights = 1.0 ):
+        """
+        Calculate an iteration of the VCD algorithm for each subset of the partition
+
+        Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
+                error_sinogram = measured_sinogram - forward_proj(recon)
+        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+        Args:
+            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            partition (int array): (K, N_indices) an integer index arrays that partitions
+                the voxels into K arrays, each of which indexes into a flattened recon.
+            recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+        Returns:
+            [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+        """
+        for subset in np.random.permutation(partition.shape[0]):
+            error_sinogram, recon = self.vcd_subset_iteration(error_sinogram, recon, partition[subset], fm_hessian,
+                                                              weights=weights)
+
+        return error_sinogram, recon
 
 
     def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
@@ -592,12 +593,6 @@ class TomographyModel:
         extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[0 :num_iterations]
         return extended_partition_sequence
 
-    def reshape_recon(self, recon):
-        """
-        Reshape recon into its 3D form
-        """
-        return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
-
     def gen_3d_shepp_logan_phantom(self):
         """
         Generates a 3D Shepp-Logan phantom.
@@ -629,6 +624,12 @@ class TomographyModel:
         voxel_values = recon.reshape((-1, num_det_rows))[indices]
 
         return voxel_values
+
+    def reshape_recon(self, recon):
+        """
+        Reshape recon into its 3D form
+        """
+        return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
 
 
 def get_rho(delta, b, sigma_x, p, q, T):
