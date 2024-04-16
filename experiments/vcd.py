@@ -60,13 +60,7 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.generate_3d_shepp_logan()
 
-    # Generate set of voxel partitions
-    partitions = parallel_model.gen_set_of_voxel_partitions()
-
-    # Generate sequence of partitions to use
-    partition_sequence = parallel_model.gen_partition_sequence()
-
-    # Generate sinogram data
+    # Generate synthetic sinogram data
     full_indices = parallel_model.gen_full_partitions()
     voxel_values = phantom.reshape((-1, num_det_rows))[full_indices]
     sinogram = parallel_model.forward_project(voxel_values[0], full_indices[0])
@@ -74,10 +68,8 @@ if __name__ == "__main__":
     # Generate weights array
     weights = parallel_model.calc_weights(sinogram/sinogram.max(), weight_type='transmission_root')
 
-    # Autoset reconstruction parameter values
-    # Bug?: After setting a meta parameter like sharpness, we need to run auto_set_regularization
+    # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness,verbose=1)
-    parallel_model.auto_set_regularization_params(sinogram, weights=weights)
 
     # Print out model parameters
     parallel_model.print_params()
@@ -85,14 +77,14 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, fm_rmse = parallel_model.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
+    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
 
     elapsed = time.time() - time0
     print('Elapsed post-compile time recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
     # Reshape recon into 3D form
-    recon = parallel_model.reshape_recon(recon)
+    recon_3d = parallel_model.reshape_recon(recon)
 
     # Display results
-    display_slices(phantom, sinogram, recon)
+    display_slices(phantom, sinogram, recon_3d)

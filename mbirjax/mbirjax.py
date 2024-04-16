@@ -430,6 +430,31 @@ class TomographyModel:
 
         return error_sinogram, recon
 
+
+    def recon( self, sinogram, weights = 1.0 ):
+        """
+        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
+        Args:
+            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+        Returns:
+            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
+        """
+        # Run auto regularization. If self.params.auto_regularize_flag is False, then this will have no effect
+        self.auto_set_regularization_params(sinogram, weights=weights)
+
+        # Generate set of voxel partitions
+        partitions = self.gen_set_of_voxel_partitions()
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.gen_partition_sequence()
+
+        # Compute reconstruction
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
+
+        return recon, fm_rmse
+
+
     def vcd_recon( self, sinogram, partitions, partition_sequence, weights = 1.0 ):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
