@@ -61,9 +61,12 @@ if __name__ == "__main__":
     phantom = parallel_model.gen_3d_shepp_logan_phantom()
 
     # Generate synthetic sinogram data
-    full_indices = parallel_model.gen_full_partitions()
+    full_indices = parallel_model.gen_full_indices()
+    print(f'phantom shape: {phantom.shape}; Full indices shape: {full_indices.shape}')
     voxel_values = phantom.reshape((-1, num_det_rows))[full_indices]
-    sinogram = parallel_model.forward_project(voxel_values[0], full_indices[0])
+    #voxel_values = mbirjax.get_voxels_at_indices(phantom, full_indices)
+    print(f'voxel_values: {voxel_values.shape}')
+    sinogram = parallel_model.forward_project(voxel_values, full_indices)
 
     # Generate weights array
     weights = parallel_model.calc_weights(sinogram/sinogram.max(), weight_type='transmission_root')

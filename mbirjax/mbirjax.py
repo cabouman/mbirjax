@@ -590,15 +590,16 @@ class TomographyModel:
 
         return partitions
 
-    def gen_full_partitions(self):
+    def gen_full_indices( self ):
         """
         Generates a full array of voxels in the region of reconstruction.
         This is useful for computing forward projections.
         """
         # Convert granularity to an np array
         partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, num_subsets=1)
+        full_indices = partition[0]
 
-        return partition
+        return full_indices
 
     def gen_partition_sequence(self) :
         # Get sequence from params and convert it to a np array
