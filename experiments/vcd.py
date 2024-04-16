@@ -69,7 +69,8 @@ if __name__ == "__main__":
     weights = parallel_model.calc_weights(sinogram/sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    parallel_model.set_params(sharpness=sharpness,verbose=1)
+    parallel_model.set_params(sharpness=sharpness, verbose=1)
+    #parallel_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()
