@@ -347,24 +347,6 @@ class TomographyModel:
         return jnp.stack([cos_angles, sin_angles], axis=0)
 
     @staticmethod
-    def recon_resize(recon, output_shape):
-        """
-        Resizes a reconstruction by performing 2D resizing along the slices dimension
-        Args:
-            recon (ndarray): 3D numpy array containing reconstruction with shape (slices, rows, cols)
-            output_shape (tuple): (num_rows, num_cols) shape of resized output
-        Returns:
-            ndarray: 3D numpy array containing interpolated reconstruction with shape (num_slices, num_rows, num_cols).
-        """
-        recon_resized = np.empty((recon.shape[0], output_shape[0], output_shape[1]), dtype=recon.dtype)
-        for i in range(recon.shape[0]):
-            PIL_image = Image.fromarray(recon[i])
-            PIL_image_resized = PIL_image.resize((output_shape[1], output_shape[0]), resample=Image.Resampling.BILINEAR)
-            recon_resized[i] = np.array(PIL_image_resized)
-
-        return recon_resized
-
-    @staticmethod
     def sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
