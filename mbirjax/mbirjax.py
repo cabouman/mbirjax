@@ -114,11 +114,11 @@ class TomographyModel:
         """
 
         # Get parameters
-        snr_db = self.params.snr_db
-        delta_pixel_recon = self.params.delta_pixel_recon
-        delta_det_channel = self.params.delta_det_channel
+        snr_db = self.get_params('snr_db')
+        delta_pixel_recon = self.get_params('delta_pixel_recon')
+        delta_det_channel = self.get_params('delta_det_channel')
         if hasattr(self.params, 'magnification'):
-            magnification = self.params.magnification
+            magnification = self.get_params('magnification')
         else:
             magnification = 1.0
 
@@ -138,7 +138,8 @@ class TomographyModel:
 
         # Compute sigma_y and scale by relative pixel pitch
         sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
-        self.set_params(sigma_y=sigma_y, auto_regularize_flag=True)
+        self.params.sigma_y = sigma_y  # Set these directly to avoid warnings in set_params
+        self.params.auto_regularize_flag = True
 
     def auto_set_sigma_x(self, sinogram):
         """
@@ -147,7 +148,7 @@ class TomographyModel:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
         sigma_x = 0.2 * self.estimate_recon_std(sinogram)
-        self.set_params(sigma_x=sigma_x)
+        self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
 
     def auto_set_sigma_p(self, sinogram):
         """
@@ -156,7 +157,7 @@ class TomographyModel:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
         sigma_p = 0.2 * self.estimate_recon_std(sinogram)
-        self.set_params(sigma_p=sigma_p)
+        self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
@@ -266,41 +267,41 @@ class TomographyModel:
         for key, val in kwargs.items():
             if key in vars(self.params).keys():
                 setattr(self.params, key, val)
-            elif key == 'angles':
-                self.angles = kwargs[key]
-                recompile = True
-            elif key == 'sinogram_shape':
-                self.sinogram_shape = kwargs[key]
-                recompile = True
-            elif key in ["sigma_y", "sigma_x", "sigma_p"]:
-                regularization_parameter_change = True
-            elif key == ["sharpness", "snr_db"]:
-                meta_parameter_change = True
             else:
                 raise NameError('"{}" not a recognized argument'.format(key))
 
+            # Handle special cases
+            if key in ['angles', 'sinogram_shape']:
+                recompile = True
+            elif key in ["sigma_y", "sigma_x", "sigma_p"]:
+                regularization_parameter_change = True
+            elif key in ["sharpness", "snr_db"]:
+                meta_parameter_change = True
+
         # Check for compatibility between angles and sinogram views
         if recompile:
-            if len(self.sinogram_shape) != 3:
+            sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
+            if len(sinogram_shape) != 3:
                 error_message = "sinogram_shape must be (views, rows, channels). \n"
-                error_message += "Got {} for sinogram shape.".format(self.sinogram_shape)
+                error_message += "Got {} for sinogram shape.".format(sinogram_shape)
                 raise ValueError(error_message)
-            if len(self.angles) != self.sinogram_shape[0]:
+            if len(angles) != sinogram_shape[0]:
                 error_message = "Number of angles must equal the number of views. \n"
-                error_message += "Got {} for number of angles and {} for number of views.".format(len(self.angles), self.sinogram_shape[0])
+                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles), sinogram_shape[0])
                 raise ValueError(error_message)
 
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
-            self.params.auto_regularize_flag = False
+            self.set_params(auto_regularize_flag=False)
             warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
                           'This is an advanced feature that will disable auto-regularization.')
 
         # Handle case if any meta regularization parameter changed
         if meta_parameter_change:
-            if self.params.auto_meta_regularization_flag is False:
-                self.params.auto_regularize_flag = True
-                warnings.warn('You have re-enabled auto-regularization. It was previously disabled')
+            if self.get_params('auto_regularize_flag') is False:
+                self.set_params(auto_regularize_flag=True)
+                warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
+                              'It was previously disabled')
 
         # Get final geometry parameters
         new_params = self.get_geometry_parameters()
@@ -336,7 +337,6 @@ class TomographyModel:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
 
-
     def get_voxels_at_indices(self, recon, indices):
         """
         Get voxels at the specified indices.
@@ -346,11 +346,7 @@ class TomographyModel:
         Returns:
         """
         # Get number of rows in detector
-        shape = self.sinogram_shape
-
-        # To Do: Bug: This doesn't work.
-        # Either we need to implement self.params.sinogram_shape or we need to add this functionality to self.get_params().
-        #shape = self.get_params('sinogram_shape')
+        shape = self.get_params('sinogram_shape')
 
         # Set number of detector rows
         num_det_rows = shape[1]
@@ -359,7 +355,6 @@ class TomographyModel:
         voxel_values = recon.reshape((-1, num_det_rows))[indices]
 
         return voxel_values
-
 
     @staticmethod
     def get_cos_sin_angles(angles):
@@ -461,7 +456,7 @@ class TomographyModel:
         num_recon_rows = self.params.num_recon_rows
         num_recon_cols = self.params.num_recon_cols
         num_recon_slices = self.params.num_recon_slices
-        angles = self.angles
+        angles = self.get_params('angles')
 
         # Initialize VCD error sinogram, recon, and hessian
         error_sinogram = sinogram
@@ -778,7 +773,8 @@ class ParallelBeamModel(TomographyModel):
             give reduced execution time relative to the initial call.
         """
         geometry_params = self.get_geometry_parameters()
-        cos_sin_angles = self.get_cos_sin_angles(self.angles)
+        cos_sin_angles = self.get_cos_sin_angles(self.get_params('angles'))
+        sinogram_shape = self.get_params('sinogram_shape')
 
         # def bp_to_voxel(sinogram, cur_index):
         #     return self.backproject_to_voxel(sinogram, cur_index, cos_sin_angles, geometry_params)
@@ -795,7 +791,7 @@ class ParallelBeamModel(TomographyModel):
         @jax.jit
         def forward_project_fcn(voxel_values, voxel_indices):
             forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 1, None, None))
-            sinogram = forward_vmap(voxel_values, voxel_indices, cos_sin_angles, geometry_params, self.sinogram_shape)
+            sinogram = forward_vmap(voxel_values, voxel_indices, cos_sin_angles, geometry_params, sinogram_shape)
             return sinogram
 
         # See TomographyModel.forward_project() TomographyModel.back_project() for documentation

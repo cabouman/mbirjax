@@ -7,6 +7,8 @@ import types
 
 # The order and content of these dictionaries must match the signatures of the corresponding tests below
 _forward_model_defaults_dict = {
+    'angles': None,
+    'sinogram_shape': None,
     'delta_det_channel': 1.0,
     'delta_det_row': 1.0,
     'det_channel_offset': 0.0,
