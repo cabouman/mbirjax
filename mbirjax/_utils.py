@@ -29,7 +29,7 @@ _recon_model_defaults_dict = {
 
 _reconstruction_defaults_dict = {
     'auto_regularize_flag': True,
-    'prior_model_type': 'qggmrf',
+    'proximal_map_flag': False,
     'positivity_flag': False,
     'initialization': 'zero',
     'snr_db': 30.0,
