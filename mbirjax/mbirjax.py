@@ -518,6 +518,9 @@ class TomographyModel:
         Returns:
             [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
         """
+        # Get positivity flag
+        positivity_flag = self.get_params('positivity_flag')
+
         # Recover recon shape parameters and make sure that recon has a 3D shape
         num_recon_rows = self.params.num_recon_rows
         num_recon_cols = self.params.num_recon_cols
@@ -549,8 +552,22 @@ class TomographyModel:
         # We can compute the truly optimal update, but it's complicated so maybe this is good enough
         alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / jnp.sum(delta_sinogram * delta_sinogram * weights)
 
-        # Flatten recon; perform sparse updates at index locations; reshape as 3D array
+        # Flatten recon for next steps
         recon = recon.reshape((-1, num_recon_slices))
+
+        # Enforce positivity constraint if desired
+        # Greg, this may result in excess compilation. Not sure.
+        if positivity_flag is True:
+            # Get recon at indices
+            recon_at_indices = recon[indices]
+
+            # Clip updates to ensure non-negativity
+            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0/alpha), delta_recon_at_indices)
+
+            # Recompute sinogram projection
+            delta_sinogram = self.forward_project(delta_recon_at_indices, indices)
+
+        # Perform sparse updates at index locations, and reshape as 3D array
         recon = recon.at[indices].add(alpha * delta_recon_at_indices)
         recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
