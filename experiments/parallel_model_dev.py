@@ -32,9 +32,9 @@ if __name__ == "__main__":
 
     # Generate indices of voxels
     num_subsets = 1
-    full_indices = mbirjax.gen_random_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
+    full_indices = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
     num_subsets = 5
-    subset_indices = mbirjax.gen_random_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
+    subset_indices = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]

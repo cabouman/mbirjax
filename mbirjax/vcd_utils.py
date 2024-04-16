@@ -24,27 +24,18 @@ def get_2d_ror_mask(num_recon_rows, num_recon_cols):
     return mask
 
 
-def gen_set_of_voxel_partitions(num_recon_rows, num_recon_cols, granularity):
+def gen_voxel_partition( num_recon_rows, num_recon_cols, num_subsets):
     """
-    Generates a collection of voxel partitions for an array of specified partition sizes.
-    This function creates a tuple of randomly generated 2D voxel partitions.
-    Args:
-        num_recon_rows (int): Number of rows in the reconstruction grid.
-        num_recon_cols (int): Number of columns in the reconstruction grid.
-        granularity (np array): 1D array of integers where each integer specifies the number of subsets in a partition.
+    Generates a partition of voxel indices into specified number of subsets for use in tomographic reconstruction algorithms.
+    The function ensures that each subset contains an equal number of voxels, suitable VCD reconstruction.
+    Parameters:
+        num_recon_rows (int): The number of rows in the reconstruction grid.
+        num_recon_cols (int): The number of columns in the reconstruction grid.
+        num_subsets (int): The number of subsets to divide the voxel indices into.
+    Raises:
+        ValueError: If the number of subsets specified is greater than the total number of voxels in the grid.
     Returns:
-        tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
-    """
-    partitions = ()
-    for size in granularity:
-        partition = gen_random_voxel_partition(num_recon_rows, num_recon_cols, size)
-        partitions += (partition,)
-
-    return partitions
-
-def gen_random_voxel_partition(num_recon_rows, num_recon_cols, num_subsets):
-    """
-    Generates a random 2D partition of the voxels
+        jnp.array: A JAX array where each row corresponds to a subset of voxel indices, sorted within each subset.
     """
     # Determine the 2D indices within the RoR
     max_index_val = num_recon_rows * num_recon_cols
@@ -96,11 +87,6 @@ def gen_indices_d2(num_recon_rows, num_recon_cols, block_width):
                               (num_recon_rows // block_width) * (num_recon_cols // block_width))
 
     return jnp.array(indices)
-
-def gen_partition_sequence( sequence, num_iters ):
-    sequence = np.array(sequence)
-    sequence = np.tile(sequence, (num_iters // sequence.size + 1))[0:num_iters]
-    return sequence
 
 def gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices=1):
     """Code to generate a simple phantom """

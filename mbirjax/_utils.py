@@ -14,7 +14,6 @@ _forward_model_defaults_dict = {
 }
 
 _recon_model_defaults_dict = {
-    'init_recon': None,
     'prox_recon': None,
     'num_recon_rows': None,
     'num_recon_cols': None,
@@ -30,13 +29,15 @@ _recon_model_defaults_dict = {
 
 _reconstruction_defaults_dict = {
     'auto_regularize_flag': True,
-    'prior_model_type': 'qggmrf',
+    'proximal_map_flag': False,
     'positivity_flag': False,
     'initialization': 'zero',
     'snr_db': 30.0,
     'sharpness': 0.0,
     'max_resolutions': None,
-    'max_equits': 100.0,
+    'num_iterations': 10,
+    'granularity': [1, 8, 64, 256],
+    'partition_sequence': [0, 1, 2, 3, 1, 2, 3, 2, 3, 3],
     'verbose': 0
 }
 

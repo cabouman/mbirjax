@@ -293,10 +293,14 @@ class TomographyModel:
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
             self.params.auto_regularize_flag = False
+            warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
+                          'This is an advanced feature that will disable auto-regularization.')
 
         # Handle case if any meta regularization parameter changed
         if meta_parameter_change:
-            self.params.auto_regularize_flag = True
+            if self.params.auto_meta_regularization_flag is False:
+                self.params.auto_regularize_flag = True
+                warnings.warn('You have re-enabled auto-regularization. It was previously disabled')
 
         # Get final geometry parameters
         new_params = self.get_geometry_parameters()
@@ -332,6 +336,31 @@ class TomographyModel:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
 
+
+    def get_voxels_at_indices(self, recon, indices):
+        """
+        Get voxels at the specified indices.
+        Args:
+            recon:
+            indices:
+        Returns:
+        """
+        # Get number of rows in detector
+        shape = self.sinogram_shape
+
+        # To Do: Bug: This doesn't work.
+        # Either we need to implement self.params.sinogram_shape or we need to add this functionality to self.get_params().
+        #shape = self.get_params('sinogram_shape')
+
+        # Set number of detector rows
+        num_det_rows = shape[1]
+
+        # Retrieve values of recon at the indices locations
+        voxel_values = recon.reshape((-1, num_det_rows))[indices]
+
+        return voxel_values
+
+
     @staticmethod
     def get_cos_sin_angles(angles):
         """
@@ -345,24 +374,6 @@ class TomographyModel:
         cos_angles = jnp.cos(angles).flatten()
         sin_angles = jnp.sin(angles).flatten()
         return jnp.stack([cos_angles, sin_angles], axis=0)
-
-    @staticmethod
-    def recon_resize(recon, output_shape):
-        """
-        Resizes a reconstruction by performing 2D resizing along the slices dimension
-        Args:
-            recon (ndarray): 3D numpy array containing reconstruction with shape (slices, rows, cols)
-            output_shape (tuple): (num_rows, num_cols) shape of resized output
-        Returns:
-            ndarray: 3D numpy array containing interpolated reconstruction with shape (num_slices, num_rows, num_cols).
-        """
-        recon_resized = np.empty((recon.shape[0], output_shape[0], output_shape[1]), dtype=recon.dtype)
-        for i in range(recon.shape[0]):
-            PIL_image = Image.fromarray(recon[i])
-            PIL_image_resized = PIL_image.resize((output_shape[1], output_shape[0]), resample=Image.Resampling.BILINEAR)
-            recon_resized[i] = np.array(PIL_image_resized)
-
-        return recon_resized
 
     @staticmethod
     def sino_indicator(sinogram):
@@ -407,32 +418,36 @@ class TomographyModel:
 
         return weights
 
-    def vcd_iteration(self, error_sinogram, recon, partition, fm_hessian, weights = 1.0):
-        """
-        Calculate an iteration of the VCD algorithm on a single subset of the partition
 
-        Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
-                error_sinogram = measured_sinogram - forward_proj(recon)
-        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+    def recon( self, sinogram, weights = 1.0 ):
+        """
+        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
+        This function takes care of generating its own partitions and partition sequence.
         Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            partition (int array): (K, N_indices) an integer index arrays that partitions
-                the voxels into K arrays, each of which indexes into a flattened recon.
-            recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
-            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
+            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
         Returns:
-            [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
         """
-        for subset in np.random.permutation(partition.shape[0]):
-            error_sinogram, recon = self.vcd_subset_iteration(error_sinogram, recon, partition[subset], fm_hessian,
-                                                              weights=weights)
+        # Run auto regularization. If self.params.auto_regularize_flag is False, then this will have no effect
+        self.auto_set_regularization_params(sinogram, weights=weights)
 
-        return error_sinogram, recon
+        # Generate set of voxel partitions
+        partitions = self.gen_set_of_voxel_partitions()
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.gen_partition_sequence()
+
+        # Compute reconstruction
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
+
+        return recon, fm_rmse
+
 
     def vcd_recon( self, sinogram, partitions, partition_sequence, weights = 1.0 ):
         """
-        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
+        Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
+        for a given set of partitions and a prescribed partition sequence.
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
@@ -457,7 +472,7 @@ class TomographyModel:
         fm_rmse = np.zeros(num_iters)
 
         for i in range(num_iters):
-            error_sinogram, recon = self.vcd_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
+            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
             fm_rmse[i] = self.forward_model_loss(error_sinogram)
             if self.params.verbose>=1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
@@ -465,13 +480,40 @@ class TomographyModel:
         return recon, fm_rmse
 
 
-    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
+    def vcd_partition_iteration( self, error_sinogram, recon, partition, fm_hessian, weights = 1.0 ):
         """
-        Calculate an iteration of the VCD algorithm on a single subset of the partition
+        Calculate an iteration of the VCD algorithm for each subset of the partition
 
         Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
                 error_sinogram = measured_sinogram - forward_proj(recon)
         where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+        Args:
+            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            partition (int array): (K, N_indices) an integer index arrays that partitions
+                the voxels into K arrays, each of which indexes into a flattened recon.
+            recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+        Returns:
+            [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+        """
+        for subset in np.random.permutation(partition.shape[0]):
+            error_sinogram, recon = self.vcd_subset_iteration(error_sinogram, recon, partition[subset], fm_hessian,
+                                                              weights=weights)
+
+        return error_sinogram, recon
+
+
+    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
+        """
+        Calculate an iteration of the VCD algorithm on a single subset of the partition
+
+        Each iteration of the algorithm should return a better reconstructed recon.
+        The combination of (error_sinogram, recon) form a overcomplete state that make computation efficient.
+        However, it is important that at each application the state should meet the constraint that:
+                error_sinogram = measured_sinogram - forward_proj(recon)
+        where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
+
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             indices (int array): (N_indices) integer index array of voxels to be updated in a flattened recon.
@@ -538,6 +580,63 @@ class TomographyModel:
         else:
             loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
+
+    def gen_set_of_voxel_partitions(self):
+        """
+        Generates a collection of voxel partitions for an array of specified partition sizes.
+        This function creates a tuple of randomly generated 2D voxel partitions.
+        Args:
+            num_recon_rows (int): Number of rows in the reconstruction grid.
+            num_recon_cols (int): Number of columns in the reconstruction grid.
+            granularity (list of integers): 1D array of integers where each integer specifies the number of subsets in a partition.
+        Returns:
+            tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
+        """
+        # Convert granularity to an np array
+        granularity = np.array(self.params.granularity)
+
+        partitions = ()
+        for size in granularity :
+            partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, size)
+            partitions += (partition,)
+
+        return partitions
+
+    def gen_full_indices( self ):
+        """
+        Generates a full array of voxels in the region of reconstruction.
+        This is useful for computing forward projections.
+        """
+        # Convert granularity to an np array
+        partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, num_subsets=1)
+        full_indices = partition[0]
+
+        return full_indices
+
+    def gen_partition_sequence(self) :
+        # Get sequence from params and convert it to a np array
+        partition_sequence = np.array(self.params.partition_sequence)
+
+        # Tile sequence so it at least iterations long
+        num_iterations = self.params.num_iterations
+        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[0 :num_iterations]
+        return extended_partition_sequence
+
+    def gen_3d_shepp_logan_phantom(self):
+        """
+        Generates a 3D Shepp-Logan phantom.
+        Returns:
+            ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
+        """
+        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+        return phantom
+
+    def reshape_recon(self, recon):
+        """
+        Reshape recon into its 3D form
+        """
+        return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+
 
 def get_rho(delta, b, sigma_x, p, q, T):
     """
