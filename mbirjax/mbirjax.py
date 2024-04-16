@@ -615,7 +615,7 @@ class TomographyModel:
         """
         return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
 
-    def generate_3d_shepp_logan(self):
+    def gen_3d_shepp_logan_phantom( self ):
         """
         Generates a 3D Shepp-Logan phantom.
         Returns:

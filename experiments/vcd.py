@@ -58,7 +58,7 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.generate_3d_shepp_logan()
+    phantom = parallel_model.gen_3d_shepp_logan_phantom()
 
     # Generate synthetic sinogram data
     full_indices = parallel_model.gen_full_partitions()
