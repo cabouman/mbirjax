@@ -50,13 +50,6 @@ if __name__ == "__main__":
     end_angle = np.pi
     sharpness = 0.0
 
-    # Best outcome so far
-    granularity = np.array([1, 8, 64, 256])  # Desired granularity of each partition
-
-    # Best outcome so far
-    granularity = np.array([1, 8, 64, 256])  # Desired granularity of each partition
-    sequence = mbirjax.gen_partition_sequence([0, 1, 2, 3, 1, 2, 3, 2, 3, 3], num_iters)  # MG-VCD
-
     # Initialize sinogram
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
@@ -64,17 +57,18 @@ if __name__ == "__main__":
     # Set up parallel beam model
     parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
 
-    # Generate phantom
-    num_recon_rows, num_recon_cols, num_recon_slices = (
-        parallel_model.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices']))
-    phantom = mbirjax.generate_3d_shepp_logan(num_recon_rows, num_recon_cols, num_recon_slices)
+    # Generate 3D Shepp Logan phantom
+    phantom = parallel_model.generate_3d_shepp_logan()
 
     # Generate set of voxel partitions
-    partitions = mbirjax.gen_set_of_voxel_partitions(num_recon_rows, num_recon_cols, granularity)
+    partitions = parallel_model.gen_set_of_voxel_partitions()
+
+    # Generate sequence of partitions to use
+    partition_sequence = parallel_model.gen_partition_sequence()
 
     # Generate sinogram data
-    full_indices = partitions[0]
-    voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
+    full_indices = parallel_model.gen_full_partitions()
+    voxel_values = phantom.reshape((-1, num_det_rows))[full_indices]
     sinogram = parallel_model.forward_project(voxel_values[0], full_indices[0])
 
     # Generate weights array
@@ -89,36 +83,16 @@ if __name__ == "__main__":
     parallel_model.print_params()
 
     # ##########################
-    # Warm up projectors for accurate timing
-    error_sinogram = sinogram
-    recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
-    hessian = parallel_model.compute_hessian_diagonal(weights=weights, angles=angles)
-
-    # Run each partition once to finish compiling
-    print('Compiling ...')
-    for i in range(len(granularity)):
-        error_sinogram, recon = parallel_model.vcd_iteration(error_sinogram, recon, partitions[i], hessian,
-                                                             weights=weights)
-    print('Done compiling.')
-    # ##########################
-
-
-    # ##########################
-    # Multi-Granularity VCD (MGVCD) reconstruction section
+    # Perform VCD reconstruction
     time0 = time.time()
-    recon, fm_rmse = parallel_model.vcd_recon(sinogram, partitions, sequence, weights=weights)
+    recon, fm_rmse = parallel_model.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
 
     elapsed = time.time() - time0
-    print('Elapsed post-compile time for {} iterations with {}x{}x{} recon is {:.3f} '
-          'seconds'.format(num_iters, num_recon_rows, num_recon_cols, num_recon_slices, elapsed))
-    recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
+    print('Elapsed post-compile time recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
-    # Plot granularity sequence
-    labels = ['Vectorized Coordinate Descent',]
-    granularity_sequences = [granularity[sequence],]
-    loss_sequences = [fm_rmse,]
-    mbirjax.plot_granularity_and_loss(granularity_sequences=granularity_sequences, losses=loss_sequences, labels=labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
+    # Reshape recon into 3D form
+    recon = parallel_model.reshape_recon(recon)
 
     # Display results
     display_slices(phantom, sinogram, recon)

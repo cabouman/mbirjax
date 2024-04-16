@@ -539,6 +539,62 @@ class TomographyModel:
             loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
+    def gen_set_of_voxel_partitions(self):
+        """
+        Generates a collection of voxel partitions for an array of specified partition sizes.
+        This function creates a tuple of randomly generated 2D voxel partitions.
+        Args:
+            num_recon_rows (int): Number of rows in the reconstruction grid.
+            num_recon_cols (int): Number of columns in the reconstruction grid.
+            granularity (list of integers): 1D array of integers where each integer specifies the number of subsets in a partition.
+        Returns:
+            tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
+        """
+        # Convert granularity to an np array
+        granularity = np.array(self.params.granularity)
+
+        partitions = ()
+        for size in granularity :
+            partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, size)
+            partitions += (partition,)
+
+        return partitions
+
+    def gen_full_partitions(self):
+        """
+        Generates a full array of voxels in the region of reconstruction.
+        This is useful for computing forward projections.
+        """
+        # Convert granularity to an np array
+        partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, num_subsets=1)
+
+        return partition
+
+    def gen_partition_sequence(self) :
+        # Get sequence from params and convert it to a np array
+        partition_sequence = np.array(self.params.partition_sequence)
+
+        # Tile sequence so it at least iterations long
+        num_iterations = self.params.num_iterations
+        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[0 :num_iterations]
+        return extended_partition_sequence
+
+    def reshape_recon(self, recon):
+        """
+        Reshape recon into its 3D form
+        """
+        return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+
+    def generate_3d_shepp_logan(self):
+        """
+        Generates a 3D Shepp-Logan phantom.
+        Returns:
+            ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
+        """
+        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+        return phantom
+
+
 def get_rho(delta, b, sigma_x, p, q, T):
     """
     Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.

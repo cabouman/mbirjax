@@ -36,7 +36,9 @@ _reconstruction_defaults_dict = {
     'snr_db': 30.0,
     'sharpness': 0.0,
     'max_resolutions': None,
-    'max_equits': 100.0,
+    'num_iterations': 10,
+    'granularity': [1, 8, 64, 256],
+    'partition_sequence': [0, 1, 2, 3, 1, 2, 3, 2, 3, 3],
     'verbose': 0
 }
 
