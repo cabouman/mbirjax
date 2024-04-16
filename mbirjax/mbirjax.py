@@ -293,10 +293,14 @@ class TomographyModel:
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
             self.params.auto_regularize_flag = False
+            warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
+                          'This is an advanced feature that will disable auto-regularization.')
 
         # Handle case if any meta regularization parameter changed
         if meta_parameter_change:
-            self.params.auto_regularize_flag = True
+            if self.params.auto_meta_regularization_flag is False:
+                self.params.auto_regularize_flag = True
+                warnings.warn('You have re-enabled auto-regularization. It was previously disabled')
 
         # Get final geometry parameters
         new_params = self.get_geometry_parameters()
