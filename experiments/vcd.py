@@ -62,10 +62,7 @@ if __name__ == "__main__":
 
     # Generate synthetic sinogram data
     full_indices = parallel_model.gen_full_indices()
-    print(f'phantom shape: {phantom.shape}; Full indices shape: {full_indices.shape}')
-    voxel_values = phantom.reshape((-1, num_det_rows))[full_indices]
-    #voxel_values = mbirjax.get_voxels_at_indices(phantom, full_indices)
-    print(f'voxel_values: {voxel_values.shape}')
+    voxel_values = parallel_model.get_voxels_at_indices(phantom, full_indices)
     sinogram = parallel_model.forward_project(voxel_values, full_indices)
 
     # Generate weights array

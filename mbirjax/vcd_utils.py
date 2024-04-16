@@ -23,16 +23,6 @@ def get_2d_ror_mask(num_recon_rows, num_recon_cols):
     mask = mask[:, :]
     return mask
 
-def get_voxels_at_indices(recon, indices):
-    """
-    This function seems to produce a bug, but I don't understand why. Charlie
-    """
-    num_rows = recon.shape[0]
-    print(f'recon shape: {recon.shape}; indices shape: {indices.shape}')
-    voxel_values = recon.reshape((-1, num_rows))[indices]
-    print(f'voxel_values shape: {voxel_values.shape}')
-    return voxel_values
-
 
 def gen_voxel_partition( num_recon_rows, num_recon_cols, num_subsets):
     """
