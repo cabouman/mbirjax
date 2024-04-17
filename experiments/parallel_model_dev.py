@@ -5,7 +5,7 @@ import jax
 import time
 import matplotlib.pyplot as plt
 import mbirjax
-
+import mbirjax.parallel_beam
 
 if __name__ == "__main__":
     """
@@ -16,9 +16,9 @@ if __name__ == "__main__":
     batch_size = 100
 
     # Initialize sinogram
-    num_views = 256
-    num_det_rows = 256
-    num_det_channels = 256
+    num_views = 128
+    num_det_rows = 10
+    num_det_channels = 128
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate phantom
     num_recon_rows, num_recon_cols, num_recon_slices = (

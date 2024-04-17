@@ -3,6 +3,7 @@ import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
+import mbirjax.parallel_beam
 import mbirjax.plot_utils as pu
 
 
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_shepp_logan_phantom()
