@@ -601,10 +601,6 @@ class TomographyModel:
         """
         Generates a collection of voxel partitions for an array of specified partition sizes.
         This function creates a tuple of randomly generated 2D voxel partitions.
-        Args:
-            num_recon_rows (int): Number of rows in the reconstruction grid.
-            num_recon_cols (int): Number of columns in the reconstruction grid.
-            granularity (list of integers): 1D array of integers where each integer specifies the number of subsets in a partition.
         Returns:
             tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
         """

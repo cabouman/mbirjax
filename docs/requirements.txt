@@ -5,3 +5,5 @@ sphinx-rtd-theme
 ruamel.yaml
 psutil
 numpy
+jax
+jaxlib

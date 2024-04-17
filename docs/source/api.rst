@@ -13,4 +13,4 @@ Primary module:
    :titlesonly:
    :hidden:
 
-   mbirjax_sandbox
+   mbirjax

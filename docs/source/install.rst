@@ -12,7 +12,7 @@ Downloading and installing from source
 
   In order to download the python code, move to a directory of your choice and run the following two commands.
 
-    | ``git clone https://github.com/cabouman/mbirjax_sandbox.git``
+    | ``git clone https://github.com/cabouman/mbirjax.git``
     | ``cd mbirjax``
 
 
@@ -21,7 +21,7 @@ Downloading and installing from source
   It is recommended that you install to a virtual environment.
   If you have Anaconda installed, you can run the following:
 
-    | ``conda create --name mbirjax_sandbox python=mbirjax``
+    | ``conda create --name mbirjax python=mbirjax``
     | ``conda activate mbirjax``
 
   Install the dependencies using:

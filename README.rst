@@ -15,7 +15,7 @@ Installing
 
     .. code-block::
 
-        git clone git@github.com:bouman/mbirjax
+        git clone git@github.com:cabouman/mbirjax.git
 
 2. Install the conda environment and package
 
