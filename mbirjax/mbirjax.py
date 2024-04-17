@@ -801,7 +801,6 @@ class ParallelBeamModel(TomographyModel):
             return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, cos_sin_angles, geometry_params)
 
         def forward_project_fcn(voxel_values, voxel_indices, batch_size=None):
-            sinogram_shape = self.sinogram_shape
             num_views = cos_sin_angles.shape[1]
             forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 1, None, None))
 
