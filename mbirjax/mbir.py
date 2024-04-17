@@ -678,27 +678,65 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
 @jax.jit
 def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
     """
-    Calculate the gradient and hessian at each index location in recon using the qGGMRF prior.
+    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
     Args:
-        recon (jax array): 3D recon with shape (num_recon_rows, num_recon_cols, num_recon_slices)
-        indices (int array): (N_indices, num_recon_slices) integer index array of voxels to be updated in a flattened recon.
+        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        sigma_x (float): Standard deviation parameter of the qGGMRF prior.
+        p (float): Norm parameter p in the qGGMRF prior.
+        q (float): Norm parameter q in the qGGMRF prior.
+        T (float): Scaling parameter in the qGGMRF prior.
     Returns:
-        [first_derivative, second_derivative]: two jpn arrays each of shape (N_indices, num_recon_slices)
+        tuple: Contains two arrays (first_derivative, second_derivative) each of shape (N_indices, num_recon_slices)
+               representing the gradient and Hessian values at specified indices.
     """
-    # Set neighborhood weights
-    b = jnp.array([1, 1, 1, 1]).reshape(1, -1) / 4.0
+    # Initialize the neighborhood weights for averaging surrounding pixel values.
+    # Order is (I think) [row+1, row-1, col+1, col-1, slice+1, slice-1]
+    b = jnp.array([1, 1, 1, 1, 1, 1]).reshape(1, -1)
+    b /= jnp.sum(b)
 
+    # Extract the shape of the reconstruction array.
     num_rows, num_cols, num_slices = recon.shape
-    row_index, col_index = jnp.unravel_index(indices, (num_rows, num_cols))
-    xs = recon[row_index, col_index]
-    offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
-    xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
-    x_neighbors_prime_new = jnp.stack(xr, axis=-1)
-    delta_prime = xs[:, :, jnp.newaxis] - x_neighbors_prime_new
-    delta_prime_up_down = jnp.diff(xs, axis=-1)  # TODO:  qggmrf in slice direction
 
+    # Convert flat indices to 2D indices for row and column access.
+    row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
+
+    # Access the central voxels' values at the given indices. Shape of xs is (num indices)x(num slices)
+    xs = recon[row_index, col_index]
+
+    # Define relative positions for accessing neighborhood voxels.
+    offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+
+    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that location over all slices.
+    xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
+
+    # Compute differences in the slice direction (temporary placeholder).
+    # delta_prime_up_down = jnp.diff(xs, axis=-1)  # This needs further implementation based on specific requirements.
+    # delta_prime_up = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (0, 1)), mode='constant', constant_values=0)
+    # delta_prime_down = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (1, 0)), mode='constant', constant_values=0)
+
+    # Shift slices up with zero padding
+    xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(0)
+
+    # Shift slices down with zero padding
+    xs_down = jnp.roll(xs, shift=1, axis=1).at[:, 0].set(0)
+
+    # Append the up-down differences to xr
+    xr = xr + [xs_up, xs_down]
+
+    # Convert to a jnp array with shape (num index elements)x(num slices)x(6 neighbors).
+    x_neighbors_prime_new = jnp.stack(xr, axis=-1)
+
+    # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
+    delta_prime = xs[:, :, jnp.newaxis] - x_neighbors_prime_new
+
+    # Reshape delta_prime for processing with the qGGMRF prior.
     delta_prime = delta_prime.reshape((-1, b.shape[-1]))
+
+    # Compute the first and second derivatives using the qGGMRF model.
     first_derivative, second_derivative = pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T)
+
+    # Reshape outputs to match the number of indices and slices.
     first_derivative = first_derivative.reshape(-1, num_slices)
     second_derivative = second_derivative.reshape(-1, num_slices)
 
