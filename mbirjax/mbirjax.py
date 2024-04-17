@@ -2,12 +2,11 @@ import types
 import numpy as np
 import yaml
 import warnings
-
+import gc
 import jax
 import jax.numpy as jnp
 from jax import lax
 
-import mbirjax
 import mbirjax._utils as utils
 
 
@@ -75,7 +74,9 @@ class TomographyModel:
         Returns:
             A jax array of shape (len(voxel_indices), num_slices)
         """
-        return self.forward_project(voxel_values, voxel_indices)
+        sinogram = self.forward_project(voxel_values, voxel_indices).block_until_ready()
+        gc.collect()
+        return sinogram
 
     def back_project(self, sinogram, indices):
         """
@@ -88,10 +89,14 @@ class TomographyModel:
         Returns:
             A jax array of shape (len(voxel_indices), num_slices)
         """
-        return self.back_project(sinogram, indices)
+        recon = self.back_project(sinogram, indices).block_until_ready()
+        gc.collect()
+        return recon
 
     def compute_hessian_diagonal(self, weights, angles, sinogram_shape=None):
-        return self.compute_hessian_diagonal(weights, angles, sinogram_shape=None)
+        hessian = self.compute_hessian_diagonal(weights, angles, sinogram_shape=None).block_until_ready()
+        gc.collect()
+        return hessian
 
     def auto_set_regularization_params(self, sinogram, weights=1):
         """
@@ -180,9 +185,9 @@ class TomographyModel:
         # Get parameters
         delta_det_channel = self.params.delta_det_channel
         sharpness = self.params.sharpness
-        if hasattr(self.params, 'magnification') :
+        if hasattr(self.params, 'magnification'):
             magnification = self.params.magnification
-        else :
+        else:
             magnification = 1.0
 
         num_det_channels = sinogram.shape[-1]
@@ -287,7 +292,9 @@ class TomographyModel:
                 raise ValueError(error_message)
             if len(self.angles) != self.sinogram_shape[0]:
                 error_message = "Number of angles must equal the number of views. \n"
-                error_message += "Got {} for number of angles and {} for number of views.".format(len(self.angles), self.sinogram_shape[0])
+                error_message += "Got {} for number of angles and {} for number of views.".format(len(self.angles),
+                                                                                                  self.sinogram_shape[
+                                                                                                      0])
                 raise ValueError(error_message)
 
         # Handle case if any regularization parameter changed
@@ -407,7 +414,7 @@ class TomographyModel:
 
         return weights
 
-    def vcd_iteration(self, error_sinogram, recon, partition, fm_hessian, weights = 1.0):
+    def vcd_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
 
@@ -430,7 +437,7 @@ class TomographyModel:
 
         return error_sinogram, recon
 
-    def vcd_recon( self, sinogram, partitions, partition_sequence, weights = 1.0 ):
+    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         Args:
@@ -457,15 +464,15 @@ class TomographyModel:
         fm_rmse = np.zeros(num_iters)
 
         for i in range(num_iters):
-            error_sinogram, recon = self.vcd_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
+            error_sinogram, recon = self.vcd_iteration(error_sinogram, recon, partitions[partition_sequence[i]],
+                                                       hessian, weights=weights)
             fm_rmse[i] = self.forward_model_loss(error_sinogram)
-            if self.params.verbose>=1:
+            if self.params.verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
 
-
-    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
+    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
 
@@ -492,10 +499,10 @@ class TomographyModel:
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-        constant = 1.0/(self.params.sigma_y ** 2.0)
+        constant = 1.0 / (self.params.sigma_y ** 2.0)
 
-        fm_gradient = -constant*self.back_project(error_sinogram*weights, indices)
-        fm_sparse_hessian = constant*fm_hessian[indices]
+        fm_gradient = -constant * self.back_project(error_sinogram * weights, indices)
+        fm_sparse_hessian = constant * fm_hessian[indices]
 
         # Compute the prior model gradient and hessian at each pixel in the index set.
         sigma_x, p, q, T = self.get_params(['sigma_x', 'p', 'q', 'T'])
@@ -522,7 +529,7 @@ class TomographyModel:
 
         return error_sinogram, recon
 
-    def forward_model_loss(self, error_sinogram, weights=1.0, normalize = True):
+    def forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
@@ -533,11 +540,13 @@ class TomographyModel:
             [loss].
         """
         if normalize:
-            avg_weight =jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean((error_sinogram * error_sinogram) * (weights/avg_weight)))
+            avg_weight = jnp.average(weights)
+            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean(
+                (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
             loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
+
 
 def get_rho(delta, b, sigma_x, p, q, T):
     """
@@ -578,13 +587,13 @@ def get_btilde(delta_prime, b, sigma_x, p, q, T):
     delta_prime = abs(delta_prime) + sigma_x * eps_float32
 
     # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime ** (q-2.0))/(2.0*(sigma_x ** p)*(T*sigma_x ** (q-p)))
+    first_term = (delta_prime ** (q - 2.0)) / (2.0 * (sigma_x ** p) * (T * sigma_x ** (q - p)))
 
     # third_term is the third term in formula.
-    second_term = (delta_prime/(T*sigma_x)) ** (q-p)
-    third_term = ((q/p)+second_term)/((1+second_term) ** 2.0)
+    second_term = (delta_prime / (T * sigma_x)) ** (q - p)
+    third_term = ((q / p) + second_term) / ((1 + second_term) ** 2.0)
 
-    result = b*(first_term*third_term)  # Broadcast b over batch_size dimension
+    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
     return result
 
 
@@ -623,7 +632,7 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
         [first_derivative, second_derivative]: two jpn arrays each of shape (N_indices, num_recon_slices)
     """
     # Set neighborhood weights
-    b = jnp.array([1, 1, 1, 1]).reshape(1, -1)/4.0
+    b = jnp.array([1, 1, 1, 1]).reshape(1, -1) / 4.0
 
     num_rows, num_cols, num_slices = recon.shape
     row_index, col_index = jnp.unravel_index(indices, (num_rows, num_cols))
@@ -681,26 +690,38 @@ class ParallelBeamModel(TomographyModel):
         geometry_params = self.get_geometry_parameters()
         cos_sin_angles = self.get_cos_sin_angles(self.angles)
 
-        # def bp_to_voxel(sinogram, cur_index):
-        #     return self.backproject_to_voxel(sinogram, cur_index, cos_sin_angles, geometry_params)
-        #
-        # # There is significant speed up from each of
-        # #   (1) Using jit on the vmap and
-        # #   (2) Defining bp_to_voxel to include the externally defined angles and geometry parameters.
-        # # Inputs are sinogram, indices
-        # back_project_fcn = jax.jit(jax.vmap(bp_to_voxel, in_axes=(None, 0)))
-        @jax.jit
         def back_project_fcn(sinogram, indices):
             return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, cos_sin_angles, geometry_params)
 
-        @jax.jit
-        def forward_project_fcn(voxel_values, voxel_indices):
+        def forward_project_fcn(voxel_values, voxel_indices, batch_size=None):
+            sinogram_shape = self.sinogram_shape
+            num_views = cos_sin_angles.shape[1]
             forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 1, None, None))
-            sinogram = forward_vmap(voxel_values, voxel_indices, cos_sin_angles, geometry_params, self.sinogram_shape)
+
+            if batch_size is None or batch_size >= num_views:
+                sinogram = forward_vmap(voxel_values, voxel_indices, cos_sin_angles, geometry_params, sinogram_shape)
+            else:
+                num_batches = num_views // batch_size
+                cos_sin_angles_batched = jnp.reshape(cos_sin_angles.T[0:num_batches * batch_size],
+                                                     (num_batches, batch_size, 2))
+                cos_sin_angles_batched = cos_sin_angles_batched.transpose((0, 2, 1))
+
+                def forward_map(cs_angle_batch):
+                    return forward_vmap(voxel_values, voxel_indices, cs_angle_batch, geometry_params,
+                                        sinogram_shape)
+
+                sinogram = jax.lax.map(forward_map, cos_sin_angles_batched)
+                sinogram = jnp.reshape(sinogram, (num_batches * batch_size,) + sinogram.shape[2:])
+                num_remaining = num_views - num_batches * batch_size
+                if num_remaining > 0:
+                    end_batch = cos_sin_angles[:, -num_remaining:]
+                    end_views = forward_map(end_batch)
+                    sinogram = jnp.concatenate((sinogram, end_views), axis=0)
+
             return sinogram
 
-        # See TomographyModel.forward_project() TomographyModel.back_project() for documentation
-        self.forward_project, self.back_project = forward_project_fcn, back_project_fcn
+        self.forward_project = jax.jit(forward_project_fcn, static_argnums=(2,))
+        self.back_project = jax.jit(back_project_fcn)
 
     @staticmethod
     def back_project_to_voxels_scan(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power=1):
@@ -742,9 +763,11 @@ class ParallelBeamModel(TomographyModel):
         extra_args, accumulated = carry
         sinogram_view, cos_sin_angle = sino_angle_pair
         voxel_indices, geometry_params, coeff_power = extra_args
-        bp_view = ParallelBeamModel.back_project_one_view_to_voxels(sinogram_view, voxel_indices, cos_sin_angle, geometry_params, coeff_power)
-        new_accumulated = accumulated + bp_view
-        return [extra_args, new_accumulated], None
+        bp_view = ParallelBeamModel.back_project_one_view_to_voxels(sinogram_view, voxel_indices, cos_sin_angle,
+                                                                    geometry_params, coeff_power)
+        accumulated += bp_view
+        del bp_view
+        return [extra_args, accumulated], None
 
     @staticmethod
     @jax.jit
@@ -825,7 +848,8 @@ class ParallelBeamModel(TomographyModel):
         # hessian_function = jax.jit(jax.vmap(bp_to_voxel, in_axes=0))
         # hessian_diagonal = hessian_function(indices)
 
-        hessian_diagonal = ParallelBeamModel.back_project_to_voxels_scan(weights, indices, cos_sin_angles, geometry_params, coeff_power=2)
+        hessian_diagonal = ParallelBeamModel.back_project_to_voxels_scan(weights, indices, cos_sin_angles,
+                                                                         geometry_params, coeff_power=2)
 
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
@@ -850,7 +874,8 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = sinogram_shape
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, cos_sin_angle, geometry_params, sinogram_shape)
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, cos_sin_angle, geometry_params,
+                                                                         sinogram_shape)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2P+1) x num_slices
@@ -864,7 +889,7 @@ class ParallelBeamModel(TomographyModel):
         # sinogram_view is num_slices x num_det_channels, sinogram_values is num_indices x (2P+1) x num_slices
         sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_slices, -1))
         sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
-        # sinogram_view = ParallelBeamModel.update_slices_vmap()(sinogram_view, sinogram_values, channel_index)
+        del Aji, channel_index
         return sinogram_view
 
     @staticmethod
