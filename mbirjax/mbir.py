@@ -127,7 +127,7 @@ class TomographyModel:
             magnification = 1.0
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.get_sino_indicator(sinogram)
+        sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
         signal_rms = np.average(weights * sinogram**2, None, sino_indicator)**0.5
@@ -151,7 +151,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self.get_estimate_of_recon_std(sinogram)
+        sigma_x = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
 
     def auto_set_sigma_p(self, sinogram):
@@ -160,7 +160,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self.get_estimate_of_recon_std(sinogram)
+        sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
@@ -365,7 +365,7 @@ class TomographyModel:
         return jnp.stack([cos_angles, sin_angles], axis=0)
 
     @staticmethod
-    def get_sino_indicator(sinogram):
+    def _get_sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
         Args:
@@ -378,7 +378,7 @@ class TomographyModel:
         indicator = jnp.int8(sinogram > (0.01 * percent_noise_floor) * jnp.mean(jnp.fabs(sinogram)))
         return indicator
 
-    def get_estimate_of_recon_std(self, sinogram):
+    def _get_estimate_of_recon_std(self, sinogram):
         """
         Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
         sigma_x in MBIR reconstruction.
@@ -396,7 +396,7 @@ class TomographyModel:
         num_det_channels = sinogram.shape[-1]
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.get_sino_indicator(sinogram)
+        sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         typical_img_value = np.average(sinogram, weights=sino_indicator) / (
