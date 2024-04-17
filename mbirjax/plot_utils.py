@@ -3,13 +3,13 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-def display_slices( phantom, sinogram, recon ) :
+def display_slices(phantom, sinogram, recon):
     num_recon_slices = phantom.shape[2]
     vmin = 0.0
     vmax = phantom.max()
     vsinomax = sinogram.max()
 
-    for slice_index in range(num_recon_slices) :
+    for slice_index in range(num_recon_slices):
         fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
         fig.suptitle('Demo of VCD reconstruction - Slice {}'.format(slice_index))
 
@@ -39,7 +39,6 @@ global slice_index, ax, fig, cbar, img, vertical_line
 
 
 def slice_viewer(data):
-
     global slice_index, cbar, vertical_line
     slice_index = data.shape[2] // 2  # Initial slice index
 
@@ -96,7 +95,7 @@ def slice_viewer(data):
     plt.close()
 
 
-def debug_plot_partitions( partitions, num_recon_rows, num_recon_cols ):
+def debug_plot_partitions(partitions, num_recon_rows, num_recon_cols):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
 
@@ -134,7 +133,8 @@ def debug_plot_partitions( partitions, num_recon_rows, num_recon_cols ):
     plt.show()
 
 
-def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices=None, num_recon_slices=1, title='Debug Plot'):
+def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices=None, num_recon_slices=1,
+                       title='Debug Plot'):
     """
     Visualizes indices on a reconstruction grid and optionally displays reconstruction data at these indices.
 
@@ -187,7 +187,8 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     plt.show()
 
 
-def plot_granularity_and_loss( granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None, fig_title=None ):
+def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None,
+                              fig_title=None):
     """
     Plots multiple granularity and loss data sets on a single figure with separate subplots, using fixed scales for all plots.
 

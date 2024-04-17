@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import mbirjax.plot_utils as pu
 import mbirjax.parallel_beam
 
-
 if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
@@ -35,11 +34,11 @@ if __name__ == "__main__":
     sinogram = parallel_model.forward_project(voxel_values, full_indices)
 
     # Generate weights array
-    weights = parallel_model.calc_weights(sinogram/sinogram.max(), weight_type='transmission_root')
+    weights = parallel_model.calc_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    #parallel_model.set_params(positivity_flag=True)
+    # parallel_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()

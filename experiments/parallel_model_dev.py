@@ -44,7 +44,7 @@ if __name__ == "__main__":
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
-    cos_sin_angles = parallel_model.get_cos_sin_angles(angles)
+    cos_sin_angles = parallel_model._get_cos_sin_angles(angles)
     geometry_params = parallel_model.get_geometry_parameters()
 
     # view = parallel_model.forward_project_voxels_one_view(voxel_values[0], full_indices[0], cos_sin_angles[0], geometry_params, sinogram.shape)
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     index = jnp.ravel_multi_index((60, 60), (num_recon_rows, num_recon_cols))
     a1 = parallel_model.back_project(y, indices[0])
 
-    cs = parallel_model.get_cos_sin_angles(angles[view_index])
+    cs = parallel_model._get_cos_sin_angles(angles[view_index])
     a2 = parallel_model.back_project_one_view_to_voxels(sinogram[view_index], indices[0], cs, geometry_params)
 
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))

@@ -130,10 +130,10 @@ class TomographyModel:
         sino_indicator = self.get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
-        signal_rms = np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
+        signal_rms = np.average(weights * sinogram**2, None, sino_indicator)**0.5
 
         # Convert snr to relative noise standard deviation
-        rel_noise_std = 10 ** (-snr_db / 20)
+        rel_noise_std = 10**(-snr_db / 20)
         # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
         default_pixel_pitch = delta_det_channel / magnification
 
@@ -141,7 +141,7 @@ class TomographyModel:
         pixel_pitch_relative_to_default = delta_pixel_recon / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
-        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
+        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default**0.5)
         self.params.sigma_y = sigma_y  # Set these directly to avoid warnings in set_params
         self.params.auto_regularize_flag = True
 
@@ -263,7 +263,8 @@ class TomographyModel:
                 raise ValueError(error_message)
             if len(angles) != sinogram_shape[0]:
                 error_message = "Number of angles must equal the number of views. \n"
-                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles), sinogram_shape[0])
+                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
+                                                                                                  sinogram_shape[0])
                 raise ValueError(error_message)
 
         # Handle case if any regularization parameter changed
@@ -332,7 +333,7 @@ class TomographyModel:
 
         return voxel_values
 
-    def get_forward_model_loss( self, error_sinogram, weights=1.0, normalize=True ):
+    def get_forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
@@ -344,19 +345,18 @@ class TomographyModel:
         """
         if normalize:
             avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean(
+            loss = jnp.sqrt((1.0 / (self.params.sigma_y**2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
-            loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            loss = (1.0 / (2 * self.params.sigma_y**2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     @staticmethod
-    def get_cos_sin_angles(angles):
+    def _get_cos_sin_angles(angles):
         """
         Take the sin and cosine of an array of num_view angles and return as a num_view x 1 jax array.
         Args:
             angles: array of angles
-
         Returns:
             num_view x 1 jax array containing cos and sin of the angles
         """
@@ -365,7 +365,7 @@ class TomographyModel:
         return jnp.stack([cos_angles, sin_angles], axis=0)
 
     @staticmethod
-    def get_sino_indicator( sinogram ):
+    def get_sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
         Args:
@@ -378,7 +378,7 @@ class TomographyModel:
         indicator = jnp.int8(sinogram > (0.01 * percent_noise_floor) * jnp.mean(jnp.fabs(sinogram)))
         return indicator
 
-    def get_estimate_of_recon_std( self, sinogram ):
+    def get_estimate_of_recon_std(self, sinogram):
         """
         Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
         sigma_x in MBIR reconstruction.
@@ -403,7 +403,7 @@ class TomographyModel:
                 num_det_channels * delta_det_channel / magnification)
 
         # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2 ** sharpness) * typical_img_value
+        sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
     @staticmethod
@@ -435,8 +435,7 @@ class TomographyModel:
 
         return weights
 
-
-    def recon( self, sinogram, weights=1.0):
+    def recon(self, sinogram, weights=1.0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -488,14 +487,16 @@ class TomographyModel:
         fm_rmse = np.zeros(num_iters)
 
         for i in range(num_iters):
-            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
+            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon,
+                                                                 partitions[partition_sequence[i]], hessian,
+                                                                 weights=weights)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
             if self.params.verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
 
-    def vcd_partition_iteration( self, error_sinogram, recon, partition, fm_hessian, weights = 1.0 ):
+    def vcd_partition_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm for each subset of the partition
 
@@ -518,8 +519,7 @@ class TomographyModel:
 
         return error_sinogram, recon
 
-
-    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
+    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
 
@@ -552,7 +552,7 @@ class TomographyModel:
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-        constant = 1.0 / (self.params.sigma_y ** 2.0)
+        constant = 1.0 / (self.params.sigma_y**2.0)
 
         fm_gradient = -constant * self.back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
@@ -582,7 +582,7 @@ class TomographyModel:
             recon_at_indices = recon[indices]
 
             # Clip updates to ensure non-negativity
-            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0/alpha), delta_recon_at_indices)
+            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0 / alpha), delta_recon_at_indices)
 
             # Recompute sinogram projection
             delta_sinogram = self.forward_project(delta_recon_at_indices, indices)
@@ -613,7 +613,7 @@ class TomographyModel:
 
         return partitions
 
-    def gen_full_indices( self ):
+    def gen_full_indices(self):
         """
         Generates a full array of voxels in the region of reconstruction.
         This is useful for computing forward projections.
@@ -624,13 +624,14 @@ class TomographyModel:
 
         return full_indices
 
-    def gen_partition_sequence(self) :
+    def gen_partition_sequence(self):
         # Get sequence from params and convert it to a np array
         partition_sequence = np.array(self.params.partition_sequence)
 
         # Tile sequence so it at least iterations long
         num_iterations = self.params.num_iterations
-        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[0 :num_iterations]
+        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[
+                                      0:num_iterations]
         return extended_partition_sequence
 
     def gen_3d_shepp_logan_phantom(self):
@@ -639,7 +640,8 @@ class TomographyModel:
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
-        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols,
+                                                  self.params.num_recon_slices)
         return phantom
 
     def reshape_recon(self, recon):
@@ -664,8 +666,8 @@ def get_rho(delta, b, sigma_x, p, q, T):
     delta = abs(delta) + sigma_x * eps_float32
 
     # Compute terms of complex expression
-    first_term = ((delta / sigma_x) ** p) / p
-    second_term = (delta / (T * sigma_x)) ** (q - p)
+    first_term = ((delta / sigma_x)**p) / p
+    second_term = (delta / (T * sigma_x))**(q - p)
     third_term = second_term / (1 + second_term)
 
     result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
@@ -688,11 +690,11 @@ def get_btilde(delta_prime, b, sigma_x, p, q, T):
     delta_prime = abs(delta_prime) + sigma_x * eps_float32
 
     # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime ** (q - 2.0)) / (2.0 * (sigma_x ** p) * (T * sigma_x ** (q - p)))
+    first_term = (delta_prime**(q - 2.0)) / (2.0 * (sigma_x**p) * (T * sigma_x**(q - p)))
 
     # third_term is the third term in formula.
-    second_term = (delta_prime / (T * sigma_x)) ** (q - p)
-    third_term = ((q / p) + second_term) / ((1 + second_term) ** 2.0)
+    second_term = (delta_prime / (T * sigma_x))**(q - p)
+    third_term = ((q / p) + second_term) / ((1 + second_term)**2.0)
 
     result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
     return result
