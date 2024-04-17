@@ -1,5 +1,5 @@
 mbirjax
---------------------------
+-------
 
 ..
     Adjust the dashes above to match the number of characters in mbirjax
