@@ -18,12 +18,12 @@ def get_2d_ror_mask(num_recon_rows, num_recon_cols):
     row_coords = np.arange(num_recon_rows) - row_center
 
     coords = np.meshgrid(col_coords, row_coords)  # Note the interchange of rows and columns for meshgrid
-    mask = coords[0] ** 2 + coords[1] ** 2 <= radius ** 2
+    mask = coords[0]**2 + coords[1]**2 <= radius**2
     mask = mask[:, :]
     return mask
 
 
-def gen_voxel_partition( num_recon_rows, num_recon_cols, num_subsets):
+def gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets):
     """
     Generates a partition of voxel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of voxels, suitable VCD reconstruction.
@@ -87,6 +87,7 @@ def gen_indices_d2(num_recon_rows, num_recon_cols, block_width):
 
     return jnp.array(indices)
 
+
 def gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices=1):
     """Code to generate a simple phantom """
     # Compute phantom height and width
@@ -103,9 +104,11 @@ def gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices=1):
     stop_cols = (num_recon_cols + phantom_cols) // 2
     for slice_index in np.arange(num_recon_slices):
         shift_cols = int(slice_index * phantom_cols / num_recon_slices)
-        phantom[start_rows:stop_rows, (shift_cols+start_cols):(shift_cols+stop_cols), slice_index] = 1.0 / max(phantom_rows,phantom_cols)
+        phantom[start_rows:stop_rows, (shift_cols + start_cols):(shift_cols + stop_cols), slice_index] = 1.0 / max(
+            phantom_rows, phantom_cols)
 
     return jnp.array(phantom)
+
 
 def ellipsoid(x0, y0, z0, a, b, c, N, M, P, angle=0, intensity=1.0):
     x = np.linspace(-1, 1, N)
@@ -122,7 +125,8 @@ def ellipsoid(x0, y0, z0, a, b, c, N, M, P, angle=0, intensity=1.0):
     ellipsoid = (Xr**2 / a**2 + Yr**2 / b**2 + Zr**2 / c**2) <= 1
     return ellipsoid.astype(float) * intensity
 
-def generate_3d_shepp_logan( N, M, P ):
+
+def generate_3d_shepp_logan(N, M, P):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
     Args:
@@ -147,5 +151,3 @@ def generate_3d_shepp_logan( N, M, P ):
     phantom += ellipsoid(0, -0.605, 0, 0.023, 0.023, 0.02, N, M, P, angle=0, intensity=0.1)
 
     return jnp.array(phantom)
-
-

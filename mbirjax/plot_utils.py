@@ -3,13 +3,13 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-def display_slices( phantom, sinogram, recon ) :
+def display_slices(phantom, sinogram, recon):
     num_recon_slices = phantom.shape[2]
     vmin = 0.0
     vmax = phantom.max()
     vsinomax = sinogram.max()
 
-    for slice_index in range(num_recon_slices) :
+    for slice_index in range(num_recon_slices):
         fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
         fig.suptitle('Demo of VCD reconstruction - Slice {}'.format(slice_index))
 
@@ -37,29 +37,57 @@ def display_slices( phantom, sinogram, recon ) :
 
 global slice_index, ax, fig, cbar, img, vertical_line
 
+import matplotlib.pyplot as plt
+import numpy as np
 
-def slice_viewer(data):
 
+def slice_viewer(data, data2=None):
+    """
+    Display slices of one or two 3D image volumes with a consistent grayscale across slices.
+    Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
+    they are displayed side by side for comparative purposes.
+
+    Args:
+        data (numpy.ndarray or jax.numpy.DeviceArray): 3D image volume with shape (height, width, depth).
+        data2 (numpy.ndarray or jax.numpy.DeviceArray, optional): Second 3D image volume with the same shape as the first.
+
+    The function sets up a matplotlib figure with interactive controls to view different slices
+    by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
+    determined by the global min and max of the entire volume.
+    """
     global slice_index, cbar, vertical_line
     slice_index = data.shape[2] // 2  # Initial slice index
 
+    # Define min and max grayscale values for consistent coloring across slices
+    vmin = min(data.min(), data2.min() if data2 is not None else data.min())
+    vmax = max(data.max(), data2.max() if data2 is not None else data.max())
+
     def update_slice(x):
+        """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
         global slice_index, vertical_line
         slice_index = int(x / ax_colorbar.get_xlim()[1] * data.shape[2])
         vertical_line.set_xdata([slice_index, slice_index])
         redraw_fig()
 
     def redraw_fig():
+        """Redraw the figure to update the slice and its display."""
         ax.clear()
-        ax.imshow(data[:, :, slice_index], cmap='gray')
-        ax.set_title(f'Slice {slice_index}')
+        if data2 is not None:
+            ax.imshow(np.concatenate((data[:, :, slice_index], data2[:, :, slice_index]), axis=1), cmap='gray',
+                      vmin=vmin, vmax=vmax)
+            ax.set_title(f'Slice {slice_index} Comparison')
+        else:
+            ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
+            ax.set_title(f'Slice {slice_index}')
         fig.canvas.draw_idle()
 
     def on_press(event):
+        """Handle mouse press events for interactive slice selection."""
         if event.inaxes == ax_colorbar:
             update_slice(event.xdata)
 
     def on_motion(event):
+        """Handle mouse motion events for continuous slice selection while dragging."""
         if event.inaxes == ax_colorbar and event.button == 1:
             update_slice(event.xdata)
 
@@ -85,8 +113,7 @@ def slice_viewer(data):
     fig.canvas.mpl_connect('motion_notify_event', on_motion)
 
     # Initial drawing
-    img = ax.imshow(data[:, :, slice_index], cmap='gray')
-    cbar = fig.colorbar(img, ax=ax, orientation='vertical')  # Initialize colorbar once
+    redraw_fig()  # Call redraw to handle initial display for single or dual images
     plt.show()
 
     plt.pause(0.1)  # Delay to ensure window stays open
@@ -96,7 +123,13 @@ def slice_viewer(data):
     plt.close()
 
 
-def debug_plot_partitions( partitions, num_recon_rows, num_recon_cols ):
+# Example usage:
+# data1 = np.random.rand(100, 100, 50)  # Random 3D volume
+# data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
+# slice_viewer(data1, data2)  # View slices of both volumes side by side
+
+
+def debug_plot_partitions(partitions, num_recon_rows, num_recon_cols):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
 
@@ -134,7 +167,8 @@ def debug_plot_partitions( partitions, num_recon_rows, num_recon_cols ):
     plt.show()
 
 
-def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices=None, num_recon_slices=1, title='Debug Plot'):
+def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices=None, num_recon_slices=1,
+                       title='Debug Plot'):
     """
     Visualizes indices on a reconstruction grid and optionally displays reconstruction data at these indices.
 
@@ -187,7 +221,8 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     plt.show()
 
 
-def plot_granularity_and_loss( granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None, fig_title=None ):
+def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None,
+                              fig_title=None):
     """
     Plots multiple granularity and loss data sets on a single figure with separate subplots, using fixed scales for all plots.
 

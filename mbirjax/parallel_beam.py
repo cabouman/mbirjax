@@ -43,7 +43,7 @@ class ParallelBeamModel(TomographyModel):
             give reduced execution time relative to the initial call.
         """
         geometry_params = self.get_geometry_parameters()
-        cos_sin_angles = self.get_cos_sin_angles(self.get_params('angles'))
+        cos_sin_angles = self._get_cos_sin_angles(self.get_params('angles'))
         sinogram_shape = self.get_params('sinogram_shape')
 
         def back_project_fcn(sinogram, indices):
@@ -170,7 +170,7 @@ class ParallelBeamModel(TomographyModel):
         sinogram_array = sinogram_view[:, channel_index.T.flatten()]
 
         # Compute dot product
-        return jnp.sum(sinogram_array * (Aji ** coeff_power), axis=1)
+        return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
 
     def compute_hessian_diagonal(self, weights, angles, sinogram_shape=None):
         """
@@ -190,7 +190,7 @@ class ParallelBeamModel(TomographyModel):
         if weights is None:
             weights = jnp.ones(sinogram_shape)
         geometry_params = self.get_geometry_parameters()
-        cos_sin_angles = self.get_cos_sin_angles(angles)
+        cos_sin_angles = self._get_cos_sin_angles(angles)
 
         num_recon_rows, num_recon_cols = geometry_params[-2:]
         num_recon_slices = weights.shape[1]
@@ -216,7 +216,7 @@ class ParallelBeamModel(TomographyModel):
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by voxel_indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            cos_sin_angle (jax array):  2D array of cosines and sines from get_cos_sin_angles()
+            cos_sin_angle (jax array):  2D array of cosines and sines from _get_cos_sin_angles()
             geometry_params (list): Geometry parameters from get_geometry_params()
             sinogram_shape (tuple): Sinogram shape
 
@@ -277,7 +277,7 @@ class ParallelBeamModel(TomographyModel):
         sinogram_array = sinogram[view_index, :, channel_index.T.flatten()]
 
         # Compute dot product
-        return jnp.sum(sinogram_array * (Aji.T.reshape((-1, 1)) ** coeff_power), axis=0)
+        return jnp.sum(sinogram_array * (Aji.T.reshape((-1, 1))**coeff_power), axis=0)
 
     @staticmethod
     @jax.jit

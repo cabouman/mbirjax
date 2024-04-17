@@ -34,9 +34,8 @@ def get_gpu_memory_stats(print_results=False):
         memory_info.append(stats)
         if print_results:
             print('GPU: {}'.format(gpu.id))
-            print('bytes_in_use:      {:.3f}GB'.format(stats['bytes_in_use'] / (1024 ** 3)))
-            print('peak_bytes_in_use: {:.3f}GB'.format(stats['peak_bytes_in_use'] / (1024 ** 3)))
-            print('bytes_limit      : {:.3f}GB'.format(stats['bytes_limit'] / (1024 ** 3)))
+            print('bytes_in_use:      {:.3f}GB'.format(stats['bytes_in_use'] / (1024**3)))
+            print('peak_bytes_in_use: {:.3f}GB'.format(stats['peak_bytes_in_use'] / (1024**3)))
+            print('bytes_limit      : {:.3f}GB'.format(stats['bytes_limit'] / (1024**3)))
 
     return memory_info
-

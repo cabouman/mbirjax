@@ -127,13 +127,13 @@ class TomographyModel:
             magnification = 1.0
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.get_sino_indicator(sinogram)
+        sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
-        signal_rms = np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
+        signal_rms = np.average(weights * sinogram**2, None, sino_indicator)**0.5
 
         # Convert snr to relative noise standard deviation
-        rel_noise_std = 10 ** (-snr_db / 20)
+        rel_noise_std = 10**(-snr_db / 20)
         # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
         default_pixel_pitch = delta_det_channel / magnification
 
@@ -141,7 +141,7 @@ class TomographyModel:
         pixel_pitch_relative_to_default = delta_pixel_recon / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
-        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
+        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default**0.5)
         self.params.sigma_y = sigma_y  # Set these directly to avoid warnings in set_params
         self.params.auto_regularize_flag = True
 
@@ -151,7 +151,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self.get_estimate_of_recon_std(sinogram)
+        sigma_x = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
 
     def auto_set_sigma_p(self, sinogram):
@@ -160,7 +160,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self.get_estimate_of_recon_std(sinogram)
+        sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
@@ -263,7 +263,8 @@ class TomographyModel:
                 raise ValueError(error_message)
             if len(angles) != sinogram_shape[0]:
                 error_message = "Number of angles must equal the number of views. \n"
-                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles), sinogram_shape[0])
+                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
+                                                                                                  sinogram_shape[0])
                 raise ValueError(error_message)
 
         # Handle case if any regularization parameter changed
@@ -332,7 +333,7 @@ class TomographyModel:
 
         return voxel_values
 
-    def get_forward_model_loss( self, error_sinogram, weights=1.0, normalize=True ):
+    def get_forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
@@ -344,19 +345,18 @@ class TomographyModel:
         """
         if normalize:
             avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean(
+            loss = jnp.sqrt((1.0 / (self.params.sigma_y**2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
-            loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            loss = (1.0 / (2 * self.params.sigma_y**2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     @staticmethod
-    def get_cos_sin_angles(angles):
+    def _get_cos_sin_angles(angles):
         """
         Take the sin and cosine of an array of num_view angles and return as a num_view x 1 jax array.
         Args:
             angles: array of angles
-
         Returns:
             num_view x 1 jax array containing cos and sin of the angles
         """
@@ -365,7 +365,7 @@ class TomographyModel:
         return jnp.stack([cos_angles, sin_angles], axis=0)
 
     @staticmethod
-    def get_sino_indicator( sinogram ):
+    def _get_sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
         Args:
@@ -378,7 +378,7 @@ class TomographyModel:
         indicator = jnp.int8(sinogram > (0.01 * percent_noise_floor) * jnp.mean(jnp.fabs(sinogram)))
         return indicator
 
-    def get_estimate_of_recon_std( self, sinogram ):
+    def _get_estimate_of_recon_std(self, sinogram):
         """
         Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
         sigma_x in MBIR reconstruction.
@@ -396,14 +396,14 @@ class TomographyModel:
         num_det_channels = sinogram.shape[-1]
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.get_sino_indicator(sinogram)
+        sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         typical_img_value = np.average(sinogram, weights=sino_indicator) / (
                 num_det_channels * delta_det_channel / magnification)
 
         # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2 ** sharpness) * typical_img_value
+        sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
     @staticmethod
@@ -435,8 +435,7 @@ class TomographyModel:
 
         return weights
 
-
-    def recon( self, sinogram, weights=1.0):
+    def recon(self, sinogram, weights=1.0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -488,14 +487,16 @@ class TomographyModel:
         fm_rmse = np.zeros(num_iters)
 
         for i in range(num_iters):
-            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
+            error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon,
+                                                                 partitions[partition_sequence[i]], hessian,
+                                                                 weights=weights)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
             if self.params.verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
 
-    def vcd_partition_iteration( self, error_sinogram, recon, partition, fm_hessian, weights = 1.0 ):
+    def vcd_partition_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm for each subset of the partition
 
@@ -518,8 +519,7 @@ class TomographyModel:
 
         return error_sinogram, recon
 
-
-    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights = 1.0):
+    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights=1.0):
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
 
@@ -552,7 +552,7 @@ class TomographyModel:
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-        constant = 1.0 / (self.params.sigma_y ** 2.0)
+        constant = 1.0 / (self.params.sigma_y**2.0)
 
         fm_gradient = -constant * self.back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
@@ -582,7 +582,7 @@ class TomographyModel:
             recon_at_indices = recon[indices]
 
             # Clip updates to ensure non-negativity
-            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0/alpha), delta_recon_at_indices)
+            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0 / alpha), delta_recon_at_indices)
 
             # Recompute sinogram projection
             delta_sinogram = self.forward_project(delta_recon_at_indices, indices)
@@ -613,7 +613,7 @@ class TomographyModel:
 
         return partitions
 
-    def gen_full_indices( self ):
+    def gen_full_indices(self):
         """
         Generates a full array of voxels in the region of reconstruction.
         This is useful for computing forward projections.
@@ -624,13 +624,14 @@ class TomographyModel:
 
         return full_indices
 
-    def gen_partition_sequence(self) :
+    def gen_partition_sequence(self):
         # Get sequence from params and convert it to a np array
         partition_sequence = np.array(self.params.partition_sequence)
 
         # Tile sequence so it at least iterations long
         num_iterations = self.params.num_iterations
-        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[0 :num_iterations]
+        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[
+                                      0:num_iterations]
         return extended_partition_sequence
 
     def gen_3d_shepp_logan_phantom(self):
@@ -639,7 +640,8 @@ class TomographyModel:
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
-        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols,
+                                                  self.params.num_recon_slices)
         return phantom
 
     def reshape_recon(self, recon):
@@ -647,55 +649,6 @@ class TomographyModel:
         Reshape recon into its 3D form
         """
         return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
-
-
-def get_rho(delta, b, sigma_x, p, q, T):
-    """
-    Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
-    Args:
-        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-    Returns:
-        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
-    """
-
-    # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
-    delta = abs(delta) + sigma_x * eps_float32
-
-    # Compute terms of complex expression
-    first_term = ((delta / sigma_x) ** p) / p
-    second_term = (delta / (T * sigma_x)) ** (q - p)
-    third_term = second_term / (1 + second_term)
-
-    result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
-    return result
-
-
-@jax.jit
-def get_btilde(delta_prime, b, sigma_x, p, q, T):
-    """
-    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
-    Args:
-        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-    Returns:
-        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
-    """
-
-    # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
-    delta_prime = abs(delta_prime) + sigma_x * eps_float32
-
-    # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime ** (q - 2.0)) / (2.0 * (sigma_x ** p) * (T * sigma_x ** (q - p)))
-
-    # third_term is the third term in formula.
-    second_term = (delta_prime / (T * sigma_x)) ** (q - p)
-    third_term = ((q / p) + second_term) / ((1 + second_term) ** 2.0)
-
-    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
-    return result
 
 
 @jax.jit
@@ -711,7 +664,7 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
         float or np.array: (batch_size,) array of second derivatives of the surrogate function at pixel.
     """
     # Compute the btilde values required for quadratic surrogate
-    btilde = get_btilde(delta_prime, b, sigma_x, p, q, T)
+    btilde = _get_btilde(delta_prime, b, sigma_x, p, q, T)
 
     # Compute first derivative
     pm_first_derivative = jnp.sum(2 * btilde * delta_prime, axis=-1)
@@ -725,31 +678,118 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
 @jax.jit
 def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
     """
-    Calculate the gradient and hessian at each index location in recon using the qGGMRF prior.
+    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
     Args:
-        recon (jax array): 3D recon with shape (num_recon_rows, num_recon_cols, num_recon_slices)
-        indices (int array): (N_indices, num_recon_slices) integer index array of voxels to be updated in a flattened recon.
+        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        sigma_x (float): Standard deviation parameter of the qGGMRF prior.
+        p (float): Norm parameter p in the qGGMRF prior.
+        q (float): Norm parameter q in the qGGMRF prior.
+        T (float): Scaling parameter in the qGGMRF prior.
     Returns:
-        [first_derivative, second_derivative]: two jpn arrays each of shape (N_indices, num_recon_slices)
+        tuple: Contains two arrays (first_derivative, second_derivative) each of shape (N_indices, num_recon_slices)
+               representing the gradient and Hessian values at specified indices.
     """
-    # Set neighborhood weights
-    b = jnp.array([1, 1, 1, 1]).reshape(1, -1) / 4.0
+    # Initialize the neighborhood weights for averaging surrounding pixel values.
+    # Order is (I think) [row+1, row-1, col+1, col-1, slice+1, slice-1]
+    b = jnp.array([1, 1, 1, 1, 1, 1]).reshape(1, -1)
+    b /= jnp.sum(b)
 
+    # Extract the shape of the reconstruction array.
     num_rows, num_cols, num_slices = recon.shape
-    row_index, col_index = jnp.unravel_index(indices, (num_rows, num_cols))
-    xs = recon[row_index, col_index]
-    offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
-    xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
-    x_neighbors_prime_new = jnp.stack(xr, axis=-1)
-    delta_prime = xs[:, :, jnp.newaxis] - x_neighbors_prime_new
-    delta_prime_up_down = jnp.diff(xs, axis=-1)  # TODO:  qggmrf in slice direction
 
+    # Convert flat indices to 2D indices for row and column access.
+    row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
+
+    # Access the central voxels' values at the given indices. Shape of xs is (num indices)x(num slices)
+    xs = recon[row_index, col_index]
+
+    # Define relative positions for accessing neighborhood voxels.
+    offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+
+    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that location over all slices.
+    xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
+
+    # Compute differences in the slice direction (temporary placeholder).
+    # delta_prime_up_down = jnp.diff(xs, axis=-1)  # This needs further implementation based on specific requirements.
+    # delta_prime_up = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (0, 1)), mode='constant', constant_values=0)
+    # delta_prime_down = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (1, 0)), mode='constant', constant_values=0)
+
+    # Shift slices up with zero padding
+    xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(0)
+
+    # Shift slices down with zero padding
+    xs_down = jnp.roll(xs, shift=1, axis=1).at[:, 0].set(0)
+
+    # Append the up-down differences to xr
+    xr = xr + [xs_up, xs_down]
+
+    # Convert to a jnp array with shape (num index elements)x(num slices)x(6 neighbors).
+    x_neighbors_prime_new = jnp.stack(xr, axis=-1)
+
+    # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
+    delta_prime = xs[:, :, jnp.newaxis] - x_neighbors_prime_new
+
+    # Reshape delta_prime for processing with the qGGMRF prior.
     delta_prime = delta_prime.reshape((-1, b.shape[-1]))
+
+    # Compute the first and second derivatives using the qGGMRF model.
     first_derivative, second_derivative = pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T)
+
+    # Reshape outputs to match the number of indices and slices.
     first_derivative = first_derivative.reshape(-1, num_slices)
     second_derivative = second_derivative.reshape(-1, num_slices)
 
     return first_derivative, second_derivative
+
+
+def _get_rho(delta, b, sigma_x, p, q, T):
+    """
+    Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
+    Args:
+        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
+        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+    Returns:
+        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
+    """
+
+    # Smallest single precision float
+    eps_float32 = np.finfo(np.float32).eps
+    delta = abs(delta) + sigma_x * eps_float32
+
+    # Compute terms of complex expression
+    first_term = ((delta / sigma_x)**p) / p
+    second_term = (delta / (T * sigma_x))**(q - p)
+    third_term = second_term / (1 + second_term)
+
+    result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+    return result
+
+
+@jax.jit
+def _get_btilde(delta_prime, b, sigma_x, p, q, T):
+    """
+    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
+    Args:
+        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
+        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+    Returns:
+        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
+    """
+
+    # Smallest single precision float
+    eps_float32 = np.finfo(np.float32).eps
+    delta_prime = abs(delta_prime) + sigma_x * eps_float32
+
+    # first_term is the product of the first three terms reorganized for numerical stability when q=0.
+    first_term = (delta_prime**(q - 2.0)) / (2.0 * (sigma_x**p) * (T * sigma_x**(q - p)))
+
+    # third_term is the third term in formula.
+    second_term = (delta_prime / (T * sigma_x))**(q - p)
+    third_term = ((q / p) + second_term) / ((1 + second_term)**2.0)
+
+    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
+    return result
 
 
 def get_transpose(linear_map, input_shape):
