@@ -151,7 +151,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self.get_estimate_recon_std(sinogram)
+        sigma_x = 0.2 * self.get_estimate_of_recon_std(sinogram)
         self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
 
     def auto_set_sigma_p(self, sinogram):
@@ -160,7 +160,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self.get_estimate_recon_std(sinogram)
+        sigma_p = 0.2 * self.get_estimate_of_recon_std(sinogram)
         self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
@@ -174,34 +174,6 @@ class TomographyModel:
         num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
 
         self.set_params(num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols, num_recon_slices=num_recon_slices)
-
-    def get_estimate_recon_std( self, sinogram ):
-        """
-        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
-        sigma_x in MBIR reconstruction.
-        Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-        """
-        # Get parameters
-        delta_det_channel = self.params.delta_det_channel
-        sharpness = self.params.sharpness
-        if hasattr(self.params, 'magnification'):
-            magnification = self.params.magnification
-        else:
-            magnification = 1.0
-
-        num_det_channels = sinogram.shape[-1]
-
-        # Compute indicator function for sinogram support
-        sino_indicator = self.get_sino_indicator(sinogram)
-
-        # Compute a typical recon value by dividing average sinogram value by a typical projection path length
-        typical_img_value = np.average(sinogram, weights=sino_indicator) / (
-                num_det_channels * delta_det_channel / magnification)
-
-        # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2 ** sharpness) * typical_img_value
-        return sigma_prior
 
     def print_params(self):
         print("----")
@@ -405,6 +377,34 @@ class TomographyModel:
         # Form indicator by thresholding sinogram
         indicator = jnp.int8(sinogram > (0.01 * percent_noise_floor) * jnp.mean(jnp.fabs(sinogram)))
         return indicator
+
+    def get_estimate_of_recon_std( self, sinogram ):
+        """
+        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
+        sigma_x in MBIR reconstruction.
+        Args:
+            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+        """
+        # Get parameters
+        delta_det_channel = self.params.delta_det_channel
+        sharpness = self.params.sharpness
+        if hasattr(self.params, 'magnification'):
+            magnification = self.params.magnification
+        else:
+            magnification = 1.0
+
+        num_det_channels = sinogram.shape[-1]
+
+        # Compute indicator function for sinogram support
+        sino_indicator = self.get_sino_indicator(sinogram)
+
+        # Compute a typical recon value by dividing average sinogram value by a typical projection path length
+        typical_img_value = np.average(sinogram, weights=sino_indicator) / (
+                num_det_channels * delta_det_channel / magnification)
+
+        # Compute sigma_x as a fraction of the typical recon value
+        sigma_prior = (2 ** sharpness) * typical_img_value
+        return sigma_prior
 
     @staticmethod
     def calc_weights(sinogram, weight_type):
