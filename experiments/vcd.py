@@ -1,40 +1,9 @@
 import numpy as np
 import time
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import mbirjax
-
-
-def display_slices( phantom, sinogram, recon ) :
-    num_recon_slices = phantom.shape[2]
-    vmin = 0.0
-    vmax = phantom.max()
-    vsinomax = sinogram.max()
-
-    for slice_index in range(num_recon_slices) :
-        fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
-        fig.suptitle('Demo of VCD reconstruction - Slice {}'.format(slice_index))
-
-        # Display original phantom slice
-        a0 = ax[0].imshow(phantom[:, :, slice_index], vmin=vmin, vmax=vmax, cmap='gray')
-        plt.colorbar(a0, ax=ax[0])
-        ax[0].set_title('Original Phantom')
-
-        # Display sinogram slice
-        a1 = ax[1].imshow(sinogram[:, slice_index, :], vmin=vmin, vmax=vsinomax, cmap='gray')
-        plt.colorbar(a1, ax=ax[1])
-        ax[1].set_title('Sinogram')
-
-        # Display reconstructed slice
-        a2 = ax[2].imshow(recon[:, :, slice_index], vmin=vmin, vmax=vmax, cmap='gray')
-        plt.colorbar(a2, ax=ax[2])
-        ax[2].set_title('VCD Reconstruction')
-
-        plt.show(block=False)
-        input("Press Enter to continue to the next slice or type 'exit' to quit: ").strip().lower()
-        plt.close(fig)
-        if input() == 'exit':
-            break
+import mbirjax.parallel_beam
+import mbirjax.plot_utils as pu
 
 
 if __name__ == "__main__":
@@ -44,7 +13,7 @@ if __name__ == "__main__":
     # Set parameters
     num_iters = 10
     num_views = 256
-    num_det_rows = 10
+    num_det_rows = 5
     num_det_channels = 256
     start_angle = 0
     end_angle = np.pi
@@ -55,7 +24,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_shepp_logan_phantom()
@@ -88,5 +57,6 @@ if __name__ == "__main__":
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)
 
+    pu.slice_viewer(recon_3d)
     # Display results
-    display_slices(phantom, sinogram, recon_3d)
+    # pu.display_slices(phantom, sinogram, recon_3d)

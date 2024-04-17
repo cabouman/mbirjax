@@ -3,6 +3,8 @@ import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
+import mbirjax.parallel_beam
+import mbirjax.plot_utils as pu
 
 
 def display_slices_for_abstract( recon1, recon2, recon3, labels) :
@@ -48,7 +50,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_shepp_logan_phantom()
@@ -99,7 +101,7 @@ if __name__ == "__main__":
     granularity_sequences = [granularity_sequence_gd, granularity_sequence_vcd, granularity_sequence_cd]
     losses = [fm_rmse_gd, fm_rmse_vcd, fm_rmse_cd]
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    mbirjax.plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
+    pu.plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 
 
     # Generate sequence of partition images for Figure 1
@@ -107,4 +109,4 @@ if __name__ == "__main__":
     partitions_fig = parallel_model.gen_set_of_voxel_partitions()
 
     # Plot the set of partitions
-    mbirjax.debug_plot_partitions(partitions=partitions_fig, num_recon_rows=32, num_recon_cols=32)
+    pu.debug_plot_partitions(partitions=partitions_fig, num_recon_rows=32, num_recon_cols=32)
