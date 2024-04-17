@@ -651,55 +651,6 @@ class TomographyModel:
         return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
 
 
-def get_rho(delta, b, sigma_x, p, q, T):
-    """
-    Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
-    Args:
-        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-    Returns:
-        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
-    """
-
-    # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
-    delta = abs(delta) + sigma_x * eps_float32
-
-    # Compute terms of complex expression
-    first_term = ((delta / sigma_x)**p) / p
-    second_term = (delta / (T * sigma_x))**(q - p)
-    third_term = second_term / (1 + second_term)
-
-    result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
-    return result
-
-
-@jax.jit
-def get_btilde(delta_prime, b, sigma_x, p, q, T):
-    """
-    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
-    Args:
-        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-    Returns:
-        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
-    """
-
-    # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
-    delta_prime = abs(delta_prime) + sigma_x * eps_float32
-
-    # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime**(q - 2.0)) / (2.0 * (sigma_x**p) * (T * sigma_x**(q - p)))
-
-    # third_term is the third term in formula.
-    second_term = (delta_prime / (T * sigma_x))**(q - p)
-    third_term = ((q / p) + second_term) / ((1 + second_term)**2.0)
-
-    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
-    return result
-
-
 @jax.jit
 def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
     """
@@ -713,7 +664,7 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
         float or np.array: (batch_size,) array of second derivatives of the surrogate function at pixel.
     """
     # Compute the btilde values required for quadratic surrogate
-    btilde = get_btilde(delta_prime, b, sigma_x, p, q, T)
+    btilde = _get_btilde(delta_prime, b, sigma_x, p, q, T)
 
     # Compute first derivative
     pm_first_derivative = jnp.sum(2 * btilde * delta_prime, axis=-1)
@@ -752,6 +703,55 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
     second_derivative = second_derivative.reshape(-1, num_slices)
 
     return first_derivative, second_derivative
+
+
+def _get_rho(delta, b, sigma_x, p, q, T):
+    """
+    Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
+    Args:
+        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
+        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+    Returns:
+        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
+    """
+
+    # Smallest single precision float
+    eps_float32 = np.finfo(np.float32).eps
+    delta = abs(delta) + sigma_x * eps_float32
+
+    # Compute terms of complex expression
+    first_term = ((delta / sigma_x)**p) / p
+    second_term = (delta / (T * sigma_x))**(q - p)
+    third_term = second_term / (1 + second_term)
+
+    result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+    return result
+
+
+@jax.jit
+def _get_btilde(delta_prime, b, sigma_x, p, q, T):
+    """
+    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
+    Args:
+        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
+        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+    Returns:
+        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
+    """
+
+    # Smallest single precision float
+    eps_float32 = np.finfo(np.float32).eps
+    delta_prime = abs(delta_prime) + sigma_x * eps_float32
+
+    # first_term is the product of the first three terms reorganized for numerical stability when q=0.
+    first_term = (delta_prime**(q - 2.0)) / (2.0 * (sigma_x**p) * (T * sigma_x**(q - p)))
+
+    # third_term is the third term in formula.
+    second_term = (delta_prime / (T * sigma_x))**(q - p)
+    third_term = ((q / p) + second_term) / ((1 + second_term)**2.0)
+
+    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
+    return result
 
 
 def get_transpose(linear_map, input_shape):
