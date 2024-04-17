@@ -127,7 +127,7 @@ class TomographyModel:
             magnification = 1.0
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.sino_indicator(sinogram)
+        sino_indicator = self.get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
         signal_rms = np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
@@ -151,7 +151,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self.estimate_recon_std(sinogram)
+        sigma_x = 0.2 * self.get_estimate_recon_std(sinogram)
         self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
 
     def auto_set_sigma_p(self, sinogram):
@@ -160,7 +160,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self.estimate_recon_std(sinogram)
+        sigma_p = 0.2 * self.get_estimate_recon_std(sinogram)
         self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
@@ -175,7 +175,7 @@ class TomographyModel:
 
         self.set_params(num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols, num_recon_slices=num_recon_slices)
 
-    def estimate_recon_std(self, sinogram):
+    def get_estimate_recon_std( self, sinogram ):
         """
         Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_p and
         sigma_x in MBIR reconstruction.
@@ -193,7 +193,7 @@ class TomographyModel:
         num_det_channels = sinogram.shape[-1]
 
         # Compute indicator function for sinogram support
-        sino_indicator = self.sino_indicator(sinogram)
+        sino_indicator = self.get_sino_indicator(sinogram)
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         typical_img_value = np.average(sinogram, weights=sino_indicator) / (
@@ -314,9 +314,6 @@ class TomographyModel:
         if recompile or initial_params != new_params:
             self.compile_projectors()
 
-    def get_geometry_parameters(self):
-        return None
-
     def get_params(self, parameter_names):
         """
         Get the values of the listed parameter names.
@@ -341,6 +338,9 @@ class TomographyModel:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
 
+    def get_geometry_parameters(self):
+        return None
+
     def get_voxels_at_indices(self, recon, indices):
         """
         Get voxels at the specified indices.
@@ -360,6 +360,24 @@ class TomographyModel:
 
         return voxel_values
 
+    def get_forward_model_loss( self, error_sinogram, weights=1.0, normalize=True ):
+        """
+        Calculate the loss function for the forward model from the error_sinogram and weights.
+        The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
+        Args:
+            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            weights (jax array): 3D weights array with same shape as sinogram
+        Returns:
+            [loss].
+        """
+        if normalize:
+            avg_weight = jnp.average(weights)
+            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean(
+                (error_sinogram * error_sinogram) * (weights / avg_weight)))
+        else:
+            loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+        return loss
+
     @staticmethod
     def get_cos_sin_angles(angles):
         """
@@ -375,7 +393,7 @@ class TomographyModel:
         return jnp.stack([cos_angles, sin_angles], axis=0)
 
     @staticmethod
-    def sino_indicator(sinogram):
+    def get_sino_indicator( sinogram ):
         """
         Compute a binary function that indicates the region of sinogram support.
         Args:
@@ -471,7 +489,7 @@ class TomographyModel:
 
         for i in range(num_iters):
             error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon, partitions[partition_sequence[i]], hessian, weights=weights)
-            fm_rmse[i] = self.forward_model_loss(error_sinogram)
+            fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
             if self.params.verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
@@ -577,24 +595,6 @@ class TomographyModel:
         error_sinogram = error_sinogram - alpha * delta_sinogram
 
         return error_sinogram, recon
-
-    def forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
-        """
-        Calculate the loss function for the forward model from the error_sinogram and weights.
-        The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
-        Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array): 3D weights array with same shape as sinogram
-        Returns:
-            [loss].
-        """
-        if normalize:
-            avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.params.sigma_y ** 2)) * jnp.mean(
-                (error_sinogram * error_sinogram) * (weights / avg_weight)))
-        else:
-            loss = (1.0 / (2 * self.params.sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
-        return loss
 
     def gen_set_of_voxel_partitions(self):
         """
