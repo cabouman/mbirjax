@@ -604,10 +604,10 @@ class TomographyModel:
             tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
         """
         # Convert granularity to an np array
-        granularity = np.array(self.params.granularity)
+        granularity = np.array(self.get_params('granularity'))
 
         partitions = ()
-        for size in granularity :
+        for size in granularity:
             partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, size)
             partitions += (partition,)
 
