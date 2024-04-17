@@ -12,7 +12,7 @@ if __name__ == "__main__":
     # Set parameters
     num_iters = 10
     num_views = 256
-    num_det_rows = 10
+    num_det_rows = 20
     num_det_channels = 256
     start_angle = 0
     end_angle = np.pi
@@ -57,4 +57,4 @@ if __name__ == "__main__":
     recon_3d = parallel_model.reshape_recon(recon)
 
     # Display results
-    pu.slice_viewer(recon_3d)
+    pu.slice_viewer(phantom, recon_3d)

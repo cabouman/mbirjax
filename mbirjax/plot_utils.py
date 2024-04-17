@@ -37,14 +37,19 @@ def display_slices(phantom, sinogram, recon):
 
 global slice_index, ax, fig, cbar, img, vertical_line
 
+import matplotlib.pyplot as plt
+import numpy as np
 
-def slice_viewer(data):
+
+def slice_viewer(data, data2=None):
     """
-    Display slices of a 3D image volume with a consistent grayscale across slices.
-    Allows interactive selection of slices via a draggable line on a colorbar-like axis.
+    Display slices of one or two 3D image volumes with a consistent grayscale across slices.
+    Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
+    they are displayed side by side for comparative purposes.
 
     Args:
         data (numpy.ndarray or jax.numpy.DeviceArray): 3D image volume with shape (height, width, depth).
+        data2 (numpy.ndarray or jax.numpy.DeviceArray, optional): Second 3D image volume with the same shape as the first.
 
     The function sets up a matplotlib figure with interactive controls to view different slices
     by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
@@ -54,7 +59,8 @@ def slice_viewer(data):
     slice_index = data.shape[2] // 2  # Initial slice index
 
     # Define min and max grayscale values for consistent coloring across slices
-    vmin, vmax = data.min(), data.max()
+    vmin = min(data.min(), data2.min() if data2 is not None else data.min())
+    vmax = max(data.max(), data2.max() if data2 is not None else data.max())
 
     def update_slice(x):
         """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
@@ -66,8 +72,13 @@ def slice_viewer(data):
     def redraw_fig():
         """Redraw the figure to update the slice and its display."""
         ax.clear()
-        ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'Slice {slice_index}')
+        if data2 is not None:
+            ax.imshow(np.concatenate((data[:, :, slice_index], data2[:, :, slice_index]), axis=1), cmap='gray',
+                      vmin=vmin, vmax=vmax)
+            ax.set_title(f'Slice {slice_index} Comparison')
+        else:
+            ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
+            ax.set_title(f'Slice {slice_index}')
         fig.canvas.draw_idle()
 
     def on_press(event):
@@ -102,8 +113,7 @@ def slice_viewer(data):
     fig.canvas.mpl_connect('motion_notify_event', on_motion)
 
     # Initial drawing
-    img = ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
-    cbar = fig.colorbar(img, ax=ax, orientation='vertical')  # Initialize colorbar once
+    redraw_fig()  # Call redraw to handle initial display for single or dual images
     plt.show()
 
     plt.pause(0.1)  # Delay to ensure window stays open
@@ -111,6 +121,12 @@ def slice_viewer(data):
 
     plt.ioff()  # Turn off interactive mode
     plt.close()
+
+
+# Example usage:
+# data1 = np.random.rand(100, 100, 50)  # Random 3D volume
+# data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
+# slice_viewer(data1, data2)  # View slices of both volumes side by side
 
 
 def debug_plot_partitions(partitions, num_recon_rows, num_recon_cols):
