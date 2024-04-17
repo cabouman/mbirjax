@@ -80,8 +80,9 @@ if __name__ == "__main__":
     time0 = time.time()
     recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
 
+    recon.block_until_ready()
     elapsed = time.time() - time0
-    print('Elapsed post-compile time recon is {:.3f} seconds'.format(elapsed))
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
     # Reshape recon into 3D form
