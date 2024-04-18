@@ -40,7 +40,7 @@ global slice_index, ax, fig, cbar, img, vertical_line
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-def slice_viewer(data, data2=None):
+def slice_viewer(data, data2=None, title=''):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
@@ -49,6 +49,7 @@ def slice_viewer(data, data2=None):
     Args:
         data (numpy.ndarray or jax.numpy.DeviceArray): 3D image volume with shape (height, width, depth).
         data2 (numpy.ndarray or jax.numpy.DeviceArray, optional): Second 3D image volume with the same shape as the first.
+        title (string, optional, default=''): Figure super title
 
     The function sets up a matplotlib figure with interactive controls to view different slices
     by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
@@ -69,7 +70,9 @@ def slice_viewer(data, data2=None):
         redraw_fig()
 
     def redraw_fig(show_colorbar=False):
-        """Redraw the figure to update the slice and its display."""
+        """Redraw the figure to update the slice and its display.
+        The colorbar is drawn only at initialization.
+        """
         ax.clear()
         if data2 is not None:
             image_divider = vmax * np.ones((data.shape[0], 5))
@@ -98,9 +101,10 @@ def slice_viewer(data, data2=None):
     # Setup the plot
     plt.ion()  # Turn on interactive mode
     fig, axes = plt.subplots(3, 1, gridspec_kw={'height_ratios': [10, 1, 0.5]})
+    fig.suptitle(title)
     ax, ax_colorbar, ax_instruction = axes
 
-    # Setup the interactive vertical line in the colorbar axis
+    # Setup the interactive vertical line in the slider
     ax_colorbar.set_xlim(0, data.shape[2])
     ax_colorbar.set_ylim(0, 1)
     vertical_line = ax_colorbar.axvline(slice_index, color='black', linewidth=4)  # Movable line
@@ -108,7 +112,7 @@ def slice_viewer(data, data2=None):
     ax_colorbar.set_yticks([])
     ax_colorbar.set_xticks([])
 
-    # Add a label below the colorbar
+    # Add a label below the slider
     ax_instruction.text(0.5, 0.5, 'Click and drag to change slice', ha='center', va='center', fontsize=10)
     ax_instruction.set_axis_off()
 
@@ -125,7 +129,6 @@ def slice_viewer(data, data2=None):
 
     plt.ioff()  # Turn off interactive mode
     plt.close()
-    exit(0)
 
 
 # Example usage:
