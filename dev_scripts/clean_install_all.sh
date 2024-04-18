@@ -6,7 +6,7 @@
 # get_demo_data_server.sh
 #####
 GPUCLUSTER="gilbreth"
-CPUCLUSTER="brown"
+CPUCLUSTER="negishi"
 
 if [[ "$HOSTNAME" == *"$GPUCLUSTER"* ]]; then
   module load  anaconda/2020.11-py38
@@ -23,11 +23,13 @@ if [[ "$HOSTNAME" == *"$CPUCLUSTER"* ]]; then
   conda config --add envs_dirs /scratch/$CPUCLUSTER/$USERNAME/.conda/envs
 fi
 
-source remove_package.sh
 source install_conda_environment.sh
 
 if [[ "$HOSTNAME" == *"gilbreth"* ]]; then
-  pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  #  pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  # To install lower version of jax (say v0.4.13) incase of XLA parallel compilation warnings use the following
+   pip install --upgrade "jax[cuda12_local]==0.4.13" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  # Ref: https://github.com/google/jax/issues/18027
   echo " "
   echo "To run with jax on Gilbreth, first load the cuda module using "
   echo "    module load cudnn/cuda-12.1_8.9"
@@ -48,3 +50,9 @@ echo "Use"
 echo "${red}   conda activate mbirjax   ${reset}"
 echo "to activate the conda environment."
 echo " "
+
+if [[ "$HOSTNAME" == *"gilbreth"* ]]; then
+  echo " "
+  echo "Verify the versions of anaconda, jax, and cuda as specified in clean_install_all.sh"
+  echo " "
+fi
