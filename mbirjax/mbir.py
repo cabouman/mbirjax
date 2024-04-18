@@ -710,11 +710,6 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
     # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that location over all slices.
     xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
 
-    # Compute differences in the slice direction (temporary placeholder).
-    # delta_prime_up_down = jnp.diff(xs, axis=-1)  # This needs further implementation based on specific requirements.
-    # delta_prime_up = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (0, 1)), mode='constant', constant_values=0)
-    # delta_prime_down = jnp.pad(delta_prime_up_down, pad_width=((0, 0), (1, 0)), mode='constant', constant_values=0)
-
     # Shift slices up with zero padding
     xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(0)
 
