@@ -28,6 +28,9 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_shepp_logan_phantom()
 
+    # Display results
+    pu.slice_viewer(phantom, phantom)
+
     # Generate synthetic sinogram data
     full_indices = parallel_model.gen_full_indices()
     voxel_values = parallel_model.get_voxels_at_indices(phantom, full_indices)

@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import pyplot as plt
 
 
 def display_slices(phantom, sinogram, recon):
@@ -37,8 +36,8 @@ def display_slices(phantom, sinogram, recon):
 
 global slice_index, ax, fig, cbar, img, vertical_line
 
-import matplotlib.pyplot as plt
-import numpy as np
+
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 def slice_viewer(data, data2=None):
@@ -65,20 +64,25 @@ def slice_viewer(data, data2=None):
     def update_slice(x):
         """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
         global slice_index, vertical_line
-        slice_index = int(x / ax_colorbar.get_xlim()[1] * data.shape[2])
+        slice_index = int(0.5 + x / ax_colorbar.get_xlim()[1] * data.shape[2])
         vertical_line.set_xdata([slice_index, slice_index])
         redraw_fig()
 
-    def redraw_fig():
+    def redraw_fig(show_colorbar=False):
         """Redraw the figure to update the slice and its display."""
         ax.clear()
         if data2 is not None:
-            ax.imshow(np.concatenate((data[:, :, slice_index], data2[:, :, slice_index]), axis=1), cmap='gray',
+            image_divider = vmax * np.ones((data.shape[0], 5))
+            im = ax.imshow(np.concatenate((data[:, :, slice_index], image_divider, data2[:, :, slice_index]), axis=1), cmap='gray',
                       vmin=vmin, vmax=vmax)
             ax.set_title(f'Slice {slice_index} Comparison')
         else:
-            ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
+            im = ax.imshow(data[:, :, slice_index], cmap='gray', vmin=vmin, vmax=vmax)
             ax.set_title(f'Slice {slice_index}')
+        if show_colorbar:
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+            fig.colorbar(im, cax=cax, orientation='vertical')
         fig.canvas.draw_idle()
 
     def on_press(event):
@@ -113,7 +117,7 @@ def slice_viewer(data, data2=None):
     fig.canvas.mpl_connect('motion_notify_event', on_motion)
 
     # Initial drawing
-    redraw_fig()  # Call redraw to handle initial display for single or dual images
+    redraw_fig(show_colorbar=True)  # Call redraw to handle initial display for single or dual images
     plt.show()
 
     plt.pause(0.1)  # Delay to ensure window stays open
@@ -121,6 +125,7 @@ def slice_viewer(data, data2=None):
 
     plt.ioff()  # Turn off interactive mode
     plt.close()
+    exit(0)
 
 
 # Example usage:
