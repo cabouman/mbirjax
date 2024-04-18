@@ -57,4 +57,4 @@ if __name__ == "__main__":
     recon_3d = parallel_model.reshape_recon(recon)
 
     # Display results
-    pu.slice_viewer(phantom, recon_3d)
+    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
