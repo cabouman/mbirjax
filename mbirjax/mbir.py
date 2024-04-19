@@ -11,46 +11,36 @@ import mbirjax._utils as utils
 
 class TomographyModel:
     """
-    Represents a general model for tomographic reconstruction using MBIRJAX.
+    A class that represents a general model for tomographic reconstruction using MBIRJAX.
+    It encapsulates the parameters and methods for both forward and back projection processes in tomographic imaging.
 
-    Forward Model Parameters:
-        delta_det_channel (float): Detector channel spacing in ALU.
-        det_channel_offset (float): Distance in ALU from center of detector to the source-detector line along a row.
-        sigma_y (float): Sinogram additive noise standard deviation.
+    Attributes:
+        params (SimpleNamespace): Configuration parameters for the model, initialized with defaults and updated via kwargs.
+        forward_project (callable): Function to forward project voxel values to sinogram space.
+        back_project (callable): Function to back project sinogram values to voxel space.
 
-    Reconstruction Model Parameters:
-        init_recon (jax array): 3D volume being reconstructed with shape (num_recon_slices, num_recon_rows, num_recon_cols).
-        prox_recon (jax array): 3D proximal map input with the same shape as reconstruction.
-        num_recon_rows (int): number of reconstruction rows.
-        num_recon_cols (int): number of reconstruction columns.
-        delta_pixel_recon (float): Reconstruction pixel spacing in ALU.
-        sigma_x (float): qGGMRF prior model regularization parameter.
-        sigma_p (float): Proximal map regularization parameter.
-        p (float): qGGMRF shape parameter in the range (1,2].
-        q (float): qGGMRF shape parameter in range [p,2].
-        T (float): qGGMRF threshold parameter, >0 and typically 1.0.
-        num_neighbors (int): Number of neighbors in the qGGMRF neighborhood. Possible values are {26,18,6}.
+    Parameters:
+        angles (array_like): A 1D array of projection angles in radians.
+        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels).
+        **kwargs: Additional keyword arguments to override default model parameters.
 
-    Reconstruction Parameters:
-        auto_regularize_flag (bool): Automatically adjust regularization using sharpness and snr_db
-        prior_model_type (str): Can be one of "qggmrf" or "prox_map".
-        positivity_flag (bool): True => enforces positivity constraint,
-        initialization (str): Options include "zero", "constant", or "recon" for starting from a provided reconstruction.
-        snr_db (float): Assumed signal-to-noise ratio of the input data, expressed in decibels (dB).
-        sharpness (float): Controls the reconstructed reconstruction sharpness.
-                           sharpness=0.0 is neutral; sharpness>0 increases sharpness; sharpness<0 reduces sharpness.
-        max_resolutions (int): Specifies the maximum number of grid resolutions for multi-resolution processing.
-        max_equits (float): Defines the maximum number of equivalent iterations (equits) used in reconstruction.
-        verbose (int): Controls verbosity. 0 => quiet; 1 => basic information; 2 => full debugging information.
+    Methods:
+        compile_projectors: Placeholder method to compile projector functions.
+        forward_project: Project voxel values into sinogram space.
+        back_project: Project sinogram values back to voxel space.
+        compute_hessian_diagonal: Compute the diagonal of the Hessian matrix for given weights and angles.
     """
 
     def __init__(self, angles, sinogram_shape, **kwargs):
         """
-        Create a TomographyModel object using the given angles and sinogram shape, along with other keyword arguments.
+        Initializes a TomographyModel with specific geometry and operational settings.
+
         Args:
-            angles (array_like): A 1D array of angles in radians.  The number of angles must match the number of views.
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            **kwargs:
+            angles (array_like): The angles at which projections should be taken, in radians.
+            sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
+            **kwargs: Arbitrary keyword arguments for setting model parameters dynamically.
+
+        Initializes forward and back projection methods and sets up the reconstruction size and parameters.
         """
         self.params = utils.get_default_params()
         self.forward_project, self.back_project = None, None  # These are callable functions compiled in set_params
@@ -59,19 +49,19 @@ class TomographyModel:
         self.set_params(**kwargs)
 
     def compile_projectors(self):
+        """Placeholder for compiling projector methods."""
         warnings.warn('Projectors not implemented yet')
 
     def forward_project(self, voxel_values, voxel_indices):
         """
         Forward project the given voxel values to a sinogram.
-        In the ParallelBeam case, the indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the
-        projection is done using all voxels with those indices across all the slices.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.
         Args:
-            voxel_values (jax array): 2D jax array of size (len(voxel_indices), num_recon_slices) containing values of
-                    voxels to be projected.  voxel_values[i, :] contains the values for all the slices at this location
-            voxel_indices (int array): 1D integer index array of voxels to be projected
+            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
+            voxel_indices (numpy.ndarray): Array of indices specifying which voxels to project.
         Returns:
-            A jax array of shape (len(voxel_indices), num_slices)
+            jnp array: The resulting 3D sinogram after projection.
         """
         sinogram = self.forward_project(voxel_values, voxel_indices).block_until_ready()
         gc.collect()
@@ -80,11 +70,11 @@ class TomographyModel:
     def back_project(self, sinogram, indices):
         """
         Back project the given sinogram to the voxels given by the indices.
-        In the ParallelBeam case, the indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the
-        projection is done onto all voxels with those indices across all the slices.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            indices (int array): (N_indices, num_recon_slices) integer index array of voxels to be computed in a flattened recon.
+            sinogram (jnp array): 3D jax array containing sinogram.
+            indices (numpy.ndarray): Array of indices specifying which voxels to back project.
         Returns:
             A jax array of shape (len(voxel_indices), num_slices)
         """
