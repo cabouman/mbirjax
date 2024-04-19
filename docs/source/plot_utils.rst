@@ -1,6 +1,7 @@
 plot_utils
 ----------
 .. automodule:: mbirjax
+   :no-index:
    :members:
    :undoc-members:
    :show-inheritance:

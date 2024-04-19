@@ -54,7 +54,7 @@ extensions = [
     'sphinx.ext.viewcode'
 ]
 
-bibtex_bibfiles = []  # Change to bibtex_bibfiles = ['refs.bib'] or similar as needed
+bibtex_bibfiles = ['refs.bib']
 
 autosummary_generate = True
 

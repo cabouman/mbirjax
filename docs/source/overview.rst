@@ -27,7 +27,7 @@ Here are the reasons to do MBIR reconstruction with MBIRJAX:
     MBIRJAX is based on object-oriented python, so it is modular and easy to use.
 
   - Plug-and-Play prior models:
-    MBIRJAX supports proximal map interfaces, so it can be used with PnP deep neural net priors (coming soon).
+    MBIRJAX supports proximal map interfaces, so it can be used with PnP deep neural net priors.
 
 
 **Getting Started**
