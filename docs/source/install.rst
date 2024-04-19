@@ -5,8 +5,7 @@ Installation
 The ``MBIRJAX`` package currently is only available to download and install from source through GitHub.
 
 
-Downloading and installing from source
------------------------------------------
+**Downloading and installing from source**
 
 1. Download the source code:
 

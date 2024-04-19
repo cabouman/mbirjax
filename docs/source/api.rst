@@ -1,35 +1,16 @@
-MBIRJAX API Documentation
-=========================
+API reference
+=============
 
-This documentation covers the public interfaces of the MBIRJAX package.
+* mbir_ tomographic reconstruction and projection methods
+* plot_utils_ plotting and visualization utilities
+
+.. _mbir: mbir.html
+.. _plot_utils: plot_utils.html
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :titlesonly:
+   :hidden:
 
-mbirjax.mbir
-------------
+   mbir
+   plot_utils
 
-.. automodule:: mbirjax.mbir
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-   .. rubric:: Functions:
-
-   .. autosummary::
-      :toctree:
-
-
-mbirjax.plot_utils
-------------------
-
-.. automodule:: mbirjax.plot_utils
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-   .. rubric:: Functions:
-
-   .. autosummary::
-      :toctree:

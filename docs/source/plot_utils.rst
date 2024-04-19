@@ -1,7 +1,7 @@
-mbirjax
--------
+plot_utils
+----------
 .. automodule:: mbirjax
-   :members: 
+   :members:
    :undoc-members:
    :show-inheritance:
    :member-order: bysource
@@ -9,4 +9,4 @@ mbirjax
    .. rubric:: **Functions:**
 
    .. autosummary::
-      mbirjax.mbir
+      plot_utils.slice_viewer

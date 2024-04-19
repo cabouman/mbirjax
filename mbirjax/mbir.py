@@ -13,21 +13,6 @@ class TomographyModel:
     """
     Represents a general model for tomographic reconstruction using MBIRJAX. This class encapsulates the parameters and
     methods for the forward and back projection processes required in tomographic imaging.
-
-    Parameters are initialized to default values defined across multiple categories such as geometry, reconstruction,
-    and system-specific settings, which can be overridden by user-provided values.
-
-    Attributes:
-        params (types.SimpleNamespace): Configuration parameters for the model, initially set to defaults defined in
-                                        the module-level dictionaries and potentially overridden by user inputs.
-        forward_project (callable, optional): Function to forward project voxel values to sinogram space.
-        back_project (callable, optional): Function to back project sinogram values to voxel space.
-
-    Methods:
-        compile_projectors: Compiles projector functions. (Placeholder implementation)
-        forward_project: Projects voxel values into sinogram space.
-        back_project: Projects sinogram values back to voxel space.
-        compute_hessian_diagonal: Computes the diagonal of the Hessian matrix for given weights and angles.
     """
 
     def __init__(self, angles, sinogram_shape, **kwargs):
