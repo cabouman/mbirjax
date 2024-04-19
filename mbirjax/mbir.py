@@ -11,24 +11,23 @@ import mbirjax._utils as utils
 
 class TomographyModel:
     """
-    A class that represents a general model for tomographic reconstruction using MBIRJAX.
-    It encapsulates the parameters and methods for both forward and back projection processes in tomographic imaging.
+    Represents a general model for tomographic reconstruction using MBIRJAX. This class encapsulates the parameters and
+    methods for the forward and back projection processes required in tomographic imaging.
+
+    Parameters are initialized to default values defined across multiple categories such as geometry, reconstruction,
+    and system-specific settings, which can be overridden by user-provided values.
 
     Attributes:
-        params (SimpleNamespace): Configuration parameters for the model, initialized with defaults and updated via kwargs.
-        forward_project (callable): Function to forward project voxel values to sinogram space.
-        back_project (callable): Function to back project sinogram values to voxel space.
-
-    Parameters:
-        angles (array_like): A 1D array of projection angles in radians.
-        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels).
-        **kwargs: Additional keyword arguments to override default model parameters.
+        params (types.SimpleNamespace): Configuration parameters for the model, initially set to defaults defined in
+                                        the module-level dictionaries and potentially overridden by user inputs.
+        forward_project (callable, optional): Function to forward project voxel values to sinogram space.
+        back_project (callable, optional): Function to back project sinogram values to voxel space.
 
     Methods:
-        compile_projectors: Placeholder method to compile projector functions.
-        forward_project: Project voxel values into sinogram space.
-        back_project: Project sinogram values back to voxel space.
-        compute_hessian_diagonal: Compute the diagonal of the Hessian matrix for given weights and angles.
+        compile_projectors: Compiles projector functions. (Placeholder implementation)
+        forward_project: Projects voxel values into sinogram space.
+        back_project: Projects sinogram values back to voxel space.
+        compute_hessian_diagonal: Computes the diagonal of the Hessian matrix for given weights and angles.
     """
 
     def __init__(self, angles, sinogram_shape, **kwargs):
@@ -52,18 +51,18 @@ class TomographyModel:
         """Placeholder for compiling projector methods."""
         warnings.warn('Projectors not implemented yet')
 
-    def forward_project(self, voxel_values, voxel_indices):
+    def forward_project(self, voxel_values, indices):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
         all voxels with those indices across all the slices.
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
-            voxel_indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            indices (numpy.ndarray): Array of indices specifying which voxels to project.
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self.forward_project(voxel_values, voxel_indices).block_until_ready()
+        sinogram = self.forward_project(voxel_values, indices).block_until_ready()
         gc.collect()
         return sinogram
 
@@ -74,15 +73,24 @@ class TomographyModel:
         all voxels with those indices across all the slices.
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
-            indices (numpy.ndarray): Array of indices specifying which voxels to back project.
+            indices (jnp array): Array of indices specifying which voxels to back project.
         Returns:
-            A jax array of shape (len(voxel_indices), num_slices)
+            A jax array of shape (len(indices), num_slices)
         """
         recon = self.back_project(sinogram, indices).block_until_ready()
         gc.collect()
         return recon
 
     def compute_hessian_diagonal(self, weights, angles, sinogram_shape=None):
+        """
+        Computes the diagonal elements of the Hessian matrix for given weights and angles.
+        Args:
+            weights (jnp array): Sinogram Weights for the Hessian computation.
+            angles (jnp array): Projection angles used in the computation.
+            sinogram_shape (tuple, optional): Shape of the sinogram, defaults to None which uses internal settings.
+        Returns:
+            jnp array: Diagonal of the Hessian matrix with same shape as recon.
+        """
         hessian = self.compute_hessian_diagonal(weights, angles, sinogram_shape=None).block_until_ready()
         gc.collect()
         return hessian
@@ -101,7 +109,7 @@ class TomographyModel:
 
     def auto_set_sigma_y(self, sinogram, weights=1):
         """
-        Sets the value of the parameter self.sigma_y used for use in MBIR reconstruction.
+        Sets the value of the parameter sigma_y used for use in MBIR reconstruction.
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or 3D jax array): scalar value or 3D weights array with the same shape as sinogram.
