@@ -2,8 +2,7 @@
 
 mbirjax
 =======
-Project for creating a JAX version of MBIR
-
+Model-Based Iterative Reconstruction (MBIR) for tomographic reconstruction that is based on the JAX programming language.
 Full documentation is available at https://mbirjax.readthedocs.io .
 
 ..

@@ -1,16 +1,35 @@
-API Documentation
-=================
+MBIRJAX API Documentation
+=========================
 
-Primary module:
+This documentation covers the public interfaces of the MBIRJAX package.
 
-..
-    Note:  add other modules and descriptions as needed.
-
-* mbirjax_ Project for creating a JAX version of MBIR
-
-.. _mbirjax: mbirjax.html
 .. toctree::
-   :titlesonly:
-   :hidden:
+   :maxdepth: 2
+   :caption: Contents:
 
-   mbirjax
+mbirjax.mbir
+------------
+
+.. automodule:: mbirjax.mbir
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+   .. rubric:: Functions:
+
+   .. autosummary::
+      :toctree:
+
+
+mbirjax.plot_utils
+------------------
+
+.. automodule:: mbirjax.plot_utils
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+   .. rubric:: Functions:
+
+   .. autosummary::
+      :toctree:

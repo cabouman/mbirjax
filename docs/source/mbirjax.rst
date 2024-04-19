@@ -1,20 +1,12 @@
 mbirjax
 -------
-
-..
-    Adjust the dashes above to match the number of characters in mbirjax
-    Include functions names as a comma separated list under :members below and one per line under autosummary below.
-
 .. automodule:: mbirjax
-    :members:
-    :undoc-members:
-    :show-inheritance:
+   :members: 
+   :undoc-members:
+   :show-inheritance:
+   :member-order: bysource
 
-    .. rubric:: **Functions:**
+   .. rubric:: **Functions:**
 
-    .. autosummary::
-
-
-
-
-
+   .. autosummary::
+      mbirjax.mbir

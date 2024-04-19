@@ -14,7 +14,7 @@ import os
 import sys
 import sphinx_rtd_theme
 
-sys.path.insert(0, os.path.abspath('../..'))
+sys.path.insert(0, os.path.abspath('../../mbirjax'))  # Adjust the path as necessary
 
 
 def skip(app, what, name, obj, would_skip, options):
@@ -30,7 +30,7 @@ def setup(app):
 # -- Project information -----------------------------------------------------
 
 project = 'mbirjax'
-copyright = '2023, mbirjax Development Team'
+copyright = '2024, mbirjax Development Team'
 author = 'mbirjax Development Team'
 
 # The full version, including alpha/beta/rc tags
@@ -43,6 +43,8 @@ release = '0.1'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'IPython.sphinxext.ipython_console_highlighting',
+    'IPython.sphinxext.ipython_directive',
     'sphinx.ext.autodoc',
     'sphinx.ext.mathjax',
     'sphinx.ext.todo',
@@ -55,9 +57,6 @@ extensions = [
 bibtex_bibfiles = []  # Change to bibtex_bibfiles = ['refs.bib'] or similar as needed
 
 autosummary_generate = True
-
-# Add any paths that contain templates here, relative to this directory.
-exclude_patterns = ['../_build', '**.ipynb_checkpoints']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['../_templates']

@@ -1,6 +1,8 @@
 # Include requirements for the docs
+sphinx>=2.2
 sphinxcontrib-bibtex
 sphinx-rtd-theme
+ipython>=6.3.1
 ruamel.yaml
 psutil
 numpy
