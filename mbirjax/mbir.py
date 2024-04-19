@@ -413,38 +413,6 @@ class TomographyModel:
         sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
-    @staticmethod
-    def calc_weights(sinogram, weight_type):
-        """
-        Compute the weights used in MBIR reconstruction.
-
-        Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weight_type (string): Type of noise model used for data
-                    - weight_type = 'unweighted' => return numpy.ones(sinogram.shape).
-                    - weight_type = 'transmission' => return numpy.exp(-sinogram).
-                    - weight_type = 'transmission_root' => return numpy.exp(-sinogram/2).
-                    - weight_type = 'emission' => return 1/(numpy.absolute(sinogram) + 0.1).
-
-        Returns:
-            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
-
-        Raises:
-            Exception: Raised if ``weight_type`` is not one of the above options.
-        """
-        if weight_type == 'unweighted':
-            weights = jnp.ones(sinogram.shape)
-        elif weight_type == 'transmission':
-            weights = jnp.exp(-sinogram)
-        elif weight_type == 'transmission_root':
-            weights = jnp.exp(-sinogram / 2)
-        elif weight_type == 'emission':
-            weights = 1.0 / (jnp.absolute(sinogram) + 0.1)
-        else:
-            raise Exception("calc_weights: undefined weight_type {}".format(weight_type))
-
-        return weights
-
     def recon(self, sinogram, weights=1.0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
@@ -611,6 +579,38 @@ class TomographyModel:
 
         return error_sinogram, recon
 
+    @staticmethod
+    def gen_weights(sinogram, weight_type):
+        """
+        Compute the weights used in MBIR reconstruction.
+
+        Args:
+            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            weight_type (string): Type of noise model used for data
+                    - weight_type = 'unweighted' => return numpy.ones(sinogram.shape).
+                    - weight_type = 'transmission' => return numpy.exp(-sinogram).
+                    - weight_type = 'transmission_root' => return numpy.exp(-sinogram/2).
+                    - weight_type = 'emission' => return 1/(numpy.absolute(sinogram) + 0.1).
+
+        Returns:
+            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+
+        Raises:
+            Exception: Raised if ``weight_type`` is not one of the above options.
+        """
+        if weight_type == 'unweighted':
+            weights = jnp.ones(sinogram.shape)
+        elif weight_type == 'transmission':
+            weights = jnp.exp(-sinogram)
+        elif weight_type == 'transmission_root':
+            weights = jnp.exp(-sinogram / 2)
+        elif weight_type == 'emission':
+            weights = 1.0 / (jnp.absolute(sinogram) + 0.1)
+        else:
+            raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
+
+        return weights
+
     def gen_set_of_voxel_partitions(self):
         """
         Generates a collection of voxel partitions for an array of specified partition sizes.
@@ -649,7 +649,7 @@ class TomographyModel:
                                       0:num_iterations]
         return extended_partition_sequence
 
-    def gen_3d_shepp_logan_phantom(self):
+    def gen_3d_sl_phantom(self):
         """
         Generates a 3D Shepp-Logan phantom.
         Returns:

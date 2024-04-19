@@ -16,3 +16,5 @@ mbir
       TomographyModel.reshape_recon
       TomographyModel.set_params
       TomographyModel.get_params
+      TomographyModel.gen_weights
+      TomographyModel.gen_3d_sl_phantom
