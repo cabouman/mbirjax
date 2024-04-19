@@ -1,5 +1,11 @@
 #!/bin/bash
 # This script destroys the conda environment for this pacakge and reinstalls it.
+cd ..
+/bin/rm -r docs/build
+/bin/rm -r dist
+/bin/rm -r mbirjax.egg-info
+/bin/rm -r build
+cd dev_scripts
 
 # Create and activate new conda environment
 # First check if the target environment is active and deactivate if so
@@ -8,8 +14,9 @@ if [ "$CONDA_DEFAULT_ENV"==$NAME ]; then
     conda deactivate
 fi
 
-conda remove env --name $NAME --all
-conda create --name $NAME python=3.10
+yes | conda remove env --name $NAME --all
+
+yes | conda create --name $NAME python=3.10
 conda activate $NAME
 
 echo

@@ -214,7 +214,7 @@ class ParallelBeamModel(TomographyModel):
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
-                voxel_values[i, j] is the value of the voxel in slice j at the location determined by voxel_indices[i].
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             cos_sin_angle (jax array):  2D array of cosines and sines from _get_cos_sin_angles()
             geometry_params (list): Geometry parameters from get_geometry_params()

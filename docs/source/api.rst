@@ -1,16 +1,16 @@
-API Documentation
-=================
+API reference
+=============
 
-Primary module:
+* mbir_ tomographic reconstruction and projection methods
+* plot_utils_ plotting and visualization utilities
 
-..
-    Note:  add other modules and descriptions as needed.
+.. _mbir: mbir.html
+.. _plot_utils: plot_utils.html
 
-* mbirjax_ Project for creating a JAX version of MBIR
-
-.. _mbirjax: mbirjax.html
 .. toctree::
    :titlesonly:
    :hidden:
 
-   mbirjax
+   mbir
+   plot_utils
+

@@ -2,11 +2,10 @@
 Installation 
 ============
 
-The ``mbirjax`` package currently is only available to download and install from source through GitHub.
+The ``MBIRJAX`` package currently is only available to download and install from source through GitHub.
 
 
-Downloading and installing from source
------------------------------------------
+**Downloading and installing from source**
 
 1. Download the source code:
 
@@ -15,32 +14,47 @@ Downloading and installing from source
     | ``git clone https://github.com/cabouman/mbirjax.git``
     | ``cd mbirjax``
 
+2. 2. Install the conda environment and package
 
-2. Create a Virtual Environment:
+    a. Option 1: Clean install using mbirjax/dev_scripts
 
-  It is recommended that you install to a virtual environment.
-  If you have Anaconda installed, you can run the following:
+        To do a clean install, use the command:
 
-    | ``conda create --name mbirjax python=mbirjax``
-    | ``conda activate mbirjax``
+        .. code-block::
 
-  Install the dependencies using:
-
-    ``pip install -r requirements.txt``
-
-  Install the package using:
-
-    ``pip install .``
-
-  or to edit the source code while using the package, install using
-
-    ``pip install -e .``
-
-  Now to use the package, this ``mbirjax`` environment needs to be activated.
+            cd dev_scripts
+            source clean_install_all.sh
 
 
-3. Install:
+    b. Option 2: Manual install
 
-You can verify the installation by running ``pip show mbirjax``, which should display a brief summary of the packages installed in the ``mbirjax`` environment.
-Now you will be able to use the ``mbirjax`` python commands from any directory by running the python command ``import mbirjax``.
+        1. *Create conda environment:*
 
+            Create a new conda environment named ``mbirjax`` using the following commands:
+
+            .. code-block::
+
+                conda create --name mbirjax python=3.10
+                conda activate mbirjax
+                pip install -r requirements.txt
+
+            Anytime you want to use this package, this ``mbirjax`` environment should be activated with the following:
+
+            .. code-block::
+
+                conda activate mbirjax
+
+
+        2. *Install mbirjax package:*
+
+            Navigate to the main directory ``mbirjax/`` and run the following:
+
+            .. code-block::
+
+                pip install .
+
+            To allow editing of the package source while using the package, use
+
+            .. code-block::
+
+                pip install -e .

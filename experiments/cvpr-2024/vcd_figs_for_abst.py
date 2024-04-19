@@ -53,7 +53,7 @@ if __name__ == "__main__":
     parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_shepp_logan_phantom()
+    phantom = parallel_model.gen_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     full_indices = parallel_model.gen_full_indices()
@@ -61,7 +61,7 @@ if __name__ == "__main__":
     sinogram = parallel_model.forward_project(voxel_values, full_indices)
 
     # Generate weights array
-    weights = parallel_model.calc_weights(sinogram/sinogram.max(), weight_type='transmission_root')
+    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
