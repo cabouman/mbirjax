@@ -20,13 +20,13 @@ Below, is a quick-start-guide to using MBIRJAX for your application:
 
 - **Get your data:**
 
-  - Import your data as a 3D numpy array called ``sinogram`` that is organized by ``(views, detector rows, detector columns)``.
+  - Import your ``sinogram`` data as a 3D numpy array organized by ``(views, detector rows, detector columns)``.
 
   - Create a 1D numpy array called ``angles`` that contains the rotation angle **in radians** of each view.
 
-  - Convert arrays to JAX format using the commands ``sinogram = jnp.array(sinogram)`` and ``angle = jnp.array(angle)``.
+  - Convert arrays both arrays to JAX format using the commands ``array = jnp.array(array)``.
 
-  Note, that each row of sinogram data is assumed to be perpendicular to the rotation axis, and the views are assumed to be in conventional raster order (i.e., left-to-right, top-to-bottom) looking through the object from the source to the detector.
+  Note, that each row of sinogram data is assumed to be perpendicular to the rotation axis and each view is assumed to be in conventional raster order (i.e., left-to-right, top-to-bottom) looking through the object from the source to the detector.
 
 
 - **Initialize a model:**
@@ -40,27 +40,29 @@ Below, is a quick-start-guide to using MBIRJAX for your application:
 
   - Run ``recon = model.recon(sinogram)`` to reconstruct using MBIR.
 
-  - Run ``recon_3d = parallel_model.reshape_recon(recon)`` to reshape your reconstruction into ``(rows, columns, slices)`` format.
+  - Then run ``recon_3d = parallel_model.reshape_recon(recon)`` to reshape your reconstruction into ``(rows, columns, slices)`` format.
 
-Even the default parameter setting will usually produce a good quality reconstruction,
+  Even the default parameter setting will usually produce a good quality reconstruction,
 
 
 - **Set reconstruction parameters:**
-  If you would like to tune image quality, you can set parameters using ``model.set_params('param_name=param_value')``.
-  Here is a list of parameters you may want to set:
 
-  - ``sharpness`` - the default value is 0. However, you can set ``sharpness=1.0`` or greater to increase sharpness, and you can set it negative to reduce noise.
-  - ``snr_db`` - the default value is 30.0. Again a larger value will increase resolution, lower will decrease it, but we recommend you start with ``sharpness``.
-  - ``verbose`` - the default value is 0, which will be quite. But if you want more feedback, set ``verbose=1`` or 2.
+  You can tune image qualty by setting the following parameters:
+
+  - ``sharpness`` -  default = 0. A larger value of ``sharpness=1.0`` or greater will increase sharpness, and a negative value will reduce noise.
+  - ``snr_db`` - default = 30.0. A larger value will increase resolution, but we recommend you start with ``sharpness``.
+  - ``verbose`` - default = 0 will be quite. Set ``verbose=1`` or 2 for more feedback.
+
+  Parameters can be set using the method ``model.set_params('param_name=param_value')``.
 
 - **Set sinogram weights:**
   As you become more experienced, you may want to set the sinogram weights to improve image quality.
   You can set weights for common scenarios by:
 
-  - Use the method ``weights = model.gen_weights(sinogram, weight_type='transmission_root')``.
+  - Generate a weight array using ``weights = model.gen_weights(sinogram, weight_type='transmission_root')``.
 
-  - Then use ``recon = model.recon(sinogram, weights=weights)`` to perform a weighted reconstruction.
+  - Then reconstruct using ``recon = model.recon(sinogram, weights=weights)``.
 
   The weights array has the same shape as the sinogram, and it represents the assumed inverse noise variance for each sinogram entry.
-  If you use the transmission options, it is critical that the sinogram be properly scaled to physically meaningful units, or you will get crazy results.
+  If you use the transmission options, it is critical that the sinogram be properly scaled to -log attenuation units, or you will get crazy results.
 
