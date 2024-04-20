@@ -242,7 +242,7 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
 def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None,
                               fig_title=None):
     """
-    Plots multiple granularity and loss data sets on a single figure with separate subplots, using fixed scales for all plots.
+    Plots multiple granularity and loss data sets on a single figure.
 
     Args:
         granularity_sequences (list of lists): A list containing different granularity sequences.

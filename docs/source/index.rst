@@ -27,7 +27,7 @@ Indices and tables
    :caption: Background
 
    overview
-   examples
+   quick_start
    theory
    credits
 
