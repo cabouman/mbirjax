@@ -3,6 +3,16 @@ import numpy as np
 
 
 def display_slices(phantom, sinogram, recon):
+    """
+    Displays slices of phantom, sinogram, and reconstructed image side by side for comparison.
+
+    This function iterates over each slice allowing the user to manually advance through slices by pressing Enter.
+
+    Parameters:
+        phantom (numpy array): The phantom in (row, column, slice) format.
+        sinogram (numpy array): The sinogram in (view, row, column) format.
+        recon (numpy array): The recon in (row, column, slice) format.
+    """
     num_recon_slices = phantom.shape[2]
     vmin = 0.0
     vmax = phantom.max()

@@ -51,7 +51,7 @@ if __name__ == "__main__":
     # in_axes=(None, None, 0, None, None))
 
     print('Starting forward projection')
-    sinogram = parallel_model.forward_project(voxel_values[0], full_indices[0], batch_size=batch_size)
+    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0], batch_size=batch_size)
 
     # Determine resulting number of views, slices, and channels and image size
     num_recon_rows, num_recon_cols, num_recon_slices = (
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     # Run once to finish compiling
     print('Starting back projection')
-    bp = parallel_model.back_project(sinogram, indices[0])
+    bp = parallel_model.sparse_back_project(sinogram, indices[0])
     print('Recon shape: ({}, {}, {})'.format(num_recon_rows, num_recon_cols, num_recon_slices))
     print('Memory stats after back projection')
     mbirjax.get_gpu_memory_stats(print_results=True)
@@ -84,8 +84,8 @@ if __name__ == "__main__":
 
     # Do a forward projection, then a backprojection
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.forward_project(voxel_values, indices[0], batch_size=batch_size)
-    Aty = parallel_model.back_project(y, indices[0])
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], batch_size=batch_size)
+    Aty = parallel_model.sparse_back_project(y, indices[0])
 
     # Calculate <Aty, x> and <y, Ax>
     Aty_x = jnp.sum(Aty * x)
@@ -106,21 +106,21 @@ if __name__ == "__main__":
     eps = 0.01
     x = x.at[i, j, k].set(eps)
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.forward_project(voxel_values, indices[0], batch_size=batch_size)
-    AtAx = parallel_model.back_project(Ax, indices[0]).reshape(x.shape)
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], batch_size=batch_size)
+    AtAx = parallel_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
     finite_diff_hessian = AtAx[i, j, k] / eps
     print('Hessian matches finite difference: {}'.format(jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)))
 
     # ##########################
     # Check the time taken per forward projection
-    #  NOTE: recompiling happens whenever forward_project is called with a new *length* of input indices
+    #  NOTE: recompiling happens whenever sparse_forward_projector is called with a new *length* of input indices
     time_taken = 0
 
     print('\nStarting multiple forward projections...')
     for j in range(num_trials):
         voxel_values = x.reshape((-1, num_recon_slices))[indices[j]]
         t0 = time.time()
-        fp = parallel_model.forward_project(voxel_values, indices[j], batch_size=batch_size)
+        fp = parallel_model.sparse_forward_project(voxel_values, indices[j], batch_size=batch_size)
         time_taken += time.time() - t0
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
@@ -128,13 +128,13 @@ if __name__ == "__main__":
 
     # ##########################
     # Check the time taken per backprojection
-    #  NOTE: recompiling happens whenever back_project is called with a new *length* of input indices
+    #  NOTE: recompiling happens whenever sparse_back_projector is called with a new *length* of input indices
     time_taken = 0
 
     print('\nStarting multiple backprojections...')
     for j in range(num_trials):
         t0 = time.time()
-        bp = parallel_model.back_project(sinogram, indices[j])
+        bp = parallel_model.sparse_back_project(sinogram, indices[j])
         time_taken += time.time() - t0
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
@@ -148,14 +148,14 @@ if __name__ == "__main__":
     x = x.at[index].set(1)
     voxel_values = x.reshape((-1, 1))[indices[0]]
 
-    Ax = parallel_model.forward_project(voxel_values, indices[0])
-    Aty = parallel_model.back_project(Ax, indices[0])
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0])
+    Aty = parallel_model.sparse_back_project(Ax, indices[0])
 
     y = jnp.zeros_like(sinogram)
     view_index = 30
     y = y.at[view_index].set(sinogram[view_index])
     index = jnp.ravel_multi_index((60, 60), (num_recon_rows, num_recon_cols))
-    a1 = parallel_model.back_project(y, indices[0])
+    a1 = parallel_model.sparse_back_project(y, indices[0])
 
     cs = parallel_model._get_cos_sin_angles(angles[view_index])
     a2 = parallel_model.back_project_one_view_to_voxels(sinogram[view_index], indices[0], cs, geometry_params)

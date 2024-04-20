@@ -27,6 +27,7 @@ Indices and tables
    :caption: Background
 
    overview
+   examples
    theory
    credits
 
@@ -37,7 +38,6 @@ Indices and tables
 
    install
    api
-   examples
 
 .. toctree::
    :hidden:

@@ -1,7 +1,7 @@
 import jax
 
 """
-Memory usage from back_project (which takes 5x-30x more memory than forward_project):
+Memory usage from sparse_back_projector (which takes 5x-30x more memory than sparse_forward_projector):
 
 Changing number of rows with 256 views by 256 channels
 10: {'num_allocs': 63, 'bytes_in_use': 14983168, 'peak_bytes_in_use': 2431167744, 'largest_alloc_size': 2415922432, 'bytes_limit': 12701761536, 'bytes_reserved': 0, 'peak_bytes_reserved': 0, 'largest_free_block_bytes': 0, 'pool_bytes': 3228616192, 'peak_pool_bytes': 3228616192}

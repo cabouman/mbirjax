@@ -46,10 +46,10 @@ class ParallelBeamModel(TomographyModel):
         cos_sin_angles = self._get_cos_sin_angles(self.get_params('angles'))
         sinogram_shape = self.get_params('sinogram_shape')
 
-        def back_project_fcn(sinogram, indices):
+        def sparse_back_project_fcn(sinogram, indices):
             return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, cos_sin_angles, geometry_params)
 
-        def forward_project_fcn(voxel_values, voxel_indices, batch_size=None):
+        def sparse_forward_project_fcn(voxel_values, voxel_indices, batch_size=None):
             num_views = cos_sin_angles.shape[1]
             forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 1, None, None))
 
@@ -75,8 +75,8 @@ class ParallelBeamModel(TomographyModel):
 
             return sinogram
 
-        self.forward_project = jax.jit(forward_project_fcn, static_argnums=(2,))
-        self.back_project = jax.jit(back_project_fcn)
+        self.sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,))
+        self.sparse_back_project = jax.jit(sparse_back_project_fcn)
 
     @staticmethod
     def back_project_to_voxels_scan(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power=1):

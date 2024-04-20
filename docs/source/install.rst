@@ -1,6 +1,7 @@
 ============
 Installation 
 ============
+.. _installation_label:
 
 The ``MBIRJAX`` package currently is only available to download and install from source through GitHub.
 
