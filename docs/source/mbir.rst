@@ -11,8 +11,8 @@ mbir
    .. autosummary::
       ParallelBeamModel
       TomographyModel.recon
-      TomographyModel.sparse_forward_projector
-      TomographyModel.sparse_back_projector
+      TomographyModel.forward_project
+      TomographyModel.back_project
       TomographyModel.reshape_recon
       TomographyModel.set_params
       TomographyModel.get_params

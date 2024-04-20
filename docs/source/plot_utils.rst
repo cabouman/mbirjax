@@ -11,3 +11,5 @@ plot_utils
 
    .. autosummary::
       plot_utils.slice_viewer
+      plot_utils.display_slices
+      plot_utils.plot_granularity_and_loss

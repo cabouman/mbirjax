@@ -254,8 +254,7 @@ class TomographyModel:
 
     def set_params(self, **kwargs):
         """
-        Updates instance parameters using keyword arguments and checks for changes to critical geometry parameters.
-        If a parameter key from kwargs does not exist within the instance's parameters, a NameError is raised.
+        Updates parameters using keyword arguments.
         After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
 
         Args:
@@ -263,9 +262,6 @@ class TomographyModel:
 
         Raises:
             NameError: If any key provided in kwargs is not an attribute of `self.params`.
-
-        Side effects:
-            May recompile projectors if geometry parameters such as angles or sinogram shape are changed.
         """
         # Get initial geometry parameters
         initial_params = self.get_geometry_parameters()
