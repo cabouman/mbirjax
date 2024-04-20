@@ -2,6 +2,11 @@
 Theory
 ======
 
+
+Model-Based Iterative Reconstruction
+------------------------------------
+
+
 The following describes how Model-Based Iterative Reconstruction (MBIR) works, and the low-level parameters used to control it.
 However, while these low level MBIR parameters can be accessed, we strongly recommend that you control image quality using the meta-parameter,
 ``sharpnesss``.
@@ -92,7 +97,8 @@ where the quantities correspond to the following python variables:
 
 
 
-**Conversion from Arbitrary Length Units (ALU)**
+Conversion from Arbitrary Length Units (ALU)
+--------------------------------------------
 
 In order to simplify usage, reconstructions are done using arbitrary length units (ALU).
 In this system, 1 ALU can correspond to any convenient measure of distance chosen by the user.
