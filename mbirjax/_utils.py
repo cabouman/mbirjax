@@ -21,7 +21,7 @@ _recon_model_defaults_dict = {
     'p': 2.0,
     'q': 1.2,
     'T': 1.0,
-    'num_neighbors': 6
+    'b': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 }
 
 _reconstruction_defaults_dict = {

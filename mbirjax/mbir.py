@@ -62,9 +62,7 @@ class TomographyModel:
         recon_at_indices = self.sparse_back_projector(sinogram, full_indices)
 
         # Get shape of recon
-        num_recon_rows = self.get_params('num_recon_rows')
-        num_recon_cols = self.get_params('num_recon_cols')
-        num_recon_slices = self.get_params('num_recon_slices')
+        num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(['num_recon_rows','num_recon_cols','num_recon_slices'])
 
         # Allocate recon of correct shape
         recon = jnp.zeros((num_recon_rows * num_recon_cols, num_recon_slices))
@@ -575,8 +573,8 @@ class TomographyModel:
         fm_sparse_hessian = constant * fm_hessian[indices]
 
         # Compute the prior model gradient and hessian at each pixel in the index set.
-        sigma_x, p, q, T = self.get_params(['sigma_x', 'p', 'q', 'T'])
-        pm_gradient, pm_hessian = pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T)
+        sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
+        pm_gradient, pm_hessian = pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
 
         # Compute update vector update direction in recon domain
         delta_recon_at_indices = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
@@ -727,7 +725,7 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
 
 
 @jax.jit
-def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
+def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
@@ -738,6 +736,7 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
         p (float): Norm parameter p in the qGGMRF prior.
         q (float): Norm parameter q in the qGGMRF prior.
         T (float): Scaling parameter in the qGGMRF prior.
+        b (list of 6 float): list of 6 qGGMRF prior neightborhood weights.
 
     Returns:
         tuple: Contains two arrays (first_derivative, second_derivative) each of shape (N_indices, num_recon_slices)
@@ -745,7 +744,7 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T):
     """
     # Initialize the neighborhood weights for averaging surrounding pixel values.
     # Order is (I think) [row+1, row-1, col+1, col-1, slice+1, slice-1]
-    b = jnp.array([1, 1, 1, 1, 1, 1]).reshape(1, -1)
+    b = jnp.array(b).reshape(1, -1)
     b /= jnp.sum(b)
 
     # Extract the shape of the reconstruction array.
