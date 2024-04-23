@@ -13,16 +13,17 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    batch_size = 100
+    view_batch_size = 100
+    voxel_batch_size = 1000
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 10
+    num_det_rows = 128
     num_det_channels = 128
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
-    angles = jnp.linspace(start_angle,jnp.pi, num_views, endpoint=False)
+    angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
     seed_value = np.random.randint(1000000)
@@ -47,11 +48,8 @@ if __name__ == "__main__":
     cos_sin_angles = parallel_model._get_cos_sin_angles(angles)
     geometry_params = parallel_model.get_geometry_parameters()
 
-    # view = parallel_model.forward_project_voxels_one_view(voxel_values[0], full_indices[0], cos_sin_angles[0], geometry_params, sinogram.shape)
-    # in_axes=(None, None, 0, None, None))
-
     print('Starting forward projection')
-    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0], batch_size=batch_size)
+    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0], view_batch_size=view_batch_size)
 
     # Determine resulting number of views, slices, and channels and image size
     num_recon_rows, num_recon_cols, num_recon_slices = (
@@ -84,7 +82,7 @@ if __name__ == "__main__":
 
     # Do a forward projection, then a backprojection
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], batch_size=batch_size)
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], view_batch_size=view_batch_size)
     Aty = parallel_model.sparse_back_project(y, indices[0])
 
     # Calculate <Aty, x> and <y, Ax>
@@ -95,7 +93,7 @@ if __name__ == "__main__":
 
     # ##########################
     # ## Test the hessian against a finite difference approximation ## #
-    hessian = parallel_model.compute_hessian_diagonal(None, angles, sinogram_shape=sinogram.shape)
+    hessian = parallel_model.compute_hessian_diagonal()
 
     x = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
     key, subkey = jax.random.split(key)
@@ -106,7 +104,7 @@ if __name__ == "__main__":
     eps = 0.01
     x = x.at[i, j, k].set(eps)
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], batch_size=batch_size)
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], view_batch_size=view_batch_size)
     AtAx = parallel_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
     finite_diff_hessian = AtAx[i, j, k] / eps
     print('Hessian matches finite difference: {}'.format(jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)))
@@ -120,7 +118,7 @@ if __name__ == "__main__":
     for j in range(num_trials):
         voxel_values = x.reshape((-1, num_recon_slices))[indices[j]]
         t0 = time.time()
-        fp = parallel_model.sparse_forward_project(voxel_values, indices[j], batch_size=batch_size)
+        fp = parallel_model.sparse_forward_project(voxel_values, indices[j], view_batch_size=view_batch_size)
         time_taken += time.time() - t0
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
@@ -156,9 +154,6 @@ if __name__ == "__main__":
     y = y.at[view_index].set(sinogram[view_index])
     index = jnp.ravel_multi_index((60, 60), (num_recon_rows, num_recon_cols))
     a1 = parallel_model.sparse_back_project(y, indices[0])
-
-    cs = parallel_model._get_cos_sin_angles(angles[view_index])
-    a2 = parallel_model.back_project_one_view_to_voxels(sinogram[view_index], indices[0], cs, geometry_params)
 
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
     ax[0].imshow(x.reshape((num_recon_rows, num_recon_cols)))

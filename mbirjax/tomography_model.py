@@ -106,19 +106,18 @@ class TomographyModel:
         gc.collect()
         return recon
 
-    def compute_hessian_diagonal(self, weights, angles, sinogram_shape=None):
+    def compute_hessian_diagonal(self, weights, voxel_batch_size=None):
         """
         Computes the diagonal elements of the Hessian matrix for given weights and angles.
 
         Args:
             weights (jnp array): Sinogram Weights for the Hessian computation.
-            angles (jnp array): Projection angles used in the computation.
-            sinogram_shape (tuple, optional): Shape of the sinogram, defaults to None which uses internal settings.
+            voxel_batch_size:
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights, angles, sinogram_shape=None).block_until_ready()
+        hessian = self.compute_hessian_diagonal(weights, voxel_batch_size=voxel_batch_size).block_until_ready()
         gc.collect()
         return hessian
 
@@ -512,7 +511,7 @@ class TomographyModel:
         # Initialize VCD error sinogram, recon, and hessian
         error_sinogram = sinogram
         recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
-        hessian = self.compute_hessian_diagonal(weights=weights, angles=angles)
+        hessian = self.compute_hessian_diagonal(weights=weights)
 
         # Initialize forward model normalized RMSE error array
         fm_rmse = np.zeros(num_iters)
@@ -714,7 +713,7 @@ class TomographyModel:
         Reshape recon into its 3D form
         """
         num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'params.num_recon_cols', 'num_recon_slices'])
+            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         return recon.reshape(num_recon_rows, num_recon_cols, num_recon_slices)
 
 
