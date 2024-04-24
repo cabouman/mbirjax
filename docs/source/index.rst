@@ -37,7 +37,8 @@ Indices and tables
    :caption: User Guide
 
    install
-   usr_api
+   usr_mbir
+   usr_plot_utils
 
 .. toctree::
    :hidden:

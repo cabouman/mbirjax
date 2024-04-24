@@ -1,5 +1,6 @@
-mbirjax Module
-==============
+========
+User API
+========
 
 .. autosummary::
       mbirjax.ParallelBeamModel
