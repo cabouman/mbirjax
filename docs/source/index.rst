@@ -37,12 +37,12 @@ Indices and tables
    :caption: User Guide
 
    install
-   api
+   usr_api
 
 .. toctree::
    :hidden:
    :maxdepth: 4
    :caption: Developer Guide
 
+   dev_api
    pytest
-   api_dev
