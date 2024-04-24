@@ -9,9 +9,18 @@ from mbirjax import TomographyModel
 class ParallelBeamModel(TomographyModel):
     """
     A class to do forward and back projection for parallel beam geometry.
+
+    See documentation for mbirjax.TomographyModel class for methods to set parameters and for projection and
+    reconstruction.
+
+    Args:
+        angles (jnp.ndarray):  1D array of angles for projection
+        sinogram_shape (tuple): shape of the sinogram in (views, rows, channels)
+        **kwargs: Additional keyword arguments to pass to TomographyModel.  See TomographyModel for possible parameters.
     """
 
     def __init__(self, angles, sinogram_shape, **kwargs):
+
         super().__init__(sinogram_shape, angles=angles, **kwargs)
 
     def verify_valid_params(self):

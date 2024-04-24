@@ -13,20 +13,19 @@ class TomographyModel:
     """
     Represents a general model for tomographic reconstruction using MBIRJAX. This class encapsulates the parameters and
     methods for the forward and back projection processes required in tomographic imaging.
+
+    Note that this class is a template for specific subclasses.  TomographyModel by itself does not implement
+    projectors or recon.  Use self.print_params() to print the parameters of the model after initialization.
+
+    Args:
+        sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
+        **kwargs: Arbitrary keyword arguments for setting model parameters dynamically.
+
+    Sets up the reconstruction size and parameters.
     """
 
     def __init__(self, sinogram_shape, **kwargs):
-        """
-        Initializes a TomographyModel with specific geometry and operational settings.  Note that this class is
-        a template for specific subclasses.  TomographyModel by itself does not implement projectors or recon.
-        Use self.print_params() to print the parameters of the model after initialization.
 
-        Args:
-            sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
-            **kwargs: Arbitrary keyword arguments for setting model parameters dynamically.
-
-        Sets up the reconstruction size and parameters.
-        """
         self.params = utils.get_default_params()
         self.add_new_params(**kwargs)
         self.sparse_forward_project, self.sparse_back_project = None, None  # These are callable functions compiled in set_params

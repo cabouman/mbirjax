@@ -54,6 +54,12 @@ extensions = [
     'sphinx.ext.viewcode'
 ]
 
+
+# Exclude __init__ method from documentation
+autodoc_default_options = {
+    'exclude-members': '__init__'
+}
+
 bibtex_bibfiles = ['refs.bib']
 
 autosummary_generate = True

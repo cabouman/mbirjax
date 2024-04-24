@@ -45,3 +45,4 @@ Indices and tables
    :caption: Developer Guide
 
    pytest
+   api_dev
