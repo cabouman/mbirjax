@@ -1,41 +1,42 @@
 import types
 
 # The order and content of these dictionaries must match the signatures of the corresponding tests below
+# The second entry in each case indicates if changing that parameter should trigger a recompile
 _forward_model_defaults_dict = {
-    'angles': None,
-    'sinogram_shape': None,
-    'delta_det_channel': 1.0,
-    'delta_det_row': 1.0,
-    'det_channel_offset': 0.0,
-    'sigma_y': 1.0
+
+    'sinogram_shape': {'val': None, 'recompile_flag': True},
+    'delta_det_channel': {'val': 1.0, 'recompile_flag': False},
+    'delta_det_row': {'val': 1.0, 'recompile_flag': False},
+    'det_channel_offset': {'val': 0.0, 'recompile_flag': False},
+    'sigma_y': {'val': 1.0, 'recompile_flag': False},
 }
 
 _recon_model_defaults_dict = {
-    'prox_recon': None,
-    'num_recon_rows': None,
-    'num_recon_cols': None,
-    'num_recon_slices': None,
-    'delta_pixel_recon': 1.0,
-    'sigma_x': 1.0,
-    'sigma_p': 1.0,
-    'p': 2.0,
-    'q': 1.2,
-    'T': 1.0,
-    'b': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    'prox_recon': {'val': None, 'recompile_flag': False},
+    'num_recon_rows': {'val': None, 'recompile_flag': False},
+    'num_recon_cols': {'val': None, 'recompile_flag': False},
+    'num_recon_slices': {'val': None, 'recompile_flag': False},
+    'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
+    'sigma_x': {'val': 1.0, 'recompile_flag': False},
+    'sigma_p': {'val': 1.0, 'recompile_flag': False},
+    'p': {'val': 2.0, 'recompile_flag': False},
+    'q': {'val': 1.2, 'recompile_flag': False},
+    'T': {'val': 1.0, 'recompile_flag': False},
+    'b': {'val': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 'recompile_flag': False},
 }
 
 _reconstruction_defaults_dict = {
-    'auto_regularize_flag': True,
-    'proximal_map_flag': False,
-    'positivity_flag': False,
-    'initialization': 'zero',
-    'snr_db': 30.0,
-    'sharpness': 0.0,
-    'max_resolutions': None,
-    'num_iterations': 10,
-    'granularity': [1, 8, 64, 256],
-    'partition_sequence': [0, 1, 2, 3, 1, 2, 3, 2, 3, 3],
-    'verbose': 0
+    'auto_regularize_flag': {'val': True, 'recompile_flag': False},
+    'proximal_map_flag': {'val': False, 'recompile_flag': False},
+    'positivity_flag': {'val': False, 'recompile_flag': False},
+    'initialization': {'val': 'zero', 'recompile_flag': False},
+    'snr_db': {'val': 30.0, 'recompile_flag': False},
+    'sharpness': {'val': 0.0, 'recompile_flag': False},
+    'max_resolutions': {'val': None, 'recompile_flag': False},
+    'num_iterations': {'val': 10, 'recompile_flag': False},
+    'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
+    'partition_sequence': {'val': [0, 1, 2, 3, 1, 2, 3, 2, 3, 3], 'recompile_flag': False},
+    'verbose': {'val': 0, 'recompile_flag': False},
 }
 
 headings = ['Geometry params', 'Recon params', 'Init params', 'Noise params', 'QGGMRF params', 'Sys params',

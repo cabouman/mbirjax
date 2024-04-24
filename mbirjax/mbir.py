@@ -15,22 +15,23 @@ class TomographyModel:
     methods for the forward and back projection processes required in tomographic imaging.
     """
 
-    def __init__(self, angles, sinogram_shape, **kwargs):
+    def __init__(self, sinogram_shape, **kwargs):
         """
-        Initializes a TomographyModel with specific geometry and operational settings.
+        Initializes a TomographyModel with specific geometry and operational settings.  Note that this class is
+        a template for specific subclasses.  TomographyModel by itself does not implement projectors or recon.
+        Use self.print_params() to print the parameters of the model after initialization.
 
         Args:
-            angles (array_like): The angles at which projections should be taken, in radians.
             sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
             **kwargs: Arbitrary keyword arguments for setting model parameters dynamically.
 
-        Initializes forward and back projection methods and sets up the reconstruction size and parameters.
+        Sets up the reconstruction size and parameters.
         """
         self.params = utils.get_default_params()
+        self.add_new_params(**kwargs)
         self.sparse_forward_project, self.sparse_back_project = None, None  # These are callable functions compiled in set_params
-        self.set_params(angles=angles, sinogram_shape=sinogram_shape)
+        self.set_params(sinogram_shape=sinogram_shape, **kwargs)
         self.auto_set_recon_size(sinogram_shape)  # Determine auto image size before processing user parameters
-        self.set_params(**kwargs)
 
     def compile_projectors(self):
         """Placeholder for compiling projector methods."""
@@ -206,8 +207,10 @@ class TomographyModel:
 
     def print_params(self):
         print("----")
-        for key, val in vars(self.params).items():
-            print("{} = {}".format(key, val))
+        for key, entry in vars(self.params).items():
+            param_val = entry.get('val')
+            recompile_flag = entry.get('recompile_flag')
+            print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
 
     def save_params(self, fname='param_dict.npy', binaries=False):
@@ -270,30 +273,22 @@ class TomographyModel:
         # Set all the given parameters
         for key, val in kwargs.items():
             if key in vars(self.params).keys():
-                setattr(self.params, key, val)
+                recompile_flag = getattr(self.params, key)['recompile_flag']
+                new_entry = {'val': val, 'recompile_flag': recompile_flag}
+                setattr(self.params, key, new_entry)
             else:
                 raise NameError('"{}" not a recognized argument'.format(key))
 
             # Handle special cases
-            if key in ['angles', 'sinogram_shape']:
+            if recompile_flag:
                 recompile = True
             elif key in ["sigma_y", "sigma_x", "sigma_p"]:
                 regularization_parameter_change = True
             elif key in ["sharpness", "snr_db"]:
                 meta_parameter_change = True
 
-        # Check for compatibility between angles and sinogram views
-        if recompile:
-            sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
-            if len(sinogram_shape) != 3:
-                error_message = "sinogram_shape must be (views, rows, channels). \n"
-                error_message += "Got {} for sinogram shape.".format(sinogram_shape)
-                raise ValueError(error_message)
-            if len(angles) != sinogram_shape[0]:
-                error_message = "Number of angles must equal the number of views. \n"
-                error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
-                                                                                                  sinogram_shape[0])
-                raise ValueError(error_message)
+        # Check for valid parameters
+        self.verify_valid_params()
 
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
@@ -315,6 +310,14 @@ class TomographyModel:
         if recompile or initial_params != new_params:
             self.compile_projectors()
 
+    def verify_valid_params(self):
+
+        sinogram_shape = self.get_params('sinogram_shape')
+        if len(sinogram_shape) != 3:
+            error_message = "sinogram_shape must be (views, rows, channels). \n"
+            error_message += "Got {} for sinogram shape.".format(sinogram_shape)
+            raise ValueError(error_message)
+
     def get_params(self, parameter_names):
         """
         Get the values of the listed parameter names.
@@ -328,17 +331,33 @@ class TomographyModel:
         """
         if isinstance(parameter_names, str):
             if parameter_names in vars(self.params).keys():
-                value = getattr(self.params, parameter_names)
+                value = getattr(self.params, parameter_names)['val']
             else:
                 raise NameError('"{}" not a recognized argument'.format(parameter_names))
             return value
         values = []
         for name in parameter_names:
             if name in vars(self.params).keys():
-                values.append(getattr(self.params, name))
+                values.append(getattr(self.params, name)['val'])
             else:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
+
+    def add_new_params(self, **kwargs):
+        """
+        Add parameters using keyword arguments.
+
+        Args:
+            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+
+        """
+        # Set all the given parameters
+        for key, val in kwargs.items():
+            if key in vars(self.params).keys():
+                raise NameError('"{}" is an existing parameter - use a different name'.format(key))
+            else:
+                new_entry = {'val': val, 'recompile_flag': True}
+                setattr(self.params, key, new_entry)
 
     def get_geometry_parameters(self):
         return None
@@ -379,10 +398,10 @@ class TomographyModel:
         """
         if normalize:
             avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.params.sigma_y**2)) * jnp.mean(
+            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y')**2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
-            loss = (1.0 / (2 * self.params.sigma_y**2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            loss = (1.0 / (2 * self.get_params('sigma_y')**2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     @staticmethod
@@ -487,9 +506,8 @@ class TomographyModel:
         """
         # Get required parameters
         num_iters = partition_sequence.size
-        num_recon_rows = self.params.num_recon_rows
-        num_recon_cols = self.params.num_recon_cols
-        num_recon_slices = self.params.num_recon_slices
+        num_recon_rows, num_recon_cols, num_recon_slices = \
+            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         angles = self.get_params('angles')
 
         # Initialize VCD error sinogram, recon, and hessian
@@ -505,7 +523,7 @@ class TomographyModel:
                                                                  partitions[partition_sequence[i]], hessian,
                                                                  weights=weights)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
-            if self.params.verbose >= 1:
+            if self.get_params('verbose') >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
@@ -557,9 +575,8 @@ class TomographyModel:
         positivity_flag = self.get_params('positivity_flag')
 
         # Recover recon shape parameters and make sure that recon has a 3D shape
-        num_recon_rows = self.params.num_recon_rows
-        num_recon_cols = self.params.num_recon_cols
-        num_recon_slices = self.params.num_recon_slices
+        num_recon_rows, num_recon_cols, num_recon_slices = \
+            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
         # flatten the recon and hessian if they are not already flat
@@ -567,7 +584,7 @@ class TomographyModel:
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-        constant = 1.0 / (self.params.sigma_y**2.0)
+        constant = 1.0 / (self.get_params('sigma_y')**2.0)
 
         fm_gradient = -constant * self.sparse_back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
@@ -652,10 +669,10 @@ class TomographyModel:
         """
         # Convert granularity to an np array
         granularity = np.array(self.get_params('granularity'))
-
+        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
         partitions = ()
         for size in granularity:
-            partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, size)
+            partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, size)
             partitions += (partition,)
 
         return partitions
@@ -666,17 +683,18 @@ class TomographyModel:
         This is useful for computing forward projections.
         """
         # Convert granularity to an np array
-        partition = mbirjax.gen_voxel_partition(self.params.num_recon_rows, self.params.num_recon_cols, num_subsets=1)
+        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
+        partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets=1)
         full_indices = partition[0]
 
         return full_indices
 
     def gen_partition_sequence(self):
         # Get sequence from params and convert it to a np array
-        partition_sequence = np.array(self.params.partition_sequence)
+        partition_sequence = np.array(self.get_params('partition_sequence'))
 
         # Tile sequence so it at least iterations long
-        num_iterations = self.params.num_iterations
+        num_iterations = self.get_params('num_iterations')
         extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[
                                       0:num_iterations]
         return extended_partition_sequence
@@ -687,15 +705,18 @@ class TomographyModel:
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
-        phantom = mbirjax.generate_3d_shepp_logan(self.params.num_recon_rows, self.params.num_recon_cols,
-                                                  self.params.num_recon_slices)
+        num_recon_rows, num_recon_cols, num_recon_slices = \
+            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        phantom = mbirjax.generate_3d_shepp_logan(num_recon_rows, num_recon_cols, num_recon_slices)
         return phantom
 
     def reshape_recon(self, recon):
         """
         Reshape recon into its 3D form
         """
-        return recon.reshape(self.params.num_recon_rows, self.params.num_recon_cols, self.params.num_recon_slices)
+        num_recon_rows, num_recon_cols, num_recon_slices = \
+            self.get_params(['num_recon_rows', 'params.num_recon_cols', 'num_recon_slices'])
+        return recon.reshape(num_recon_rows, num_recon_cols, num_recon_slices)
 
 
 @jax.jit

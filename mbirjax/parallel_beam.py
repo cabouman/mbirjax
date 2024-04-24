@@ -12,7 +12,20 @@ class ParallelBeamModel(TomographyModel):
     """
 
     def __init__(self, angles, sinogram_shape, **kwargs):
-        super().__init__(angles, sinogram_shape, **kwargs)
+        super().__init__(sinogram_shape, angles=angles, **kwargs)
+
+    def verify_valid_params(self):
+        """
+        Check that all parameters are compatible for a reconstruction.
+        """
+        super().verify_valid_params()
+        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
+
+        if len(angles) != sinogram_shape[0]:
+            error_message = "Number of angles must equal the number of views. \n"
+            error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
+                                                                                              sinogram_shape[0])
+            raise ValueError(error_message)
 
     def get_geometry_parameters(self):
         """
