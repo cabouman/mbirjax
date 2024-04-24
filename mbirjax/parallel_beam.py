@@ -8,16 +8,38 @@ from mbirjax import TomographyModel
 
 class ParallelBeamModel(TomographyModel):
     """
-    A class to do forward and back projection for parallel beam geometry.
+    A class designed for handling forward and backward projections in a parallel beam geometry, extending the
+    :class:`TomographyModel`. This class offers specialized methods and parameters tailored for parallel beam setups.
 
-    See documentation for mbirjax.TomographyModel class for methods to set parameters and for projection and
-    reconstruction.
+    This class inherits all methods and properties from the :class:`~mbirjax.TomographyModel` and may override some
+    to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
+    like setting parameters and performing projections and reconstructions.
 
-    Args:
-        angles (jnp.ndarray):  1D array of angles for projection
-        sinogram_shape (tuple): shape of the sinogram in (views, rows, channels)
-        **kwargs: Additional keyword arguments to pass to TomographyModel.  See TomographyModel for possible parameters.
+    Parameters
+    ----------
+    angles : jnp.ndarray
+        A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
+    sinogram_shape : tuple
+        Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
+        different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
+        the detector that are assumed to be aligned with the rotation axis..
+    **kwargs : dict
+        Additional keyword arguments that are passed to the :class:`~mbirjax.TomographyModel` constructor. These can
+        include settings and configurations specific to the tomography model such as noise models or image dimensions.
+        Refer to the :class:`~mbirjax.TomographyModel` documentation for a detailed list of possible parameters.
+
+    Examples
+    --------
+    Initialize a parallel beam model with specific angles and sinogram shape:
+
+    >>> angles = jnp.array([0, jnp.pi/4, jnp.pi/2])
+    >>> model = ParallelBeamModel(angles, (180, 256, 10))
+
+    See Also
+    --------
+    TomographyModel : The base class from which this class inherits.
     """
+
 
     def __init__(self, angles, sinogram_shape, **kwargs):
 

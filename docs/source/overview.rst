@@ -41,8 +41,8 @@ Right now MBIRJAX supports *parallel-beam* imaging geometry as shown below, but 
 
 .. list-table::
 
-    * - .. figure:: figs/geom-parallel.png
+    * - .. figure:: figs/geom-parallel.jpg
            :align: center
-           :width: 50%
+           :width: 75%
 
            Parallel-beam geometry
