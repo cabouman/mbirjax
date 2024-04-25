@@ -133,7 +133,7 @@ class TomographyModel:
 
         The method adjusts the regularization parameters only if `auto_regularize_flag` is set to True within the model's parameters.
         """
-        if self.params.auto_regularize_flag == True:
+        if self.get_params('auto_regularize_flag'):
             self.auto_set_sigma_y(sinogram, weights)
             self.auto_set_sigma_x(sinogram)
             self.auto_set_sigma_p(sinogram)
@@ -148,13 +148,8 @@ class TomographyModel:
         """
 
         # Get parameters
-        snr_db = self.get_params('snr_db')
-        delta_pixel_recon = self.get_params('delta_pixel_recon')
-        delta_det_channel = self.get_params('delta_det_channel')
-        if hasattr(self.params, 'magnification'):
-            magnification = self.get_params('magnification')
-        else:
-            magnification = 1.0
+        snr_db, magnification = self.get_params(['snr_db', 'magnification'])
+        delta_pixel_recon, delta_det_channel = self.get_params(['delta_pixel_recon', 'delta_det_channel'])
 
         # Compute indicator function for sinogram support
         sino_indicator = self._get_sino_indicator(sinogram)
@@ -172,8 +167,7 @@ class TomographyModel:
 
         # Compute sigma_y and scale by relative pixel pitch
         sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default**0.5)
-        self.params.sigma_y = sigma_y  # Set these directly to avoid warnings in set_params
-        self.params.auto_regularize_flag = True
+        self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
 
     def auto_set_sigma_x(self, sinogram):
         """
@@ -182,7 +176,7 @@ class TomographyModel:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
         sigma_x = 0.2 * self._get_estimate_of_recon_std(sinogram)
-        self.params.sigma_x = sigma_x  # Set these directly to avoid warnings in set_params
+        self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
 
     def auto_set_sigma_p(self, sinogram):
         """
@@ -191,7 +185,7 @@ class TomographyModel:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
         sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
-        self.params.sigma_p = sigma_p  # Set these directly to avoid warnings in set_params
+        self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
     def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
@@ -253,16 +247,17 @@ class TomographyModel:
                 except yaml.YAMLError as exc:
                     print(exc)
 
-    def set_params(self, **kwargs):
+    def set_params(self, no_warning=False, **kwargs):
         """
         Updates parameters using keyword arguments.
         After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
 
         Args:
+            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
             **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
 
         Raises:
-            NameError: If any key provided in kwargs is not an attribute of `self.params`.
+            NameError: If any key provided in kwargs is not a recognized parameter.
         """
         # Get initial geometry parameters
         initial_params = self.get_geometry_parameters()
@@ -293,15 +288,17 @@ class TomographyModel:
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
             self.set_params(auto_regularize_flag=False)
-            warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
-                          'This is an advanced feature that will disable auto-regularization.')
+            if not no_warning:
+                warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
+                              'This is an advanced feature that will disable auto-regularization.')
 
         # Handle case if any meta regularization parameter changed
         if meta_parameter_change:
             if self.get_params('auto_regularize_flag') is False:
                 self.set_params(auto_regularize_flag=True)
-                warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
-                              'It was previously disabled')
+                if not no_warning:
+                    warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
+                                  'It was previously disabled')
 
         # Get final geometry parameters
         new_params = self.get_geometry_parameters()
@@ -309,14 +306,6 @@ class TomographyModel:
         # Compare the two outputs
         if recompile or initial_params != new_params:
             self.compile_projectors()
-
-    def verify_valid_params(self):
-
-        sinogram_shape = self.get_params('sinogram_shape')
-        if len(sinogram_shape) != 3:
-            error_message = "sinogram_shape must be (views, rows, channels). \n"
-            error_message += "Got {} for sinogram shape.".format(sinogram_shape)
-            raise ValueError(error_message)
 
     def get_params(self, parameter_names):
         """
@@ -354,10 +343,21 @@ class TomographyModel:
         # Set all the given parameters
         for key, val in kwargs.items():
             if key in vars(self.params).keys():
-                raise NameError('"{}" is an existing parameter - use a different name'.format(key))
+                raise NameError('"{}" is an existing parameter - use set_params to set the value'.format(key))
             else:
                 new_entry = {'val': val, 'recompile_flag': True}
                 setattr(self.params, key, new_entry)
+
+    def verify_valid_params(self):
+        """
+        Verify any conditions that must be satisfied among parameters for correct projections.
+        """
+
+        sinogram_shape = self.get_params('sinogram_shape')
+        if len(sinogram_shape) != 3:
+            error_message = "sinogram_shape must be (views, rows, channels). \n"
+            error_message += "Got {} for sinogram shape.".format(sinogram_shape)
+            raise ValueError(error_message)
 
     def get_geometry_parameters(self):
         return None
@@ -444,13 +444,9 @@ class TomographyModel:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
         # Get parameters
-        delta_det_channel = self.params.delta_det_channel
-        sharpness = self.params.sharpness
-        if hasattr(self.params, 'magnification'):
-            magnification = self.params.magnification
-        else:
-            magnification = 1.0
-
+        delta_det_channel = self.get_params('delta_det_channel')
+        sharpness = self.get_params('sharpness')
+        magnification = self.get_params('magnification')
         num_det_channels = sinogram.shape[-1]
 
         # Compute indicator function for sinogram support
@@ -476,7 +472,7 @@ class TomographyModel:
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
         """
-        # Run auto regularization. If self.params.auto_regularize_flag is False, then this will have no effect
+        # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
