@@ -134,8 +134,8 @@ class ParallelBeamModel(TomographyModel):
 
             return sinogram
 
-        self.sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,))
-        self.sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
+        self._sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,))
+        self._sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
 
     @staticmethod
     def back_project_to_voxels_vmap(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power=1,
@@ -304,7 +304,7 @@ class ParallelBeamModel(TomographyModel):
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
 
-        hessian_diagonal = self.sparse_back_project(weights, indices, voxel_batch_size=voxel_batch_size, coeff_power=2)
+        hessian_diagonal = self._sparse_back_project(weights, indices, voxel_batch_size=voxel_batch_size, coeff_power=2)
 
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 

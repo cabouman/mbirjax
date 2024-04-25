@@ -111,7 +111,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Check the time taken per forward projection
-    #  NOTE: recompiling happens whenever sparse_forward_projector is called with a new *length* of input indices
+    #  NOTE: recompiling happens whenever sparse_forward_project is called with a new *length* of input indices
     time_taken = 0
 
     print('\nStarting multiple forward projections...')
@@ -126,7 +126,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Check the time taken per backprojection
-    #  NOTE: recompiling happens whenever sparse_back_projector is called with a new *length* of input indices
+    #  NOTE: recompiling happens whenever sparse_back_project is called with a new *length* of input indices
     time_taken = 0
 
     print('\nStarting multiple backprojections...')

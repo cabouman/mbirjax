@@ -28,7 +28,7 @@ class TomographyModel:
 
         self.params = utils.get_default_params()
         self.add_new_params(**kwargs)
-        self.sparse_forward_project, self.sparse_back_project = None, None  # These are callable functions compiled in set_params
+        self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self.set_params(sinogram_shape=sinogram_shape, **kwargs)
         self.auto_set_recon_size(sinogram_shape)  # Determine auto image size before processing user parameters
 
@@ -46,7 +46,7 @@ class TomographyModel:
         """
         full_indices = self.gen_full_indices()
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        sinogram = self.sparse_forward_projector(voxel_values, full_indices)
+        sinogram = self.sparse_forward_project(voxel_values, full_indices)
 
         return sinogram
 
@@ -59,7 +59,7 @@ class TomographyModel:
             jnp array: The resulting 3D sinogram after projection.
         """
         full_indices = self.gen_full_indices()
-        recon_at_indices = self.sparse_back_projector(sinogram, full_indices)
+        recon_at_indices = self.sparse_back_project(sinogram, full_indices)
 
         # Get shape of recon
         num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(['num_recon_rows','num_recon_cols','num_recon_slices'])
@@ -72,7 +72,7 @@ class TomographyModel:
 
         return recon
 
-    def sparse_forward_projector(self, voxel_values, indices):
+    def sparse_forward_project(self, voxel_values, indices, view_batch_size=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -81,15 +81,16 @@ class TomographyModel:
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            view_batch_size (int):
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self.sparse_forward_project(voxel_values, indices).block_until_ready()
+        sinogram = self._sparse_forward_project(voxel_values, indices, view_batch_size=view_batch_size).block_until_ready()
         gc.collect()
         return sinogram
 
-    def sparse_back_projector(self, sinogram, indices):
+    def sparse_back_project(self, sinogram, indices, voxel_batch_size=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -98,11 +99,12 @@ class TomographyModel:
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             indices (jnp array): Array of indices specifying which voxels to back project.
+            voxel_batch_size (int):
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon = self.sparse_back_project(sinogram, indices).block_until_ready()
+        recon = self._sparse_back_project(sinogram, indices, voxel_batch_size=voxel_batch_size).block_until_ready()
         gc.collect()
         return recon
 
@@ -584,7 +586,7 @@ class TomographyModel:
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
         constant = 1.0 / (self.get_params('sigma_y')**2.0)
 
-        fm_gradient = -constant * self.sparse_back_project(error_sinogram * weights, indices)
+        fm_gradient = -constant * self._sparse_back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
 
         # Compute the prior model gradient and hessian at each pixel in the index set.
@@ -595,7 +597,7 @@ class TomographyModel:
         delta_recon_at_indices = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
 
         # Compute update direction in sinogram domain
-        delta_sinogram = self.sparse_forward_project(delta_recon_at_indices, indices)
+        delta_sinogram = self._sparse_forward_project(delta_recon_at_indices, indices)
 
         # Compute "optimal" update step
         # This is really only optimal for the forward model component.
@@ -615,7 +617,7 @@ class TomographyModel:
             delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0 / alpha), delta_recon_at_indices)
 
             # Recompute sinogram projection
-            delta_sinogram = self.sparse_forward_project(delta_recon_at_indices, indices)
+            delta_sinogram = self._sparse_forward_project(delta_recon_at_indices, indices)
 
         # Perform sparse updates at index locations, and reshape as 3D array
         recon = recon.at[indices].add(alpha * delta_recon_at_indices)
