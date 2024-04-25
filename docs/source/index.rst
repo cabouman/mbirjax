@@ -3,22 +3,65 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
+MBIRJAX: High-performance tomographic reconstruction
+====================================================
 
 **MBIRJAX** is a Python package for Model Based Iterative Reconstruction (MBIR) of images from tomographic data.
-MBIRJAX uses an object oriented Python interface, so it is modular and easy to use.
-It also support automatic selection of MBIR parameters, so users can control image sharpness through the use of intuitive meta-parameters. In other words, you first reconstruction is likely to look good with little tuning. Finally, it has hooks to support Plug-and-Play prior models that can dramatically improve image quality [] [].
-MBIRJAX is fast, portable, and will run on CPUs or GPUs because it is based on the JAX programming language.
-At its heart it uses an algorithm called Vectorized Coordinate Descent to solve the associated optimization problem in a fast and robust way. All computations are on-the-fly, so there is no need to manage the storage of system matrices.
+
+**Key features:**
+
+
+* Modular, extensible, easy-to-use, object-oriented Python interface.
+* Automatic selection of MBIR parameters for good initial images, with fine-tuning through intuitive meta-parameters.
+* Supports Plug-and-Play prior models that can dramatically improve image quality [] [].
+* Fast, portable, seamless application on CPUs or GPUs because it is based on the JAX_ programming language.
+* Uses Vectorized Coordinate Descent for fast, robust convergence.
 
 
 
+.. grid:: 3
+   :margin: 0
+   :padding: 0
+   :gutter: 0
 
-Indices and tables
-==================
+   .. grid-item-card:: Simple API
+      :columns: 12 6 6 4
+      :class-card: sd-border-0
+      :shadow: None
 
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+      Reconstructions can be performed in just a few lines of python code.
+
+   .. grid-item-card:: Fast, robust convergence
+      :columns: 12 6 6 4
+      :class-card: sd-border-0
+      :shadow: None
+
+      Vectorized Coordinate Descent produces high-quality images quickly.
+
+   .. grid-item-card:: Portability
+      :columns: 12 6 6 4
+      :class-card: sd-border-0
+      :shadow: None
+
+      Based on JAX_, MBIRJAX can easily run on CPU or GPU
+
+
+.. grid:: 3
+
+    .. grid-item-card:: :material-regular:`rocket_launch;2em` Getting Started
+      :columns: 12 6 6 4
+      :link: overview
+      :link-type: doc
+
+    .. grid-item-card:: :material-regular:`library_books;2em` User Guides
+      :columns: 12 6 6 4
+      :link: usr_api
+      :link-type: doc
+
+    .. grid-item-card:: :material-regular:`laptop_chromebook;2em` Developer Docs
+      :columns: 12 6 6 4
+      :link: dev_api
+      :link-type: doc
 
 
 .. toctree::
@@ -47,3 +90,6 @@ Indices and tables
 
    dev_api
    pytest
+
+
+.. _JAX: https://jax.readthedocs.io/
