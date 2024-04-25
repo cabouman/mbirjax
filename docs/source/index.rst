@@ -13,9 +13,9 @@ MBIRJAX: High-performance tomographic reconstruction
 
 * Modular, extensible, easy-to-use, object-oriented Python interface.
 * Automatic selection of MBIR parameters for good initial images, with fine-tuning through intuitive meta-parameters.
-* Supports Plug-and-Play prior models that can dramatically improve image quality [] [].
-* Fast, portable, seamless application on CPUs or GPUs because it is based on the JAX_ programming language.
-* Uses Vectorized Coordinate Descent for fast, robust convergence.
+* Support for Plug-and-Play prior models that can dramatically improve image quality [] [].
+* Fast, portable, seamless use on CPUs or GPUs through the use of JAX_.
+* Vectorized Coordinate Descent algorithm for fast, robust convergence.
 
 
 
@@ -43,22 +43,25 @@ MBIRJAX: High-performance tomographic reconstruction
       :class-card: sd-border-0
       :shadow: None
 
-      Based on JAX_, MBIRJAX can easily run on CPU or GPU
+      Based on JAX_, MBIRJAX can easily run on CPU or GPU.
 
 
 .. grid:: 3
 
     .. grid-item-card:: :material-regular:`rocket_launch;2em` Getting Started
+      :class-card: getting-started
       :columns: 12 6 6 4
       :link: overview
       :link-type: doc
 
     .. grid-item-card:: :material-regular:`library_books;2em` User Guides
+      :class-card: user-guides
       :columns: 12 6 6 4
       :link: usr_api
       :link-type: doc
 
     .. grid-item-card:: :material-regular:`laptop_chromebook;2em` Developer Docs
+      :class-card: developer-docs
       :columns: 12 6 6 4
       :link: dev_api
       :link-type: doc

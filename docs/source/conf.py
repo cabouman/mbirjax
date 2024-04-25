@@ -12,9 +12,18 @@
 #
 import os
 import sys
-import sphinx_rtd_theme
 
 sys.path.insert(0, os.path.abspath('../../mbirjax'))  # Adjust the path as necessary
+sys.path.insert(0, os.path.abspath('..'))  # Adjust the path as necessary
+
+# -- Project information -----------------------------------------------------
+
+project = 'MBIRJAX'
+copyright = '2024, MBIRJAX Development Team'
+author = 'MBIRJAX Development Team'
+
+# The full version, including alpha/beta/rc tags
+release = '0.1'
 
 
 def skip(app, what, name, obj, would_skip, options):
@@ -26,15 +35,6 @@ def skip(app, what, name, obj, would_skip, options):
 def setup(app):
     app.connect("autodoc-skip-member", skip)
 
-
-# -- Project information -----------------------------------------------------
-
-project = 'mbirjax'
-copyright = '2024, mbirjax Development Team'
-author = 'mbirjax Development Team'
-
-# The full version, including alpha/beta/rc tags
-release = '0.1'
 
 
 # -- General configuration ---------------------------------------------------
@@ -106,14 +106,6 @@ napolean_use_rtype = False
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-#html_theme = 'bizstyle'
-# html_theme = 'sphinx_rtd_theme'
-# html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
-#
-# html_theme_options = {
-#     'style_nav_header_background': '#4f8fb8ff',
-#     'collapse_navigation': False,
-# }
 html_theme = 'sphinx_book_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
@@ -128,12 +120,19 @@ html_theme_options = {
 
 main_doc = 'index'
 
-html_logo = "logo.png"
+html_logo = "_static/logo.png"
 
-# Output file base name for HTML help builder.
-htmlhelp_basename = project + 'doc'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-#html_static_path = ['_static']
-html_static_path = []
+html_static_path = ["_static"]
+# html_static_path = []
+
+html_css_files = [
+    'custom_styles.css',
+]
+
+# Output file base name for HTML help builder.
+htmlhelp_basename = project + 'doc'
+
+
