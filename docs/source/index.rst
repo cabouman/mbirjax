@@ -57,13 +57,13 @@ MBIRJAX: High-performance tomographic reconstruction
     .. grid-item-card:: :material-regular:`library_books;2em` User Guides
       :class-card: user-guides
       :columns: 12 6 6 4
-      :link: usr_api
+      :link: usr_mbir
       :link-type: doc
 
     .. grid-item-card:: :material-regular:`laptop_chromebook;2em` Developer Docs
       :class-card: developer-docs
       :columns: 12 6 6 4
-      :link: dev_api
+      :link: dev_mbir
       :link-type: doc
 
 

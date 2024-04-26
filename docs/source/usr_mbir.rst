@@ -2,6 +2,8 @@
 User API
 ========
 
+MBIRJAX is designed to give reconstructions using just a few lines of code.
+
 .. autosummary::
       mbirjax.ParallelBeamModel
       mbirjax.TomographyModel.recon
