@@ -1,5 +1,7 @@
-plot_utils
-----------
+==================
+Plotting utilities
+==================
+
 .. automodule:: mbirjax
    :no-index:
    :members:

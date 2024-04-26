@@ -1,15 +1,16 @@
-=================
-Quick Start Guide
-=================
+===========
+Quick Start
+===========
 
-Getting Started
-~~~~~~~~~~~~~~~
+Demos
+~~~~~
 
 
 The best way to start is to:
-- **Install MBIRJAX:** using the instructions provided on the :ref:`Installation Page <installation_label>`.
 
-- **Run Demo:** using the simple Python program entitled ``demo_3D_shepp_logan.py`` located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__ that make it easy to get started.
+- **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <installation_label>`.
+
+- **Run Demo** using the Python program entitled ``demo_3D_shepp_logan.py`` located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
 You can then modify the Python script to suit your needs.
 

@@ -14,16 +14,22 @@ if __name__ == "__main__":
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
-    start_angle = 0
-    end_angle = np.pi
+    start_angle = -np.pi*(1/2)
+    end_angle = np.pi*(1/2)
     sharpness = 0.0
 
     # Initialize sinogram
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
-    angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
     parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+
+    # Here are other things you might want to do
+    #parallel_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
+    #parallel_model.set_params(delta_pixel_recon=1.0)    # You can change the pixel pitch
+    #parallel_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #parallel_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_sl_phantom()
@@ -56,3 +62,6 @@ if __name__ == "__main__":
 
     # Display results
     pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+
+    # You can also display individual slides with the sinogram
+    #pu.display_slices(phantom, sinogram, recon_3d)

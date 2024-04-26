@@ -1,0 +1,17 @@
+
+:root {
+  --block-bg-opacity: .5;
+}
+
+.getting-started {
+  background-color: rgba(93, 152, 246, var(--block-bg-opacity));
+}
+
+.user-guides {
+  background-color: rgba(59, 167, 155, var(--block-bg-opacity));
+}
+
+.developer-docs {
+  background-color: rgba(235, 129, 252, var(--block-bg-opacity));
+}
+
