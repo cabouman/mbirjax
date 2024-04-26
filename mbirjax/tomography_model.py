@@ -260,7 +260,6 @@ class TomographyModel:
             NameError: If any key provided in kwargs is not a recognized parameter.
         """
         # Get initial geometry parameters
-        initial_params = self.get_geometry_parameters()
         recompile = False
         regularization_parameter_change = False
         meta_parameter_change = False
@@ -300,11 +299,8 @@ class TomographyModel:
                     warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
                                   'It was previously disabled')
 
-        # Get final geometry parameters
-        new_params = self.get_geometry_parameters()
-
         # Compare the two outputs
-        if recompile or initial_params != new_params:
+        if recompile:
             self.compile_projectors()
 
     def get_params(self, parameter_names):
@@ -351,6 +347,8 @@ class TomographyModel:
     def verify_valid_params(self):
         """
         Verify any conditions that must be satisfied among parameters for correct projections.
+        Subclasses of TomographyModel should call super().verify_valid_params() before checking any
+        subclass-specific conditions.
         """
 
         sinogram_shape = self.get_params('sinogram_shape')
@@ -358,9 +356,6 @@ class TomographyModel:
             error_message = "sinogram_shape must be (views, rows, channels). \n"
             error_message += "Got {} for sinogram shape.".format(sinogram_shape)
             raise ValueError(error_message)
-
-    def get_geometry_parameters(self):
-        return None
 
     def get_voxels_at_indices(self, recon, indices):
         """

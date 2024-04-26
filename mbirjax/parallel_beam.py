@@ -60,15 +60,15 @@ class ParallelBeamModel(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Get a list of the primary geometry parameters.
+        Convenience function to get a list of the primary geometry parameters for projection.
         Returns:
-            List of delta_det_channel, det_channel_offset, delta_pixel_recon, num_recon_rows, num_recon_cols
+            List of delta_det_channel, det_channel_offset, delta_pixel_recon,
+            num_recon_rows, num_recon_cols, num_recon_slices
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
-        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon',
+                                           'num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
 
-        # TODO:  Need to include detector rows/recon slices
-        return geometry_params + [num_recon_rows, num_recon_cols]
+        return geometry_params
 
     def compile_projectors(self):
         """
@@ -261,10 +261,7 @@ class ParallelBeamModel(TomographyModel):
             The value of the voxel at the input index obtained by backprojecting the input sinogram.
         """
 
-        # Get the geometry parameters and the system matrix and channel indices
-        num_det_rows, num_det_channels = sinogram_view.shape
-        num_slices = num_det_rows
-
+        # Get the part of the system matrix and channel indices for this voxel
         Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, cos_sin_angle, geometry_params,
                                                                          (1,) + sinogram_view.shape)
 
@@ -296,11 +293,8 @@ class ParallelBeamModel(TomographyModel):
             error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
             raise ValueError(error_message)
         geometry_params = self.get_geometry_parameters()
-        angles = self.get_params('angles')
-        cos_sin_angles = self._get_cos_sin_angles(angles)
 
-        num_recon_rows, num_recon_cols = geometry_params[-2:]
-        num_recon_slices = weights.shape[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[-3:]
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
 
@@ -389,7 +383,7 @@ class ParallelBeamModel(TomographyModel):
         P = 1  # This is the assumed number of channels per side
 
         # Get all the geometry parameters
-        delta_det_channel, det_channel_offset, delta_pixel_recon, num_recon_rows, num_recon_cols = geometry_params
+        delta_det_channel, det_channel_offset, delta_pixel_recon, num_recon_rows, num_recon_cols = geometry_params[:-1]
 
         num_views, num_det_rows, num_det_channels = sinogram_shape
 

@@ -5,17 +5,17 @@ import types
 _forward_model_defaults_dict = {
 
     'sinogram_shape': {'val': None, 'recompile_flag': True},
-    'delta_det_channel': {'val': 1.0, 'recompile_flag': False},
-    'delta_det_row': {'val': 1.0, 'recompile_flag': False},
+    'delta_det_channel': {'val': 1.0, 'recompile_flag': True},
+    'delta_det_row': {'val': 1.0, 'recompile_flag': True},
     'det_channel_offset': {'val': 0.0, 'recompile_flag': False},
     'sigma_y': {'val': 1.0, 'recompile_flag': False},
 }
 
 _recon_model_defaults_dict = {
     'prox_recon': {'val': None, 'recompile_flag': False},
-    'num_recon_rows': {'val': None, 'recompile_flag': False},
-    'num_recon_cols': {'val': None, 'recompile_flag': False},
-    'num_recon_slices': {'val': None, 'recompile_flag': False},
+    'num_recon_rows': {'val': None, 'recompile_flag': True},
+    'num_recon_cols': {'val': None, 'recompile_flag': True},
+    'num_recon_slices': {'val': None, 'recompile_flag': True},
     'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
