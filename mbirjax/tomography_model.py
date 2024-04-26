@@ -201,7 +201,7 @@ class TomographyModel:
 
     def print_params(self):
         print("----")
-        for key, entry in vars(self.params).items():
+        for key, entry in self.params.items():
             param_val = entry.get('val')
             recompile_flag = entry.get('recompile_flag')
             print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
@@ -223,7 +223,7 @@ class TomographyModel:
         elif fname[-4:] == '.yml' or fname[-5:] == '.yaml':
             # Work through all the parameters by group, with a heading for each group
             with open(fname, 'w') as file:
-                for heading, dic in zip(ParallelBeamModel.headings, ParallelBeamModel.dicts):
+                for heading, dic in zip(utils.headings, utils.dicts):
                     file.write('# ' + heading + '\n')
                     for key in dic.keys():
                         val = self.params[key]
@@ -260,17 +260,16 @@ class TomographyModel:
             NameError: If any key provided in kwargs is not a recognized parameter.
         """
         # Get initial geometry parameters
-        initial_params = self.get_geometry_parameters()
         recompile = False
         regularization_parameter_change = False
         meta_parameter_change = False
 
         # Set all the given parameters
         for key, val in kwargs.items():
-            if key in vars(self.params).keys():
-                recompile_flag = getattr(self.params, key)['recompile_flag']
+            if key in self.params.keys():
+                recompile_flag = self.params[key]['recompile_flag']
                 new_entry = {'val': val, 'recompile_flag': recompile_flag}
-                setattr(self.params, key, new_entry)
+                self.params[key] = new_entry
             else:
                 raise NameError('"{}" not a recognized argument'.format(key))
 
@@ -300,11 +299,8 @@ class TomographyModel:
                     warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
                                   'It was previously disabled')
 
-        # Get final geometry parameters
-        new_params = self.get_geometry_parameters()
-
         # Compare the two outputs
-        if recompile or initial_params != new_params:
+        if recompile:
             self.compile_projectors()
 
     def get_params(self, parameter_names):
@@ -319,15 +315,15 @@ class TomographyModel:
             Single value or list of values
         """
         if isinstance(parameter_names, str):
-            if parameter_names in vars(self.params).keys():
-                value = getattr(self.params, parameter_names)['val']
+            if parameter_names in self.params.keys():
+                value = self.params[parameter_names]['val']
             else:
                 raise NameError('"{}" not a recognized argument'.format(parameter_names))
             return value
         values = []
         for name in parameter_names:
-            if name in vars(self.params).keys():
-                values.append(getattr(self.params, name)['val'])
+            if name in self.params.keys():
+                values.append(self.params[name]['val'])
             else:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
@@ -342,15 +338,17 @@ class TomographyModel:
         """
         # Set all the given parameters
         for key, val in kwargs.items():
-            if key in vars(self.params).keys():
+            if key in self.params.keys():
                 raise NameError('"{}" is an existing parameter - use set_params to set the value'.format(key))
             else:
                 new_entry = {'val': val, 'recompile_flag': True}
-                setattr(self.params, key, new_entry)
+                self.params[key] = new_entry
 
     def verify_valid_params(self):
         """
         Verify any conditions that must be satisfied among parameters for correct projections.
+        Subclasses of TomographyModel should call super().verify_valid_params() before checking any
+        subclass-specific conditions.
         """
 
         sinogram_shape = self.get_params('sinogram_shape')
@@ -358,9 +356,6 @@ class TomographyModel:
             error_message = "sinogram_shape must be (views, rows, channels). \n"
             error_message += "Got {} for sinogram shape.".format(sinogram_shape)
             raise ValueError(error_message)
-
-    def get_geometry_parameters(self):
-        return None
 
     def get_voxels_at_indices(self, recon, indices):
         """
