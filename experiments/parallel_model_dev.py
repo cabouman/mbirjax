@@ -141,13 +141,13 @@ if __name__ == "__main__":
     # ##########################
     # Show the forward and back projection from a single pixel
     i, j = num_recon_rows // 4, num_recon_cols // 3
-    index = jnp.ravel_multi_index((i, j), (num_recon_rows, num_recon_cols))
-    x = jnp.zeros((num_recon_rows, num_recon_cols)).flatten()
-    x = x.at[index].set(1)
-    voxel_values = x.reshape((-1, 1))[indices[0]]
+    x = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+    x = x.at[i, j, :].set(1)
+    voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
 
     Ax = parallel_model.sparse_forward_project(voxel_values, indices[0])
     Aty = parallel_model.sparse_back_project(Ax, indices[0])
+    Aty = parallel_model.reshape_recon(Aty)
 
     y = jnp.zeros_like(sinogram)
     view_index = 30
@@ -155,12 +155,13 @@ if __name__ == "__main__":
     index = jnp.ravel_multi_index((60, 60), (num_recon_rows, num_recon_cols))
     a1 = parallel_model.sparse_back_project(y, indices[0])
 
+    slice_index = 0
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
-    ax[0].imshow(x.reshape((num_recon_rows, num_recon_cols)))
+    ax[0].imshow(x[:, :, slice_index])
     ax[0].set_title('x = phantom')
-    ax[1].imshow(Ax[:, 0, :])
+    ax[1].imshow(Ax[:, slice_index, :])
     ax[1].set_title('y = Ax')
-    ax[2].imshow(Aty.reshape((num_recon_rows, num_recon_cols)))
+    ax[2].imshow(Aty[:, :, slice_index])
     ax[2].set_title('Aty = AtAx')
     plt.pause(2)
 

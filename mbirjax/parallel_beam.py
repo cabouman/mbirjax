@@ -332,11 +332,11 @@ class ParallelBeamModel(TomographyModel):
 
         # Now sum over indices into the locations specified by channel_index.
         # Directly using index_add for indexed updates
-        sinogram_view = jnp.zeros((num_slices, num_det_channels))  # num_det_rows x num_det_channels
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))  # num_det_rows x num_det_channels
 
         # Apply the vectorized update function with a vmap over slices
-        # sinogram_view is num_slices x num_det_channels, sinogram_values is num_indices x (2P+1) x num_slices
-        sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_slices, -1))
+        # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2P+1) x num_det_rows
+        sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
         sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
         del Aji, channel_index
         return sinogram_view
@@ -359,8 +359,7 @@ class ParallelBeamModel(TomographyModel):
         """
 
         # Get the geometry parameters and the system matrix and channel indices
-        num_views, num_det_rows, num_det_channels = sinogram.shape
-        num_slices = num_det_rows
+        num_views = sinogram.shape[0]
 
         Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, cos_sin_angles, geometry_params,
                                                                          sinogram.shape)
