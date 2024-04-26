@@ -53,5 +53,5 @@ for d in dicts:
 
 
 def get_default_params():
-    return types.SimpleNamespace(**recon_defaults_dict)
+    return recon_defaults_dict
 
