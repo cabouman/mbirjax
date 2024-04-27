@@ -87,11 +87,11 @@ class ParallelBeamModel(TomographyModel):
             give reduced execution time relative to the initial call.
         """
         geometry_params = self.get_geometry_parameters()
-        cos_sin_angles = self._get_cos_sin_angles(self.get_params('angles'))
+        angles = self.get_params('angles')
         sinogram_shape = self.get_params('sinogram_shape')
 
         def sparse_back_project_fcn(sinogram, indices, voxel_batch_size=None, coeff_power=1):
-            return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, cos_sin_angles, geometry_params,
+            return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, angles, geometry_params,
                                                                  voxel_batch_size=voxel_batch_size,
                                                                  coeff_power=coeff_power)
 
@@ -109,26 +109,24 @@ class ParallelBeamModel(TomographyModel):
             Returns:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
             """
-            num_views = cos_sin_angles.shape[1]
-            forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 1, None, None))
+            num_views = len(angles)
+            forward_vmap = jax.vmap(self.forward_project_voxels_one_view, in_axes=(None, None, 0, None, None))
 
             if view_batch_size is None or view_batch_size >= num_views:
-                sinogram = forward_vmap(voxel_values, voxel_indices, cos_sin_angles, geometry_params, sinogram_shape)
+                sinogram = forward_vmap(voxel_values, voxel_indices, angles, geometry_params, sinogram_shape)
             else:
                 num_batches = num_views // view_batch_size
-                cos_sin_angles_batched = jnp.reshape(cos_sin_angles.T[0:num_batches * view_batch_size],
-                                                     (num_batches, view_batch_size, 2))
-                cos_sin_angles_batched = cos_sin_angles_batched.transpose((0, 2, 1))
+                angles_batched = jnp.reshape(angles[0:num_batches * view_batch_size],(num_batches, view_batch_size))
 
                 def forward_map(cs_angle_batch):
                     return forward_vmap(voxel_values, voxel_indices, cs_angle_batch, geometry_params,
                                         sinogram_shape)
 
-                sinogram = jax.lax.map(forward_map, cos_sin_angles_batched)
+                sinogram = jax.lax.map(forward_map, angles_batched)
                 sinogram = jnp.reshape(sinogram, (num_batches * view_batch_size,) + sinogram.shape[2:])
                 num_remaining = num_views - num_batches * view_batch_size
                 if num_remaining > 0:
-                    end_batch = cos_sin_angles[:, -num_remaining:]
+                    end_batch = angles[-num_remaining:]
                     end_views = forward_map(end_batch)
                     sinogram = jnp.concatenate((sinogram, end_views), axis=0)
 
@@ -138,14 +136,14 @@ class ParallelBeamModel(TomographyModel):
         self._sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
 
     @staticmethod
-    def back_project_to_voxels_vmap(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power=1,
+    def back_project_to_voxels_vmap(sinogram, voxel_indices, angles, geometry_params, coeff_power=1,
                                     voxel_batch_size=None):
         """
         Use jax.vmap to backproject one view at a time and then sum over voxels.
         Args:
             sinogram:
             voxel_indices:
-            cos_sin_angles:
+            angles:
             geometry_params:
             coeff_power:
             voxel_batch_size:
@@ -154,9 +152,9 @@ class ParallelBeamModel(TomographyModel):
 
         """
         num_voxels = voxel_indices.shape[0]
-        backward_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_voxels, in_axes=(0, None, 1, None, None))
+        backward_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_voxels, in_axes=(0, None, 0, None, None))
         if voxel_batch_size is None or voxel_batch_size >= num_voxels:
-            bp_all_views = backward_vmap(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power)
+            bp_all_views = backward_vmap(sinogram, voxel_indices, angles, geometry_params, coeff_power)
             bp = jnp.sum(bp_all_views, axis=0)
         else:
             num_batches = num_voxels // voxel_batch_size
@@ -164,7 +162,7 @@ class ParallelBeamModel(TomographyModel):
                                              (num_batches, voxel_batch_size))
 
             def backward_map(voxel_inds_batch):
-                return backward_vmap(sinogram, voxel_inds_batch, cos_sin_angles, geometry_params, coeff_power)
+                return backward_vmap(sinogram, voxel_inds_batch, angles, geometry_params, coeff_power)
 
             bp_all_views = jax.lax.map(backward_map, voxel_inds_batched)
             bp = jnp.sum(bp_all_views, axis=1)
@@ -179,14 +177,14 @@ class ParallelBeamModel(TomographyModel):
         return bp
 
     @staticmethod
-    def back_project_to_voxels_scan(sinogram, voxel_indices, cos_sin_angles, geometry_params, coeff_power=1,
+    def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params, coeff_power=1,
                                     voxel_batch_size=None):
         """
         Use jax.lax.scan to backproject one view at a time and accumulate the results in the specified voxels.
         Args:
             sinogram:
             voxel_indices:
-            cos_sin_angles:
+            angles:
             geometry_params:
             coeff_power:
             voxel_batch_size:
@@ -200,7 +198,7 @@ class ParallelBeamModel(TomographyModel):
         initial_bp = jnp.zeros((voxel_indices.shape[0], sinogram.shape[1]))
         extra_args = voxel_indices, geometry_params, coeff_power
         initial_carry = [extra_args, initial_bp]
-        sino_angles = (sinogram, cos_sin_angles.T)
+        sino_angles = (sinogram, angles)
         # Use lax.scan to process each (slice, angle) pair of 'sino_angles'
         final_carry, _ = lax.scan(ParallelBeamModel.accumulate_and_project, initial_carry, sino_angles)
 
@@ -218,9 +216,9 @@ class ParallelBeamModel(TomographyModel):
 
         """
         extra_args, accumulated = carry
-        sinogram_view, cos_sin_angle = sino_angle_pair
+        sinogram_view, angle = sino_angle_pair
         voxel_indices, geometry_params, coeff_power = extra_args
-        bp_view = ParallelBeamModel.back_project_one_view_to_voxels(sinogram_view, voxel_indices, cos_sin_angle,
+        bp_view = ParallelBeamModel.back_project_one_view_to_voxels(sinogram_view, voxel_indices, angle,
                                                                     geometry_params, coeff_power)
         accumulated += bp_view
         del bp_view
@@ -228,13 +226,13 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @jax.jit
-    def back_project_one_view_to_voxels(sinogram_view, voxel_indices, cos_sin_angle, geometry_params, coeff_power=1):
+    def back_project_one_view_to_voxels(sinogram_view, voxel_indices, angle, geometry_params, coeff_power=1):
         """
 
         Args:
             sinogram_view:
             voxel_indices:
-            cos_sin_angle:
+            angle:
             geometry_params:
             coeff_power:
 
@@ -242,18 +240,18 @@ class ParallelBeamModel(TomographyModel):
 
         """
         bp_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_voxel, in_axes=(None, 0, None, None, None))
-        bp = bp_vmap(sinogram_view, voxel_indices, cos_sin_angle, geometry_params, coeff_power)
+        bp = bp_vmap(sinogram_view, voxel_indices, angle, geometry_params, coeff_power)
         return bp
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, cos_sin_angle, geometry_params, coeff_power=1):
+    def back_project_one_view_to_voxel(sinogram_view, voxel_index, angle, geometry_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel given a sinogram view and various parameters.
         This code uses the distance driven projector.
         Args:
             sinogram_view: [jax array] one view of the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
-            cos_sin_angle:
+            angle:
             geometry_params:
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
@@ -262,7 +260,7 @@ class ParallelBeamModel(TomographyModel):
         """
 
         # Get the part of the system matrix and channel indices for this voxel
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, cos_sin_angle, geometry_params,
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, angle, geometry_params,
                                                                          (1,) + sinogram_view.shape)
 
         # Extract out the relevant entries from the sinogram
@@ -303,14 +301,14 @@ class ParallelBeamModel(TomographyModel):
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, cos_sin_angle, geometry_params, sinogram_shape):
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            cos_sin_angle (jax array):  2D array of cosines and sines from _get_cos_sin_angles()
+            angle (float):  angle for this view
             geometry_params (list): Geometry parameters from get_geometry_params()
             sinogram_shape (tuple): Sinogram shape
 
@@ -323,7 +321,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = sinogram_shape
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, cos_sin_angle, geometry_params,
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, angle, geometry_params,
                                                                          sinogram_shape)
 
         # Add axes to be able to broadcast while multiplying.
@@ -343,14 +341,14 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @jax.jit
-    def backproject_to_voxel(sinogram, voxel_index, cos_sin_angles, geometry_params, coeff_power=1):
+    def backproject_to_voxel(sinogram, voxel_index, angles, geometry_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel given the sinogram and various parameters.
         This code uses the distance driven projector.
         Args:
             sinogram: [jax array] the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
-            cos_sin_angles:
+            angles:
             geometry_params:
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
@@ -361,7 +359,7 @@ class ParallelBeamModel(TomographyModel):
         # Get the geometry parameters and the system matrix and channel indices
         num_views = sinogram.shape[0]
 
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, cos_sin_angles, geometry_params,
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, angles, geometry_params,
                                                                          sinogram.shape)
 
         # Extract out the relevant entries from the sinogram
@@ -374,7 +372,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @jax.jit
-    def compute_Aji_channel_index(voxel_indices, cos_sin_angles, geometry_params, sinogram_shape):
+    def compute_Aji_channel_index(voxel_indices, angles, geometry_params, sinogram_shape):
 
         # TODO:  P should be included in function signature with a partial on the jit
         warnings.warn('Compiling for indices length = {}'.format(voxel_indices.shape))
@@ -400,8 +398,8 @@ class ParallelBeamModel(TomographyModel):
 
         # Precompute cosine and sine of view angle
         # angles = angles.reshape((-1, 1))  # Reshape to be a column vector of size num_views x 1
-        cosine = cos_sin_angles[0:1].T  # jnp.cos(angles)    # length = num_views
-        sine = cos_sin_angles[1:2].T  # jnp.sin(angles)      # length = num_views
+        cosine = jnp.cos(angles)    # length = num_views
+        sine = jnp.sin(angles)      # length = num_views
 
         # Rotate coordinates of pixel
         x_pos_rot = cosine * x_pos + sine * y_pos  # length = num_indices
