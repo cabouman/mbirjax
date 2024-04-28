@@ -1,16 +1,14 @@
-from setuptools import setup, find_packages, Extension
-import numpy as np
-import os
+from setuptools import setup, find_packages
 
-NAME = "mbirjax"
+NAME = "MBIRJAX"
 VERSION = "0.1"
 DESCR = "Project for creating a JAX version of MBIR"
 REQUIRES = ['numpy']
 LICENSE = "BSD-3-Clause"
 
-AUTHOR = 'mbirjax development team'
+AUTHOR = 'MBIRJAX development team'
 EMAIL = "buzzard@purdue.edu"
-PACKAGE_DIR = "mbirjax"
+PACKAGE_DIR = "MBIRJAX"
 
 setup(install_requires=REQUIRES,
       zip_safe=False,

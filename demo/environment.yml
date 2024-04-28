@@ -1,0 +1,6 @@
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Include requirements for the demos
+
