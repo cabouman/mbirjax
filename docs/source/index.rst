@@ -63,7 +63,7 @@ MBIRJAX: High-performance tomographic reconstruction
     .. grid-item-card:: :material-regular:`laptop_chromebook;2em` Developer Docs
       :class-card: developer-docs
       :columns: 12 6 6 4
-      :link: install
+      :link: dev_api
       :link-type: doc
 
 
