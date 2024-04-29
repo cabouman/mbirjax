@@ -8,7 +8,7 @@ Demos
 
 The best way to start is to:
 
-- **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <installation_label>`.
+- **Install MBIRJAX** in a conda environment and activate this environment using the instructions provided on the :ref:`Installation Page <installation_label>`.
 
 - **Run Demo** using the Python program entitled ``demo_3D_shepp_logan.py`` located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
@@ -17,7 +17,7 @@ You can then modify the Python script to suit your needs.
 Quick Start Guide
 ~~~~~~~~~~~~~~~~~
 
-Below, is a quick-start-guide to using MBIRJAX for your application:
+Below is a quick-start-guide to using MBIRJAX for your application:
 
 - **Get your data:**
 
@@ -25,9 +25,9 @@ Below, is a quick-start-guide to using MBIRJAX for your application:
 
   - Create a 1D numpy array called ``angles`` that contains the rotation angle **in radians** of each view.
 
-  - Convert arrays both arrays to JAX format using the commands ``array = jnp.array(array)``.
+  - (Optional) Convert arrays both arrays to JAX format using the commands ``array = jnp.array(array)``.
 
-  Note, that each row of sinogram data is assumed to be perpendicular to the rotation axis and each view is assumed to be in conventional raster order (i.e., left-to-right, top-to-bottom) looking through the object from the source to the detector.
+  Note that each row of sinogram data is assumed to be perpendicular to the rotation axis and each view is assumed to be in conventional raster order (i.e., left-to-right, top-to-bottom) looking through the object from the source to the detector.
 
 
 - **Initialize a model:**

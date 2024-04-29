@@ -46,7 +46,7 @@ else
   pip install --upgrade "jax[cpu]"
 fi
 
-source install_package.sh
+#source install_package.sh
 source build_docs.sh
 
 red=`tput setaf 1`

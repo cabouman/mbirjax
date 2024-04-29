@@ -13,11 +13,11 @@ NAME=mbirjax
 if [ "$CONDA_DEFAULT_ENV"==$NAME ]; then
     conda deactivate
 fi
-
-yes | conda remove env --name $NAME --all
-
-yes | conda create --name $NAME python=3.10
+yes | conda env remove --name $NAME
+yes | conda env create --name $NAME --file ../environment.yml
 conda activate $NAME
+
+yes | conda env update --file ../demo/environment.yml --prune
 
 echo
 echo "Use 'conda activate" $NAME "' to activate this environment."

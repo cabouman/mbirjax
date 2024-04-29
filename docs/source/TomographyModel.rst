@@ -1,3 +1,6 @@
+.. _TomographyModelDocs:
+
+
 ===============
 TomographyModel
 ===============
@@ -5,34 +8,43 @@ TomographyModel
 The ``TomographyModel`` provides the basic interface for all specific geometries for tomographic projection
 and reconstruction.
 
+Constructor
+-----------
+
 .. autoclass:: mbirjax.TomographyModel
-   :members:
-        mbirjax.TomographyModel.recon
-        mbirjax.TomographyModel.forward_project
-        mbirjax.TomographyModel.back_project
-        mbirjax.TomographyModel.reshape_recon
-        mbirjax.TomographyModel.set_params
-        mbirjax.TomographyModel.get_params
-        mbirjax.TomographyModel.gen_weights
-        mbirjax.TomographyModel.gen_3d_sl_phantom
+   :no-index:
    :show-inheritance:
 
-Projection and Recon
+Recon and Projection
 --------------------
 
 .. automethod:: mbirjax.TomographyModel.recon
+   :no-index:
+
 .. automethod:: mbirjax.TomographyModel.forward_project
+   :no-index:
+
 .. automethod:: mbirjax.TomographyModel.back_project
-.. automethod:: mbirjax.TomographyModel.reshape_recon
+   :no-index:
+
+
 
 Parameter Handling
 ------------------
 
 .. automethod:: mbirjax.TomographyModel.set_params
+   :no-index:
+
 .. automethod:: mbirjax.TomographyModel.get_params
+   :no-index:
+
 
 Data Generation
 ---------------
 
 .. automethod:: mbirjax.TomographyModel.gen_weights
+   :no-index:
+
 .. automethod:: mbirjax.TomographyModel.gen_3d_sl_phantom
+   :no-index:
+

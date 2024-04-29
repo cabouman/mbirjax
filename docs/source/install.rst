@@ -15,9 +15,9 @@ The ``MBIRJAX`` package currently is only available to download and install from
     | ``git clone https://github.com/cabouman/mbirjax.git``
     | ``cd mbirjax``
 
-2. 2. Install the conda environment and package
+2. Install the conda environment and package
 
-    a. Option 1: Clean install using mbirjax/dev_scripts
+    Option 1: Clean install using mbirjax/dev_scripts
 
         To do a clean install, use the command:
 
@@ -27,7 +27,7 @@ The ``MBIRJAX`` package currently is only available to download and install from
             source clean_install_all.sh
 
 
-    b. Option 2: Manual install
+    Option 2: Manual install
 
         1. *Create conda environment:*
 
@@ -35,9 +35,8 @@ The ``MBIRJAX`` package currently is only available to download and install from
 
             .. code-block::
 
-                conda create --name mbirjax python=3.10
+                conda env create --name mbirjax --file ../environment.yml
                 conda activate mbirjax
-                pip install -r requirements.txt
 
             Anytime you want to use this package, this ``mbirjax`` environment should be activated with the following:
 

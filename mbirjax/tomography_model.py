@@ -19,7 +19,7 @@ class TomographyModel:
 
     Args:
         sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
-        **kwargs: Arbitrary keyword arguments for setting model parameters dynamically.
+        **kwargs (dict): Arbitrary keyword arguments for setting model parameters dynamically.
 
     Sets up the reconstruction size and parameters.
     """
@@ -39,6 +39,7 @@ class TomographyModel:
     def forward_project(self, recon):
         """
         Perform a full forward projection at all voxels in the field-of-view.
+
         Args:
             recon (jnp array): The 3D reconstruction array.
         Returns:
@@ -53,6 +54,7 @@ class TomographyModel:
     def back_project(self, sinogram):
         """
         Perform a full back projection at all voxels in the field-of-view.
+
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
         Returns:
@@ -172,6 +174,7 @@ class TomographyModel:
     def auto_set_sigma_x(self, sinogram):
         """
         Compute the automatic value of ``sigma_x`` for use in MBIR reconstruction with qGGMRF prior.
+
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
@@ -181,6 +184,7 @@ class TomographyModel:
     def auto_set_sigma_p(self, sinogram):
         """
         Compute the automatic value of ``sigma_p`` for use in MBIR reconstruction with proximal map prior.
+
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
@@ -655,6 +659,7 @@ class TomographyModel:
         """
         Generates a collection of voxel partitions for an array of specified partition sizes.
         This function creates a tuple of randomly generated 2D voxel partitions.
+
         Returns:
             tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
         """
@@ -693,6 +698,7 @@ class TomographyModel:
     def gen_3d_sl_phantom(self):
         """
         Generates a 3D Shepp-Logan phantom.
+
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
@@ -703,7 +709,10 @@ class TomographyModel:
 
     def reshape_recon(self, recon):
         """
-        Reshape recon into its 3D form
+        Reshape recon into its 3D form.
+
+        Args:
+            recon (ndarray or jnp.array): A 3D numpy array of shape specified by (num_recon_rows, num_recon_cols, num_recon_slices)
         """
         num_recon_rows, num_recon_cols, num_recon_slices = \
             self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
@@ -805,6 +814,7 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
 def _get_rho(delta, b, sigma_x, p, q, T):
     """
     Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
+
     Args:
         delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
         b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
