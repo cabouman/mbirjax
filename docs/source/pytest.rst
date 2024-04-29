@@ -2,9 +2,8 @@
 Running pytest
 ==============
 
-From a clean repository, build and run unit tests with the following::
+From a clean repository, install and activate the conda environment, change directory to `tests`, then run unit tests with the following::
 
-    $ CC=gcc python setup.py build_ext --inplace
-    $ pytest
-  
-This should be repeated for each supported compiler and platform.
+    python main_tests.py
+
+This should be repeated for each supported platform.

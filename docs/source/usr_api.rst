@@ -1,15 +1,41 @@
-User API reference
-==================
+========
+User API
+========
 
-* usr_mbir_ tomographic reconstruction and projection methods
-* usr_plot_utils_ plotting and visualization utilities
+MBIRJAX is designed to give reconstructions using just a few lines of code.
 
-.. _usr_mbir: mbir.html
-.. _usr_plot_utils: plot_utils.html
+The first step is to create an instance with a specific geometry. This is done by initializing a class such as
+
+.. autosummary::
+
+   mbirjax.ParallelBeamModel
+
+:ref:`ParallelBeamModelDocs` and classes for other geometries are derived from :ref:`TomographyModelDocs`, which includes several methods
+for manipulating sinograms and reconstructions.
+
+.. autosummary::
+
+   mbirjax.TomographyModel.recon
+   mbirjax.TomographyModel.forward_project
+   mbirjax.TomographyModel.back_project
+   mbirjax.TomographyModel.reshape_recon
+   mbirjax.TomographyModel.set_params
+   mbirjax.TomographyModel.get_params
+   mbirjax.TomographyModel.gen_weights
+   mbirjax.TomographyModel.gen_3d_sl_phantom
+
+.. automodule:: mbirjax
+   :no-index:
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 .. toctree::
-   :titlesonly:
    :hidden:
+   :maxdepth: 4
+   :caption: Classes
 
-   usr_mbir
-   usr_plot_utils
+   TomographyModel
+   ParallelBeamModel
+
+

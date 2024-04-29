@@ -9,24 +9,23 @@ from mbirjax import TomographyModel
 class ParallelBeamModel(TomographyModel):
     """
     A class designed for handling forward and backward projections in a parallel beam geometry, extending the
-    :class:`TomographyModel`. This class offers specialized methods and parameters tailored for parallel beam setups.
+    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for parallel beam setups.
 
-    This class inherits all methods and properties from the :class:`~mbirjax.TomographyModel` and may override some
+    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
     like setting parameters and performing projections and reconstructions.
 
-    Parameters
-    ----------
-    angles : jnp.ndarray
-        A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
-    sinogram_shape : tuple
-        Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
-        different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
-        the detector that are assumed to be aligned with the rotation axis..
-    **kwargs : dict
-        Additional keyword arguments that are passed to the :class:`~mbirjax.TomographyModel` constructor. These can
-        include settings and configurations specific to the tomography model such as noise models or image dimensions.
-        Refer to the :class:`~mbirjax.TomographyModel` documentation for a detailed list of possible parameters.
+    Args:
+        angles (jnp.ndarray):
+            A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
+        sinogram_shape (tuple):
+            Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
+            different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
+            the detector that are assumed to be aligned with the rotation axis.
+        **kwargs (dict):
+            Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
+            include settings and configurations specific to the tomography model such as noise models or image dimensions.
+            Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
 
     Examples
     --------
@@ -39,7 +38,6 @@ class ParallelBeamModel(TomographyModel):
     --------
     TomographyModel : The base class from which this class inherits.
     """
-
 
     def __init__(self, angles, sinogram_shape, **kwargs):
 
@@ -61,6 +59,7 @@ class ParallelBeamModel(TomographyModel):
     def get_geometry_parameters(self):
         """
         Convenience function to get a list of the primary geometry parameters for projection.
+
         Returns:
             List of delta_det_channel, det_channel_offset, delta_pixel_recon,
             num_recon_rows, num_recon_cols, num_recon_slices
@@ -140,6 +139,7 @@ class ParallelBeamModel(TomographyModel):
                                     voxel_batch_size=None):
         """
         Use jax.vmap to backproject one view at a time and then sum over voxels.
+
         Args:
             sinogram:
             voxel_indices:
@@ -181,6 +181,7 @@ class ParallelBeamModel(TomographyModel):
                                     voxel_batch_size=None):
         """
         Use jax.lax.scan to backproject one view at a time and accumulate the results in the specified voxels.
+
         Args:
             sinogram:
             voxel_indices:
@@ -248,13 +249,15 @@ class ParallelBeamModel(TomographyModel):
         """
         Calculate the backprojection value at a specified recon voxel given a sinogram view and various parameters.
         This code uses the distance driven projector.
+
         Args:
-            sinogram_view: [jax array] one view of the sinogram to be back projected
+            sinogram_view (jax array): one view of the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
             angle:
             geometry_params:
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
+
         Returns:
             The value of the voxel at the input index obtained by backprojecting the input sinogram.
         """
@@ -274,8 +277,9 @@ class ParallelBeamModel(TomographyModel):
         Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
         matrix except using the square of the coefficients in the backprojection to a given voxel.
         One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will computed as an
+        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
         array of ones of size sinogram_shape.
+
         Args:
             weights (ndarray or None): The weights with shape (views, rows, channels)
             voxel_batch_size:
@@ -304,6 +308,7 @@ class ParallelBeamModel(TomographyModel):
     def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
@@ -345,6 +350,7 @@ class ParallelBeamModel(TomographyModel):
         """
         Calculate the backprojection value at a specified recon voxel given the sinogram and various parameters.
         This code uses the distance driven projector.
+
         Args:
             sinogram: [jax array] the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
@@ -352,6 +358,7 @@ class ParallelBeamModel(TomographyModel):
             geometry_params:
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
+
         Returns:
             The value of the voxel at the input index obtained by backprojecting the input sinogram.
         """

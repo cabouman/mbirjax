@@ -16,9 +16,6 @@ submodules:
   recursive: true
 conda:
   environment: environment.yml
-python:
-  install:
-    - requirements: docs/requirements.txt
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:

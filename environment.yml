@@ -3,8 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10
-  - sphinx
+  - python>=3.10
   - matplotlib
   - numpy
   - scipy
@@ -12,6 +11,12 @@ dependencies:
   - setuptools
   - jax
   - jaxlib
+  - sphinx
+  - sphinxcontrib-bibtex
+  - sphinx-book-theme>=1.0.1
+  - sphinx-design
+  - ruamel.yaml
+  - psutil
   - pip
   - pip:
       - -e .

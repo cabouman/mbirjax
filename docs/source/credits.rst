@@ -20,7 +20,7 @@ Please use the following Bibtex citation when referencing this software. :cite:`
 ::
 
     @Misc {mbirjax-2024,
-    author = {Charles A Bouman and Greg T. Buzzard},
+    author = {Charles A. Bouman and Gregery T. Buzzard},
     title =	{{V}ectorized {C}oordinate {D}escent ({VCD}) {B}ased MBIR {R}econstruction},
     howpublished = {Software library available from \url{https://github.com/cabouman/mbirjax}},
     year = 2024
