@@ -17,12 +17,9 @@ yes | conda env remove --name $NAME
 yes | conda env create --name $NAME --file ../environment.yml
 conda activate $NAME
 
-#pip install -e ../.
 yes | conda env update --file ../docs/environment.yml --prune
 yes | conda env update --file ../demo/environment.yml --prune
-#pip install -r demo/requirements.txt
-# yes | conda install sphinx
-
+pip install -r ../docs/requirements.txt
 
 echo
 echo "Use 'conda activate" $NAME "' to activate this environment."

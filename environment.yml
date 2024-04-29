@@ -1,0 +1,17 @@
+name: mbirjax
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - sphinx
+  - matplotlib
+  - numpy
+  - scipy
+  - pyyaml
+  - setuptools
+  - jax
+  - jaxlib
+  - pip
+  - pip:
+      - -e .
