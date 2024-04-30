@@ -468,6 +468,7 @@ class TomographyModel:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
             num_iterations (int): number of iterations of the VCD algorithm to perform.
+            init_recon (jax array): reconstruction to be used for initialization.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -482,11 +483,13 @@ class TomographyModel:
         partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
 
         # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights, init_recon=init_recon)
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+                                        init_recon=init_recon)
 
         return recon, fm_rmse
 
-    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None):
+
+    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None, prox_input=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -508,7 +511,7 @@ class TomographyModel:
         angles = self.get_params('angles')
 
         if init_recon is None:
-            # Initialize VCD error sinogram, recon, and hessian
+            # Initialize VCD recon, and error sinogram
             recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
             error_sinogram = sinogram
         else:
@@ -518,8 +521,9 @@ class TomographyModel:
                 error_message = "init_recon does not have the correct shape. \n"
                 error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape, init_recon.shape)
                 raise ValueError(error_message)
-            recon = jnp.array(init_recon)
 
+            # Initialize VCD recon, and error sinogram
+            recon = jnp.array(init_recon)
             error_sinogram = sinogram - self.forward_project(recon)
 
         # Initialize the diagonal of the hessian of the forward model
@@ -531,14 +535,14 @@ class TomographyModel:
         for i in range(num_iters):
             error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon,
                                                                  partitions[partition_sequence[i]], hessian,
-                                                                 weights=weights)
+                                                                 weights=weights, prox_input=prox_input)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
             if self.get_params('verbose') >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
 
         return recon, fm_rmse
 
-    def vcd_partition_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0):
+    def vcd_partition_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0, prox_input=None):
         """
         Calculate an iteration of the VCD algorithm for each subset of the partition
         Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
@@ -558,11 +562,11 @@ class TomographyModel:
         """
         for subset in np.random.permutation(partition.shape[0]):
             error_sinogram, recon = self.vcd_subset_iteration(error_sinogram, recon, partition[subset], fm_hessian,
-                                                              weights=weights)
+                                                              weights=weights, prox_input=prox_input)
 
         return error_sinogram, recon
 
-    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights=1.0):
+    def vcd_subset_iteration(self, error_sinogram, recon, indices, fm_hessian, weights=1.0, prox_input=None):
         """
         Calculate an iteration of the VCD algorithm on a single subset of the partition
         Each iteration of the algorithm should return a better reconstructed recon.
@@ -577,6 +581,7 @@ class TomographyModel:
             recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
             fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
             [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
@@ -589,7 +594,19 @@ class TomographyModel:
             self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
-        # flatten the recon and hessian if they are not already flat
+        # Test to make sure the prox_input input is correct
+        if prox_input is not None:
+            # Make sure that prox_input has the correct size
+            if prox_input.size != recon.size:
+                error_message = "prox_input does not have the correct size. \n"
+                error_message += "Expected {}, but got shape {} for prox_input shape.".format(recon.size,
+                                                                                              prox_input.size)
+                raise ValueError(error_message)
+
+            # If used, make sure that prox_input has the correct a 3D shape and type
+            prox_input = jnp.array(prox_input.reshape((num_recon_rows, num_recon_cols, num_recon_slices)))
+
+        # flatten the hessian if it is not already flat
         fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
@@ -599,9 +616,17 @@ class TomographyModel:
         fm_gradient = -constant * self._sparse_back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
 
-        # Compute the prior model gradient and hessian at each pixel in the index set.
-        sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
-        pm_gradient, pm_hessian = pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
+        # Compute the prior model gradient and hessian (i.e., second derivative) terms
+        if prox_input is None:
+            # This is for the qGGMRF prior
+            # Compute the prior model gradient and hessian at each pixel in the index set.
+            sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
+            pm_gradient, pm_hessian = pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
+        else:
+            # This is for the proximal map prior
+            sigma_p = self.get_params('sigma_p')
+            pm_gradient = (1.0 / (sigma_p**2.0))*(recon - prox_input)
+            pm_hessian = sigma_p**2
 
         # Compute update vector update direction in recon domain
         delta_recon_at_indices = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
