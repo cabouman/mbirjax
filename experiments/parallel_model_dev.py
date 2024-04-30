@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # ##########################
     # Do all the setup
     view_batch_size = 100
-    voxel_batch_size = 1000
+    voxel_batch_size = 10000
 
     # Initialize sinogram
     num_views = 128

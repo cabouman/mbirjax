@@ -168,8 +168,8 @@ class ParallelBeamModel(TomographyModel):
                 num_batches = num_views // view_batch_size
                 angles_batched = jnp.reshape(angles[0:num_batches * view_batch_size],(num_batches, view_batch_size))
 
-                def forward_map(cs_angle_batch):
-                    return forward_vmap(voxel_values, voxel_indices, cs_angle_batch, geometry_params,
+                def forward_map(angle_batch):
+                    return forward_vmap(voxel_values, voxel_indices, angle_batch, geometry_params,
                                         sinogram_shape)
 
                 sinogram = jax.lax.map(forward_map, angles_batched)
@@ -183,16 +183,33 @@ class ParallelBeamModel(TomographyModel):
             return sinogram
 
         def sparse_back_project_fcn(sinogram, indices, coeff_power=1):
-            return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, angles, geometry_params,
-                                                                 voxel_batch_size=voxel_batch_size,
-                                                                 coeff_power=coeff_power)
+            num_voxels = len(indices)
+            if voxel_batch_size is None or voxel_batch_size >= num_voxels:
+                voxel_values = ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, angles, geometry_params,
+                                                                             coeff_power=coeff_power)
+            else:
+                num_batches = num_voxels // voxel_batch_size
+                length_of_batches = num_batches * voxel_batch_size
+                indices_batched = jnp.reshape(indices[:length_of_batches], (num_batches, voxel_batch_size))
+
+                def backward_map(indices_batch):
+                    return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices_batch, angles, geometry_params,
+                                                                         coeff_power=coeff_power)
+
+                voxel_values = jax.lax.map(backward_map, indices_batched)
+                voxel_values = voxel_values.reshape((length_of_batches, -1))
+                num_remaining = num_voxels - num_batches * voxel_batch_size
+                if num_remaining > 0:
+                    end_batch = indices[-num_remaining:]
+                    end_values = backward_map(end_batch)
+                    voxel_values = jnp.concatenate((voxel_values, end_values), axis=0)
+            return voxel_values
 
         self._sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,3))
-        self._sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
+        self._sparse_back_project = sparse_back_project_fcn  # jax.jit(sparse_back_project_fcn, static_argnums=(2,))
 
     @staticmethod
-    def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params,
-                                    voxel_batch_size=None, coeff_power=1):
+    def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params, coeff_power=1):
         """
         Use jax.lax.scan to backproject one view at a time and accumulate the results in the specified voxels.
 
