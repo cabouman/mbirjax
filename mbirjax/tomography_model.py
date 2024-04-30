@@ -462,7 +462,7 @@ class TomographyModel:
         sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
-    def recon(self, sinogram, weights=1.0):
+    def recon(self, sinogram, weights=1.0, num_iterations=13):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -470,6 +470,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            num_iterations (int): number of iterations of the VCD algorithm to perform.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -481,7 +482,7 @@ class TomographyModel:
         partitions = self.gen_set_of_voxel_partitions()
 
         # Generate sequence of partitions to use
-        partition_sequence = self.gen_partition_sequence()
+        partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
 
         # Compute reconstruction
         recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
@@ -688,14 +689,29 @@ class TomographyModel:
 
         return full_indices
 
-    def gen_partition_sequence(self):
+    def gen_partition_sequence(self, num_iterations):
+        """
+        Generates a sequence of voxel partitions of the specified length by extending the sequence
+        with the last element if necessary.
+        """
         # Get sequence from params and convert it to a np array
         partition_sequence = np.array(self.get_params('partition_sequence'))
 
-        # Tile sequence so it at least iterations long
-        num_iterations = self.get_params('num_iterations')
-        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[
-                                      0:num_iterations]
+        # Check if the sequence needs to be extended
+        current_length = partition_sequence.size
+        if num_iterations > current_length:
+            # Calculate the number of additional elements needed
+            extra_elements_needed = num_iterations - current_length
+            # Get the last element of the array
+            last_element = partition_sequence[-1]
+            # Create an array of the last element repeated the necessary number of times
+            extension_array = np.full(extra_elements_needed, last_element)
+            # Concatenate the original array with the extension array
+            extended_partition_sequence = np.concatenate((partition_sequence, extension_array))
+        else:
+            # If no extension is needed, slice the original array to the desired length
+            extended_partition_sequence = partition_sequence[:num_iterations]
+
         return extended_partition_sequence
 
     def gen_3d_sl_phantom(self):

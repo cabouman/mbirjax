@@ -34,9 +34,8 @@ _reconstruction_defaults_dict = {
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
     'max_resolutions': {'val': None, 'recompile_flag': False},
-    'num_iterations': {'val': 13, 'recompile_flag': False},
     'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
-    'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], 'recompile_flag': False},
+    'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 0, 'recompile_flag': False},
 }
 
