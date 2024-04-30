@@ -468,7 +468,7 @@ class TomographyModel:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
             num_iterations (int): number of iterations of the VCD algorithm to perform.
-            init_recon (jax array): reconstruction to be used for initialization.
+            init_recon (jax array): optional reconstruction to be used for initialization.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -485,6 +485,37 @@ class TomographyModel:
         # Compute reconstruction
         recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                         init_recon=init_recon)
+
+        return recon, fm_rmse
+
+
+    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=13, init_recon=None):
+        """
+        Proximal Map function for use in Plug-and-Play applications.
+        This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_p.
+
+        Args:
+            prox_input (jax array): proximal map input with same shape as reconstruction.
+            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            num_iterations (int): number of iterations of the VCD algorithm to perform.
+            init_recon (jax array): optional reconstruction to be used for initialization.
+
+        Returns:
+            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
+        """
+        # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
+        self.auto_set_regularization_params(sinogram, weights=weights)
+
+        # Generate set of voxel partitions
+        partitions = self.gen_set_of_voxel_partitions()
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
+
+        # Compute reconstruction
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+                                        init_recon=init_recon, prox_input=prox_input)
 
         return recon, fm_rmse
 
@@ -621,12 +652,14 @@ class TomographyModel:
             # This is for the qGGMRF prior
             # Compute the prior model gradient and hessian at each pixel in the index set.
             sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
-            pm_gradient, pm_hessian = pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
+            pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
         else:
             # This is for the proximal map prior
             sigma_p = self.get_params('sigma_p')
-            pm_gradient = (1.0 / (sigma_p**2.0))*(recon - prox_input)
             pm_hessian = sigma_p**2
+
+            # Compute the prior model gradient at each pixel in the index set.
+            pm_gradient = pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p)
 
         # Compute update vector update direction in recon domain
         delta_recon_at_indices = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
@@ -801,7 +834,7 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
 
 
 @jax.jit
-def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
+def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
@@ -865,6 +898,34 @@ def pm_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
 
     return first_derivative, second_derivative
 
+
+@jax.jit
+def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
+    """
+    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
+
+    Args:
+        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        sigma_p (float): Standard deviation parameter of the proximal map.
+
+    Returns:
+        first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
+    """
+    # Compute the prior model gradient at all voxels
+    pm_gradient = (1.0 / (sigma_p**2.0)) * (recon - prox_input)
+
+    # Extract the shape of the reconstruction array.
+    num_rows, num_cols, num_slices = recon.shape
+
+    # Convert flat indices to 2D indices for row and column access.
+    row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
+
+    # Access the gradient's values at the given indices. Shape of pm_gradient is (num indices)x(num slices)
+    pm_gradient = pm_gradient[row_index, col_index]
+
+    return pm_gradient
 
 def _get_rho(delta, b, sigma_x, p, q, T):
     """
