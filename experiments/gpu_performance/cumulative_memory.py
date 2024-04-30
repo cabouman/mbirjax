@@ -163,6 +163,7 @@ if __name__ == "__main__":
                     # Set up parallel beam model
                     sinogram_shape = (nv, nr, nc)
                     parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram_shape)
+                    parallel_model.set_params(voxel_batch_size=voxel_batch_size)
 
                     # Generate phantom for forward projection
                     num_recon_rows, num_recon_cols, num_recon_slices = (
@@ -205,7 +206,7 @@ if __name__ == "__main__":
                             print('Out of memory in forward projector')
                             sinogram = np.ones((nv, nr, nc))
                         try:
-                            bp = parallel_model.back_project(sinogram, indices, voxel_batch_size=voxel_batch_size)
+                            bp = parallel_model.back_project(sinogram, indices)
                             m1 = mbirjax.get_gpu_memory_stats()
                             peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
                         except:
@@ -218,7 +219,7 @@ if __name__ == "__main__":
                         print('Back projection for speed')
                         t0 = time.time()
                         try:
-                            bp = parallel_model.back_project(sinogram, indices, voxel_batch_size=voxel_batch_size)
+                            bp = parallel_model.sparse_back_project(sinogram, indices)
                         except:
                             print('Out of memory on pass 2')
                         t1 = time.time()

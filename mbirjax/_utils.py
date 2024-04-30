@@ -38,6 +38,8 @@ _reconstruction_defaults_dict = {
     'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
     'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], 'recompile_flag': False},
     'verbose': {'val': 0, 'recompile_flag': False},
+    'voxel_batch_size': {'val': None, 'recompile_flag': True},
+    'view_batch_size': {'val': None, 'recompile_flag': True}
 }
 
 headings = ['Geometry params', 'Recon params', 'Init params', 'Noise params', 'QGGMRF params', 'Sys params',

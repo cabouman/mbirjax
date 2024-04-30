@@ -74,7 +74,7 @@ class TomographyModel:
 
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, view_batch_size=None):
+    def sparse_forward_project(self, voxel_values, indices):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -83,16 +83,15 @@ class TomographyModel:
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
-            view_batch_size (int):
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self._sparse_forward_project(voxel_values, indices, view_batch_size=view_batch_size).block_until_ready()
+        sinogram = self._sparse_forward_project(voxel_values, indices).block_until_ready()
         gc.collect()
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, voxel_batch_size=None):
+    def sparse_back_project(self, sinogram, indices):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -101,27 +100,25 @@ class TomographyModel:
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             indices (jnp array): Array of indices specifying which voxels to back project.
-            voxel_batch_size (int):
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon = self._sparse_back_project(sinogram, indices, voxel_batch_size=voxel_batch_size).block_until_ready()
+        recon = self._sparse_back_project(sinogram, indices).block_until_ready()
         gc.collect()
         return recon
 
-    def compute_hessian_diagonal(self, weights, voxel_batch_size=None):
+    def compute_hessian_diagonal(self, weights):
         """
         Computes the diagonal elements of the Hessian matrix for given weights and angles.
 
         Args:
             weights (jnp array): Sinogram Weights for the Hessian computation.
-            voxel_batch_size:
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights, voxel_batch_size=voxel_batch_size).block_until_ready()
+        hessian = self.compute_hessian_diagonal(weights).block_until_ready()
         gc.collect()
         return hessian
 

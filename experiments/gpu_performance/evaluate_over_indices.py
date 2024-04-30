@@ -77,7 +77,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
             print('Initial back projection for memory: nv={}, nc={}, nr={}, ni={}'.format(nv, nc, nr, ni))
             sinogram = np.ones((nv, nr, nc))
             try:
-                bp = parallel_model.back_project(sinogram, indices, voxel_batch_size=voxel_batch_size)
+                bp = parallel_model.back_project(sinogram, indices)
                 m1 = mbirjax.get_gpu_memory_stats()
                 peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
             except:
@@ -90,7 +90,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
             print('Back projection for speed')
             t0 = time.time()
             try:
-                bp = parallel_model.back_project(sinogram, indices, voxel_batch_size=voxel_batch_size)
+                bp = parallel_model.sparse_back_project(sinogram, indices)
                 t1 = time.time()
                 time_diff_secs = t1 - t0
             except:

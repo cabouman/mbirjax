@@ -47,9 +47,10 @@ if __name__ == "__main__":
     voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
     cos_sin_angles = parallel_model._get_cos_sin_angles(angles)
     geometry_params = parallel_model.get_geometry_parameters()
+    parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
 
     print('Starting forward projection')
-    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0], view_batch_size=view_batch_size)
+    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0])
 
     # Determine resulting number of views, slices, and channels and image size
     num_recon_rows, num_recon_cols, num_recon_slices = (
@@ -82,7 +83,7 @@ if __name__ == "__main__":
 
     # Do a forward projection, then a backprojection
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], view_batch_size=view_batch_size)
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0])
     Aty = parallel_model.sparse_back_project(y, indices[0])
 
     # Calculate <Aty, x> and <y, Ax>
@@ -104,7 +105,7 @@ if __name__ == "__main__":
     eps = 0.01
     x = x.at[i, j, k].set(eps)
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0], view_batch_size=view_batch_size)
+    Ax = parallel_model.sparse_forward_project(voxel_values, indices[0])
     AtAx = parallel_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
     finite_diff_hessian = AtAx[i, j, k] / eps
     print('Hessian matches finite difference: {}'.format(jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)))
@@ -118,7 +119,7 @@ if __name__ == "__main__":
     for j in range(num_trials):
         voxel_values = x.reshape((-1, num_recon_slices))[indices[j]]
         t0 = time.time()
-        fp = parallel_model.sparse_forward_project(voxel_values, indices[j], view_batch_size=view_batch_size)
+        fp = parallel_model.sparse_forward_project(voxel_values, indices[j])
         time_taken += time.time() - t0
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
