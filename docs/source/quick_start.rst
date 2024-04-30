@@ -43,7 +43,7 @@ Below is a quick-start-guide to using MBIRJAX for your application:
 
   - Then run ``recon_3d = parallel_model.reshape_recon(recon)`` to reshape your reconstruction into ``(rows, columns, slices)`` format.
 
-  Even the default parameter setting will usually produce a good quality reconstruction,
+  Even the default parameter setting will usually produce a good quality reconstruction.
 
 
 - **Tune image quality:**
