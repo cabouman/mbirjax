@@ -474,7 +474,7 @@ class TomographyModel:
         return recon, fm_rmse
 
 
-    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=13, init_recon=None):
+    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_p.
@@ -489,9 +489,6 @@ class TomographyModel:
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
         """
-        # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-        self.auto_set_regularization_params(sinogram, weights=weights)
-
         # Generate set of voxel partitions
         partitions = self.gen_set_of_voxel_partitions()
 
