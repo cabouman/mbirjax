@@ -66,7 +66,7 @@ if __name__ == "__main__":
     #recon, fm_rmse = parallel_model.prox_map(prox_input, sinogram, weights=weights)
 
     # Test proximal map for fixed point
-    init_recon = phantom + 1.0
+    init_recon = phantom
     recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon)
 
     # Reshape recon into 3D form

@@ -670,7 +670,8 @@ class TomographyModel:
         # Compute "optimal" update step
         # This is really only optimal for the forward model component.
         # We can compute the truly optimal update, but it's complicated so maybe this is good enough
-        alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / jnp.sum(delta_sinogram * delta_sinogram * weights)
+        alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
+        # TODO: test for alpha==0 and terminate if needed and handle the 1/alpha in positivity
 
         # Flatten recon for next steps
         recon = recon.reshape((-1, num_recon_slices))
