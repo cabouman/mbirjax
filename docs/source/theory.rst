@@ -97,8 +97,9 @@ where the quantities correspond to the following python variables:
 
 
 
-Conversion from Arbitrary Length Units (ALU)
---------------------------------------------
+Arbitrary Length Units (ALU) Conversion
+---------------------------------------
+.. _ALU_conversion_label:
 
 In order to simplify usage, reconstructions are done using arbitrary length units (ALU).
 In this system, 1 ALU can correspond to any convenient measure of distance chosen by the user.
