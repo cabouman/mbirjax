@@ -74,7 +74,7 @@ class TomographyModel:
 
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, view_batch_size=None):
+    def sparse_forward_project(self, voxel_values, indices):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -83,16 +83,15 @@ class TomographyModel:
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
-            view_batch_size (int):
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self._sparse_forward_project(voxel_values, indices, view_batch_size=view_batch_size).block_until_ready()
+        sinogram = self._sparse_forward_project(voxel_values, indices).block_until_ready()
         gc.collect()
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, voxel_batch_size=None):
+    def sparse_back_project(self, sinogram, indices):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -101,27 +100,25 @@ class TomographyModel:
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             indices (jnp array): Array of indices specifying which voxels to back project.
-            voxel_batch_size (int):
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon = self._sparse_back_project(sinogram, indices, voxel_batch_size=voxel_batch_size).block_until_ready()
+        recon = self._sparse_back_project(sinogram, indices).block_until_ready()
         gc.collect()
         return recon
 
-    def compute_hessian_diagonal(self, weights, voxel_batch_size=None):
+    def compute_hessian_diagonal(self, weights):
         """
         Computes the diagonal elements of the Hessian matrix for given weights and angles.
 
         Args:
             weights (jnp array): Sinogram Weights for the Hessian computation.
-            voxel_batch_size:
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights, voxel_batch_size=voxel_batch_size).block_until_ready()
+        hessian = self.compute_hessian_diagonal(weights).block_until_ready()
         gc.collect()
         return hessian
 
@@ -462,7 +459,7 @@ class TomographyModel:
         sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
-    def recon(self, sinogram, weights=1.0):
+    def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -470,6 +467,7 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            num_iterations (int): number of iterations of the VCD algorithm to perform.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -481,14 +479,14 @@ class TomographyModel:
         partitions = self.gen_set_of_voxel_partitions()
 
         # Generate sequence of partitions to use
-        partition_sequence = self.gen_partition_sequence()
+        partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
 
         # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights, init_recon=init_recon)
 
         return recon, fm_rmse
 
-    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0):
+    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -498,6 +496,7 @@ class TomographyModel:
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            init_recon (jax array): Initial reconstruction to use in reconstruction.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -508,9 +507,22 @@ class TomographyModel:
             self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         angles = self.get_params('angles')
 
-        # Initialize VCD error sinogram, recon, and hessian
-        error_sinogram = sinogram
-        recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+        if init_recon is None:
+            # Initialize VCD error sinogram, recon, and hessian
+            recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+            error_sinogram = sinogram
+        else:
+            # Make sure that init_recon has the correct shape and type
+            recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+            if init_recon.shape != recon_shape:
+                error_message = "init_recon does not have the correct shape. \n"
+                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape, init_recon.shape)
+                raise ValueError(error_message)
+            recon = jnp.array(init_recon)
+
+            error_sinogram = sinogram - self.forward_project(recon)
+
+        # Initialize the diagonal of the hessian of the forward model
         hessian = self.compute_hessian_diagonal(weights=weights)
 
         # Initialize forward model normalized RMSE error array
@@ -688,14 +700,29 @@ class TomographyModel:
 
         return full_indices
 
-    def gen_partition_sequence(self):
+    def gen_partition_sequence(self, num_iterations):
+        """
+        Generates a sequence of voxel partitions of the specified length by extending the sequence
+        with the last element if necessary.
+        """
         # Get sequence from params and convert it to a np array
         partition_sequence = np.array(self.get_params('partition_sequence'))
 
-        # Tile sequence so it at least iterations long
-        num_iterations = self.get_params('num_iterations')
-        extended_partition_sequence = np.tile(partition_sequence, (num_iterations // partition_sequence.size + 1))[
-                                      0:num_iterations]
+        # Check if the sequence needs to be extended
+        current_length = partition_sequence.size
+        if num_iterations > current_length:
+            # Calculate the number of additional elements needed
+            extra_elements_needed = num_iterations - current_length
+            # Get the last element of the array
+            last_element = partition_sequence[-1]
+            # Create an array of the last element repeated the necessary number of times
+            extension_array = np.full(extra_elements_needed, last_element)
+            # Concatenate the original array with the extension array
+            extended_partition_sequence = np.concatenate((partition_sequence, extension_array))
+        else:
+            # If no extension is needed, slice the original array to the desired length
+            extended_partition_sequence = partition_sequence[:num_iterations]
+
         return extended_partition_sequence
 
     def gen_3d_sl_phantom(self):

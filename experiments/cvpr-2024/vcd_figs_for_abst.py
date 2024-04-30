@@ -72,21 +72,21 @@ if __name__ == "__main__":
     # Perform VCD reconstruction
     recon_vcd, fm_rmse_vcd = parallel_model.recon(sinogram, weights=weights)
     granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence()
+    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
     granularity_sequence_vcd = granularity[partition_sequence]
 
     # Perform GD reconstruction
     parallel_model.set_params(partition_sequence=[0,])
     recon_gd, fm_rmse_gd = parallel_model.recon(sinogram, weights=weights)
     granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence()
+    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
     granularity_sequence_gd = granularity[partition_sequence]
 
     # Perform CD reconstruction
     parallel_model.set_params(partition_sequence=[3,])
     recon_cd, fm_rmse_cd = parallel_model.recon(sinogram, weights=weights)
     granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence()
+    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################
 
