@@ -513,8 +513,11 @@ class TomographyModel:
             error_sinogram = sinogram
         else:
             # Make sure that init_recon has the correct shape and type
-            if init_recon.shape != (num_recon_rows, num_recon_cols, num_recon_slices):
-                raise ValueError(f"init_recon does not have the correct shape.")
+            recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+            if init_recon.shape != recon_shape:
+                error_message = "init_recon does not have the correct shape. \n"
+                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape, init_recon.shape)
+                raise ValueError(error_message)
             recon = jnp.array(init_recon)
 
             error_sinogram = sinogram - self.forward_project(recon)
