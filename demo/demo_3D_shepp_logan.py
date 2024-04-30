@@ -58,12 +58,16 @@ if __name__ == "__main__":
     # ##########################
 
     # Test initialization feature
-    # init_recon = 0*recon + 1.0
-    # recon, fm_rmse = parallel_model.recon(sinogram, weights=weights, init_recon=init_recon)
+    #init_recon = 0*recon + 1.0
+    #recon, fm_rmse = parallel_model.recon(sinogram, weights=weights, init_recon=init_recon)
 
-    # Test proximal map
-    prox_input = 0*recon + 1.0
-    recon, fm_rmse = parallel_model.prox_map(prox_input, sinogram, weights=weights)
+    # Test proximal map for arbitrary input
+    #prox_input = 0*recon + 1.0
+    #recon, fm_rmse = parallel_model.prox_map(prox_input, sinogram, weights=weights)
+
+    # Test proximal map for fixed point
+    init_recon = phantom + 1.0
+    recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon)
 
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)
