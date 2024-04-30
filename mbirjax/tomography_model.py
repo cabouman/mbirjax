@@ -462,7 +462,7 @@ class TomographyModel:
         sigma_prior = (2**sharpness) * typical_img_value
         return sigma_prior
 
-    def recon(self, sinogram, weights=1.0, num_iterations=13):
+    def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -485,11 +485,11 @@ class TomographyModel:
         partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
 
         # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights)
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights, init_recon=init_recon)
 
         return recon, fm_rmse
 
-    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0):
+    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -499,6 +499,7 @@ class TomographyModel:
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            init_recon (jax array): Initial reconstruction to use in reconstruction.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -509,9 +510,19 @@ class TomographyModel:
             self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
         angles = self.get_params('angles')
 
-        # Initialize VCD error sinogram, recon, and hessian
-        error_sinogram = sinogram
-        recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+        if init_recon is None:
+            # Initialize VCD error sinogram, recon, and hessian
+            recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+            error_sinogram = sinogram
+        else:
+            # Make sure that init_recon has the correct shape and type
+            if init_recon.shape != (num_recon_rows, num_recon_cols, num_recon_slices):
+                raise ValueError(f"init_recon does not have the correct shape.")
+            recon = jnp.array(init_recon)
+
+            error_sinogram = sinogram - self.forward_project(recon)
+
+        # Initialize the diagonal of the hessian of the forward model
         hessian = self.compute_hessian_diagonal(weights=weights)
 
         # Initialize forward model normalized RMSE error array

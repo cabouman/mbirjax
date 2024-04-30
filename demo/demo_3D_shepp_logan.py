@@ -57,6 +57,10 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
+    # Test initialization feature
+    # init_recon = 0*recon + 1.0
+    # recon, fm_rmse = parallel_model.recon(sinogram, weights=weights, init_recon=init_recon)
+
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)
 
