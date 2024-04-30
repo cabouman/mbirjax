@@ -204,6 +204,9 @@ class TomographyModel:
         self.set_params(num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols, num_recon_slices=num_recon_slices)
 
     def print_params(self):
+        """
+        Prints out the parameters of the model.
+        """
         print("----")
         for key, entry in self.params.items():
             param_val = entry.get('val')

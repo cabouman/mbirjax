@@ -23,6 +23,7 @@ for manipulating sinograms and reconstructions.
    mbirjax.TomographyModel.get_params
    mbirjax.TomographyModel.gen_weights
    mbirjax.TomographyModel.gen_3d_sl_phantom
+   mbirjax.TomographyModel.print_params
 
 .. automodule:: mbirjax
    :no-index:
