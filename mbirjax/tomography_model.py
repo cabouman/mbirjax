@@ -404,21 +404,6 @@ class TomographyModel:
         return loss
 
     @staticmethod
-    def _get_cos_sin_angles(angles):
-        """
-        Take the sin and cosine of an array of num_view angles and return as a num_view x 1 jax array.
-
-        Args:
-            angles: array of angles
-
-        Returns:
-            num_view x 1 jax array containing cos and sin of the angles
-        """
-        cos_angles = jnp.cos(angles).flatten()
-        sin_angles = jnp.sin(angles).flatten()
-        return jnp.stack([cos_angles, sin_angles], axis=0)
-
-    @staticmethod
     def _get_sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
@@ -671,7 +656,7 @@ class TomographyModel:
         # This is really only optimal for the forward model component.
         # We can compute the truly optimal update, but it's complicated so maybe this is good enough
         alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
-        # TODO: test for alpha==0 and terminate if needed and handle the 1/alpha in positivity
+        # TODO: test for alpha<0 and terminate.
 
         # Flatten recon for next steps
         recon = recon.reshape((-1, num_recon_slices))
@@ -683,7 +668,8 @@ class TomographyModel:
             recon_at_indices = recon[indices]
 
             # Clip updates to ensure non-negativity
-            delta_recon_at_indices = jnp.maximum(-recon_at_indices * (1.0 / alpha), delta_recon_at_indices)
+            constant = 1.0 / (alpha + jnp.finfo(np.float32).eps)
+            delta_recon_at_indices = jnp.maximum(-constant*recon_at_indices, delta_recon_at_indices)
 
             # Recompute sinogram projection
             delta_sinogram = self._sparse_forward_project(delta_recon_at_indices, indices)

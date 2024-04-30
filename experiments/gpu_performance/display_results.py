@@ -10,6 +10,7 @@ def display_results(filename):
     mem_values = data['mem_values']
     time_values = data['time_values']
     eval_type_index = data['eval_type_index']
+    voxel_batch_size = data['voxel_batch_size']
     max_percent_used_gb = data['max_percent_used_gb']
     max_avail_gb = data['max_avail_gb']
     num_views = data['num_views']
@@ -30,8 +31,9 @@ def display_results(filename):
 
     plt.ion()
 
-    eval_types = ['Forward_projection', 'Backward_projection_0', 'Backward_projection_1', 'Backward_projection_2']
-    super_title_mem = 'Peak log2(GB) as a function of #views, #channels, #rows, and #indices\n'
+    eval_types = ['Forward_projection', 'Backward_projection']
+    super_title_mem = 'Peak log2(GB) as a function of #views, #channels, #rows, and #indices'
+    super_title_mem += ', voxel_batch_size={}\n'.format(voxel_batch_size)
     super_title_mem += eval_types[eval_type_index]
     super_title_mem += ':  Avail GB = {:.1f}, Max percent mem used = {:.2f}'.format(max_avail_gb, max_percent_used_gb)
     super_title_time = 'log2(seconds elapsed) as a function of #views, #channels, #rows, and #indices\n'
