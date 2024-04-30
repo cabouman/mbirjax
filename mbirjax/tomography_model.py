@@ -404,21 +404,6 @@ class TomographyModel:
         return loss
 
     @staticmethod
-    def _get_cos_sin_angles(angles):
-        """
-        Take the sin and cosine of an array of num_view angles and return as a num_view x 1 jax array.
-
-        Args:
-            angles: array of angles
-
-        Returns:
-            num_view x 1 jax array containing cos and sin of the angles
-        """
-        cos_angles = jnp.cos(angles).flatten()
-        sin_angles = jnp.sin(angles).flatten()
-        return jnp.stack([cos_angles, sin_angles], axis=0)
-
-    @staticmethod
     def _get_sino_indicator(sinogram):
         """
         Compute a binary function that indicates the region of sinogram support.
