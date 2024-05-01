@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import jax
 import time
 import matplotlib.pyplot as plt
-import mbirjax
+import gc
 import mbirjax.parallel_beam
 
 if __name__ == "__main__":
@@ -17,9 +17,9 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Initialize sinogram
-    num_views = 128
-    num_det_rows = 128
-    num_det_channels = 128
+    num_views = 1024
+    num_det_rows = 1024
+    num_det_channels = 1024
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -45,7 +45,6 @@ if __name__ == "__main__":
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
-    cos_sin_angles = parallel_model._get_cos_sin_angles(angles)
     geometry_params = parallel_model.get_geometry_parameters()
     parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
 
@@ -92,6 +91,12 @@ if __name__ == "__main__":
 
     print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(np.allclose(Aty_x, y_Ax)))
 
+    # Clean up before further projections
+    del Ax, Aty, bp
+    del phantom
+    del x, y
+    gc.collect()
+
     # ##########################
     # ## Test the hessian against a finite difference approximation ## #
     hessian = parallel_model.compute_hessian_diagonal()
@@ -121,6 +126,8 @@ if __name__ == "__main__":
         t0 = time.time()
         fp = parallel_model.sparse_forward_project(voxel_values, indices[j])
         time_taken += time.time() - t0
+        del fp
+        gc.collect()
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
     print('Done')
@@ -135,6 +142,8 @@ if __name__ == "__main__":
         t0 = time.time()
         bp = parallel_model.sparse_back_project(sinogram, indices[j])
         time_taken += time.time() - t0
+        del bp
+        gc.collect()
 
     print('Mean time per call = {}'.format(time_taken / num_trials))
     print('Done')

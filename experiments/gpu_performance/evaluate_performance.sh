@@ -5,10 +5,11 @@
 evaluation_type_index=1
 
 # Define the lists for each independent variable (each should be increasing, no spaces after =, spaces between ints)
-num_views=(256 512 1024)
-num_channels=(256 512 1024)
-num_det_rows=(256 512 1024)
-num_indices=(256*256 512*512 1024*512)
+num_views=(512 1024)
+num_channels=(512 1024)
+num_det_rows=(512 1024)
+num_indices=(512*512 1024*1024)
+voxel_batch_size=30000
 
 # Convert array to string 
 views_str="[${num_views[*]}]"         # Join array elements with spaces
@@ -23,7 +24,7 @@ indices_str="${indices_str// /, }"    # Replace spaces with comma-space
 # Set up the evaluation files
 echo "$views_str"
 echo "Initializing" "$views_str" "$channels_str" "$det_rows_str" "$indices_str"
-filename=$(python initialize_evaluation.py $evaluation_type_index "$views_str" "$channels_str" "$det_rows_str" "$indices_str")
+filename=$(python initialize_evaluation.py $evaluation_type_index $voxel_batch_size "$views_str" "$channels_str" "$det_rows_str" "$indices_str")
 #echo "$filename"
 # Nested loop over the lists
 for nv in ${num_views[@]}; do

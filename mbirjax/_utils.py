@@ -1,4 +1,5 @@
 import types
+import copy
 
 # The order and content of these dictionaries must match the signatures of the corresponding tests below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
@@ -54,5 +55,5 @@ for d in dicts:
 
 
 def get_default_params():
-    return recon_defaults_dict
+    return copy.deepcopy(recon_defaults_dict)
 

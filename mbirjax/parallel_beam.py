@@ -205,8 +205,8 @@ class ParallelBeamModel(TomographyModel):
                     voxel_values = jnp.concatenate((voxel_values, end_values), axis=0)
             return voxel_values
 
-        self._sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,3))
-        self._sparse_back_project = sparse_back_project_fcn  # jax.jit(sparse_back_project_fcn, static_argnums=(2,))
+        self._sparse_forward_project = jax.jit(sparse_forward_project_fcn)
+        self._sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
 
     @staticmethod
     def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params, coeff_power=1):
