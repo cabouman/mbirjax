@@ -29,12 +29,9 @@ _recon_model_defaults_dict = {
 
 _reconstruction_defaults_dict = {
     'auto_regularize_flag': {'val': True, 'recompile_flag': False},
-    'proximal_map_flag': {'val': False, 'recompile_flag': False},
     'positivity_flag': {'val': False, 'recompile_flag': False},
-    'initialization': {'val': 'zero', 'recompile_flag': False},
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
-    'max_resolutions': {'val': None, 'recompile_flag': False},
     'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
     'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 0, 'recompile_flag': False},
