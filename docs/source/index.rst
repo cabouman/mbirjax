@@ -74,6 +74,7 @@ MBIRJAX: High-performance tomographic reconstruction
 
    overview
    quick_start
+   advanced_features
    theory
    credits
 
