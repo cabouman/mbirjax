@@ -1,4 +1,5 @@
 import types
+import copy
 
 # The order and content of these dictionaries must match the signatures of the corresponding tests below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
@@ -28,16 +29,14 @@ _recon_model_defaults_dict = {
 
 _reconstruction_defaults_dict = {
     'auto_regularize_flag': {'val': True, 'recompile_flag': False},
-    'proximal_map_flag': {'val': False, 'recompile_flag': False},
     'positivity_flag': {'val': False, 'recompile_flag': False},
-    'initialization': {'val': 'zero', 'recompile_flag': False},
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
-    'max_resolutions': {'val': None, 'recompile_flag': False},
-    'num_iterations': {'val': 13, 'recompile_flag': False},
     'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
-    'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], 'recompile_flag': False},
+    'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 0, 'recompile_flag': False},
+    'voxel_batch_size': {'val': None, 'recompile_flag': True},
+    'view_batch_size': {'val': None, 'recompile_flag': True}
 }
 
 headings = ['Geometry params', 'Recon params', 'Init params', 'Noise params', 'QGGMRF params', 'Sys params',
@@ -53,5 +52,5 @@ for d in dicts:
 
 
 def get_default_params():
-    return recon_defaults_dict
+    return copy.deepcopy(recon_defaults_dict)
 

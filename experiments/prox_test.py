@@ -1,9 +1,9 @@
 import numpy as np
 import time
 import jax.numpy as jnp
-import mbirjax
-import mbirjax.parallel_beam
+import matplotlib.pyplot as plt
 import mbirjax.plot_utils as pu
+import mbirjax.parallel_beam
 
 if __name__ == "__main__":
     """
@@ -12,15 +12,15 @@ if __name__ == "__main__":
     # Set parameters
     num_iters = 10
     num_views = 256
-    num_det_rows = 5
+    num_det_rows = 20
     num_det_channels = 256
-    start_angle = 0
-    end_angle = np.pi
+    start_angle = -np.pi*(1/2)
+    end_angle = np.pi*(1/2)
     sharpness = 0.0
 
     # Initialize sinogram
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
-    angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
     parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
@@ -42,18 +42,17 @@ if __name__ == "__main__":
     parallel_model.print_params()
 
     # ##########################
-    # Perform VCD reconstruction
-    time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
-
-    recon.block_until_ready()
-    elapsed = time.time() - time0
-    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
-    # ##########################
+    # Test proximal map for fixed point
+    # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
+    parallel_model.auto_set_regularization_params(sinogram, weights=weights)
+    init_recon = phantom + 1.0
+    recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon, num_iterations=13)
 
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)
 
-    pu.slice_viewer(recon_3d)
     # Display results
-    # pu.display_slices(phantom, sinogram, recon_3d)
+    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+
+    # You can also display individual slides with the sinogram
+    #pu.display_slices(phantom, sinogram, recon_3d)

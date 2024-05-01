@@ -88,13 +88,65 @@ class ParallelBeamModel(TomographyModel):
         geometry_params = self.get_geometry_parameters()
         angles = self.get_params('angles')
         sinogram_shape = self.get_params('sinogram_shape')
+        voxel_batch_size, view_batch_size = self.get_params(['voxel_batch_size', 'view_batch_size'])
 
-        def sparse_back_project_fcn(sinogram, indices, voxel_batch_size=None, coeff_power=1):
-            return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, angles, geometry_params,
-                                                                 voxel_batch_size=voxel_batch_size,
-                                                                 coeff_power=coeff_power)
+        def sparse_forward_project_fcn(voxel_values, voxel_indices):
+            """
+            Compute the sinogram obtained by forward projecting the specified voxels. The voxels
+            are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
+            and for each such 2D index, the voxels in all slices at that location are projected.
 
-        def sparse_forward_project_fcn(voxel_values, voxel_indices, view_batch_size=None):
+            Args:
+                voxel_values (ndarray or jax array): 2D array of shape (len(voxel_indices), num_slices) of voxel values
+                voxel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape (num_rows, num_cols)
+
+            Returns:
+                3D array of shape (num_views, num_det_rows, num_det_cols)
+            """
+            num_voxels = len(voxel_indices)
+            if voxel_batch_size is None or voxel_batch_size >= num_voxels:
+                sinogram = sparse_forward_project_voxel_batch(voxel_values, voxel_indices)
+            else:
+                num_batches = num_voxels // voxel_batch_size
+                length_of_batches = num_batches * voxel_batch_size
+                voxel_values_batched = jnp.reshape(voxel_values[:length_of_batches],
+                                                    (num_batches, voxel_batch_size, -1))
+                voxel_indices_batched = jnp.reshape(voxel_indices[:length_of_batches], (num_batches, voxel_batch_size))
+
+                # Set up a scan over the voxel batches.  We'll project one batch to a sinogram,
+                # then add that to the accumulated sinogram
+                initial_sinogram = jnp.zeros(sinogram_shape)
+                initial_carry = [view_batch_size, initial_sinogram]
+                values_indices = (voxel_values_batched, voxel_indices_batched)
+                final_carry, _ = lax.scan(forward_project_accumulate, initial_carry, values_indices)
+
+                # Get the sinogram from these batches, and add in any leftover voxels
+                sinogram = final_carry[1]
+                num_remaining = num_voxels - num_batches * voxel_batch_size
+                if num_remaining > 0:
+                    end_batch_values = voxel_values[-num_remaining:]
+                    end_batch_indices = voxel_indices[-num_remaining:]
+                    sinogram += sparse_forward_project_voxel_batch(end_batch_values, end_batch_indices)
+
+            return sinogram
+
+        def forward_project_accumulate(carry, values_indices_batch):
+            """
+
+            Args:
+                carry:
+                values_indices_batch:
+
+            Returns:
+
+            """
+            view_batch_size, cur_sino = carry
+            voxel_values, voxel_indices = values_indices_batch
+            cur_sino += sparse_forward_project_voxel_batch(voxel_values, voxel_indices)
+
+            return [view_batch_size, cur_sino], None
+
+        def sparse_forward_project_voxel_batch(voxel_values, voxel_indices):
             """
             Compute the sinogram obtained by forward projecting the specified voxels. The voxels
             are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
@@ -103,7 +155,6 @@ class ParallelBeamModel(TomographyModel):
             Args:
                 voxel_values: 2D array of shape (len(voxel_indices), num_slices) of voxel values
                 voxel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
-                view_batch_size: Number of views to process in one batch (to limit memory use)
 
             Returns:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
@@ -117,8 +168,8 @@ class ParallelBeamModel(TomographyModel):
                 num_batches = num_views // view_batch_size
                 angles_batched = jnp.reshape(angles[0:num_batches * view_batch_size],(num_batches, view_batch_size))
 
-                def forward_map(cs_angle_batch):
-                    return forward_vmap(voxel_values, voxel_indices, cs_angle_batch, geometry_params,
+                def forward_map(angle_batch):
+                    return forward_vmap(voxel_values, voxel_indices, angle_batch, geometry_params,
                                         sinogram_shape)
 
                 sinogram = jax.lax.map(forward_map, angles_batched)
@@ -131,54 +182,34 @@ class ParallelBeamModel(TomographyModel):
 
             return sinogram
 
-        self._sparse_forward_project = jax.jit(sparse_forward_project_fcn, static_argnums=(2,))
+        def sparse_back_project_fcn(sinogram, indices, coeff_power=1):
+            num_voxels = len(indices)
+            if voxel_batch_size is None or voxel_batch_size >= num_voxels:
+                voxel_values = ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices, angles, geometry_params,
+                                                                             coeff_power=coeff_power)
+            else:
+                num_batches = num_voxels // voxel_batch_size
+                length_of_batches = num_batches * voxel_batch_size
+                indices_batched = jnp.reshape(indices[:length_of_batches], (num_batches, voxel_batch_size))
+
+                def backward_map(indices_batch):
+                    return ParallelBeamModel.back_project_to_voxels_scan(sinogram, indices_batch, angles, geometry_params,
+                                                                         coeff_power=coeff_power)
+
+                voxel_values = jax.lax.map(backward_map, indices_batched)
+                voxel_values = voxel_values.reshape((length_of_batches, -1))
+                num_remaining = num_voxels - num_batches * voxel_batch_size
+                if num_remaining > 0:
+                    end_batch = indices[-num_remaining:]
+                    end_values = backward_map(end_batch)
+                    voxel_values = jnp.concatenate((voxel_values, end_values), axis=0)
+            return voxel_values
+
+        self._sparse_forward_project = jax.jit(sparse_forward_project_fcn)
         self._sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnums=(2,))
 
     @staticmethod
-    def back_project_to_voxels_vmap(sinogram, voxel_indices, angles, geometry_params, coeff_power=1,
-                                    voxel_batch_size=None):
-        """
-        Use jax.vmap to backproject one view at a time and then sum over voxels.
-
-        Args:
-            sinogram:
-            voxel_indices:
-            angles:
-            geometry_params:
-            coeff_power:
-            voxel_batch_size:
-
-        Returns:
-
-        """
-        num_voxels = voxel_indices.shape[0]
-        backward_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_voxels, in_axes=(0, None, 0, None, None))
-        if voxel_batch_size is None or voxel_batch_size >= num_voxels:
-            bp_all_views = backward_vmap(sinogram, voxel_indices, angles, geometry_params, coeff_power)
-            bp = jnp.sum(bp_all_views, axis=0)
-        else:
-            num_batches = num_voxels // voxel_batch_size
-            voxel_inds_batched = jnp.reshape(voxel_indices[0:num_batches * voxel_batch_size],
-                                             (num_batches, voxel_batch_size))
-
-            def backward_map(voxel_inds_batch):
-                return backward_vmap(sinogram, voxel_inds_batch, angles, geometry_params, coeff_power)
-
-            bp_all_views = jax.lax.map(backward_map, voxel_inds_batched)
-            bp = jnp.sum(bp_all_views, axis=1)
-            bp = jnp.reshape(bp, (num_batches * voxel_batch_size, ) + bp.shape[2:])
-            num_remaining = num_voxels - num_batches * voxel_batch_size
-            if num_remaining > 0:
-                end_batch = voxel_indices[-num_remaining:]
-                end_bp_all_views = backward_map(end_batch)
-                end_bp = jnp.sum(end_bp_all_views, axis=0)
-                bp = jnp.concatenate((bp, end_bp), axis=0)
-
-        return bp
-
-    @staticmethod
-    def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params, coeff_power=1,
-                                    voxel_batch_size=None):
+    def back_project_to_voxels_scan(sinogram, voxel_indices, angles, geometry_params, coeff_power=1):
         """
         Use jax.lax.scan to backproject one view at a time and accumulate the results in the specified voxels.
 
@@ -187,37 +218,38 @@ class ParallelBeamModel(TomographyModel):
             voxel_indices:
             angles:
             geometry_params:
-            coeff_power:
             voxel_batch_size:
+            coeff_power:
 
         Returns:
 
         """
-        # jax.lax.scan applies a function to each entry indexed by the leading dimension of its input, the incorporates
-        # the output of that function into an accumulator.  Here we apply accumulate and project to one sinogram
-        # view and the cos and sin of the corresponding angle.
+        # TODO:  Implement voxel_batch_size
+        # jax.lax.scan applies a function to each entry indexed by the leading dimension of its input, then incorporates
+        # the output of that function into an accumulator.  Here we apply backproject_accumulate to one sinogram
+        # view and the corresponding angle.
         initial_bp = jnp.zeros((voxel_indices.shape[0], sinogram.shape[1]))
         extra_args = voxel_indices, geometry_params, coeff_power
         initial_carry = [extra_args, initial_bp]
         sino_angles = (sinogram, angles)
         # Use lax.scan to process each (slice, angle) pair of 'sino_angles'
-        final_carry, _ = lax.scan(ParallelBeamModel.accumulate_and_project, initial_carry, sino_angles)
+        final_carry, _ = lax.scan(ParallelBeamModel.backproject_accumulate, initial_carry, sino_angles)
 
         return final_carry[1]
 
     @staticmethod
-    def accumulate_and_project(carry, sino_angle_pair):
+    def backproject_accumulate(carry, view_angle_pair):
         """
 
         Args:
             carry:
-            sino_angle_pair:
+            view_angle_pair:
 
         Returns:
 
         """
         extra_args, accumulated = carry
-        sinogram_view, angle = sino_angle_pair
+        sinogram_view, angle = view_angle_pair
         voxel_indices, geometry_params, coeff_power = extra_args
         bp_view = ParallelBeamModel.back_project_one_view_to_voxels(sinogram_view, voxel_indices, angle,
                                                                     geometry_params, coeff_power)
@@ -272,78 +304,6 @@ class ParallelBeamModel(TomographyModel):
         # Compute dot product
         return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
 
-    def compute_hessian_diagonal(self, weights=None, voxel_batch_size=None):
-        """
-        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
-        matrix except using the square of the coefficients in the backprojection to a given voxel.
-        One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
-        array of ones of size sinogram_shape.
-
-        Args:
-            weights (ndarray or None): The weights with shape (views, rows, channels)
-            voxel_batch_size:
-
-        Returns:
-            An array that is the same size as the reconstruction.
-        """
-        sinogram_shape = self.get_params('sinogram_shape')
-        if weights is None:
-            weights = jnp.ones(sinogram_shape)
-        elif weights.shape != sinogram_shape:
-            error_message = 'Weights must be constant or an array of the same shape as sinogram'
-            error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
-            raise ValueError(error_message)
-        geometry_params = self.get_geometry_parameters()
-
-        num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[-3:]
-        max_index = num_recon_rows * num_recon_cols
-        indices = jnp.arange(max_index)
-
-        hessian_diagonal = self._sparse_back_project(weights, indices, voxel_batch_size=voxel_batch_size, coeff_power=2)
-
-        return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
-
-    @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):
-        """
-        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
-
-        Args:
-            voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
-                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
-            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            angle (float):  angle for this view
-            geometry_params (list): Geometry parameters from get_geometry_params()
-            sinogram_shape (tuple): Sinogram shape
-
-        Returns:
-            jax array of shape sinogram_shape
-        """
-        if voxel_values.ndim != 2:
-            raise ValueError('voxel_values must have shape (num_indices, num_slices)')
-        num_slices = voxel_values.shape[1]
-
-        # Get the geometry parameters and the system matrix and channel indices
-        num_views, num_det_rows, num_det_channels = sinogram_shape
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, angle, geometry_params,
-                                                                         sinogram_shape)
-
-        # Add axes to be able to broadcast while multiplying.
-        # sinogram_values has shape num_indices x (2P+1) x num_slices
-        sinogram_values = (Aji[:, :, None] * voxel_values[:, None, :])
-
-        # Now sum over indices into the locations specified by channel_index.
-        # Directly using index_add for indexed updates
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))  # num_det_rows x num_det_channels
-
-        # Apply the vectorized update function with a vmap over slices
-        # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2P+1) x num_det_rows
-        sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
-        sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
-        del Aji, channel_index
-        return sinogram_view
-
     @staticmethod
     @jax.jit
     def backproject_to_voxel(sinogram, voxel_index, angles, geometry_params, coeff_power=1):
@@ -376,6 +336,45 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute dot product
         return jnp.sum(sinogram_array * (Aji.T.reshape((-1, 1))**coeff_power), axis=0)
+
+    @staticmethod
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):
+        """
+        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            angle (float):  angle for this view
+            geometry_params (list): Geometry parameters from get_geometry_params()
+            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
+
+        Returns:
+            jax array of shape (num_det_rows, num_det_channels)
+        """
+        if voxel_values.ndim != 2:
+            raise ValueError('voxel_values must have shape (num_indices, num_slices)')
+
+        # Get the geometry parameters and the system matrix and channel indices
+        num_views, num_det_rows, num_det_channels = sinogram_shape
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, angle, geometry_params,
+                                                                         sinogram_shape)
+
+        # Add axes to be able to broadcast while multiplying.
+        # sinogram_values has shape num_indices x (2P+1) x num_slices
+        sinogram_values = (Aji[:, :, None] * voxel_values[:, None, :])
+
+        # Now sum over indices into the locations specified by channel_index.
+        # Directly using index_add for indexed updates
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))  # num_det_rows x num_det_channels
+
+        # Apply the vectorized update function with a vmap over slices
+        # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2P+1) x num_det_rows
+        sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
+        sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
+        del Aji, channel_index
+        return sinogram_view
 
     @staticmethod
     @jax.jit
@@ -442,3 +441,34 @@ class ParallelBeamModel(TomographyModel):
         Aji = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 3
         Aji = Aji * (channel_index >= 0) * (channel_index < num_det_channels)
         return Aji, channel_index
+
+    def compute_hessian_diagonal(self, weights=None):
+        """
+        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
+        matrix except using the square of the coefficients in the backprojection to a given voxel.
+        One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
+        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
+        array of ones of size sinogram_shape.
+
+        Args:
+            weights (ndarray or None): The weights with shape (views, rows, channels)
+
+        Returns:
+            An array that is the same size as the reconstruction.
+        """
+        sinogram_shape = self.get_params('sinogram_shape')
+        if weights is None:
+            weights = jnp.ones(sinogram_shape)
+        elif weights.shape != sinogram_shape:
+            error_message = 'Weights must be constant or an array of the same shape as sinogram'
+            error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
+            raise ValueError(error_message)
+        geometry_params = self.get_geometry_parameters()
+
+        num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[-3:]
+        max_index = num_recon_rows * num_recon_cols
+        indices = jnp.arange(max_index)
+
+        hessian_diagonal = self._sparse_back_project(weights, indices, coeff_power=2)
+
+        return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))

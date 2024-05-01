@@ -14,10 +14,11 @@ The best way to start is to:
 
 You can then modify the Python script to suit your needs.
 
-Quick Start Guide
-~~~~~~~~~~~~~~~~~
 
-Below is a quick-start-guide to using MBIRJAX for your application:
+Quick Start
+~~~~~~~~~~~
+
+Below are simple instructions on how to do your first reconstruction:
 
 - **Get your data:**
 
@@ -43,27 +44,5 @@ Below is a quick-start-guide to using MBIRJAX for your application:
 
   - Then run ``recon_3d = parallel_model.reshape_recon(recon)`` to reshape your reconstruction into ``(rows, columns, slices)`` format.
 
-  Even the default parameter setting will usually produce a good quality reconstruction,
-
-
-- **Set reconstruction parameters:**
-
-  You can tune image qualty by setting the following parameters:
-
-  - ``sharpness`` -  default = 0. A larger value of ``sharpness=1.0`` or greater will increase sharpness, and a negative value will reduce noise.
-  - ``snr_db`` - default = 30.0. A larger value will increase resolution, but we recommend you start with ``sharpness``.
-  - ``verbose`` - default = 0 will be quite. Set ``verbose=1`` or 2 for more feedback.
-
-  Parameters can be set using the method ``model.set_params('param_name=param_value')``.
-
-- **Set sinogram weights:**
-  As you become more experienced, you may want to set the sinogram weights to improve image quality.
-  You can set weights for common scenarios by:
-
-  - Generate a weight array using ``weights = model.gen_weights(sinogram, weight_type='transmission_root')``.
-
-  - Then reconstruct using ``recon = model.recon(sinogram, weights=weights)``.
-
-  The weights array has the same shape as the sinogram, and it represents the assumed inverse noise variance for each sinogram entry.
-  If you use the transmission options, it is critical that the sinogram be properly scaled to -log attenuation units, or you will get crazy results.
+  Even the default parameter setting will usually produce a good quality reconstruction.
 
