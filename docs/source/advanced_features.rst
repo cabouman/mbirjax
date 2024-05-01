@@ -54,6 +54,6 @@ Below are tips on important and useful features:
   - ``voxel_batch_size`` - This defaults to None and sets the maximum number of voxels that are processed together.
 
   If you are running out of memory, we recommend that you set these parameters to smaller values.
-  Good starting points are ``view_batch_size=100`` and ``view_batch_size=10000``
+  Good starting points are ``view_batch_size=100`` and ``voxel_batch_size=10000``
 
 
