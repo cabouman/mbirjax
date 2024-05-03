@@ -1,8 +1,4 @@
-import warnings
-
-import jax
-from jax import numpy as jnp, lax
-
+import jax.numpy as jnp
 from mbirjax import TomographyModel
 
 
@@ -18,9 +14,9 @@ class GeometryTemplateModel(TomographyModel):
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
         param1, param2 (scalars):
-            These are view independent scalar parameters that are required for the geometery and are not already included in the parent class.
+            These are view-independent scalar parameters that are required for the geometry and are not already included in the parent class.
         view_dependent_vec1, view_dependent_vec2 (jnp.ndarray):
-            These are view dependent parameter vectors each with length = number of views.
+            These are view-dependent parameter vectors each with length = number of views.
         **kwargs (dict):
             Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
             include settings and configurations specific to the tomography model such as noise models or image dimensions.
@@ -28,21 +24,28 @@ class GeometryTemplateModel(TomographyModel):
     """
 
     def __init__(self, sinogram_shape, param1, param2, view_dependent_vec1, view_dependent_vec2, **kwargs):
-        view_params_array = jnp.stack([view_dependent_vec1, view_dependent_vec2], axis=-1)
+        # Convert the view-dependent vectors to an array
+        view_independent_vecs = [vec.flatten() for vec in [view_dependent_vec1, view_dependent_vec2]]
+        try:
+            view_params_array = jnp.stack(view_independent_vecs, axis=1)
+        except ValueError as e:
+            raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
+                             "same length.")
 
         super().__init__(sinogram_shape, param1=param1, param2=param2, view_params_array=view_params_array, **kwargs)
 
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
+        Extend to include any geometry-specific conditions.
         """
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
 
         if view_params_array.shape[0] != sinogram_shape[0]:
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
-            error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
-                                                                                              sinogram_shape[0])
+            error_message += "Got {} for length of view-dependent parameters and "
+            error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
     def get_geometry_parameters(self):
@@ -59,7 +62,6 @@ class GeometryTemplateModel(TomographyModel):
 
         return geometry_params
 
-
     @staticmethod
     def back_project_one_view_to_voxel(sinogram_view, voxel_index, single_view_params, geometry_params, coeff_power=1):
         """
@@ -67,16 +69,16 @@ class GeometryTemplateModel(TomographyModel):
         This code uses the distance driven projector.
 
         Args:
-            sinogram_view (jax array): one view of the sinogram to be back projected
-            TODO: From Charlie: I think the following statement may be incorrect.
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
+            sinogram_view (2D jax array): one view of the sinogram to be back projected
+            voxel_index (int):  index into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for the view being back projected.
-            geometry_params (list): Geometry parameters from get_geometry_params().
-            coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
+            geometry_params (1D jax array): Geometry parameters from get_geometry_params().
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
 
         Returns:
-            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting the input sinogram view.
+            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
         """
         # The number of slices will need to come from geometry_params
         num_slices = 1
@@ -84,7 +86,6 @@ class GeometryTemplateModel(TomographyModel):
         # Computes the voxel values in all slices corresponding to voxel_index
         voxel_values_cylinder = jnp.zeros(num_slices)
         return voxel_values_cylinder
-
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, single_view_params, geometry_params, sinogram_shape):
