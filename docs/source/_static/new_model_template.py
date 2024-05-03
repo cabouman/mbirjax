@@ -48,7 +48,7 @@ class GeometryTemplateModel(TomographyModel):
     def get_geometry_parameters(self):
         """
         TODO: This needs to be changed so that it returns the view_params_array
-        Required function to get a list of the primary geometry parameters for projection.
+        Required function to get a list of the view independent geometry parameters required for projection.
 
         Returns:
             List of delta_det_channel, det_channel_offset, delta_pixel_recon,
@@ -68,14 +68,15 @@ class GeometryTemplateModel(TomographyModel):
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
+            TODO: From Charlie: I think the following statement may be incorrect.
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
-            single_view_params: These are the view dependent parameters for this view
-            geometry_params:
+            single_view_params: These are the view dependent parameters for the view being back projected.
+            geometry_params (list): Geometry parameters from get_geometry_params().
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
 
         Returns:
-            The value of the voxel at the input index obtained by backprojecting the input sinogram.
+            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting the input sinogram view.
         """
         # The number of slices will need to come from geometry_params
         num_slices = 1
@@ -88,15 +89,15 @@ class GeometryTemplateModel(TomographyModel):
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, single_view_params, geometry_params, sinogram_shape):
         """
-        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+        Forward project a set of voxels determined by indices into a single view.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            angle (float):  angle for this view
-            geometry_params (list): Geometry parameters from get_geometry_params()
-            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
+            single_view_params: These are the view dependent parameters for this view.
+            geometry_params (list): Geometry parameters from get_geometry_params().
+            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels).
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
