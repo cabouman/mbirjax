@@ -1,7 +1,7 @@
 import warnings
 
 import jax
-from jax import numpy as jnp, lax
+import jax.numpy as jnp
 
 from mbirjax import TomographyModel
 
@@ -30,9 +30,9 @@ class ParallelBeamModel(TomographyModel):
     Examples
     --------
     Initialize a parallel beam model with specific angles and sinogram shape:
-
+    >>> import mbirjax
     >>> angles = jnp.array([0, jnp.pi/4, jnp.pi/2])
-    >>> model = ParallelBeamModel(angles, (180, 256, 10))
+    >>> model = mbirjax.ParallelBeamModel(angles, (180, 256, 10))
 
     See Also
     --------
@@ -118,7 +118,7 @@ class ParallelBeamModel(TomographyModel):
                 initial_sinogram = jnp.zeros(sinogram_shape)
                 initial_carry = [view_batch_size, initial_sinogram]
                 values_indices = (voxel_values_batched, voxel_indices_batched)
-                final_carry, _ = lax.scan(forward_project_accumulate, initial_carry, values_indices)
+                final_carry, _ = jax.lax.scan(forward_project_accumulate, initial_carry, values_indices)
 
                 # Get the sinogram from these batches, and add in any leftover voxels
                 sinogram = final_carry[1]
@@ -233,7 +233,7 @@ class ParallelBeamModel(TomographyModel):
         initial_carry = [extra_args, initial_bp]
         sino_angles = (sinogram, angles)
         # Use lax.scan to process each (slice, angle) pair of 'sino_angles'
-        final_carry, _ = lax.scan(ParallelBeamModel.backproject_accumulate, initial_carry, sino_angles)
+        final_carry, _ = jax.lax.scan(ParallelBeamModel.backproject_accumulate, initial_carry, sino_angles)
 
         return final_carry[1]
 
@@ -303,39 +303,6 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute dot product
         return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
-
-    @staticmethod
-    @jax.jit
-    def backproject_to_voxel(sinogram, voxel_index, angles, geometry_params, coeff_power=1):
-        """
-        Calculate the backprojection value at a specified recon voxel given the sinogram and various parameters.
-        This code uses the distance driven projector.
-
-        Args:
-            sinogram: [jax array] the sinogram to be back projected
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
-            angles:
-            geometry_params:
-            coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
-                Normally 1, but should be 2 when computing theta 2.
-
-        Returns:
-            The value of the voxel at the input index obtained by backprojecting the input sinogram.
-        """
-
-        # Get the geometry parameters and the system matrix and channel indices
-        num_views = sinogram.shape[0]
-
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, angles, geometry_params,
-                                                                         sinogram.shape)
-
-        # Extract out the relevant entries from the sinogram
-        view_index = jnp.arange(num_views)
-        view_index = jnp.concatenate((view_index, view_index, view_index))  # Should be 3*num_views
-        sinogram_array = sinogram[view_index, :, channel_index.T.flatten()]
-
-        # Compute dot product
-        return jnp.sum(sinogram_array * (Aji.T.reshape((-1, 1))**coeff_power), axis=0)
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):

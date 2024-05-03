@@ -23,7 +23,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_sl_phantom()
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
+    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iters)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

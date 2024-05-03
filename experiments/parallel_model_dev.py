@@ -30,7 +30,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
 
     # Generate phantom
     num_recon_rows, num_recon_cols, num_recon_slices = (
