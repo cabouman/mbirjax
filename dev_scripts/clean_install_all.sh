@@ -31,7 +31,7 @@ fi
 
 source install_conda_environment.sh
 
-if [[ "$HOSTNAME" == *"gilbreth"* ]]; then
+if nvidia-smi | grep -q "CUDA"; then
   #  pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
   # To install lower version of jax (say v0.4.13) incase of XLA parallel compilation warnings use the following
    pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

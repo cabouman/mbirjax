@@ -17,9 +17,9 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Initialize sinogram
-    num_views = 1024
-    num_det_rows = 1024
-    num_det_channels = 1024
+    num_views = 128
+    num_det_rows = 128
+    num_det_channels = 128
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
