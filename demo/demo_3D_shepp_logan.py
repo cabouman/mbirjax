@@ -10,7 +10,6 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_iters = 10
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
@@ -44,7 +43,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iters)
+    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

@@ -15,7 +15,6 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Set parameters
-    num_iters = 10
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
