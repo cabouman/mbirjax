@@ -10,7 +10,6 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_iters = 10
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
@@ -23,7 +22,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_sl_phantom()

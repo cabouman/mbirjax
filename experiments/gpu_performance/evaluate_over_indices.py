@@ -38,7 +38,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
 
         # Set up parallel beam
         sinogram_shape = (nv, nr, nc)
-        parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram_shape)
+        parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
         parallel_model.set_params(voxel_batch_size=voxel_batch_size)
 
         # Generate phantom for forward projection

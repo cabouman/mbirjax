@@ -1,12 +1,15 @@
 Developer API reference
 =======================
 
-**MBIRJAX** can be extended to include other geometries.  More details to come.
-
-For now, browse the developer docs:
+Documentation for all methods is available at the following links:
 
 * :ref:`TomographyBeamModelDevDocs`
 * :ref:`ParallelBeamModelDevDocs`
+
+**MBIRJAX** can be extended to include other geometries by following the outline in new_model_template.py:
+
+.. include:: _static/new_model_template.py
+   :code: python
 
 .. automodule:: mbirjax
    :members:
