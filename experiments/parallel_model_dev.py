@@ -17,9 +17,9 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Initialize sinogram
-    num_views = 1024
-    num_det_rows = 1024
-    num_det_channels = 1024
+    num_views = 128
+    num_det_rows = 128
+    num_det_channels = 128
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -30,7 +30,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate phantom
     num_recon_rows, num_recon_cols, num_recon_slices = (
@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
-    geometry_params = parallel_model.get_geometry_parameters()
+
     parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
 
     print('Starting forward projection')

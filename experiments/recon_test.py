@@ -15,7 +15,6 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Set parameters
-    num_iters = 10
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
@@ -28,7 +27,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Here are other things you might want to do
     parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
