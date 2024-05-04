@@ -28,7 +28,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Here are other things you might want to do
     parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)

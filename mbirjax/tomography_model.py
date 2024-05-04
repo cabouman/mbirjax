@@ -31,11 +31,13 @@ class TomographyModel:
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
         self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
-        self.auto_set_recon_size(sinogram_shape, no_compile=True)  # Determine auto image size before processing user parameters
+        self.auto_set_recon_size(sinogram_shape,
+                                 no_compile=True)  # Determine auto image size before processing user parameters
         self.compile_projectors()
 
     def compile_projectors(self):
-        projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view, self.back_project_one_view_to_voxel)
+        projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view,
+                                                 self.back_project_one_view_to_voxel)
         self._sparse_forward_project = projector_functions._sparse_forward_project
         self._sparse_back_project = projector_functions._sparse_back_project
         self._compute_hessian_diagonal = projector_functions._compute_hessian_diagonal
@@ -78,7 +80,8 @@ class TomographyModel:
         recon_at_indices = self.sparse_back_project(sinogram, full_indices)
 
         # Get shape of recon
-        num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(['num_recon_rows','num_recon_cols','num_recon_slices'])
+        num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(
+            ['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
 
         # Allocate recon of correct shape
         recon = jnp.zeros((num_recon_rows * num_recon_cols, num_recon_slices))
@@ -124,7 +127,7 @@ class TomographyModel:
 
     def compute_hessian_diagonal(self, weights=None):
         """
-        Computes the diagonal elements of the Hessian matrix for given weights and angles.
+        Computes the diagonal elements of the Hessian matrix for given weights.
 
         Args:
             weights (jnp array): Sinogram Weights for the Hessian computation.
@@ -168,10 +171,10 @@ class TomographyModel:
         sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
-        signal_rms = np.average(weights * sinogram**2, None, sino_indicator)**0.5
+        signal_rms = np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
 
         # Convert snr to relative noise standard deviation
-        rel_noise_std = 10**(-snr_db / 20)
+        rel_noise_std = 10 ** (-snr_db / 20)
         # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
         default_pixel_pitch = delta_det_channel / magnification
 
@@ -179,7 +182,7 @@ class TomographyModel:
         pixel_pitch_relative_to_default = delta_pixel_recon / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
-        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default**0.5)
+        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
         self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
 
     def auto_set_sigma_x(self, sinogram):
@@ -219,8 +222,11 @@ class TomographyModel:
         """
         Prints out the parameters of the model.
         """
+        verbose = self.get_params('verbose')
         print("----")
         for key, entry in self.params.items():
+            if verbose < 2 and key == 'view_params_array':
+                continue
             param_val = entry.get('val')
             recompile_flag = entry.get('recompile_flag')
             print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
@@ -413,10 +419,10 @@ class TomographyModel:
         """
         if normalize:
             avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y')**2)) * jnp.mean(
+            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y') ** 2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
-            loss = (1.0 / (2 * self.get_params('sigma_y')**2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            loss = (1.0 / (2 * self.get_params('sigma_y') ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     @staticmethod
@@ -457,7 +463,7 @@ class TomographyModel:
                 num_det_channels * delta_det_channel / magnification)
 
         # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2**sharpness) * typical_img_value
+        sigma_prior = (2 ** sharpness) * typical_img_value
         return sigma_prior
 
     def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
@@ -489,7 +495,6 @@ class TomographyModel:
 
         return recon, fm_rmse
 
-
     def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
         """
         Proximal Map function for use in Plug-and-Play applications.
@@ -517,7 +522,6 @@ class TomographyModel:
 
         return recon, fm_rmse
 
-
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None, prox_input=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
@@ -537,7 +541,6 @@ class TomographyModel:
         num_iters = partition_sequence.size
         num_recon_rows, num_recon_cols, num_recon_slices = \
             self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        angles = self.get_params('angles')
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
@@ -548,7 +551,8 @@ class TomographyModel:
             recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
             if init_recon.shape != recon_shape:
                 error_message = "init_recon does not have the correct shape. \n"
-                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape, init_recon.shape)
+                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
+                                                                                              init_recon.shape)
                 raise ValueError(error_message)
 
             # Initialize VCD recon, and error sinogram
@@ -640,7 +644,7 @@ class TomographyModel:
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-        constant = 1.0 / (self.get_params('sigma_y')**2.0)
+        constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
 
         fm_gradient = -constant * self._sparse_back_project(error_sinogram * weights, indices)
         fm_sparse_hessian = constant * fm_hessian[indices]
@@ -654,7 +658,7 @@ class TomographyModel:
         else:
             # This is for the proximal map prior
             sigma_p = self.get_params('sigma_p')
-            pm_hessian = sigma_p**2
+            pm_hessian = sigma_p ** 2
 
             # Compute the prior model gradient at each pixel in the index set.
             pm_gradient = pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p)
@@ -668,7 +672,8 @@ class TomographyModel:
         # Compute "optimal" update step
         # This is really only optimal for the forward model component.
         # We can compute the truly optimal update, but it's complicated so maybe this is good enough
-        alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
+        alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (
+                    jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
         # TODO: test for alpha<0 and terminate.
 
         # Flatten recon for next steps
@@ -682,7 +687,7 @@ class TomographyModel:
 
             # Clip updates to ensure non-negativity
             constant = 1.0 / (alpha + jnp.finfo(np.float32).eps)
-            delta_recon_at_indices = jnp.maximum(-constant*recon_at_indices, delta_recon_at_indices)
+            delta_recon_at_indices = jnp.maximum(-constant * recon_at_indices, delta_recon_at_indices)
 
             # Recompute sinogram projection
             delta_sinogram = self._sparse_forward_project(delta_recon_at_indices, indices)
@@ -914,7 +919,7 @@ def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
         first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
     """
     # Compute the prior model gradient at all voxels
-    pm_gradient = (1.0 / (sigma_p**2.0)) * (recon - prox_input)
+    pm_gradient = (1.0 / (sigma_p ** 2.0)) * (recon - prox_input)
 
     # Extract the shape of the reconstruction array.
     num_rows, num_cols, num_slices = recon.shape
@@ -926,6 +931,7 @@ def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
     pm_gradient = pm_gradient[row_index, col_index]
 
     return pm_gradient
+
 
 def _get_rho(delta, b, sigma_x, p, q, T):
     """
@@ -943,8 +949,8 @@ def _get_rho(delta, b, sigma_x, p, q, T):
     delta = abs(delta) + sigma_x * eps_float32
 
     # Compute terms of complex expression
-    first_term = ((delta / sigma_x)**p) / p
-    second_term = (delta / (T * sigma_x))**(q - p)
+    first_term = ((delta / sigma_x) ** p) / p
+    second_term = (delta / (T * sigma_x)) ** (q - p)
     third_term = second_term / (1 + second_term)
 
     result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
@@ -969,11 +975,11 @@ def _get_btilde(delta_prime, b, sigma_x, p, q, T):
     delta_prime = abs(delta_prime) + sigma_x * eps_float32
 
     # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime**(q - 2.0)) / (2.0 * (sigma_x**p) * (T * sigma_x**(q - p)))
+    first_term = (delta_prime ** (q - 2.0)) / (2.0 * (sigma_x ** p) * (T * sigma_x ** (q - p)))
 
     # third_term is the third term in formula.
-    second_term = (delta_prime / (T * sigma_x))**(q - p)
-    third_term = ((q / p) + second_term) / ((1 + second_term)**2.0)
+    second_term = (delta_prime / (T * sigma_x)) ** (q - p)
+    third_term = ((q / p) + second_term) / ((1 + second_term) ** 2.0)
 
     result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
     return result

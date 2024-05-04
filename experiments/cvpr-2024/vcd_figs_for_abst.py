@@ -50,7 +50,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram.shape)
+    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_sl_phantom()

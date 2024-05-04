@@ -162,7 +162,7 @@ if __name__ == "__main__":
 
                     # Set up parallel beam model
                     sinogram_shape = (nv, nr, nc)
-                    parallel_model = mbirjax.ParallelBeamModel(angles, sinogram_shape)
+                    parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
                     parallel_model.set_params(voxel_batch_size=voxel_batch_size)
 
                     # Generate phantom for forward projection

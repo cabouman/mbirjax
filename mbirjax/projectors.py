@@ -14,7 +14,7 @@ class Projectors:
 
     def compile_projectors(self, forward_core, backward_core):
         """
-        Compute the forward and back projectors for this set of angles
+        Compute the forward and back projectors for this geometry and current view parameters
         Args:
 
         Returns:
@@ -28,8 +28,7 @@ class Projectors:
             called multiple times with the same shape of input, then the cached version will be used, which will
             give reduced execution time relative to the initial call.
         """
-        geometry_params = self.tomography_model.get_geometry_parameters()
-        angles = self.tomography_model.get_params('angles')
+        geometry_params, view_params_array = self.tomography_model.get_geometry_parameters()
         sinogram_shape = self.tomography_model.get_params('sinogram_shape')
         voxel_batch_size, view_batch_size = self.tomography_model.get_params(['voxel_batch_size', 'view_batch_size'])
 
@@ -102,24 +101,25 @@ class Projectors:
             Returns:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
             """
-            num_views = len(angles)
+            num_views = view_params_array.shape[0]
             forward_vmap = jax.vmap(forward_core, in_axes=(None, None, 0, None, None))
 
             if view_batch_size is None or view_batch_size >= num_views:
-                sinogram = forward_vmap(voxel_values, voxel_indices, angles, geometry_params, sinogram_shape)
+                sinogram = forward_vmap(voxel_values, voxel_indices, view_params_array, geometry_params, sinogram_shape)
             else:
                 num_batches = num_views // view_batch_size
-                angles_batched = jnp.reshape(angles[0:num_batches * view_batch_size],(num_batches, view_batch_size))
+                view_params_batched = jnp.reshape(view_params_array[0:num_batches * view_batch_size], (num_batches, view_batch_size, -1))
 
-                def forward_map(angle_batch):
-                    return forward_vmap(voxel_values, voxel_indices, angle_batch, geometry_params,
+                @jax.jit
+                def forward_map(view_params_batch):
+                    return forward_vmap(voxel_values, voxel_indices, view_params_batch, geometry_params,
                                         sinogram_shape)
 
-                sinogram = jax.lax.map(forward_map, angles_batched)
+                sinogram = jax.lax.map(forward_map, view_params_batched)
                 sinogram = jnp.reshape(sinogram, (num_batches * view_batch_size,) + sinogram.shape[2:])
                 num_remaining = num_views - num_batches * view_batch_size
                 if num_remaining > 0:
-                    end_batch = angles[-num_remaining:]
+                    end_batch = view_params_array[-num_remaining:]
                     end_views = forward_map(end_batch)
                     sinogram = jnp.concatenate((sinogram, end_views), axis=0)
 
@@ -161,49 +161,49 @@ class Projectors:
             # TODO:  Implement voxel_batch_size
             # jax.lax.scan applies a function to each entry indexed by the leading dimension of its input, then
             # incorporates the output of that function into an accumulator.  Here we apply backproject_accumulate to
-            # one sinogram view and the corresponding angle.
+            # one sinogram view and the corresponding view_params.
             initial_bp = jnp.zeros((voxel_indices.shape[0], sinogram.shape[1]))
             extra_args = voxel_indices, geometry_params, coeff_power
             initial_carry = [extra_args, initial_bp]
-            sino_angles = (sinogram, angles)
-            # Use lax.scan to process each (slice, angle) pair of 'sino_angles'
-            final_carry, _ = jax.lax.scan(backproject_accumulate, initial_carry, sino_angles)
+            sino_view_params = (sinogram, view_params_array)
+            # Use lax.scan to process each (slice, view_params) pair of 'sino_view_params'
+            final_carry, _ = jax.lax.scan(backproject_accumulate, initial_carry, sino_view_params)
 
             return final_carry[1]
 
-        def backproject_accumulate(carry, view_angle_pair):
+        def backproject_accumulate(carry, view_params_pair):
             """
 
             Args:
                 carry:
-                view_angle_pair:
+                view_params_pair:
 
             Returns:
 
             """
             extra_args, accumulated = carry
-            sinogram_view, angle = view_angle_pair
+            sinogram_view, view_params = view_params_pair
             voxel_indices, geometry_params, coeff_power = extra_args
-            bp_view = back_project_one_view_to_voxels(sinogram_view, voxel_indices, angle, coeff_power)
+            bp_view = back_project_one_view_to_voxels(sinogram_view, voxel_indices, view_params, coeff_power)
             accumulated += bp_view
             del bp_view
             return [extra_args, accumulated], None
 
         @jax.jit
-        def back_project_one_view_to_voxels(sinogram_view, voxel_indices, angle, coeff_power=1):
+        def back_project_one_view_to_voxels(sinogram_view, voxel_indices, view_params, coeff_power=1):
             """
 
             Args:
                 sinogram_view:
                 voxel_indices:
-                angle:
+                view_params:
                 coeff_power:
 
             Returns:
 
             """
             bp_vmap = jax.vmap(backward_core, in_axes=(None, 0, None, None, None))
-            bp = bp_vmap(sinogram_view, voxel_indices, angle, geometry_params, coeff_power)
+            bp = bp_vmap(sinogram_view, voxel_indices, view_params, geometry_params, coeff_power)
             return bp
 
         def compute_hessian_diagonal(weights=None):

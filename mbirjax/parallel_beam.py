@@ -2,8 +2,8 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-
-from mbirjax import TomographyModel, Projectors
+from functools import partial
+from mbirjax import TomographyModel
 
 
 class ParallelBeamModel(TomographyModel):
@@ -32,33 +32,41 @@ class ParallelBeamModel(TomographyModel):
     Initialize a parallel beam model with specific angles and sinogram shape:
     >>> import mbirjax
     >>> angles = jnp.array([0, jnp.pi/4, jnp.pi/2])
-    >>> model = mbirjax.ParallelBeamModel(angles, (180, 256, 10))
+    >>> model = mbirjax.ParallelBeamModel((180, 256, 10), angles)
 
     See Also
     --------
     TomographyModel : The base class from which this class inherits.
     """
 
-    def __init__(self, angles, sinogram_shape, **kwargs):
-
-        super().__init__(sinogram_shape, angles=angles, **kwargs)
+    def __init__(self, sinogram_shape, angles, **kwargs):
+        # Convert the view-dependent vectors to an array
+        # This is more complicated than needed with only a single view-dependent vector but is included to
+        # illustrate the process as shown in TemplateModel
+        view_dependent_vecs = [vec.flatten() for vec in [angles]]
+        try:
+            view_params_array = jnp.stack(view_dependent_vecs, axis=1)
+        except ValueError as e:
+            raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
+                             "same length.")
+        super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
 
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
         """
         super().verify_valid_params()
-        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
+        sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
 
-        if len(angles) != sinogram_shape[0]:
-            error_message = "Number of angles must equal the number of views. \n"
-            error_message += "Got {} for number of angles and {} for number of views.".format(len(angles),
-                                                                                              sinogram_shape[0])
+        if view_params_array.shape[0] != sinogram_shape[0]:
+            error_message = "Number view dependent parameter vectors must equal the number of views. \n"
+            error_message += "Got {} for length of view-dependent parameters and "
+            error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
     def get_geometry_parameters(self):
         """
-        Convenience function to get a list of the primary geometry parameters for projection.
+        Function to get a list of the primary geometry parameters for projection.
 
         Returns:
             List of delta_det_channel, det_channel_offset, delta_pixel_recon,
@@ -66,8 +74,9 @@ class ParallelBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon',
                                            'num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        view_params_array = self.get_params('view_params_array')
 
-        return geometry_params
+        return geometry_params, view_params_array
 
     @staticmethod
     def back_project_one_view_to_voxel(sinogram_view, voxel_index, angle, geometry_params, coeff_power=1):
@@ -78,13 +87,14 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
-            angle:
-            geometry_params:
+            angle (float): The angle in radians for this view.
+            geometry_params (list or 1D jax array)):  Geometry parameters from get_geometry_params().
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
 
         Returns:
-            The value of the voxel at the input index obtained by backprojecting the input sinogram.
+            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
         """
 
         # Get the part of the system matrix and channel indices for this voxel
@@ -106,8 +116,8 @@ class ParallelBeamModel(TomographyModel):
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            angle (float):  angle for this view
-            geometry_params (list): Geometry parameters from get_geometry_params()
+            angle (float):  Angle for this view
+            geometry_params (list or 1D jax array): Geometry parameters from get_geometry_params()
             sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
 
         Returns:
@@ -122,7 +132,7 @@ class ParallelBeamModel(TomographyModel):
                                                                          sinogram_shape)
 
         # Add axes to be able to broadcast while multiplying.
-        # sinogram_values has shape num_indices x (2P+1) x num_slices
+        # sinogram_values has shape num_indices x (2p+1) x num_slices
         sinogram_values = (Aji[:, :, None] * voxel_values[:, None, :])
 
         # Now sum over indices into the locations specified by channel_index.
@@ -130,20 +140,31 @@ class ParallelBeamModel(TomographyModel):
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))  # num_det_rows x num_det_channels
 
         # Apply the vectorized update function with a vmap over slices
-        # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2P+1) x num_det_rows
+        # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2p+1) x num_det_rows
         sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
         sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
         del Aji, channel_index
         return sinogram_view
 
     @staticmethod
-    @jax.jit
-    def compute_Aji_channel_index(voxel_indices, angles, geometry_params, sinogram_shape):
+    @partial(jax.jit, static_argnums=4)
+    def compute_Aji_channel_index(voxel_indices, angle, geometry_params, sinogram_shape, p=1):
+        """
+        Calculate the coefficients Aji of the system matrix along with the channel indices associated with the
+        given voxel indices and view angle.
 
-        # TODO:  P should be included in function signature with a partial on the jit
+        Args:
+            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view
+            geometry_params (list or 1D jax array): Geometry parameters from get_geometry_params()
+            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
+            p (int, optional, default=1):  # This is the assumed number of channels per side
+
+        Returns:
+            jax array of Aji, jax array of channel indices
+        """
         warnings.warn('Compiling for indices length = {}'.format(voxel_indices.shape))
         warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
-        P = 1  # This is the assumed number of channels per side
 
         # Get all the geometry parameters
         delta_det_channel, det_channel_offset, delta_pixel_recon, num_recon_rows, num_recon_cols = geometry_params[:-1]
@@ -163,9 +184,8 @@ class ParallelBeamModel(TomographyModel):
         channel_center = (delta_det_channel * (num_det_channels - 1.0) / 2.0) + det_channel_offset
 
         # Precompute cosine and sine of view angle
-        # angles = angles.reshape((-1, 1))  # Reshape to be a column vector of size num_views x 1
-        cosine = jnp.cos(angles)    # length = num_views
-        sine = jnp.sin(angles)      # length = num_views
+        cosine = jnp.cos(angle)    # length = num_views
+        sine = jnp.sin(angle)      # length = num_views
 
         # Rotate coordinates of pixel
         x_pos_rot = cosine * x_pos + sine * y_pos  # length = num_indices
@@ -180,24 +200,25 @@ class ParallelBeamModel(TomographyModel):
         # Compute the location on the detector in ALU of the projected center of the voxel
         x_pos_on_detector = x_pos_rot + channel_center  # length = num_indices
 
-        # Compute a jnp array with 2P+1 entries that are the channel indices of the relevant channels
-        # Hardwired for P=1, i.e., 3 pixel window
+        # Compute a jnp array with 2p+1 entries that are the channel indices of the relevant channels
         channel_index = jnp.round(x_pos_on_detector / delta_det_channel).astype(int)  # length = num_indices
         channel_index = channel_index.reshape((-1, 1))
-        # Compute channel indices for 3 adjacent channels at each view angle
-        # Should be num_indices x 3
-        channel_index = jnp.concatenate([channel_index - 1, channel_index, channel_index + 1], axis=-1)
+
+        # Compute channel indices for 2p+1 adjacent channels at each view angle
+        # Should be num_indices x 2p+1
+        # channel_index = jnp.concatenate([channel_index - 1, channel_index, channel_index + 1], axis=-1)
+        channel_index = jnp.concatenate([channel_index + j for j in range(-p, p+1)], axis=-1)
 
         # Compute the distance of each channel from the projected center of the voxel
         delta = jnp.abs(
-            channel_index * delta_det_channel - x_pos_on_detector.reshape((-1, 1)))  # Should be num_indices x 3
+            channel_index * delta_det_channel - x_pos_on_detector.reshape((-1, 1)))  # Should be num_indices x 2p+1
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
         tmp1 = (W + delta_det_channel) / 2.0  # length = num_indices
         tmp2 = (W - delta_det_channel) / 2.0  # length = num_indices
-        Lv = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta), 0)  # Should be num_indices x 3
+        Lv = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta), 0)  # Should be num_indices x 2p+1
 
         # Compute the values of Aij
-        Aji = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 3
+        Aji = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
         Aji = Aji * (channel_index >= 0) * (channel_index < num_det_channels)
         return Aji, channel_index
