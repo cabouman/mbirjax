@@ -16,6 +16,7 @@ for manipulating sinograms and reconstructions.
 .. autosummary::
 
    mbirjax.TomographyModel.recon
+   mbirjax.TomographyModel.prox_map
    mbirjax.TomographyModel.forward_project
    mbirjax.TomographyModel.back_project
    mbirjax.TomographyModel.reshape_recon
