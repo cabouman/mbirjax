@@ -108,7 +108,7 @@ class TomographyModel:
         gc.collect()
         return recon
 
-    def compute_hessian_diagonal(self, weights):
+    def compute_hessian_diagonal(self, weights=None):
         """
         Computes the diagonal elements of the Hessian matrix for given weights and angles.
 
@@ -118,7 +118,7 @@ class TomographyModel:
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights).block_until_ready()
+        hessian = self._compute_hessian_diagonal(weights).block_until_ready()
         gc.collect()
         return hessian
 
