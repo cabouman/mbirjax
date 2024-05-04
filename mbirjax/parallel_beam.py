@@ -42,10 +42,6 @@ class ParallelBeamModel(TomographyModel):
     def __init__(self, angles, sinogram_shape, **kwargs):
 
         super().__init__(sinogram_shape, angles=angles, **kwargs)
-        projector_functions = Projectors(self, self.forward_project_voxels_one_view, self.back_project_one_view_to_voxel)
-        self._sparse_forward_project = projector_functions._sparse_forward_project
-        self._sparse_back_project = projector_functions._sparse_back_project
-        self._compute_hessian_diagonal = projector_functions._compute_hessian_diagonal
 
     def verify_valid_params(self):
         """

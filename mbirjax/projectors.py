@@ -9,8 +9,8 @@ class Projectors:
     def __init__(self, tomography_model, forward_core, backward_core):
 
         self.tomography_model = tomography_model
-        projector_functions = self.compile_projectors(forward_core, backward_core)
-        self._sparse_forward_project, self._sparse_back_project, self._compute_hessian_diagonal = projector_functions
+        self._sparse_forward_project, self._sparse_back_project, self._compute_hessian_diagonal = None, None, None
+        self.compile_projectors(forward_core, backward_core)
 
     def compile_projectors(self, forward_core, backward_core):
         """
@@ -235,6 +235,8 @@ class Projectors:
 
             return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
-        # Return the compiled projectors and Hessian function
-        return (jax.jit(sparse_forward_project_fcn), jax.jit(sparse_back_project_fcn, static_argnums=(2,)),
-                compute_hessian_diagonal)
+        # Set the compiled projectors and Hessian function
+        projector_functions = (jax.jit(sparse_forward_project_fcn),
+                               jax.jit(sparse_back_project_fcn, static_argnums=(2,)),
+                               compute_hessian_diagonal)
+        self._sparse_forward_project, self._sparse_back_project, self._compute_hessian_diagonal = projector_functions

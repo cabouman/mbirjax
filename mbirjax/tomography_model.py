@@ -29,12 +29,26 @@ class TomographyModel:
         self.params = utils.get_default_params()
         self.add_new_params(**kwargs)
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
-        self.set_params(sinogram_shape=sinogram_shape, **kwargs)
-        self.auto_set_recon_size(sinogram_shape)  # Determine auto image size before processing user parameters
+        self._compute_hessian_diagonal = None
+        self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
+        self.auto_set_recon_size(sinogram_shape, no_compile=True)  # Determine auto image size before processing user parameters
+        self.compile_projectors()
 
     def compile_projectors(self):
-        """Placeholder for compiling projector methods."""
-        warnings.warn('Projectors not implemented yet')
+        projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view, self.back_project_one_view_to_voxel)
+        self._sparse_forward_project = projector_functions._sparse_forward_project
+        self._sparse_back_project = projector_functions._sparse_back_project
+        self._compute_hessian_diagonal = projector_functions._compute_hessian_diagonal
+
+    @staticmethod
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, geometry_params, sinogram_shape):
+        warnings.warn('Back projector not implemented for TomographyModel.')
+        return None
+
+    @staticmethod
+    def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, geometry_params, coeff_power=1):
+        warnings.warn('Back projector not implemented for TomographyModel.')
+        return None
 
     def forward_project(self, recon):
         """
@@ -188,7 +202,7 @@ class TomographyModel:
         sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
-    def auto_set_recon_size(self, sinogram_shape, magnification=1.0):
+    def auto_set_recon_size(self, sinogram_shape, magnification=1.0, no_compile=True):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
@@ -198,7 +212,8 @@ class TomographyModel:
         num_recon_cols = num_recon_rows
         num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
 
-        self.set_params(num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols, num_recon_slices=num_recon_slices)
+        self.set_params(no_compile=no_compile, num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols,
+                        num_recon_slices=num_recon_slices)
 
     def print_params(self):
         """
@@ -251,13 +266,14 @@ class TomographyModel:
                 except yaml.YAMLError as exc:
                     print(exc)
 
-    def set_params(self, no_warning=False, **kwargs):
+    def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
         Updates parameters using keyword arguments.
         After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
 
         Args:
             no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
+            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
             **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
 
         Raises:
@@ -304,7 +320,7 @@ class TomographyModel:
                                   'It was previously disabled')
 
         # Compare the two outputs
-        if recompile:
+        if recompile and not no_compile:
             self.compile_projectors()
 
     def get_params(self, parameter_names):
