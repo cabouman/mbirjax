@@ -38,9 +38,9 @@ class TomographyModel:
     def compile_projectors(self):
         projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view,
                                                  self.back_project_one_view_to_voxel)
-        self._sparse_forward_project = projector_functions._sparse_forward_project
-        self._sparse_back_project = projector_functions._sparse_back_project
-        self._compute_hessian_diagonal = projector_functions._compute_hessian_diagonal
+        self._sparse_forward_project = projector_functions.sparse_forward_project
+        self._sparse_back_project = projector_functions.sparse_back_project
+        self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, geometry_params, sinogram_shape):
