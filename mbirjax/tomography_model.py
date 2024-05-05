@@ -24,15 +24,15 @@ class TomographyModel:
     Sets up the reconstruction size and parameters.
     """
 
-    def __init__(self, sinogram_shape, **kwargs):
+    def __init__(self, sinogram_shape, recon_shape=None, **kwargs):
 
         self.params = utils.get_default_params()
         self.add_new_params(**kwargs)
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
         self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
-        self.auto_set_recon_size(sinogram_shape,
-                                 no_compile=True)  # Determine auto image size before processing user parameters
+        if recon_shape is None:
+            self.auto_set_recon_size(sinogram_shape, no_compile=True)  # Determine auto image size
         self.compile_projectors()
 
     def compile_projectors(self):
@@ -77,19 +77,9 @@ class TomographyModel:
             jnp array: The resulting 3D sinogram after projection.
         """
         full_indices = self.gen_full_indices()
-        recon_at_indices = self.sparse_back_project(sinogram, full_indices)
+        recon = self.sparse_back_project(sinogram, full_indices)
 
-        # Get shape of recon
-        num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(
-            ['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-
-        # Allocate recon of correct shape
-        recon = jnp.zeros((num_recon_rows * num_recon_cols, num_recon_slices))
-
-        # Add back projections to allocated recon
-        recon = recon.at[full_indices].add(recon_at_indices)
-
-        return recon
+        return self.reshape_recon(recon)
 
     def sparse_forward_project(self, voxel_values, indices):
         """
@@ -121,9 +111,9 @@ class TomographyModel:
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon = self._sparse_back_project(sinogram, indices).block_until_ready()
+        recon_at_indices = self._sparse_back_project(sinogram, indices).block_until_ready()
         gc.collect()
-        return recon
+        return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None):
         """
@@ -214,9 +204,8 @@ class TomographyModel:
         num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_pixel_recon * magnification)))
         num_recon_cols = num_recon_rows
         num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
-
-        self.set_params(no_compile=no_compile, num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols,
-                        num_recon_slices=num_recon_slices)
+        recon_shape = [num_recon_rows, num_recon_cols, num_recon_slices]
+        self.set_params(no_compile=no_compile, recon_shape=recon_shape)
 
     def print_params(self):
         """
@@ -386,22 +375,20 @@ class TomographyModel:
     def get_voxels_at_indices(self, recon, indices):
         """
         Retrieves voxel values from a reconstruction array at specified indices.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the values are retrieved
+        using all voxels with those indices across all the slices.
 
         Args:
             recon (jnp array): The 3D reconstruction array.
-            indices (jnp array): Indices for which voxel values are required.
+            indices (numpy.ndarray): Array of indices specifying which voxels to project.
 
         Returns:
             numpy.ndarray or jax.numpy.DeviceArray: Array of voxel values at the specified indices.
         """
-        # Get number of rows in detector
-        shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
 
-        # Set number of detector rows
-        num_det_rows = shape[1]
-
-        # Retrieve values of recon at the indices locations
-        voxel_values = recon.reshape((-1, num_det_rows))[indices]
+        # Flatten the recon along the first two dimensions, then retrieve values of recon at the indices locations
+        voxel_values = recon.reshape([-1,] + recon_shape[2:])[indices]
 
         return voxel_values
 
@@ -412,11 +399,13 @@ class TomographyModel:
 
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array): 3D weights array with same shape as sinogram
+            weights (jax array, optional, default=1.0): 3D weights array with same shape as sinogram
+            normalize (bool, optional, default=True):  If true, then
 
         Returns:
             [loss].
         """
+        loss = (1.0 / (2 * self.get_params('sigma_y') ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         if normalize:
             avg_weight = jnp.average(weights)
             loss = jnp.sqrt((1.0 / (self.get_params('sigma_y') ** 2)) * jnp.mean(
@@ -539,16 +528,14 @@ class TomographyModel:
         """
         # Get required parameters
         num_iters = partition_sequence.size
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        recon_shape = self.get_params('recon_shape')
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
-            recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+            recon = jnp.zeros(recon_shape)
             error_sinogram = sinogram
         else:
             # Make sure that init_recon has the correct shape and type
-            recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
             if init_recon.shape != recon_shape:
                 error_message = "init_recon does not have the correct shape. \n"
                 error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
@@ -623,9 +610,7 @@ class TomographyModel:
         positivity_flag = self.get_params('positivity_flag')
 
         # Recover recon shape parameters and make sure that recon has a 3D shape
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
+        recon = self.reshape_recon(recon)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -637,9 +622,10 @@ class TomographyModel:
                 raise ValueError(error_message)
 
             # If used, make sure that prox_input has the correct a 3D shape and type
-            prox_input = jnp.array(prox_input.reshape((num_recon_rows, num_recon_cols, num_recon_slices)))
+            prox_input = jnp.array(prox_input.reshape(recon.shape))
 
         # flatten the hessian if it is not already flat
+        num_recon_slices = recon.shape[2]
         fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
@@ -694,7 +680,7 @@ class TomographyModel:
 
         # Perform sparse updates at index locations, and reshape as 3D array
         recon = recon.at[indices].add(alpha * delta_recon_at_indices)
-        recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
+        recon = self.reshape_recon(recon)
 
         # Update sinogram
         error_sinogram = error_sinogram - alpha * delta_sinogram
@@ -743,10 +729,11 @@ class TomographyModel:
         """
         # Convert granularity to an np array
         granularity = np.array(self.get_params('granularity'))
-        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
+        recon_shape = self.get_params('recon_shape')
+        num_recon_rows, num_recon_cols = recon_shape[:2]
         partitions = ()
         for size in granularity:
-            partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, size)
+            partition = mbirjax.gen_voxel_partition(recon_shape, size)
             partitions += (partition,)
 
         return partitions
@@ -757,8 +744,8 @@ class TomographyModel:
         This is useful for computing forward projections.
         """
         # Convert granularity to an np array
-        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
-        partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets=1)
+        recon_shape = self.get_params('recon_shape')
+        partition = mbirjax.gen_voxel_partition(recon_shape, num_subsets=1)
         full_indices = partition[0]
 
         return full_indices
@@ -795,9 +782,8 @@ class TomographyModel:
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        phantom = mbirjax.generate_3d_shepp_logan(num_recon_rows, num_recon_cols, num_recon_slices)
+        recon_shape = self.get_params('recon_shape')
+        phantom = mbirjax.generate_3d_shepp_logan(recon_shape)
         return phantom
 
     def reshape_recon(self, recon):
@@ -807,9 +793,8 @@ class TomographyModel:
         Args:
             recon (ndarray or jnp.array): A 3D numpy array of shape specified by (num_recon_rows, num_recon_cols, num_recon_slices)
         """
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        return recon.reshape(num_recon_rows, num_recon_cols, num_recon_slices)
+        recon_shape = self.get_params('recon_shape')
+        return recon.reshape(recon_shape)
 
 
 @jax.jit
@@ -862,7 +847,7 @@ def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, 
     b /= jnp.sum(b)
 
     # Extract the shape of the reconstruction array.
-    num_rows, num_cols, num_slices = recon.shape
+    num_rows, num_cols, num_slices = recon.shape[:3]
 
     # Convert flat indices to 2D indices for row and column access.
     row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
@@ -873,7 +858,8 @@ def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, 
     # Define relative positions for accessing neighborhood voxels.
     offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
-    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that location over all slices.
+    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that
+    # location over all slices.
     xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
 
     # Shift slices up with zero padding
@@ -922,7 +908,7 @@ def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
     pm_gradient = (1.0 / (sigma_p ** 2.0)) * (recon - prox_input)
 
     # Extract the shape of the reconstruction array.
-    num_rows, num_cols, num_slices = recon.shape
+    num_rows, num_cols = recon.shape[:2]
 
     # Convert flat indices to 2D indices for row and column access.
     row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))

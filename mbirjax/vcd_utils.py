@@ -2,13 +2,18 @@ import numpy as np
 import jax.numpy as jnp
 
 
-def get_2d_ror_mask(num_recon_rows, num_recon_cols):
+def get_2d_ror_mask(recon_shape):
     """
     Get a binary mask for the region of reconstruction.
+
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices)
+
     Returns:
         A binary mask for the region of reconstruction.
     """
     # Set up a mask to zero out points outside the ROR
+    num_recon_rows, num_recon_cols = recon_shape[:2]
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
 
@@ -23,27 +28,30 @@ def get_2d_ror_mask(num_recon_rows, num_recon_cols):
     return mask
 
 
-def gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets):
+def gen_voxel_partition(recon_shape, num_subsets):
     """
     Generates a partition of voxel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of voxels, suitable VCD reconstruction.
-    Parameters:
-        num_recon_rows (int): The number of rows in the reconstruction grid.
-        num_recon_cols (int): The number of columns in the reconstruction grid.
+
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the voxel indices into.
+
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of voxels in the grid.
+
     Returns:
         jnp.array: A JAX array where each row corresponds to a subset of voxel indices, sorted within each subset.
     """
     # Determine the 2D indices within the RoR
+    num_recon_rows, num_recon_cols = recon_shape[:2]
     max_index_val = num_recon_rows * num_recon_cols
     indices = np.arange(max_index_val, dtype=np.int32)
     if num_subsets > max_index_val:
         raise ValueError('num_subsets must not be larger than max_index_val')
 
     # Mask off indices that are outside the region of reconstruction
-    mask = get_2d_ror_mask(num_recon_rows, num_recon_cols)
+    mask = get_2d_ror_mask(recon_shape)
     mask = mask.flatten()
     indices = indices[mask == 1]
 
@@ -65,10 +73,18 @@ def gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets):
     return jnp.array(indices)
 
 
-def gen_indices_d2(num_recon_rows, num_recon_cols, block_width):
+def gen_indices_d2(recon_shape, block_width):
     """
     Generates an index array for a 2D reconstruction using a block size of block_width x block_width
+
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices)
+        block_width (int): side length of block
+
+    Returns:
+
     """
+    num_recon_rows, num_recon_cols = recon_shape[:2]
     max_index_val = num_recon_rows * num_recon_cols
 
     # Make sure rows and columns are divisible by block_width, but make sure to round up
@@ -88,9 +104,10 @@ def gen_indices_d2(num_recon_rows, num_recon_cols, block_width):
     return jnp.array(indices)
 
 
-def gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices=1):
+def gen_phantom(recon_shape):
     """Code to generate a simple phantom """
     # Compute phantom height and width
+    num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
     phantom_rows = num_recon_rows // 4  # Phantom height
     phantom_cols = num_recon_cols // 4  # Phantom width
 
@@ -126,17 +143,18 @@ def ellipsoid(x0, y0, z0, a, b, c, N, M, P, angle=0, intensity=1.0):
     return ellipsoid.astype(float) * intensity
 
 
-def generate_3d_shepp_logan(N, M, P):
+def generate_3d_shepp_logan(phantom_shape):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
+
     Args:
-        N (int): Number of voxels along the x-axis (width).
-        M (int): Number of voxels along the y-axis (height).
-        P (int): Number of voxels along the z-axis (depth).
+        phantom_shape (tuple): Phantom shape in (rows, columns, slices).
+
     Returns:
-        ndarray: A 3D numpy array of shape (N, M, P) representing the voxel intensities of the phantom.
+        ndarray: A 3D numpy array of shape phantom_shape representing the voxel intensities of the phantom.
     """
-    phantom = np.zeros((N, M, P))
+    phantom = np.zeros(phantom_shape)
+    N, M, P = phantom_shape
 
     # Main ellipsoid
     phantom += ellipsoid(0, 0, 0, 0.69, 0.92, 0.9, N, M, P, intensity=1)

@@ -227,7 +227,7 @@ class Projectors:
                 error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
                 raise ValueError(error_message)
 
-            num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[-3:]
+            num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[3:6]
             max_index = num_recon_rows * num_recon_cols
             indices = jnp.arange(max_index)
 

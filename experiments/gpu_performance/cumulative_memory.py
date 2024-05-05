@@ -166,13 +166,12 @@ if __name__ == "__main__":
                     parallel_model.set_params(voxel_batch_size=voxel_batch_size)
 
                     # Generate phantom for forward projection
-                    num_recon_rows, num_recon_cols, num_recon_slices = (
-                        parallel_model.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices']))
-                    phantom = mbirjax.gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices)
+                    recon_shape = parallel_model.get_params('recon_shape')
+                    phantom = mbirjax.gen_phantom(recon_shape)
 
                     # Get a subset of the given size
                     indices = np.arange(ni, dtype=int)
-                    voxel_values = phantom.reshape((-1, num_recon_slices))[indices]
+                    voxel_values = phantom.reshape([-1,] + recon_shape[2:])[indices]
 
                     if eval_type_index == 0:
 

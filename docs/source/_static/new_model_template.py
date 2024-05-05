@@ -56,8 +56,8 @@ class TemplateModel(TomographyModel):
             List of any parameters required for back_project_one_view_to_voxel or forward_project_voxels_one_view,
             along with the view-dependent parameters in view_params_array.
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon',
-                                           'num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
+        geometry_params += self.get_params('recon_shape')
         view_params_array = self.get_params('view_params_array')
 
         return geometry_params, view_params_array

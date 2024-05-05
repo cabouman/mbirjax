@@ -147,29 +147,29 @@ def slice_viewer(data, data2=None, title=''):
 # slice_viewer(data1, data2)  # View slices of both volumes side by side
 
 
-def debug_plot_partitions(partitions, num_recon_rows, num_recon_cols):
+def debug_plot_partitions(partitions, recon_shape):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
 
     Parameters:
         partitions (tuple of arrays): A tuple where each element is a 2D numpy array representing a partition.
-        num_recon_rows (int): Number of rows in the original image grid.
-        num_recon_cols (int): Number of columns in the original image grid.
+        recon_shape (tuple): Shape of phantom in (rows, columns, slices).
     """
+    num_recon_rows, recon_shape = recon_shape[:2]
     plt.rcParams.update({'font.size': 24})  # Adjust font size here
     num_partitions = len(partitions)
     fig, axes = plt.subplots(nrows=1, ncols=num_partitions, figsize=(5 * num_partitions, 5))
 
     for i, partition in enumerate(partitions):
         # Create an empty image array to fill with subset colors
-        image = np.zeros((num_recon_rows * num_recon_cols), dtype=int)
+        image = np.zeros((num_recon_rows * recon_shape), dtype=int)
 
         # Assign a unique color (integer label) to each subset
         for subset_index, indices in enumerate(partition):
             image[indices.flatten()] = subset_index + 1  # Color code starts from 1 upwards
 
         # Reshape the image array back to 2D format
-        image = image.reshape((num_recon_rows, num_recon_cols))
+        image = image.reshape((num_recon_rows, recon_shape))
 
         # Plotting
         if num_partitions == 1:

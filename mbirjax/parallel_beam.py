@@ -72,8 +72,8 @@ class ParallelBeamModel(TomographyModel):
             List of delta_det_channel, det_channel_offset, delta_pixel_recon,
             num_recon_rows, num_recon_cols, num_recon_slices
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon',
-                                           'num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
+        geometry_params += self.get_params('recon_shape')
         view_params_array = self.get_params('view_params_array')
 
         return geometry_params, view_params_array
@@ -172,8 +172,8 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = sinogram_shape
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
-        recon_shape = (num_recon_rows, num_recon_cols)
-        row_index, col_index = jnp.unravel_index(voxel_indices, recon_shape)
+        recon_shape_2d = (num_recon_rows, num_recon_cols)
+        row_index, col_index = jnp.unravel_index(voxel_indices, recon_shape_2d)
 
         # Compute the x,y position of the voxel relative to the center of rotation
         # Assumes: rows index top to bottom; slice is viewed from the top; rotation of object is clockwise

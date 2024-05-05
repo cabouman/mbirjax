@@ -13,10 +13,8 @@ _forward_model_defaults_dict = {
 }
 
 _recon_model_defaults_dict = {
+    'recon_shape': {'val': None, 'recompile_flag': True},
     'prox_recon': {'val': None, 'recompile_flag': False},
-    'num_recon_rows': {'val': None, 'recompile_flag': True},
-    'num_recon_cols': {'val': None, 'recompile_flag': True},
-    'num_recon_slices': {'val': None, 'recompile_flag': True},
     'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
