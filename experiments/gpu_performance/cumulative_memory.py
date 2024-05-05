@@ -171,7 +171,7 @@ if __name__ == "__main__":
 
                     # Get a subset of the given size
                     indices = np.arange(ni, dtype=int)
-                    voxel_values = phantom.reshape([-1,] + recon_shape[2:])[indices]
+                    voxel_values = phantom.reshape((-1,) + recon_shape[2:])[indices]
 
                     if eval_type_index == 0:
 

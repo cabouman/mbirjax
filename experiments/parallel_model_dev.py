@@ -13,13 +13,13 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 100
+    view_batch_size = 1024
     voxel_batch_size = 10000
 
     # Initialize sinogram
-    num_views = 128
-    num_det_rows = 128
-    num_det_channels = 128
+    num_views = 256
+    num_det_rows = 100
+    num_det_channels = 256
     start_angle = 0
     end_angle = jnp.pi
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     subset_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
 
     # Generate sinogram data
-    voxel_values = phantom.reshape([-1,] + recon_shape[2:])[full_indices]
+    voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
     parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
 

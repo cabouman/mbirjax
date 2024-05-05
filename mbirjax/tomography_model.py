@@ -30,9 +30,9 @@ class TomographyModel:
         self.add_new_params(**kwargs)
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
-        self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
         if recon_shape is None:
-            self.auto_set_recon_size(sinogram_shape, no_compile=True)  # Determine auto image size
+            self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)  # Determine auto image size
+        self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
         self.compile_projectors()
 
     def compile_projectors(self):
@@ -43,12 +43,12 @@ class TomographyModel:
         self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, geometry_params, sinogram_shape):
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, projector_params):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, geometry_params, coeff_power=1):
+    def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, projector_params, coeff_power=1):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
@@ -195,7 +195,7 @@ class TomographyModel:
         sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
-    def auto_set_recon_size(self, sinogram_shape, magnification=1.0, no_compile=True):
+    def auto_set_recon_size(self, sinogram_shape, magnification=1.0, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
@@ -204,8 +204,8 @@ class TomographyModel:
         num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_pixel_recon * magnification)))
         num_recon_cols = num_recon_rows
         num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
-        recon_shape = [num_recon_rows, num_recon_cols, num_recon_slices]
-        self.set_params(no_compile=no_compile, recon_shape=recon_shape)
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
 
     def print_params(self):
         """
@@ -297,7 +297,8 @@ class TomographyModel:
                 meta_parameter_change = True
 
         # Check for valid parameters
-        self.verify_valid_params()
+        if not no_warning:
+            self.verify_valid_params()
 
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
@@ -388,7 +389,7 @@ class TomographyModel:
         recon_shape = self.get_params('recon_shape')
 
         # Flatten the recon along the first two dimensions, then retrieve values of recon at the indices locations
-        voxel_values = recon.reshape([-1,] + recon_shape[2:])[indices]
+        voxel_values = recon.reshape((-1,) + recon_shape[2:])[indices]
 
         return voxel_values
 

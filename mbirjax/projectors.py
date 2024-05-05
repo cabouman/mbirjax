@@ -28,8 +28,10 @@ class Projectors:
             called multiple times with the same shape of input, then the cached version will be used, which will
             give reduced execution time relative to the initial call.
         """
-        geometry_params, view_params_array = self.tomography_model.get_geometry_parameters()
-        sinogram_shape = self.tomography_model.get_params('sinogram_shape')
+        geometry_params = self.tomography_model.get_geometry_parameters()
+        sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
+        projector_params = (tuple(sinogram_shape), tuple(recon_shape), tuple(geometry_params))
+        view_params_array = self.tomography_model.get_params('view_params_array')
         voxel_batch_size, view_batch_size = self.tomography_model.get_params(['voxel_batch_size', 'view_batch_size'])
 
         def sparse_forward_project_fcn(voxel_values, voxel_indices):
@@ -102,18 +104,18 @@ class Projectors:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
             """
             num_views = view_params_array.shape[0]
-            forward_vmap = jax.vmap(forward_core, in_axes=(None, None, 0, None, None))
+            forward_vmap = jax.vmap(forward_core, in_axes=(None, None, 0, None))
 
             if view_batch_size is None or view_batch_size >= num_views:
-                sinogram = forward_vmap(voxel_values, voxel_indices, view_params_array, geometry_params, sinogram_shape)
+                sinogram = forward_vmap(voxel_values, voxel_indices, view_params_array, projector_params)
             else:
                 num_batches = num_views // view_batch_size
-                view_params_batched = jnp.reshape(view_params_array[0:num_batches * view_batch_size], (num_batches, view_batch_size, -1))
+                view_params_batched = jnp.reshape(view_params_array[0:num_batches * view_batch_size],
+                                                  (num_batches, view_batch_size, -1))
 
                 @jax.jit
                 def forward_map(view_params_batch):
-                    return forward_vmap(voxel_values, voxel_indices, view_params_batch, geometry_params,
-                                        sinogram_shape)
+                    return forward_vmap(voxel_values, voxel_indices, view_params_batch, projector_params)
 
                 sinogram = jax.lax.map(forward_map, view_params_batched)
                 sinogram = jnp.reshape(sinogram, (num_batches * view_batch_size,) + sinogram.shape[2:])
@@ -163,7 +165,7 @@ class Projectors:
             # incorporates the output of that function into an accumulator.  Here we apply backproject_accumulate to
             # one sinogram view and the corresponding view_params.
             initial_bp = jnp.zeros((voxel_indices.shape[0], sinogram.shape[1]))
-            extra_args = voxel_indices, geometry_params, coeff_power
+            extra_args = voxel_indices, coeff_power
             initial_carry = [extra_args, initial_bp]
             sino_view_params = (sinogram, view_params_array)
             # Use lax.scan to process each (slice, view_params) pair of 'sino_view_params'
@@ -183,7 +185,7 @@ class Projectors:
             """
             extra_args, accumulated = carry
             sinogram_view, view_params = view_params_pair
-            voxel_indices, geometry_params, coeff_power = extra_args
+            voxel_indices, coeff_power = extra_args
             bp_view = back_project_one_view_to_voxels(sinogram_view, voxel_indices, view_params, coeff_power)
             accumulated += bp_view
             del bp_view
@@ -203,7 +205,7 @@ class Projectors:
 
             """
             bp_vmap = jax.vmap(backward_core, in_axes=(None, 0, None, None, None))
-            bp = bp_vmap(sinogram_view, voxel_indices, view_params, geometry_params, coeff_power)
+            bp = bp_vmap(sinogram_view, voxel_indices, view_params, projector_params, coeff_power)
             return bp
 
         def compute_hessian_diagonal(weights=None):
@@ -227,7 +229,7 @@ class Projectors:
                 error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
                 raise ValueError(error_message)
 
-            num_recon_rows, num_recon_cols, num_recon_slices = geometry_params[3:6]
+            num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
             max_index = num_recon_rows * num_recon_cols
             indices = jnp.arange(max_index)
 

@@ -53,17 +53,16 @@ class TemplateModel(TomographyModel):
         Required function to get a list of the view independent geometry parameters required for projection.
 
         Returns:
-            List of any parameters required for back_project_one_view_to_voxel or forward_project_voxels_one_view,
-            along with the view-dependent parameters in view_params_array.
+            List of any parameters required for back_project_one_view_to_voxel or forward_project_voxels_one_view.
+            This does not need to include view dependent parameters, or sinogram_shape or recon_shape, which
+            are passed in automatically to projector_params.
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
-        geometry_params += self.get_params('recon_shape')
-        view_params_array = self.get_params('view_params_array')
 
-        return geometry_params, view_params_array
+        return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, single_view_params, geometry_params, coeff_power=1):
+    def back_project_one_view_to_voxel(sinogram_view, voxel_index, single_view_params, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxels given a sinogram view and various parameters.
         This code uses the distance driven projector.
@@ -74,7 +73,7 @@ class TemplateModel(TomographyModel):
             sinogram_view (2D jax array): one view of the sinogram to be back projected
             voxel_index (int):  index into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for the view being back projected.
-            geometry_params (1D jax array): Geometry parameters from get_geometry_params().
+            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
 
@@ -90,7 +89,7 @@ class TemplateModel(TomographyModel):
         return voxel_values_cylinder
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, single_view_params, geometry_params, sinogram_shape):
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, single_view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into a single view.
 
@@ -101,13 +100,13 @@ class TemplateModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for this view.
-            geometry_params (list or 1D jax array): Geometry parameters from get_geometry_params().
-            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels).
+            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
         """
 
         # Returns a single view of the sinogram
+        sinogram_shape = projector_params[0]
         sinogram_view = jnp.zeros(sinogram_shape[1:])
         return sinogram_view

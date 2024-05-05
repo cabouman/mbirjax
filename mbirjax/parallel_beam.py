@@ -64,6 +64,12 @@ class ParallelBeamModel(TomographyModel):
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
+        recon_shape = self.get_params('recon_shape')
+        if recon_shape[2] != sinogram_shape[1]:
+            error_message = "Number of recon slices must match number of sinogram rows. \n"
+            error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
+            raise ValueError(error_message)
+
     def get_geometry_parameters(self):
         """
         Function to get a list of the primary geometry parameters for projection.
@@ -73,13 +79,11 @@ class ParallelBeamModel(TomographyModel):
             num_recon_rows, num_recon_cols, num_recon_slices
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
-        geometry_params += self.get_params('recon_shape')
-        view_params_array = self.get_params('view_params_array')
 
-        return geometry_params, view_params_array
+        return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, angle, geometry_params, coeff_power=1):
+    def back_project_one_view_to_voxel(sinogram_view, voxel_index, angle, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel given a sinogram view and various parameters.
         This code uses the distance driven projector.
@@ -88,7 +92,7 @@ class ParallelBeamModel(TomographyModel):
             sinogram_view (jax array): one view of the sinogram to be back projected
             voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
             angle (float): The angle in radians for this view.
-            geometry_params (list or 1D jax array)):  Geometry parameters from get_geometry_params().
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing theta 2.
 
@@ -98,8 +102,9 @@ class ParallelBeamModel(TomographyModel):
         """
 
         # Get the part of the system matrix and channel indices for this voxel
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, angle, geometry_params,
-                                                                         (1,) + sinogram_view.shape)
+        sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
+        view_projector_params = (sinogram_view_shape,) + projector_params[1:]
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_index, angle, view_projector_params)
 
         # Extract out the relevant entries from the sinogram
         sinogram_array = sinogram_view[:, channel_index.T.flatten()]
@@ -108,7 +113,7 @@ class ParallelBeamModel(TomographyModel):
         return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, geometry_params, sinogram_shape):
+    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -117,7 +122,7 @@ class ParallelBeamModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
-            geometry_params (list or 1D jax array): Geometry parameters from get_geometry_params()
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
             sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
 
         Returns:
@@ -127,9 +132,8 @@ class ParallelBeamModel(TomographyModel):
             raise ValueError('voxel_values must have shape (num_indices, num_slices)')
 
         # Get the geometry parameters and the system matrix and channel indices
-        num_views, num_det_rows, num_det_channels = sinogram_shape
-        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, angle, geometry_params,
-                                                                         sinogram_shape)
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        Aji, channel_index = ParallelBeamModel.compute_Aji_channel_index(voxel_indices, angle, projector_params)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2p+1) x num_slices
@@ -148,7 +152,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnums=4)
-    def compute_Aji_channel_index(voxel_indices, angle, geometry_params, sinogram_shape, p=1):
+    def compute_Aji_channel_index(voxel_indices, angle, projector_params, p=1):
         """
         Calculate the coefficients Aji of the system matrix along with the channel indices associated with the
         given voxel indices and view angle.
@@ -156,8 +160,9 @@ class ParallelBeamModel(TomographyModel):
         Args:
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
-            geometry_params (list or 1D jax array): Geometry parameters from get_geometry_params()
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
             sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
+            recon_shape (tuple): Recon shape (rows, columns, slices)
             p (int, optional, default=1):  # This is the assumed number of channels per side
 
         Returns:
@@ -167,9 +172,11 @@ class ParallelBeamModel(TomographyModel):
         warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
 
         # Get all the geometry parameters
-        delta_det_channel, det_channel_offset, delta_pixel_recon, num_recon_rows, num_recon_cols = geometry_params[:-1]
+        geometry_params = projector_params[2]
+        delta_det_channel, det_channel_offset, delta_pixel_recon = geometry_params
 
-        num_views, num_det_rows, num_det_channels = sinogram_shape
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        num_recon_rows, num_recon_cols = projector_params[1][:2]
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         recon_shape_2d = (num_recon_rows, num_recon_cols)
