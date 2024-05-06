@@ -14,11 +14,10 @@ _forward_model_defaults_dict = {
 
 _recon_model_defaults_dict = {
     'recon_shape': {'val': None, 'recompile_flag': True},
-    'prox_recon': {'val': None, 'recompile_flag': False},
+    'magnification': {'val': 1.0, 'recompile_flag': False},
     'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
-    'magnification': {'val': 1.0, 'recompile_flag': False},
     'p': {'val': 2.0, 'recompile_flag': False},
     'q': {'val': 1.2, 'recompile_flag': False},
     'T': {'val': 1.0, 'recompile_flag': False},
