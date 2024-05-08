@@ -18,7 +18,7 @@ if __name__ == "__main__":
 
     # Initialize sinogram
     num_views = 256
-    num_det_rows = 100
+    num_det_rows = 20
     num_det_channels = 256
     start_angle = 0
     end_angle = jnp.pi

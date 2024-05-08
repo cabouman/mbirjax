@@ -18,15 +18,22 @@ class Projectors:
         Args:
 
         Returns:
-            A callable of the form back_projector(sinogram, indices), where sinogram is an array with shape
-            (views, rows, channels) and indices is a 1D array of integer indices into the flattened reconstruction
-            volume.
-            The output of a call to back_projector is the backprojection of the sinogram onto the corresponding voxels.
+            Nothing, but the class variables `sparse_forward_project`, `sparse_back_project`, and
+            `compute_hessian_diagonal` are set to callable functions.  These are used to implement the following
+            methods:
+
+            * `sparse_forward_project`: :meth:`TomographyModel.sparse_forward_project`
+            * `sparse_back_project`: :meth:`TomographyModel.sparse_back_project`
+            * `compute_hessian_diagonal`: :meth:`TomographyModel.compute_hessian_diagonal`
 
         Note:
-            The returned function will be jit compiled each time it is called with a new shape of input.  If it is
+            The returned functions will be jit compiled each time they are called with a new shape of input.  If
             called multiple times with the same shape of input, then the cached version will be used, which will
             give reduced execution time relative to the initial call.
+
+            This method requires geometry-specific implementations of
+            :meth:`TomographyModel.forward_project_voxels_one_view` and
+            :meth:`TomographyModel.back_project_one_view_to_voxel`.
         """
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
@@ -160,7 +167,6 @@ class Projectors:
             Returns:
 
             """
-            # TODO:  Implement voxel_batch_size
             # jax.lax.scan applies a function to each entry indexed by the leading dimension of its input, then
             # incorporates the output of that function into an accumulator.  Here we apply backproject_accumulate to
             # one sinogram view and the corresponding view_params.
