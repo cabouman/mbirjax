@@ -97,13 +97,13 @@ class ConeBeamModel(TomographyModel):
         # Get the part of the system matrix and channel indices for this voxel
         sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
         view_projector_params = (sinogram_view_shape,) + projector_params[1:]
-        Aji, channel_index = ConeBeamModel.compute_Aji_channel_index(voxel_index, angle, view_projector_params)
+        Aij_value, Aij_channel = ConeBeamModel.compute_Aji_channel_index(voxel_index, angle, view_projector_params)
 
         # Extract out the relevant entries from the sinogram
-        sinogram_array = sinogram_view[:, channel_index.T.flatten()]
+        sinogram_array = sinogram_view[:, Aij_channel.T.flatten()]
 
         # Compute dot product
-        return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
+        return jnp.sum(sinogram_array * (Aij_value**coeff_power), axis=1)
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, projector_params):
@@ -126,29 +126,29 @@ class ConeBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        Aji, channel_index = ConeBeamModel.compute_Aji_channel_index(voxel_indices, angle, projector_params)
+        Aij_value, Aij_channel = ConeBeamModel.compute_Aji_channel_index(voxel_indices, angle, projector_params)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2p+1) x num_slices
-        sinogram_values = (Aji[:, :, None] * voxel_values[:, None, :])
+        sinogram_values = (Aij_value[:, :, None] * voxel_values[:, None, :])
 
-        # Now sum over indices into the locations specified by channel_index.
+        # Now sum over indices into the locations specified by Aij_channel.
         # Directly using index_add for indexed updates
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))  # num_det_rows x num_det_channels
 
         # Apply the vectorized update function with a vmap over slices
         # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2p+1) x num_det_rows
         sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
-        sinogram_view = sinogram_view.at[:, channel_index.flatten()].add(sinogram_values)
-        del Aji, channel_index
+        sinogram_view = sinogram_view.at[:, Aij_channel.flatten()].add(sinogram_values)
+        del Aij_value, Aij_channel
         return sinogram_view
 
 
     @staticmethod
     @partial(jax.jit, static_argnums=3)
-    def compute_Aij_voxels_single_view( voxel_indices, angle, projector_params, p=1 ):
+    def compute_Bij_Cij_voxels_single_view(voxel_indices, angle, projector_params, p=1 ):
         """
-        Calculate the sparse system matrix for a subset of voxels and a single view.
+        Calculate the separable sparse system matrices for a subset of voxels and a single view.
         It returns a sparse matrix specified by the system matrix values and associated detector column index.
         Since this is for parallel beam geometry, the values are assumed to be the same for each row/slice.
 
@@ -159,17 +159,16 @@ class ConeBeamModel(TomographyModel):
             p (int, optional, default=1):  # This is the assumed number of channels per side
 
         Returns:
-            Aji_value (num indices, 2p+1), Aji_channel (num indices, 2p+1)
+            Bij_value, Bij_column, Cij_value, Cij_row (jnp array): Each with shape (num voxels)x(num slices)x(2p+1)
         """
-        def recon_ijk_to_xyz( i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, recon_slice_offset, angle):
+        def recon_ijk_to_xyz( i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, num_recon_slices, recon_slice_offset, angle):
             # Compute the un-rotated coordinates relative to iso
-            x_tilde, y_tilde, z = delta_pixel_recon * (jnp.array([i, j, k]) - jnp.array([num_recon_rows, num_recon_cols]) / 2.0)
-            z += recon_slice_offset  # Adding slice offset to z only
-
-            # Compute the rotated coordinates relative to iso
+            x_tilde = delta_pixel_recon * (i - (num_recon_rows-1) / 2.0)
+            y_tilde = delta_pixel_recon * (j - (num_recon_cols-1) / 2.0)
             x = jnp.cos(angle) * x_tilde - jnp.sin(angle) * y_tilde  # corrected minus sign here
             y = jnp.sin(angle) * x_tilde + jnp.cos(angle) * y_tilde
 
+            z = delta_pixel_recon * (k - (num_recon_slices-1) / 2.0) + recon_slice_offset
             return x, y, z
 
         def geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification):
@@ -177,7 +176,7 @@ class ConeBeamModel(TomographyModel):
             source_to_iso_dist = source_detector_dist / magnification
 
             # Check for a potential division by zero or very small denominator
-            if (source_to_iso_dist - y) == 0 :
+            if (source_to_iso_dist - y) == 0:
                 raise ValueError("Invalid geometry: Denominator in pixel magnification calculation becomes zero.")
 
             # Compute the magnification at this specific voxel
@@ -189,7 +188,7 @@ class ConeBeamModel(TomographyModel):
 
             return u, v, pixel_mag
 
-        def detector_uv_to_mn( self, u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows, num_det_channels):
+        def detector_uv_to_mn(u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows, num_det_channels):
             # Account for small rotation of the detector
             u_tilde = jnp.cos(det_rotation) * u + jnp.sin(det_rotation) * v
             v_tilde = -jnp.sin(det_rotation) * u + jnp.cos(det_rotation) * v
@@ -212,23 +211,41 @@ class ConeBeamModel(TomographyModel):
         delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist, magnification, delta_pixel_recon, recon_slice_offset = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        num_recon_rows, num_recon_cols = projector_params[1][:2]
+        num_recon_rows, num_recon_cols, num_recon_slices = projector_params[1][:]
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         recon_shape_2d = (num_recon_rows, num_recon_cols)
+        num_of_indices = voxel_indices.size
         row_index, col_index = jnp.unravel_index(voxel_indices, recon_shape_2d)
 
-        # TODO: We need something here so that we handle slices. Right now there is no k
-        # We might need to break this into 2 functions, one for B and one for C. Not sure.
+        # Replicate along the slice access
+        i = (jnp.tile(row_index, reps=(num_recon_slices, 1)).T).flatten()
+        j = (jnp.tile(col_index, reps=(num_recon_slices, 1)).T).flatten()
+        k = (jnp.tile(jnp.arange(num_recon_slices), reps=(num_of_indices, 1))).flatten()
+
+        # TODO: Need to check that i,j,k each have shape (num voxels)*(num slices)
+
+        # All the following objects should have shape (num voxels)*(num slices)
+        # x, y, z
+        # u, v
+        # mp, np
+        # cone_angle_channel
+        # cone_angle_row
+        # cos_alpha_col
+        # cos_alpha_row
+        # W_col has shape
+        # W_row has shape
+        # mp has shape
+        # np has shape 
 
         # Convert from ijk to coordinates about iso
-        x, y, z = recon_ijk_to_xyz(i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, recon_slice_offset, angle)
+        x, y, z = recon_ijk_to_xyz(i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, num_recon_slices, recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
         u, v, pixel_mag = geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification)
 
         # Convert from uv to index coordinates in detector
-        m, n = detector_uv_to_mn(u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows, num_det_channels)
+        mp, np = detector_uv_to_mn(u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows, num_det_channels)
 
         # Compute cone angle of pixel along columns and rows
         cone_angle_channel = jnp.arctan2(u, source_detector_dist)
@@ -238,35 +255,55 @@ class ConeBeamModel(TomographyModel):
         cos_alpha_col = jnp.maximum(jnp.abs(jnp.cos(angle - cone_angle_channel)), jnp.abs(jnp.sin(angle - cone_angle_channel)))
         cos_alpha_row = jnp.maximum(jnp.abs(jnp.cos(cone_angle_row)), jnp.abs(jnp.sin(cone_angle_row)))
 
-        # Compute compute projected voxel width along columns and rows
+        # Compute projected voxel width along columns and rows
         W_col = pixel_mag * (delta_pixel_recon / delta_det_channel) * (cos_alpha_col / jnp.cos(cone_angle_channel))
         W_row = pixel_mag * (delta_pixel_recon / delta_det_row) * (cos_alpha_row / jnp.cos(cone_angle_row))
 
+        # ################
+        # Compute the Bij matrix entries
+        # Compute a jnp channel index array with shape [(num voxels)*(num slices)]x1
+        Bij_channel = jnp.round(mp).astype(int)
+        Bij_channel = Bij_channel.reshape((-1, 1))
 
+        # Compute a jnp channel index array with shape [(num voxels)*(num slices)]x(2p+1)
+        Bij_channel = jnp.concatenate([Bij_channel + j for j in range(-p, p+1)], axis=-1)
 
-        # Compute the location on the detector in ALU of the projected center of the voxel
-        x_pos_on_detector = x_pos_rot + channel_center  # length = num_indices
-
-        # Compute a jnp array with 2p+1 entries that are the channel indices of the relevant channels
-        Aij_channel = jnp.round(x_pos_on_detector / delta_det_channel).astype(int)  # length = num_indices
-        Aij_channel = Aij_channel.reshape((-1, 1))
-
-        # Compute channel indices for 2p+1 adjacent channels at each view angle
-        # Should be num_indices x 2p+1
-        # Aij_channel = jnp.concatenate([Aij_channel - 1, Aij_channel, Aij_channel + 1], axis=-1)
-        Aij_channel = jnp.concatenate([Aij_channel + j for j in range(-p, p+1)], axis=-1)
-
-        # Compute the distance of each channel from the projected center of the voxel
-        delta = jnp.abs(
-            Aij_channel * delta_det_channel - x_pos_on_detector.reshape((-1, 1)))  # Should be num_indices x 2p+1
+        # Compute the distance of each channel from the center of the voxel
+        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        delta_channel = jnp.abs(Bij_channel - mp.reshape((-1, 1)))
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
-        tmp1 = (W + delta_det_channel) / 2.0  # length = num_indices
-        tmp2 = (W - delta_det_channel) / 2.0  # length = num_indices
-        Lv = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta), 0)  # Should be num_indices x 2p+1
+        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        tmp1 = (W_col + 1) / 2.0  # length = num_indices
+        tmp2 = (W_col - 1) / 2.0  # length = num_indices
+        L_channel = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_channel), 0)
 
-        # Compute the values of Aij
-        Aji_value = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
-        Aji_value = Aji_value * (Aij_channel >= 0) * (Aij_channel < num_det_channels)
-        return Aji_value, Aij_channel
+        # Compute Bij sparse matrix with shape [(num voxels)*(num slices)]x(2p+1)
+        Bij_value = (delta_pixel_recon / cos_alpha_col) * (L_channel / delta_det_channel)
+        Bij_value = Bij_value * (Bij_channel >= 0) * (Bij_channel < num_det_channels)
+
+        # ################
+        # Compute the Cij matrix entries
+        # Compute a jnp row index array with shape [(num voxels)*(num slices)]x1
+        Cij_row = jnp.round(mp).astype(int)
+        Cij_row = Cij_row.reshape((-1, 1))
+
+        # Compute a jnp row index array with shape [(num voxels)*(num slices)]x(2p+1)
+        Cij_row = jnp.concatenate([Cij_row + j for j in range(-p, p + 1)], axis=-1)
+
+        # Compute the distance of each row from the center of the voxel
+        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        delta_row = jnp.abs(Cij_row - mp.reshape((-1, 1)))
+
+        # Calculate L = length of intersection between detector element and projection of flattened voxel
+        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        tmp1 = (W_row + 1) / 2.0  # length = num_indices
+        tmp2 = (W_row - 1) / 2.0  # length = num_indices
+        L_row = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_row), 0)
+
+        # Compute Cij sparse matrix with shape [(num voxels)*(num slices)]x(2p+1)
+        Cij_value = (delta_pixel_recon / cos_alpha_col) * (L_row / delta_det_row)
+        Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
+
+        return Bij_value, Bij_channel, Cij_value, Cij_row
 
