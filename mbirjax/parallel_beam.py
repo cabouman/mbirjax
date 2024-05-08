@@ -104,13 +104,13 @@ class ParallelBeamModel(TomographyModel):
         # Get the part of the system matrix and channel indices for this voxel
         sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
         view_projector_params = (sinogram_view_shape,) + projector_params[1:]
-        Aji, channel_index = ParallelBeamModel.compute_Aji_single_view(voxel_index, angle, view_projector_params)
+        Aij_value, Aij_index = ParallelBeamModel.compute_Aij_voxels_single_view(voxel_index, angle, view_projector_params)
 
         # Extract out the relevant entries from the sinogram
-        sinogram_array = sinogram_view[:, channel_index.T.flatten()]
+        sinogram_array = sinogram_view[:, Aij_index.T.flatten()]
 
         # Compute dot product
-        return jnp.sum(sinogram_array * (Aji**coeff_power), axis=1)
+        return jnp.sum(sinogram_array * (Aij_value**coeff_power), axis=1)
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, projector_params):
@@ -132,7 +132,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        Aij_value, Aij_channel = ParallelBeamModel.compute_Aji_single_view(voxel_indices, angle, projector_params)
+        Aij_value, Aij_channel = ParallelBeamModel.compute_Aij_voxels_single_view(voxel_indices, angle, projector_params)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2p+1) x num_slices
@@ -152,7 +152,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnums=3)
-    def compute_Aji_single_view(voxel_indices, angle, projector_params, p=1):
+    def compute_Aij_voxels_single_view(voxel_indices, angle, projector_params, p=1):
         """
         Calculate the sparse system matrix for a subset of voxels and a single view.
         The function returns a sparse matrix specified by the matrix values and associated detector column index.
