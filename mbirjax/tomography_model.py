@@ -36,6 +36,14 @@ class TomographyModel:
         self.compile_projectors()
 
     def compile_projectors(self):
+        """
+        Creates an instance of the Projectors class and set the local instance variables needed for forward
+        and back projection and compute_hessian_diagonal.  This method requires that the current geometry has
+        implementations of :meth:`forward_project_voxels_one_view` and :meth:`back_project_one_view_to_voxel`
+
+        Returns:
+            Nothing, but creates jit-compiled functions.
+        """
         projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view,
                                                  self.back_project_one_view_to_voxel)
         self._sparse_forward_project = projector_functions.sparse_forward_project
@@ -44,11 +52,45 @@ class TomographyModel:
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, projector_params):
-        warnings.warn('Back projector not implemented for TomographyModel.')
+        """
+        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_det_rows, num_det_channels)
+        """
+        warnings.warn('Forward projector not implemented for TomographyModel.')
         return None
 
     @staticmethod
     def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, projector_params, coeff_power=1):
+        """
+        Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            sinogram_view (jax array): one view of the sinogram to be back projected
+            voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
+            view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 for compute_hessian_diagonal.
+
+        Returns:
+            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
+        """
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
