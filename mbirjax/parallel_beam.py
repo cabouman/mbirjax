@@ -94,7 +94,7 @@ class ParallelBeamModel(TomographyModel):
             angle (float): The angle in radians for this view.
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
-                Normally 1, but should be 2 when computing theta 2.
+                Normally 1, but should be 2 for compute_hessian_diagonal.
 
         Returns:
             The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
@@ -123,7 +123,6 @@ class ParallelBeamModel(TomographyModel):
             voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -151,7 +150,7 @@ class ParallelBeamModel(TomographyModel):
         return sinogram_view
 
     @staticmethod
-    @partial(jax.jit, static_argnums=4)
+    @partial(jax.jit, static_argnums=3)
     def compute_Aji_channel_index(voxel_indices, angle, projector_params, p=1):
         """
         Calculate the coefficients Aji of the system matrix along with the channel indices associated with the
