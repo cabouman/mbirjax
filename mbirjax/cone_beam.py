@@ -263,9 +263,9 @@ class ConeBeamModel(TomographyModel) :
         j = (jnp.tile(col_index, reps=(num_recon_slices, 1)).T).flatten()
         k = (jnp.tile(jnp.arange(num_recon_slices), reps=(num_of_indices, 1))).flatten()
 
-        # TODO: Need to check that i,j,k each have shape (num voxels)*(num slices)
+        # TODO: Need to check that i,j,k each have shape (num pixels)*(num slices)
 
-        # All the following objects should have shape (num voxels)*(num slices)
+        # All the following objects should have shape (num pixels)*(num slices)
         # x, y, z
         # u, v
         # mp, np
@@ -294,8 +294,7 @@ class ConeBeamModel(TomographyModel) :
         cone_angle_row = jnp.arctan2(v, source_detector_dist)
 
         # Compute cos alpha for row and columns
-        cos_alpha_col = jnp.maximum(jnp.abs(jnp.cos(angle - cone_angle_channel)),
-                                    jnp.abs(jnp.sin(angle - cone_angle_channel)))
+        cos_alpha_col = jnp.maximum(jnp.abs(jnp.cos(angle - cone_angle_channel)), jnp.abs(jnp.sin(angle - cone_angle_channel)))
         cos_alpha_row = jnp.maximum(jnp.abs(jnp.cos(cone_angle_row)), jnp.abs(jnp.sin(cone_angle_row)))
 
         # Compute projected voxel width along columns and rows
@@ -304,47 +303,47 @@ class ConeBeamModel(TomographyModel) :
 
         # ################
         # Compute the Bij matrix entries
-        # Compute a jnp channel index array with shape [(num voxels)*(num slices)]x1
+        # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x1
         Bij_channel = jnp.round(mp).astype(int)
         Bij_channel = Bij_channel.reshape((-1, 1))
 
-        # Compute a jnp channel index array with shape [(num voxels)*(num slices)]x(2p+1)
+        # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x(2p+1)
         Bij_channel = jnp.concatenate([Bij_channel + j for j in range(-p, p + 1)], axis=-1)
 
         # Compute the distance of each channel from the center of the voxel
-        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        # Should be shape [(num pixels)*(num slices)]x(2p+1)
         delta_channel = jnp.abs(Bij_channel - mp.reshape((-1, 1)))
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
-        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        # Should be shape [(num pixels)*(num slices)]x(2p+1)
         tmp1 = (W_col + 1) / 2.0  # length = num_indices
         tmp2 = (W_col - 1) / 2.0  # length = num_indices
         L_channel = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_channel), 0)
 
-        # Compute Bij sparse matrix with shape [(num voxels)*(num slices)]x(2p+1)
+        # Compute Bij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
         Bij_value = (delta_pixel_recon / cos_alpha_col) * (L_channel / delta_det_channel)
         Bij_value = Bij_value * (Bij_channel >= 0) * (Bij_channel < num_det_channels)
 
         # ################
         # Compute the Cij matrix entries
-        # Compute a jnp row index array with shape [(num voxels)*(num slices)]x1
+        # Compute a jnp row index array with shape [(num pixels)*(num slices)]x1
         Cij_row = jnp.round(mp).astype(int)
         Cij_row = Cij_row.reshape((-1, 1))
 
-        # Compute a jnp row index array with shape [(num voxels)*(num slices)]x(2p+1)
+        # Compute a jnp row index array with shape [(num pixels)*(num slices)]x(2p+1)
         Cij_row = jnp.concatenate([Cij_row + j for j in range(-p, p + 1)], axis=-1)
 
         # Compute the distance of each row from the center of the voxel
-        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        # Should be shape [(num pixels)*(num slices)]x(2p+1)
         delta_row = jnp.abs(Cij_row - mp.reshape((-1, 1)))
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
-        # Should be shape [(num voxels)*(num slices)]x(2p+1)
+        # Should be shape [(num pixels)*(num slices)]x(2p+1)
         tmp1 = (W_row + 1) / 2.0  # length = num_indices
         tmp2 = (W_row - 1) / 2.0  # length = num_indices
         L_row = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_row), 0)
 
-        # Compute Cij sparse matrix with shape [(num voxels)*(num slices)]x(2p+1)
+        # Compute Cij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
         Cij_value = (delta_pixel_recon / cos_alpha_col) * (L_row / delta_det_row)
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
 
