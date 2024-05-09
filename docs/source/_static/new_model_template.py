@@ -84,7 +84,7 @@ class TemplateModel(TomographyModel):
         # The number of slices will need to come from geometry_params
         num_slices = 1
 
-        # Computes the voxel values in all slices corresponding to voxel_index
+        # Computes the voxel values in all slices corresponding to pixel_index
         voxel_values_cylinder = jnp.zeros(num_slices)
         return voxel_values_cylinder
 
