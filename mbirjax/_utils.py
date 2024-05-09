@@ -8,6 +8,7 @@ _forward_model_defaults_dict = {
     'sinogram_shape': {'val': None, 'recompile_flag': True},
     'delta_det_channel': {'val': 1.0, 'recompile_flag': True},
     'delta_det_row': {'val': 1.0, 'recompile_flag': True},
+    'det_row_offset': {'val': 0.0, 'recompile_flag': False},
     'det_channel_offset': {'val': 0.0, 'recompile_flag': False},
     'sigma_y': {'val': 1.0, 'recompile_flag': False},
 }
