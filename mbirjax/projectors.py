@@ -48,7 +48,7 @@ class Projectors:
             and for each such 2D index, the voxels in all slices at that location are projected.
 
             Args:
-                voxel_values (ndarray or jax array): 2D array of shape (len(voxel_indices), num_slices) of voxel values
+                voxel_values (ndarray or jax array): 2D array of shape (len(pixel_indices), num_slices) of voxel values
                 voxel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape (num_rows, num_cols)
 
             Returns:
@@ -104,7 +104,7 @@ class Projectors:
             and for each such 2D index, the voxels in all slices at that location are projected.
 
             Args:
-                voxel_values: 2D array of shape (len(voxel_indices), num_slices) of voxel values
+                voxel_values: 2D array of shape (len(pixel_indices), num_slices) of voxel values
                 voxel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
 
             Returns:

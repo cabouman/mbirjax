@@ -90,7 +90,7 @@ class ParallelBeamModel(TomographyModel):
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
+            voxel_index: the integer index into flattened recon - need to apply unravel_index(pixel_index, recon_shape) to get i, j, k
             angle (float): The angle in radians for this view.
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).

@@ -81,7 +81,7 @@ class TomographyModel:
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(voxel_index, recon_shape) to get i, j, k
+            voxel_index: the integer index into flattened recon - need to apply unravel_index(pixel_index, recon_shape) to get i, j, k
             view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
@@ -130,7 +130,7 @@ class TomographyModel:
         all voxels with those indices across all the slices.
 
         Args:
-            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
+            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
 
         Returns:
