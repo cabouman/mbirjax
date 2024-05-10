@@ -162,6 +162,7 @@ class ConeBeamModel(TomographyModel):
         """
         if voxel_values.ndim != 2:
             raise ValueError('voxel_values must have shape (num_indices, num_slices)')
+        pixel_indices = pixel_indices.reshape((-1, 1))
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
@@ -178,17 +179,18 @@ class ConeBeamModel(TomographyModel):
         sinogram_view = jnp.zeros((Nr, Nc))
 
         # Compute the outer products and scale by voxel_values
-        # First, compute the outer product for each voxel's Bij_value
-        outer_products = jnp.einsum('ki,kj->kij', Bij_value, Cij_value) * voxel_values[:, None, None]
+        # First, compute the outer product of Bij_value and Cij_value
+        outer_products = jnp.einsum('kmi,kmj->kmij', Bij_value, Cij_value)
+        weighted_product = outer_products * voxel_values[:, :, None, None]
 
         # Expand Cij_row and Cij_channel for broadcasting
         rows_expanded = Cij_row[:, :, None]  # Shape (Nv, 2p+1, 1)
         cols_expanded = Cij_row[:, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Flatten the arrays to use in index_add
-        flat_outer_products = outer_products.reshape(-1)
-        flat_rows = rows_expanded.broadcast_to(outer_products.shape).reshape(-1)
-        flat_cols = cols_expanded.broadcast_to(outer_products.shape).reshape(-1)
+        flat_outer_products = weighted_product.reshape(-1)
+        flat_rows = rows_expanded.broadcast_to(weighted_product.shape).reshape(-1)
+        flat_cols = cols_expanded.broadcast_to(weighted_product.shape).reshape(-1)
 
         # Aggregate the results into sinogram_view using index_add
         indices = (flat_rows, flat_cols)  # Prepare indices for index_add
@@ -226,13 +228,13 @@ class ConeBeamModel(TomographyModel):
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         recon_shape_2d = (num_recon_rows, num_recon_cols)
-        num_of_indices = pixel_indices.size
+        num_indices = pixel_indices.size
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape_2d)
 
         # Replicate along the slice access
-        i = jnp.tile(row_index, reps=(num_recon_slices, 1)).T.flatten()
-        j = jnp.tile(col_index, reps=(num_recon_slices, 1)).T.flatten()
-        k = jnp.tile(jnp.arange(num_recon_slices), reps=(num_of_indices, 1)).flatten()
+        i = jnp.tile(row_index, reps=(num_recon_slices, 1))
+        j = jnp.tile(col_index, reps=(num_recon_slices, 1))
+        k = jnp.tile(jnp.arange(num_indices)[:, None], reps=(num_recon_slices, 1))
 
         # TODO: Need to check that i,j,k each have shape (num pixels)*(num slices)
 
@@ -277,7 +279,6 @@ class ConeBeamModel(TomographyModel):
         # Compute the Bij matrix entries
         # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x1
         Bij_channel = jnp.round(mp).astype(int)
-        Bij_channel = Bij_channel.reshape((-1, 1))
 
         # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x(2p+1)
         Bij_channel = jnp.concatenate([Bij_channel + j for j in range(-p, p + 1)], axis=-1)
@@ -294,14 +295,13 @@ class ConeBeamModel(TomographyModel):
         L_channel = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_channel), 0)
 
         # Compute Bij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
-        Bij_value = (delta_pixel_recon / cos_alpha_col) * (L_channel / delta_det_channel)
+        Bij_value = (delta_pixel_recon / cos_alpha_col) * L_channel
         Bij_value = Bij_value * (Bij_channel >= 0) * (Bij_channel < num_det_channels)
 
         # ################
         # Compute the Cij matrix entries
         # Compute a jnp row index array with shape [(num pixels)*(num slices)]x1
         Cij_row = jnp.round(mp).astype(int)
-        Cij_row = Cij_row.reshape((-1, 1))
 
         # Compute a jnp row index array with shape [(num pixels)*(num slices)]x(2p+1)
         Cij_row = jnp.concatenate([Cij_row + j for j in range(-p, p + 1)], axis=-1)
@@ -317,8 +317,15 @@ class ConeBeamModel(TomographyModel):
         L_row = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_row), 0)
 
         # Compute Cij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
-        Cij_value = (delta_pixel_recon / cos_alpha_col) * (L_row / delta_det_row)
+        Cij_value = (delta_pixel_recon / cos_alpha_col) * L_row
+        # Zero out any out-of-bounds values
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
+
+        # Reshape to num_indices x num_recon_slices x (2p+1)
+        Bij_value = Bij_value.reshape((num_indices, num_recon_slices, Bij_value.shape[1]))
+        Bij_channel = Bij_channel.reshape(Bij_value.shape)
+        Cij_value = Cij_value.reshape((num_indices, num_recon_slices, Cij_value.shape[1]))
+        Cij_row = Cij_row.reshape(Cij_value.shape)
 
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
