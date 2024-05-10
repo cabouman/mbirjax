@@ -115,7 +115,7 @@ class ConeBeamModel(TomographyModel):
 
         # Compute sparse system matrices for rows and columns
         # Bij_value, Bij_channel, Cij_value, Cij_row are all shaped [(num pixels)*(num slices)]x(2p+1)
-        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(pixel_index,
+        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(voxel_values, pixel_index,
                                                                                                       angle,
                                                                                                       view_projector_params)
 
@@ -184,17 +184,19 @@ class ConeBeamModel(TomographyModel):
         weighted_product = outer_products * voxel_values[:, :, None, None]
 
         # Expand Cij_row and Cij_channel for broadcasting
-        rows_expanded = Cij_row[:, :, None]  # Shape (Nv, 2p+1, 1)
-        cols_expanded = Cij_row[:, None, :]  # Shape (Nv, 1, 2p+1)
+        rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
+        channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Flatten the arrays to use in index_add
         flat_outer_products = weighted_product.reshape(-1)
-        flat_rows = rows_expanded.broadcast_to(weighted_product.shape).reshape(-1)
-        flat_cols = cols_expanded.broadcast_to(weighted_product.shape).reshape(-1)
+        flat_rows = jnp.tile(rows_expanded, reps=(1, 1, 1, weighted_product.shape[3]))
+        flat_rows = flat_rows.reshape(-1)
+        flat_channels = jnp.tile(channels_expanded, reps=(1, 1, weighted_product.shape[2], 1))
+        flat_channels = flat_channels.reshape(-1)
 
         # Aggregate the results into sinogram_view using index_add
-        indices = (flat_rows, flat_cols)  # Prepare indices for index_add
-        sinogram_view = lax.index_add(sinogram_view, indices, flat_outer_products)
+        indices = (flat_rows, flat_channels)  # Prepare indices for index_add
+        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_outer_products)
 
         return sinogram_view
 
