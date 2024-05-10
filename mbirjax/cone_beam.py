@@ -115,7 +115,7 @@ class ConeBeamModel(TomographyModel):
 
         # Compute sparse system matrices for rows and columns
         # Bij_value, Bij_channel, Cij_value, Cij_row are all shaped [(num pixels)*(num slices)]x(2p+1)
-        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(voxel_values, pixel_index,
+        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(pixel_index,
                                                                                                       angle,
                                                                                                       view_projector_params)
 
@@ -166,8 +166,7 @@ class ConeBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(voxel_values,
-                                                                                                      pixel_indices,
+        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(pixel_indices,
                                                                                                       angle,
                                                                                                       projector_params)
 
@@ -201,8 +200,8 @@ class ConeBeamModel(TomographyModel):
         return sinogram_view
 
     @staticmethod
-    @partial(jax.jit, static_argnums=3)
-    def compute_sparse_Bij_Cij_single_view(voxel_values, pixel_indices, angle, projector_params, p=1):
+    @partial(jax.jit, static_argnums=2)
+    def compute_sparse_Bij_Cij_single_view(pixel_indices, angle, projector_params, p=1):
         """
         Calculate the separable sparse system matrices for a subset of voxels and a single view.
         It returns a sparse matrix specified by the system matrix values and associated detector column index.
@@ -225,8 +224,8 @@ class ConeBeamModel(TomographyModel):
         delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist, magnification, delta_pixel_recon, recon_slice_offset = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        num_recon_rows, num_recon_cols = projector_params[1][:2]
-        num_recon_slices = voxel_values.shape[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = projector_params[1]
+        # num_recon_slices = voxel_values.shape[1]
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         recon_shape_2d = (num_recon_rows, num_recon_cols)
