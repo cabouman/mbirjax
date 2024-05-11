@@ -110,7 +110,8 @@ class ParallelBeamModel(TomographyModel):
         sinogram_array = sinogram_view[:, Aij_index.T.flatten()]
 
         # Compute dot product
-        return jnp.sum(sinogram_array * (Aij_value**coeff_power), axis=1)
+        back_projection = jnp.sum(sinogram_array * (Aij_value**coeff_power), axis=1)
+        return back_projection
 
     @staticmethod
     def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, projector_params):
@@ -227,4 +228,6 @@ class ParallelBeamModel(TomographyModel):
         # Compute the values of Aij
         Aij_value = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
         Aij_value = Aij_value * (Aij_channel >= 0) * (Aij_channel < num_det_channels)
+
+        # jax.debug.breakpoint()
         return Aij_value, Aij_channel

@@ -122,12 +122,12 @@ class ConeBeamModel(TomographyModel):
 
         # Generate full index arrays for rows and columns
         # Expand Cij_row and Cij_channel for broadcasting
-        Cij_value_expanded = Cij_value[:, :, :, None]  # Shape (Nv, 2p+1, 1)
-        Bij_value_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
+        Cij_value_expanded = Cij_value[0, :, :, None]  # Shape (Nv, 2p+1, 1)
+        Bij_value_expanded = Bij_channel[0, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Expand Cij_row and Cij_channel for broadcasting
-        rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
-        channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
+        rows_expanded = Cij_row[0, :, :, None]  # Shape (Nv, 2p+1, 1)
+        channels_expanded = Bij_channel[0, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Create sinogram_array with shape (Nv x psf_width x psf_width)
         sinogram_array = sinogram_view[rows_expanded, channels_expanded]
@@ -314,6 +314,7 @@ class ConeBeamModel(TomographyModel):
         # Zero out any out-of-bounds values
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
 
+        # jax.debug.breakpoint()
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
     @staticmethod
