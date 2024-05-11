@@ -115,31 +115,26 @@ class ConeBeamModel(TomographyModel):
 
         # Compute sparse system matrices for rows and columns
         # Bij_value, Bij_channel, Cij_value, Cij_row are all shaped [(num pixels)*(num slices)]x(2p+1)
+        pixel_index = jnp.array(pixel_index).reshape((1, 1))
         Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(pixel_index,
                                                                                                       angle,
                                                                                                       view_projector_params)
 
-        # Determine shape of Bij where Nv = total number of voxels, and psf_width = 2p+1
-        Nv, psf_width = Bij_value.shape  # Nv = (num pixels)*(num slices)
-
         # Generate full index arrays for rows and columns
-        row_indices = Cij_row[:, :, None]  # Expand Cij_row to shape (num voxels, 2p+1, 1)
-        col_indices = Bij_channel[:, None, :]  # Expand Bij_channel to shape (num voxels, 1, 2p+1)
+        # Expand Cij_row and Cij_channel for broadcasting
+        Cij_value_expanded = Cij_value[:, :, :, None]  # Shape (Nv, 2p+1, 1)
+        Bij_value_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
 
-        # Broadcast indices to shape (Nv, 2p+1, 2p+1)
-        row_indices = jnp.broadcast_to(row_indices, shape=(Nv, psf_width, psf_width))
-        col_indices = jnp.broadcast_to(col_indices, shape=(Nv, psf_width, psf_width))
+        # Expand Cij_row and Cij_channel for broadcasting
+        rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
+        channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Create sinogram_array with shape (Nv x psf_width x psf_width)
-        sinogram_array = sinogram_view[row_indices, col_indices]
-
-        # Broadcast Bij_value and Cij_row for element-wise multiplication
-        Bij_value_expanded = Bij_value[:, :, None]  # Shape (Nv, 2p+1, 1)
-        Cij_row_expanded = Cij_row[:, None, :]  # Shape (Nv, 1, 2p+1)
+        sinogram_array = sinogram_view[rows_expanded, channels_expanded]
 
         # Compute back projection
         # coeff_power = 1 normally; coeff_power = 2 when computing diagonal of hessian
-        back_projection = jnp.sum(sinogram_array * ((Bij_value_expanded * Cij_row_expanded) ** coeff_power),
+        back_projection = jnp.sum(sinogram_array * ((Bij_value_expanded * Cij_value_expanded) ** coeff_power),
                                   axis=(1, 2))
 
         return back_projection
@@ -180,22 +175,22 @@ class ConeBeamModel(TomographyModel):
         # Compute the outer products and scale by voxel_values
         # First, compute the outer product of Bij_value and Cij_value
         outer_products = jnp.einsum('kmi,kmj->kmij', Bij_value, Cij_value)
-        weighted_product = outer_products * voxel_values[:, :, None, None]
+        sinogram_entries = outer_products * voxel_values[:, :, None, None]
 
         # Expand Cij_row and Cij_channel for broadcasting
         rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
         channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Flatten the arrays to use in index_add
-        flat_outer_products = weighted_product.reshape(-1)
-        flat_rows = jnp.tile(rows_expanded, reps=(1, 1, 1, weighted_product.shape[3]))
+        flat_sinogram_entries = sinogram_entries.reshape(-1)
+        flat_rows = jnp.tile(rows_expanded, reps=(1, 1, 1, sinogram_entries.shape[3]))
         flat_rows = flat_rows.reshape(-1)
-        flat_channels = jnp.tile(channels_expanded, reps=(1, 1, weighted_product.shape[2], 1))
+        flat_channels = jnp.tile(channels_expanded, reps=(1, 1, sinogram_entries.shape[2], 1))
         flat_channels = flat_channels.reshape(-1)
 
         # Aggregate the results into sinogram_view using index_add
-        indices = (flat_rows, flat_channels)  # Prepare indices for index_add
-        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_outer_products)
+        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
+        # jax.debug.breakpoint()
 
         return sinogram_view
 
@@ -232,14 +227,12 @@ class ConeBeamModel(TomographyModel):
         num_indices = pixel_indices.size
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape_2d)
 
-        # Replicate along the slice access
-        i = jnp.tile(row_index, reps=(num_recon_slices, 1))
-        j = jnp.tile(col_index, reps=(num_recon_slices, 1))
-        k = jnp.tile(jnp.arange(num_indices)[:, None], reps=(num_recon_slices, 1))
+        # Replicate along the slice axis
+        i = jnp.tile(row_index[:, :, None], reps=(1, num_recon_slices, 1))
+        j = jnp.tile(col_index[:, :, None], reps=(1, num_recon_slices, 1))
+        k = jnp.tile(jnp.arange(num_recon_slices)[None, :, None], reps=(num_indices, 1, 1))
 
-        # TODO: Need to check that i,j,k each have shape (num pixels)*(num slices)
-
-        # All the following objects should have shape (num pixels)*(num slices)
+        # All the following objects should have shape (num pixels)x(num slices)x1
         # x, y, z
         # u, v
         # mp, np
@@ -279,18 +272,17 @@ class ConeBeamModel(TomographyModel):
         # ################
         # Compute the Bij matrix entries
         # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x1
-        Bij_channel = jnp.round(mp).astype(int)
+        Bij_channel = jnp.round(np).astype(int)
 
         # Compute a jnp channel index array with shape [(num pixels)*(num slices)]x(2p+1)
         Bij_channel = jnp.concatenate([Bij_channel + j for j in range(-p, p + 1)], axis=-1)
 
         # Compute the distance of each channel from the center of the voxel
         # Should be shape [(num pixels)*(num slices)]x(2p+1)
-        delta_channel = jnp.abs(Bij_channel - mp.reshape((-1, 1)))
+        delta_channel = jnp.abs(Bij_channel - np)
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
         # Should be shape [(num pixels)*(num slices)]x(2p+1)
-         # TODO: Continue from here
         tmp1 = (W_col + 1) / 2.0  # length = num_indices
         tmp2 = (W_col - 1) / 2.0  # length = num_indices
         L_channel = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_channel), 0)
@@ -309,7 +301,7 @@ class ConeBeamModel(TomographyModel):
 
         # Compute the distance of each row from the center of the voxel
         # Should be shape [(num pixels)*(num slices)]x(2p+1)
-        delta_row = jnp.abs(Cij_row - mp.reshape((-1, 1)))
+        delta_row = jnp.abs(Cij_row - mp)
 
         # Calculate L = length of intersection between detector element and projection of flattened voxel
         # Should be shape [(num pixels)*(num slices)]x(2p+1)
@@ -321,12 +313,6 @@ class ConeBeamModel(TomographyModel):
         Cij_value = (delta_pixel_recon / cos_alpha_col) * L_row
         # Zero out any out-of-bounds values
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
-
-        # Reshape to num_indices x num_recon_slices x (2p+1)
-        Bij_value = Bij_value.reshape((num_indices, num_recon_slices, Bij_value.shape[1]))
-        Bij_channel = Bij_channel.reshape(Bij_value.shape)
-        Cij_value = Cij_value.reshape((num_indices, num_recon_slices, Cij_value.shape[1]))
-        Cij_row = Cij_row.reshape(Cij_value.shape)
 
         return Bij_value, Bij_channel, Cij_value, Cij_row
 

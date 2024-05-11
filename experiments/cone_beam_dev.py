@@ -52,7 +52,7 @@ if __name__ == "__main__":
     conebeam_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
 
     print('Starting forward projection')
-    sinogram = conebeam_model.sparse_forward_project(voxel_values[0], full_indices[0])
+    sinogram = conebeam_model.sparse_forward_project(voxel_values[0][23:27], full_indices[0][23:27])
 
     # Determine resulting number of views, slices, and channels and image size
     print('Sinogram shape: {}'.format(sinogram.shape))
