@@ -332,11 +332,12 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     @jax.jit
     def geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification):
-        # Compute the source to iso distance
-        source_to_iso_dist = source_detector_dist / magnification
-
         # Compute the magnification at this specific voxel
-        pixel_mag = source_detector_dist / (source_to_iso_dist - y)
+        # This can be done with the following 2 lines, but by taking the reciprocal of pixel_mag, we can express it in
+        # terms of magnification and source_detector_dist, which remains valid even source_detector_dist = np.Inf.
+        # source_to_iso_dist = source_detector_dist / magnification
+        # pixel_mag = source_detector_dist / (source_to_iso_dist - y)
+        pixel_mag = 1 / (1 / magnification - y / source_detector_dist)
 
         # Compute the physical position that this voxel projects onto the detector
         u = pixel_mag * x

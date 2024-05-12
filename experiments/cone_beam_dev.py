@@ -18,10 +18,11 @@ if __name__ == "__main__":
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 20
-    num_det_channels = 128
-    magnification = 1
-    source_detector_distance = 10000.0
+    num_det_rows = 5
+    num_det_channels = 256
+    magnification = 4.
+    source_detector_distance = 1000
+    delta_pixel_recon = 0.5
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
     end_angle = jnp.pi + extra_angle
@@ -34,6 +35,7 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, magnification)
+    conebeam_model.set_params(delta_pixel_recon=0.5)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
@@ -46,17 +48,17 @@ if __name__ == "__main__":
     num_subsets = 5
     subset_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
 
-    # # ##########################
-    # # Show the forward and back projection from a single pixel
-    # i, j = num_recon_rows // 4, num_recon_cols // 3
-    # x = jnp.zeros(recon_shape)
-    # x = x.at[i, j, :].set(1)
-    # voxel_values = x.reshape((-1, num_recon_slices))[full_indices[0]]
-    #
-    # Ax = conebeam_model.sparse_forward_project(voxel_values, full_indices[0])
-    # Ax = np.array(Ax)
-    # Aty = conebeam_model.sparse_back_project(Ax, full_indices[0])
-    # Aty = np.array(Aty)
+    # ##########################
+    # Show the forward and back projection from a single pixel
+    i, j = num_recon_rows // 4, num_recon_cols // 3
+    x = jnp.zeros(recon_shape)
+    x = x.at[i, j, :].set(1)
+    voxel_values = x.reshape((-1, num_recon_slices))[full_indices[0]]
+
+    Ax = conebeam_model.sparse_forward_project(voxel_values, full_indices[0])
+    Ax = np.array(Ax)
+    Aty = conebeam_model.sparse_back_project(Ax, full_indices[0])
+    Aty = np.array(Aty)
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
@@ -178,14 +180,17 @@ if __name__ == "__main__":
     index = jnp.ravel_multi_index((6, 6), (num_recon_rows, num_recon_cols))
     a1 = conebeam_model.sparse_back_project(y, indices[0])
 
-    slice_index = 0
+    slice_index = (num_recon_slices + 1) // 2
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
-    ax[0].imshow(x[:, :, slice_index])
+    cax = ax[0].imshow(x[:, :, slice_index])
     ax[0].set_title('x = phantom')
-    ax[1].imshow(Ax[:, slice_index, :])
+    fig.colorbar(cax, ax=ax[0])
+    cax = ax[1].imshow(Ax[:, slice_index, :])
     ax[1].set_title('y = Ax')
-    ax[2].imshow(Aty[:, :, slice_index])
+    fig.colorbar(cax, ax=ax[1])
+    cax = ax[2].imshow(Aty[:, :, slice_index])
     ax[2].set_title('Aty = AtAx')
+    fig.colorbar(cax, ax=ax[2])
     plt.pause(2)
 
     print('Final memory stats:')
