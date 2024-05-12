@@ -123,7 +123,7 @@ class ConeBeamModel(TomographyModel):
         # Generate full index arrays for rows and columns
         # Expand Cij_row and Cij_channel for broadcasting
         Cij_value_expanded = Cij_value[0, :, :, None]  # Shape (Nv, 2p+1, 1)
-        Bij_value_expanded = Bij_channel[0, :, None, :]  # Shape (Nv, 1, 2p+1)
+        Bij_value_expanded = Bij_value[0, :, None, :]  # Shape (Nv, 1, 2p+1)
 
         # Expand Cij_row and Cij_channel for broadcasting
         rows_expanded = Cij_row[0, :, :, None]  # Shape (Nv, 2p+1, 1)
@@ -136,7 +136,7 @@ class ConeBeamModel(TomographyModel):
         # coeff_power = 1 normally; coeff_power = 2 when computing diagonal of hessian
         back_projection = jnp.sum(sinogram_array * ((Bij_value_expanded * Cij_value_expanded) ** coeff_power),
                                   axis=(1, 2))
-
+        # jax.debug.breakpoint()
         return back_projection
 
     @staticmethod
@@ -174,14 +174,14 @@ class ConeBeamModel(TomographyModel):
 
         # Compute the outer products and scale by voxel_values
         # First, compute the outer product of Bij_value and Cij_value
-        outer_products = jnp.einsum('kmi,kmj->kmij', Bij_value, Cij_value)
+        outer_products = jnp.einsum('kmi,kmj->kmij', Cij_value, Bij_value)
         sinogram_entries = outer_products * voxel_values[:, :, None, None]
 
         # Expand Cij_row and Cij_channel for broadcasting
         rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
         channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
 
-        # Flatten the arrays to use in index_add
+        # Flatten the arrays to index into sinogram view
         flat_sinogram_entries = sinogram_entries.reshape(-1)
         flat_rows = jnp.tile(rows_expanded, reps=(1, 1, 1, sinogram_entries.shape[3]))
         flat_rows = flat_rows.reshape(-1)
@@ -189,10 +189,9 @@ class ConeBeamModel(TomographyModel):
         flat_channels = flat_channels.reshape(-1)
 
         # Aggregate the results into sinogram_view using index_add
-        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
+        sinogram_view1 = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
         # jax.debug.breakpoint()
-
-        return sinogram_view
+        return sinogram_view1
 
     @staticmethod
     @partial(jax.jit, static_argnums=2)
@@ -310,11 +309,10 @@ class ConeBeamModel(TomographyModel):
         L_row = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_row), 0)
 
         # Compute Cij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
-        Cij_value = (delta_pixel_recon / cos_alpha_col) * L_row
+        Cij_value = (delta_pixel_recon / cos_alpha_row) * L_row
         # Zero out any out-of-bounds values
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
 
-        # jax.debug.breakpoint()
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
     @staticmethod

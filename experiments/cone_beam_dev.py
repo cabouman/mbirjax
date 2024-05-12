@@ -17,19 +17,19 @@ if __name__ == "__main__":
     voxel_batch_size = 10000
 
     # Initialize sinogram
-    num_views = 10
-    num_det_rows = 5
-    num_det_channels = 10
-    magnification = 2
-    source_detector_distance = 100.0
+    num_views = 128
+    num_det_rows = 20
+    num_det_channels = 128
+    magnification = 1
+    source_detector_distance = 10000.0
     start_angle = 0
-    extra_angle = jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
+    extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
     end_angle = jnp.pi + extra_angle
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
     angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
-    seed_value = np.random.randint(1000000)
+    seed_value = 0  #np.random.randint(1000000)
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
@@ -45,6 +45,18 @@ if __name__ == "__main__":
     full_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
     num_subsets = 5
     subset_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
+
+    # # ##########################
+    # # Show the forward and back projection from a single pixel
+    # i, j = num_recon_rows // 4, num_recon_cols // 3
+    # x = jnp.zeros(recon_shape)
+    # x = x.at[i, j, :].set(1)
+    # voxel_values = x.reshape((-1, num_recon_slices))[full_indices[0]]
+    #
+    # Ax = conebeam_model.sparse_forward_project(voxel_values, full_indices[0])
+    # Ax = np.array(Ax)
+    # Aty = conebeam_model.sparse_back_project(Ax, full_indices[0])
+    # Aty = np.array(Aty)
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
@@ -163,7 +175,7 @@ if __name__ == "__main__":
     y = jnp.zeros_like(sinogram)
     view_index = 30
     y = y.at[view_index].set(sinogram[view_index])
-    index = jnp.ravel_multi_index((60, 60), (num_recon_rows, num_recon_cols))
+    index = jnp.ravel_multi_index((6, 6), (num_recon_rows, num_recon_cols))
     a1 = conebeam_model.sparse_back_project(y, indices[0])
 
     slice_index = 0

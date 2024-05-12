@@ -111,6 +111,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute dot product
         back_projection = jnp.sum(sinogram_array * (Aij_value**coeff_power), axis=1)
+        # jax.debug.breakpoint()
         return back_projection
 
     @staticmethod
