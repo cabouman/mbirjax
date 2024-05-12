@@ -9,6 +9,11 @@ if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
+    # ##########################
+    # Test batch size feature
+    view_batch_size = 100
+    voxel_batch_size = 10000
+
     # Set parameters
     num_views = 256
     num_det_rows = 20
@@ -23,6 +28,13 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+
+    # Here are other things you might want to do
+    parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
+    #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
+    #cone_model.set_params(delta_pixel_recon=1.0)    # You can change the pixel pitch
+    #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
     phantom = parallel_model.gen_3d_sl_phantom()
@@ -41,11 +53,14 @@ if __name__ == "__main__":
     parallel_model.print_params()
 
     # ##########################
-    # Test proximal map for fixed point
-    # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-    parallel_model.auto_set_regularization_params(sinogram, weights=weights)
-    init_recon = phantom + 1.0
-    recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon, num_iterations=13)
+    # Perform VCD reconstruction
+    time0 = time.time()
+    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
+
+    recon.block_until_ready()
+    elapsed = time.time() - time0
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+    # ##########################
 
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)
