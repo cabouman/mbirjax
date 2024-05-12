@@ -8,15 +8,15 @@ _forward_model_defaults_dict = {
     'sinogram_shape': {'val': None, 'recompile_flag': True},
     'delta_det_channel': {'val': 1.0, 'recompile_flag': True},
     'delta_det_row': {'val': 1.0, 'recompile_flag': True},
-    'det_row_offset': {'val': 0.0, 'recompile_flag': False},
-    'det_channel_offset': {'val': 0.0, 'recompile_flag': False},
+    'det_row_offset': {'val': 0.0, 'recompile_flag': True},
+    'det_channel_offset': {'val': 0.0, 'recompile_flag': True},
     'sigma_y': {'val': 1.0, 'recompile_flag': False},
 }
 
 _recon_model_defaults_dict = {
     'recon_shape': {'val': None, 'recompile_flag': True},
-    'magnification': {'val': 1.0, 'recompile_flag': False},
-    'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
+    'magnification': {'val': 1.0, 'recompile_flag': True},
+    'delta_pixel_recon': {'val': 1.0, 'recompile_flag': True},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
     'p': {'val': 2.0, 'recompile_flag': False},
