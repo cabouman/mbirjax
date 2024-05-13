@@ -50,11 +50,8 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
-    # Reshape recon into 3D form
-    recon_3d = parallel_model.reshape_recon(recon)
-
     # Display results
-    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 
     # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon_3d)
+    #pu.display_slices(phantom, sinogram, recon)
