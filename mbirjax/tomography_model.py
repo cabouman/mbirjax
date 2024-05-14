@@ -33,9 +33,9 @@ class TomographyModel:
         if recon_shape is None:
             self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)  # Determine auto image size
         self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
-        self.compile_projectors()
+        self.create_projectors()
 
-    def compile_projectors(self):
+    def create_projectors(self):
         """
         Creates an instance of the Projectors class and set the local instance variables needed for forward
         and back projection and compute_hessian_diagonal.  This method requires that the current geometry has
@@ -51,7 +51,7 @@ class TomographyModel:
         self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, projector_params):
+    def forward_project_voxels_one_view(voxel_values, pixel_indices, view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -61,7 +61,7 @@ class TomographyModel:
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
-            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
 
@@ -359,7 +359,7 @@ class TomographyModel:
 
         # Compare the two outputs
         if recompile and not no_compile:
-            self.compile_projectors()
+            self.create_projectors()
 
     def get_params(self, parameter_names):
         """
