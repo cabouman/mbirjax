@@ -309,7 +309,7 @@ class ConeBeamModel(TomographyModel):
         L_row = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_row), 0)
 
         # Compute Cij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
-        Cij_value = (delta_pixel_recon / cos_alpha_row) * L_row
+        Cij_value = (1 / cos_alpha_row) * L_row
         # Zero out any out-of-bounds values
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
 
