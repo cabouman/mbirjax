@@ -53,7 +53,7 @@ class TemplateModel(TomographyModel):
         Required function to get a list of the view independent geometry parameters required for projection.
 
         Returns:
-            List of any parameters required for back_project_one_view_to_voxel or forward_project_voxels_one_view.
+            List of any parameters required for back_project_one_view_to_pixel or forward_project_pixels_to_one_view.
             This does not need to include view dependent parameters, or sinogram_shape or recon_shape, which
             are passed in automatically to projector_params.
         """
@@ -62,7 +62,7 @@ class TemplateModel(TomographyModel):
         return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, single_view_params, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel(sinogram_view, voxel_index, single_view_params, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxels given a sinogram view and various parameters.
         This code uses the distance driven projector.
@@ -89,7 +89,7 @@ class TemplateModel(TomographyModel):
         return voxel_values_cylinder
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, single_view_params, projector_params):
+    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into a single view.
 
@@ -98,7 +98,7 @@ class TemplateModel(TomographyModel):
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
-            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for this view.
             projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 

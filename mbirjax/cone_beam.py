@@ -91,7 +91,7 @@ class ConeBeamModel(TomographyModel):
         return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
         """
         Calculate the backprojection at a specified recon pixel cylinder given a sinogram view and model parameters.
         Also supports computation of the diagonal hessian when coeff_power = 2.
@@ -140,7 +140,7 @@ class ConeBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -188,10 +188,10 @@ class ConeBeamModel(TomographyModel):
         flat_channels = jnp.tile(channels_expanded, reps=(1, 1, sinogram_entries.shape[2], 1))
         flat_channels = flat_channels.reshape(-1)
 
-        # Aggregate the results into sinogram_view using index_add
-        sinogram_view1 = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
+        # Aggregate the results into sinogram_view
+        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
         # jax.debug.breakpoint()
-        return sinogram_view1
+        return sinogram_view
 
     @staticmethod
     @partial(jax.jit, static_argnums=2)

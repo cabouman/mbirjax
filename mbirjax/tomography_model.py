@@ -39,19 +39,19 @@ class TomographyModel:
         """
         Creates an instance of the Projectors class and set the local instance variables needed for forward
         and back projection and compute_hessian_diagonal.  This method requires that the current geometry has
-        implementations of :meth:`forward_project_voxels_one_view` and :meth:`back_project_one_view_to_voxel`
+        implementations of :meth:`forward_project_pixels_to_one_view` and :meth:`back_project_one_view_to_pixel`
 
         Returns:
             Nothing, but creates jit-compiled functions.
         """
-        projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view,
-                                                 self.back_project_one_view_to_voxel)
+        projector_functions = mbirjax.Projectors(self, self.forward_project_pixels_to_one_view,
+                                                 self.back_project_one_view_to_pixel)
         self._sparse_forward_project = projector_functions.sparse_forward_project
         self._sparse_back_project = projector_functions.sparse_back_project
         self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -72,7 +72,7 @@ class TomographyModel:
         return None
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel(sinogram_view, voxel_index, view_params, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
 

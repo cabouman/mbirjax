@@ -83,14 +83,14 @@ class ParallelBeamModel(TomographyModel):
         return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, angle, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
         """
-        Calculate the backprojection value at a specified recon voxel given a sinogram view and various parameters.
-        This code uses the distance driven projector.
+        Calculate the backprojection value to a specified recon voxel cylinder specified by a pixel location. 
+        Takes as input one sinogram view and various parameters. This code uses the distance driven projector.
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(pixel_index, recon_shape) to get i, j, k
+            pixel_index: the integer index into flattened recon - need to apply unravel_index(pixel_index, recon_shape) to get i, j, k
             angle (float): The angle in radians for this view.
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power: [int] backproject using the coefficients of (A_ij ** coeff_power).
@@ -104,7 +104,7 @@ class ParallelBeamModel(TomographyModel):
         # Get the part of the system matrix and channel indices for this voxel
         sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
         view_projector_params = (sinogram_view_shape,) + projector_params[1:]
-        Aij_value, Aij_index = ParallelBeamModel.compute_sparse_Aij_single_view(voxel_index, angle, view_projector_params)
+        Aij_value, Aij_index = ParallelBeamModel.compute_sparse_Aij_single_view(pixel_index, angle, view_projector_params)
 
         # Extract out the relevant entries from the sinogram
         sinogram_array = sinogram_view[:, Aij_index.T.flatten()]
@@ -115,14 +115,15 @@ class ParallelBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, angle, projector_params):
+    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
-        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+        Forward project a set of voxel cylinders determined by indices into the flattened array of size 
+        num_rows x num_cols.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
-            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
@@ -134,7 +135,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        Aij_value, Aij_channel = ParallelBeamModel.compute_sparse_Aij_single_view(voxel_indices, angle, projector_params)
+        Aij_value, Aij_channel = ParallelBeamModel.compute_sparse_Aij_single_view(pixel_indices, angle, projector_params)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2p+1) x num_slices
@@ -154,14 +155,14 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnums=3)
-    def compute_sparse_Aij_single_view(voxel_indices, angle, projector_params, p=1):
+    def compute_sparse_Aij_single_view(pixel_indices, angle, projector_params, p=1):
         """
         Calculate the sparse system matrix for a subset of voxels and a single view.
         The function returns a sparse matrix specified by the matrix values and associated detector column index.
         Since this is for parallel beam geometry, the values are assumed to be the same for each row/slice pair.
 
         Args:
-            voxel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this single view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
             p (int, optional, default=1):  # This is the assumed number of channels per side
@@ -169,7 +170,7 @@ class ParallelBeamModel(TomographyModel):
         Returns:
             Aij_value (num indices, 2p+1), Aji_channel (num indices, 2p+1)
         """
-        warnings.warn('Compiling for indices length = {}'.format(voxel_indices.shape))
+        warnings.warn('Compiling for indices length = {}'.format(pixel_indices.shape))
         warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
 
         # Get all the geometry parameters
@@ -181,7 +182,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         recon_shape_2d = (num_recon_rows, num_recon_cols)
-        row_index, col_index = jnp.unravel_index(voxel_indices, recon_shape_2d)
+        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape_2d)
 
         # Compute the x,y position of the voxel relative to the center of rotation
         # Assumes: rows index top to bottom; slice is viewed from the top; rotation of object is clockwise
