@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
                     # Generate phantom for forward projection
                     recon_shape = parallel_model.get_params('recon_shape')
-                    phantom = mbirjax.gen_phantom(recon_shape)
+                    phantom = mbirjax.gen_cube_phantom(recon_shape)
 
                     # Get a subset of the given size
                     indices = np.arange(ni, dtype=int)

@@ -40,7 +40,7 @@ if __name__ == "__main__":
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mbirjax.gen_phantom(recon_shape)
+    phantom = mbirjax.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels
     num_subsets = 1

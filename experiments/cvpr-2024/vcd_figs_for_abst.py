@@ -101,11 +101,9 @@ if __name__ == "__main__":
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
     pu.plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 
-
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
-    parallel_model.set_params(recon_shape=recon_shape, granularity=[1, 2, 4, 8, 16])
-    partitions_fig = parallel_model.gen_set_of_pixel_partitions()
+    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 2, 4, 8, 16])
 
     # Plot the set of partitions
     pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)

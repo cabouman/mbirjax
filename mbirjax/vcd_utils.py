@@ -28,6 +28,26 @@ def get_2d_ror_mask(recon_shape):
     return mask
 
 
+def gen_set_of_pixel_partitions(recon_shape, granularity):
+    """
+    Generates a collection of voxel partitions for an array of specified partition sizes.
+    This function creates a tuple of randomly generated 2D voxel partitions.
+
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices)
+        granularity (list or tuple):  List of num_subsets to use for each partition
+
+    Returns:
+        tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
+    """
+    partitions = ()
+    for num_subsets in granularity:
+        partition = gen_pixel_partition(recon_shape, num_subsets)
+        partitions += (partition,)
+
+    return partitions
+
+
 def gen_pixel_partition(recon_shape, num_subsets):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
@@ -104,7 +124,7 @@ def gen_indices_d2(recon_shape, block_width):
     return jnp.array(indices)
 
 
-def gen_phantom(recon_shape):
+def gen_cube_phantom(recon_shape):
     """Code to generate a simple phantom """
     # Compute phantom height and width
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
@@ -141,6 +161,90 @@ def ellipsoid(x0, y0, z0, a, b, c, N, M, P, angle=0, intensity=1.0):
 
     ellipsoid = (Xr**2 / a**2 + Yr**2 / b**2 + Zr**2 / c**2) <= 1
     return ellipsoid.astype(float) * intensity
+
+
+def _gen_ellipsoid(x_grid, y_grid, z_grid, x0, y0, z0, a, b, c, gray_level, alpha=0, beta=0, gamma=0):
+    """
+    Return an image with a 3D ellipsoid in a 3D plane with a center of [x0,y0,z0] and ...
+
+    Args:
+        x_grid(float): 3D grid of X coordinate values.
+        y_grid(float): 3D grid of Y coordinate values.
+        z_grid(float): 3D grid of Z coordinate values.
+        x0(float): horizontal center of ellipsoid.
+        y0(float): vertical center of ellipsoid.
+        z0(float): normal center of ellipsoid.
+        a(float): X-axis radius.
+        b(float): Y-axis radius.
+        c(float): Z-axis radius.
+        gray_level(float): Gray level for the ellipse.
+        alpha(float): [Default=0.0] counter-clockwise angle of rotation by X-axis in radians.
+        beta(float): [Default=0.0] counter-clockwise angle of rotation by Y-axis in radians.
+        gamma(float): [Default=0.0] counter-clockwise angle of rotation by Z-axis in radians.
+
+    Return:
+        ndarray: 3D array with the same shape as x_grid, y_grid, and z_grid
+
+    """
+    # Generate Rotation Matrix.
+    rx = np.array([[1, 0, 0], [0, np.cos(-alpha), -np.sin(-alpha)], [0, np.sin(-alpha), np.cos(-alpha)]])
+    ry = np.array([[np.cos(-beta), 0, np.sin(-beta)], [0, 1, 0], [-np.sin(-beta), 0, np.cos(-beta)]])
+    rz = np.array([[np.cos(-gamma), -np.sin(-gamma), 0], [np.sin(-gamma), np.cos(-gamma), 0], [0, 0, 1]])
+    r = np.dot(rx, np.dot(ry, rz))
+
+    cor = np.array([x_grid.flatten() - x0, y_grid.flatten() - y0, z_grid.flatten() - z0])
+
+    image = ((np.dot(r[0], cor)) ** 2 / a ** 2 + (np.dot(r[1], cor)) ** 2 / b ** 2 + (
+        np.dot(r[2], cor)) ** 2 / c ** 2 <= 1.0) * gray_level
+
+    return image.reshape(x_grid.shape)
+
+
+def generate_3d_shepp_logan_reference(phantom_shape):
+    """
+    Generate a 3D Shepp Logan phantom based on below reference.
+
+    Kak AC, Slaney M. Principles of computerized tomographic imaging. Page.102. IEEE Press, New York, 1988. https://engineering.purdue.edu/~malcolm/pct/CTI_Ch03.pdf
+
+    Args:
+        num_rows: int, number of rows.
+        num_cols: int, number of cols.
+        num_slices: int, number of slices.
+
+    Return:
+        out_image: 3D array, num_slices*num_rows*num_cols
+    """
+
+    # The function describing the phantom is defined as the sum of 10 ellipsoids inside a 2×2×2 cube:
+    sl3d_paras = [
+        {'x0': 0.0, 'y0': 0.0, 'z0': 0.0, 'a': 0.69, 'b': 0.92, 'c': 0.9, 'gamma': 0, 'gray_level': 2.0},
+        {'x0': 0.0, 'y0': 0.0, 'z0': 0.0, 'a': 0.6624, 'b': 0.874, 'c': 0.88, 'gamma': 0, 'gray_level': -0.98},
+        {'x0': -0.22, 'y0': 0.0, 'z0': -0.25, 'a': 0.41, 'b': 0.16, 'c': 0.21, 'gamma': 108, 'gray_level': -0.02},
+        {'x0': 0.22, 'y0': 0.0, 'z0': -0.25, 'a': 0.31, 'b': 0.11, 'c': 0.22, 'gamma': 72, 'gray_level': -0.02},
+        {'x0': 0.0, 'y0': 0.35, 'z0': -0.25, 'a': 0.21, 'b': 0.25, 'c': 0.5, 'gamma': 0, 'gray_level': 0.02},
+        {'x0': 0.0, 'y0': 0.1, 'z0': -0.25, 'a': 0.046, 'b': 0.046, 'c': 0.046, 'gamma': 0, 'gray_level': 0.02},
+        {'x0': -0.08, 'y0': -0.65, 'z0': -0.25, 'a': 0.046, 'b': 0.023, 'c': 0.02, 'gamma': 0, 'gray_level': 0.01},
+        {'x0': 0.06, 'y0': -0.65, 'z0': -0.25, 'a': 0.046, 'b': 0.023, 'c': 0.02, 'gamma': 90, 'gray_level': 0.01},
+        {'x0': 0.06, 'y0': -0.105, 'z0': 0.625, 'a': 0.056, 'b': 0.04, 'c': 0.1, 'gamma': 90, 'gray_level': 0.02},
+        {'x0': 0.0, 'y0': 0.1, 'z0': 0.625, 'a': 0.056, 'b': 0.056, 'c': 0.1, 'gamma': 0, 'gray_level': -0.02}
+    ]
+
+    num_rows, num_cols, num_slices = phantom_shape
+    axis_x = np.linspace(-1.0, 1.0, num_cols)
+    axis_y = np.linspace(1.0, -1.0, num_rows)
+    axis_z = np.linspace(-1.0, 1.0, num_slices)
+
+    x_grid, y_grid, z_grid = np.meshgrid(axis_x, axis_y, axis_z)
+    image = x_grid * 0.0
+
+    for el_paras in sl3d_paras:
+        image += _gen_ellipsoid(x_grid=x_grid, y_grid=y_grid, z_grid=z_grid, x0=el_paras['x0'], y0=el_paras['y0'],
+                               z0=el_paras['z0'],
+                               a=el_paras['a'], b=el_paras['b'], c=el_paras['c'],
+                               gamma=el_paras['gamma'] / 180.0 * np.pi,
+                               gray_level=el_paras['gray_level'])
+
+    return image
 
 
 def generate_3d_shepp_logan(phantom_shape):

@@ -776,7 +776,7 @@ class TomographyModel:
         num_recon_rows, num_recon_cols = recon_shape[:2]
         partitions = ()
         for size in granularity:
-            partition = mbirjax.gen_voxel_partition(recon_shape, size)
+            partition = mbirjax.gen_pixel_partition(recon_shape, size)
             partitions += (partition,)
 
         return partitions
@@ -788,7 +788,7 @@ class TomographyModel:
         """
         # Convert granularity to an np array
         recon_shape = self.get_params('recon_shape')
-        partition = mbirjax.gen_voxel_partition(recon_shape, num_subsets=1)
+        partition = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)
         full_indices = partition[0]
 
         return full_indices

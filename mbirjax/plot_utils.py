@@ -50,7 +50,7 @@ global slice_index, ax, fig, cbar, img, vertical_line
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-def slice_viewer(data, data2=None, title=''):
+def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
@@ -69,13 +69,17 @@ def slice_viewer(data, data2=None, title=''):
     slice_index = data.shape[2] // 2  # Initial slice index
 
     # Define min and max grayscale values for consistent coloring across slices
-    vmin = min(data.min(), data2.min() if data2 is not None else data.min())
-    vmax = max(data.max(), data2.max() if data2 is not None else data.max())
+    if vmin is None:
+        vmin = min(data.min(), data2.min() if data2 is not None else data.min())
+    if vmax is None:
+        vmax = max(data.max(), data2.max() if data2 is not None else data.max())
+
+    vmin_orig, vmax_orig = vmin, vmax
 
     def update_slice(x):
         """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
         global slice_index, vertical_line
-        slice_index = int(0.5 + x / ax_colorbar.get_xlim()[1] * data.shape[2])
+        slice_index = int(0.5 + x / ax_slice_slider.get_xlim()[1] * (data.shape[2] - 1))
         vertical_line.set_xdata([slice_index, slice_index])
         redraw_fig()
 
@@ -100,31 +104,47 @@ def slice_viewer(data, data2=None, title=''):
 
     def on_press(event):
         """Handle mouse press events for interactive slice selection."""
-        if event.inaxes == ax_colorbar:
+        if event.inaxes == ax_slice_slider:
             update_slice(event.xdata)
 
     def on_motion(event):
         """Handle mouse motion events for continuous slice selection while dragging."""
-        if event.inaxes == ax_colorbar and event.button == 1:
+        if event.inaxes == ax_slice_slider and event.button == 1:
             update_slice(event.xdata)
 
     # Setup the plot
     plt.ion()  # Turn on interactive mode
-    fig, axes = plt.subplots(3, 1, gridspec_kw={'height_ratios': [10, 1, 0.5]})
+    fig, axes = plt.subplots(nrows=5, ncols=1, figsize=(6, 6), gridspec_kw={'height_ratios': [10, 1, 0.5, 1, 0.5]})
     fig.suptitle(title)
-    ax, ax_colorbar, ax_instruction = axes
+    ax = axes[0]
+    ax_slice_slider, ax_slice_instruction = axes[1], axes[2]
+    ax_intensity_slider, ax_intensity_instructions = axes[3], axes[4]
 
-    # Setup the interactive vertical line in the slider
-    ax_colorbar.set_xlim(0, data.shape[2])
-    ax_colorbar.set_ylim(0, 1)
-    vertical_line = ax_colorbar.axvline(slice_index, color='black', linewidth=4)  # Movable line
-    ax_colorbar.set_facecolor('white')
-    ax_colorbar.set_yticks([])
-    ax_colorbar.set_xticks([])
+    # Setup the interactive vertical line in the slice slider
+    ax_slice_slider.set_xlim(0, data.shape[2] - 1)
+    ax_slice_slider.set_ylim(0, 1)
+    vertical_line = ax_slice_slider.axvline(slice_index, color='black', linewidth=4)  # Movable line
+    ax_slice_slider.set_facecolor('white')
+    ax_slice_slider.set_yticks([])
+    ax_slice_slider.set_xticks([])
 
     # Add a label below the slider
-    ax_instruction.text(0.5, 0.5, 'Click and drag to change slice', ha='center', va='center', fontsize=10)
-    ax_instruction.set_axis_off()
+    ax_slice_instruction.text(0.5, 0.5, 'Click and drag to change slice', ha='center', va='center', fontsize=10)
+    ax_slice_instruction.set_axis_off()
+
+    # Setup the interactive window in the intensity slider
+    ax_intensity_slider.set_xlim(vmin_orig, vmax_orig)
+    ax_intensity_slider.set_ylim(0, 1)
+    vmin_line = ax_intensity_slider.axvline(vmin_orig, color='red', linewidth=4)  # Movable line
+    vmax_line = ax_intensity_slider.axvline(vmax_orig, color='red', linewidth=4)
+    intensity_line = ax_intensity_slider.axhline(y=0.5, color='red', linewidth=4)
+    ax_intensity_slider.set_facecolor('white')
+    ax_intensity_slider.set_yticks([])
+    ax_intensity_slider.set_xticks([vmin_orig, vmax_orig])
+
+    # Add a label below the slider
+    ax_intensity_instructions.text(0.5, 0.5, 'Click and drag to change intensity window', ha='center', va='center', fontsize=10)
+    ax_intensity_instructions.set_axis_off()
 
     # Connect events
     fig.canvas.mpl_connect('button_press_event', on_press)
