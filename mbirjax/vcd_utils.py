@@ -28,20 +28,20 @@ def get_2d_ror_mask(recon_shape):
     return mask
 
 
-def gen_voxel_partition(recon_shape, num_subsets):
+def gen_pixel_partition(recon_shape, num_subsets):
     """
-    Generates a partition of voxel indices into specified number of subsets for use in tomographic reconstruction algorithms.
-    The function ensures that each subset contains an equal number of voxels, suitable VCD reconstruction.
+    Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
+    The function ensures that each subset contains an equal number of pixels, suitable VCD reconstruction.
 
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
-        num_subsets (int): The number of subsets to divide the voxel indices into.
+        num_subsets (int): The number of subsets to divide the pixel indices into.
 
     Raises:
-        ValueError: If the number of subsets specified is greater than the total number of voxels in the grid.
+        ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
 
     Returns:
-        jnp.array: A JAX array where each row corresponds to a subset of voxel indices, sorted within each subset.
+        jnp.array: A JAX array where each row corresponds to a subset of pixel indices, sorted within each subset.
     """
     # Determine the 2D indices within the RoR
     num_recon_rows, num_recon_cols = recon_shape[:2]

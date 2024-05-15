@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # ##########################
     # Do all the setup
     view_batch_size = 1024
-    voxel_batch_size = 10000
+    pixel_batch_size = 10000
 
     # Initialize sinogram
     num_views = 128
@@ -42,11 +42,11 @@ if __name__ == "__main__":
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
     phantom = mbirjax.gen_phantom(recon_shape)
 
-    # Generate indices of voxels
+    # Generate indices of pixels
     num_subsets = 1
-    full_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
+    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
     num_subsets = 5
-    subset_indices = mbirjax.gen_voxel_partition(recon_shape, num_subsets)
+    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
 
     # ##########################
     # Show the forward and back projection from a single pixel
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
-    conebeam_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
+    conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     print('Starting forward projection')
     sinogram = conebeam_model.sparse_forward_project(voxel_values[0][23:27], full_indices[0][23:27])

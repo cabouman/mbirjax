@@ -19,7 +19,7 @@ MBIR reconstruction works by solving the following optimization problem
     {\hat x} = \arg \min_x \left\{ f(x) + h(x) \right\}
 
 where :math:`f(x)` is the forward model term and :math:`h(x)` is the prior model term.
-The super-voxel algorithm is then used to efficiently perform this optimization.
+The Multi-Granular Vectorized Coordinate Descent (VCD) algorithm is then used to efficiently perform this optimization.
 
 
 **Forward Model:**

@@ -516,7 +516,7 @@ class TomographyModel:
         self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
-        partitions = self.gen_set_of_voxel_partitions()
+        partitions = self.gen_set_of_pixel_partitions()
 
         # Generate sequence of partitions to use
         partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
@@ -543,7 +543,7 @@ class TomographyModel:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
         """
         # Generate set of voxel partitions
-        partitions = self.gen_set_of_voxel_partitions()
+        partitions = self.gen_set_of_pixel_partitions()
 
         # Generate sequence of partitions to use
         partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
@@ -762,7 +762,7 @@ class TomographyModel:
 
         return weights
 
-    def gen_set_of_voxel_partitions(self):
+    def gen_set_of_pixel_partitions(self):
         """
         Generates a collection of voxel partitions for an array of specified partition sizes.
         This function creates a tuple of randomly generated 2D voxel partitions.

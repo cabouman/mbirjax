@@ -11,7 +11,7 @@ implemented in a specific geometry in order to override
 * :meth:`mbirjax.TomographyModel.sparse_back_project`
 * :meth:`mbirjax.TomographyModel.compute_hessian_diagonal`
 
-The ``Projectors`` class provides JAX-specific code using vmap and scan along with batching along voxels and
+The ``Projectors`` class provides JAX-specific code using vmap and scan along with batching along pixels and
 views in order to provide code that balances memory-efficiency with time-efficiency.
 
 .. autoclass:: mbirjax.Projectors

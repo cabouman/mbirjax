@@ -101,7 +101,7 @@ class ParallelBeamModel(TomographyModel):
             the input sinogram view.
         """
 
-        # Get the part of the system matrix and channel indices for this voxel
+        # Get the part of the system matrix and channel indices for this voxel cylinder
         sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
         view_projector_params = (sinogram_view_shape,) + projector_params[1:]
         Aij_value, Aij_index = ParallelBeamModel.compute_sparse_Aij_single_view(pixel_index, angle, view_projector_params)

@@ -105,7 +105,7 @@ if __name__ == "__main__":
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
     parallel_model.set_params(recon_shape=recon_shape, granularity=[1, 2, 4, 8, 16])
-    partitions_fig = parallel_model.gen_set_of_voxel_partitions()
+    partitions_fig = parallel_model.gen_set_of_pixel_partitions()
 
     # Plot the set of partitions
-    pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=)
+    pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
