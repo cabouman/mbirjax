@@ -37,7 +37,7 @@ if __name__ == "__main__":
     #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_sl_phantom()
+    phantom = parallel_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
