@@ -197,7 +197,7 @@ class TomographyModel:
 
         # Get parameters
         snr_db, magnification = self.get_params(['snr_db', 'magnification'])
-        delta_pixel_recon, delta_det_channel = self.get_params(['delta_pixel_recon', 'delta_det_channel'])
+        delta_voxel_xy, delta_det_channel = self.get_params(['delta_voxel_xy', 'delta_det_channel'])
 
         # Compute indicator function for sinogram support
         sino_indicator = self._get_sino_indicator(sinogram)
@@ -211,7 +211,7 @@ class TomographyModel:
         default_pixel_pitch = delta_det_channel / magnification
 
         # Compute the recon pixel pitch relative to the default.
-        pixel_pitch_relative_to_default = delta_pixel_recon / default_pixel_pitch
+        pixel_pitch_relative_to_default = delta_voxel_xy / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
         sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
@@ -241,11 +241,11 @@ class TomographyModel:
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        delta_pixel_recon = self.get_params('delta_pixel_recon')
+        delta_voxel_xy = self.get_params('delta_voxel_xy')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
-        num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_pixel_recon * magnification)))
+        num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_voxel_xy * magnification)))
         num_recon_cols = num_recon_rows
-        num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
+        num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_voxel_xy) / magnification)))
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
 

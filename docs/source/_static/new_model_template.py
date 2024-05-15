@@ -57,7 +57,7 @@ class TemplateModel(TomographyModel):
             This does not need to include view dependent parameters, or sinogram_shape or recon_shape, which
             are passed in automatically to projector_params.
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel_xy'])
 
         return geometry_params
 

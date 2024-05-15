@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from mbirjax import TomographyModel
-from jax import lax
 
 
 class ConeBeamModel(TomographyModel):
@@ -86,7 +85,7 @@ class ConeBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset', 'det_rotation',
-             'source_detector_dist', 'magnification', 'delta_pixel_recon', 'recon_slice_offset'])
+             'source_detector_dist', 'magnification', 'delta_voxel_xy', 'delta_voxel_z', 'recon_slice_offset'])
 
         return geometry_params
 
@@ -215,16 +214,16 @@ class ConeBeamModel(TomographyModel):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist, magnification, delta_pixel_recon, recon_slice_offset = geometry_params
+        (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
+         magnification, delta_voxel_xy, delta_voxel_z, recon_slice_offset) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        num_recon_rows, num_recon_cols, num_recon_slices = projector_params[1]
-        # num_recon_slices = voxel_values.shape[1]
+        recon_shape = projector_params[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
-        recon_shape_2d = (num_recon_rows, num_recon_cols)
         num_indices = pixel_indices.size
-        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape_2d)
+        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
 
         # Replicate along the slice axis
         i = jnp.tile(row_index[:, :, None], reps=(1, num_recon_slices, 1))
@@ -245,15 +244,15 @@ class ConeBeamModel(TomographyModel):
         # np has shape 
 
         # Convert from ijk to coordinates about iso
-        x, y, z = ConeBeamModel.recon_ijk_to_xyz(i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, num_recon_slices,
+        x, y, z = ConeBeamModel.recon_ijk_to_xyz(i, j, k, delta_voxel_xy, delta_voxel_z, recon_shape,
                                    recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
         u, v, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification)
 
         # Convert from uv to index coordinates in detector
-        mp, np = ConeBeamModel.detector_uv_to_mn(u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset,
-                                   det_row_offset, num_det_rows, num_det_channels)
+        mp, np = ConeBeamModel.detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset,
+                                                 det_row_offset, num_det_rows, num_det_channels, det_rotation)
 
         # Compute cone angle of pixel along columns and rows
         cone_angle_channel = jnp.arctan2(u, source_detector_dist)
@@ -265,8 +264,8 @@ class ConeBeamModel(TomographyModel):
         cos_alpha_row = jnp.maximum(jnp.abs(jnp.cos(cone_angle_row)), jnp.abs(jnp.sin(cone_angle_row)))
 
         # Compute projected voxel width along columns and rows
-        W_col = pixel_mag * (delta_pixel_recon / delta_det_channel) * (cos_alpha_col / jnp.cos(cone_angle_channel))
-        W_row = pixel_mag * (delta_pixel_recon / delta_det_row) * (cos_alpha_row / jnp.cos(cone_angle_row))
+        W_col = pixel_mag * (delta_voxel_xy / delta_det_channel) * (cos_alpha_col / jnp.cos(cone_angle_channel))
+        W_row = pixel_mag * (delta_voxel_xy / delta_det_row) * (cos_alpha_row / jnp.cos(cone_angle_row))
 
         # ################
         # Compute the Bij matrix entries
@@ -287,7 +286,7 @@ class ConeBeamModel(TomographyModel):
         L_channel = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta_channel), 0)
 
         # Compute Bij sparse matrix with shape [(num pixels)*(num slices)]x(2p+1)
-        Bij_value = (delta_pixel_recon / cos_alpha_col) * L_channel
+        Bij_value = (delta_voxel_xy / cos_alpha_col) * L_channel
         Bij_value = Bij_value * (Bij_channel >= 0) * (Bij_channel < num_det_channels)
 
         # ################
@@ -316,17 +315,66 @@ class ConeBeamModel(TomographyModel):
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
     @staticmethod
+    @partial(jax.jit, static_argnums=2)
+    def compute_sparse_Bij_Cij_single_view_new(pixel_indices, angle, projector_params, p=1):
+        """
+        Calculate the separable sparse system matrices for a subset of voxels and a single view.
+        It returns a sparse matrix specified by the system matrix values and associated detector column index.
+        Since this is for parallel beam geometry, the values are assumed to be the same for each row/slice.
+
+        Args:
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this single view
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            p (int, optional, default=1):  # This is the assumed number of channels per side
+
+        Returns:
+            Bij_value, Bij_column, Cij_value, Cij_row (jnp array): Each with shape (num voxels)x(num slices)x(2p+1)
+        """
+        warnings.warn('Compiling for indices length = {}'.format(pixel_indices.shape))
+        warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
+
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
+         magnification, delta_voxel_xy, delta_voxel_z, recon_slice_offset) = geometry_params
+
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        recon_shape = projector_params[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+
+        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
+        num_indices = pixel_indices.size
+        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
+
+        slice_index = jnp.arange(num_recon_slices)
+
+        x, y, z = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel_xy, delta_voxel_z,
+                                                 recon_shape, recon_slice_offset, angle)
+
+        # Convert from xyz to coordinates on detector
+        u, v, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification)
+
+    @staticmethod
     @jax.jit
-    def recon_ijk_to_xyz(i, j, k, delta_pixel_recon, num_recon_rows, num_recon_cols, num_recon_slices,
+    def recon_ijk_to_xyz(i, j, k, delta_voxel_xy, delta_voxel_z, recon_shape,
                          recon_slice_offset, angle):
+
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = delta_pixel_recon * (i - (num_recon_rows - 1) / 2.0)
-        x_tilde = delta_pixel_recon * (j - (num_recon_cols - 1) / 2.0)
-        x = jnp.cos(angle) * x_tilde - jnp.sin(angle) * y_tilde  # corrected minus sign here
-        y = jnp.sin(angle) * x_tilde + jnp.cos(angle) * y_tilde
+        y_tilde = delta_voxel_xy * (i - (num_recon_rows - 1) / 2.0)
+        x_tilde = delta_voxel_xy * (j - (num_recon_cols - 1) / 2.0)
 
-        z = delta_pixel_recon * (k - (num_recon_slices - 1) / 2.0) + recon_slice_offset
+        # Precompute cosine and sine of view angle, then do the rotation
+        cosine = jnp.cos(angle)  # length = num_views
+        sine = jnp.sin(angle)  # length = num_views
+
+        x = cosine * x_tilde - sine * y_tilde
+        y = sine * x_tilde + cosine * y_tilde
+
+        z = delta_voxel_z * (k - (num_recon_slices - 1) / 2.0) + recon_slice_offset
         return x, y, z
 
     @staticmethod
@@ -346,12 +394,14 @@ class ConeBeamModel(TomographyModel):
         return u, v, pixel_mag
 
     @staticmethod
-    @jax.jit
-    def detector_uv_to_mn(u, v, det_rotation, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset,
-                          num_det_rows, num_det_channels):
+    @partial(jax.jit, static_argnames='det_rotation')
+    def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
+                          num_det_channels, det_rotation):
         # Account for small rotation of the detector
-        u_tilde = jnp.cos(det_rotation) * u + jnp.sin(det_rotation) * v
-        v_tilde = -jnp.sin(det_rotation) * u + jnp.cos(det_rotation) * v
+        # TODO:  In addition to including the rotation, we'd need to adjust the calculation of the channel as a
+        #  function of slice.
+        u_tilde = u  # jnp.cos(det_rotation) * u + jnp.sin(det_rotation) * v
+        v_tilde = v  # -jnp.sin(det_rotation) * u + jnp.cos(det_rotation) * v
 
         # Get the center of the detector grid for columns and rows
         det_center_row = (num_det_rows - 1) / 2.0  # num_of_rows

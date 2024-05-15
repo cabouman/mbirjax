@@ -32,7 +32,7 @@ if __name__ == "__main__":
     # Here are other things you might want to do
     parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
     #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
-    #cone_model.set_params(delta_pixel_recon=1.0)    # You can change the pixel pitch
+    #cone_model.set_params(delta_voxel_xy=1.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
     #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 

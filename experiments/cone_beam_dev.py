@@ -18,11 +18,11 @@ if __name__ == "__main__":
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 5
-    num_det_channels = 256
-    magnification = 4.
-    source_detector_distance = 1000
-    delta_pixel_recon = 0.5
+    num_det_rows = 20
+    num_det_channels = 128
+    magnification = 1.
+    source_detector_distance = np.Inf
+    delta_voxel_xy = 1
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
     end_angle = jnp.pi + extra_angle
@@ -30,12 +30,12 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
-    seed_value = 0  #np.random.randint(1000000)
+    seed_value = np.random.randint(1000000)
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
     conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, magnification)
-    conebeam_model.set_params(delta_pixel_recon=0.5)
+    conebeam_model.set_params(delta_voxel_xy=delta_voxel_xy)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
