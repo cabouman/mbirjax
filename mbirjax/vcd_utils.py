@@ -244,10 +244,10 @@ def generate_3d_shepp_logan_reference(phantom_shape):
                                gamma=el_paras['gamma'] / 180.0 * np.pi,
                                gray_level=el_paras['gray_level'])
 
-    return image
+    return image.transpose((1, 0, 2))
 
 
-def generate_3d_shepp_logan(phantom_shape):
+def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
 

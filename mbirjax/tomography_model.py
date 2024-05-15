@@ -818,15 +818,15 @@ class TomographyModel:
 
         return extended_partition_sequence
 
-    def gen_3d_sl_phantom(self):
+    def gen_modified_3d_sl_phantom(self):
         """
-        Generates a 3D Shepp-Logan phantom.
+        Generates a simplified, low-dynamic range version of the 3D Shepp-Logan phantom.
 
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
         recon_shape = self.get_params('recon_shape')
-        phantom = mbirjax.generate_3d_shepp_logan(recon_shape)
+        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
         return phantom
 
     def reshape_recon(self, recon):
