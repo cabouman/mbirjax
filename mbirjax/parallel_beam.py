@@ -75,10 +75,10 @@ class ParallelBeamModel(TomographyModel):
         Function to get a list of the primary geometry parameters for projection.
 
         Returns:
-            List of delta_det_channel, det_channel_offset, delta_pixel_recon,
+            List of delta_det_channel, det_channel_offset, delta_voxel_xy,
             num_recon_rows, num_recon_cols, num_recon_slices
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_pixel_recon'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel_xy'])
 
         return geometry_params
 
@@ -104,7 +104,7 @@ class ParallelBeamModel(TomographyModel):
         # Get the part of the system matrix and channel indices for this voxel cylinder
         sinogram_view_shape = (1,) + sinogram_view.shape  # Adjoin a leading 1 to indicate a single view sinogram
         view_projector_params = (sinogram_view_shape,) + projector_params[1:]
-        Aij_value, Aij_index = ParallelBeamModel.compute_sparse_Aij_single_view(pixel_index, angle, view_projector_params)
+        Aij_value, Aij_index = ParallelBeamModel.compute_sparse_A_single_view(pixel_index, angle, view_projector_params)
 
         # Extract out the relevant entries from the sinogram
         sinogram_array = sinogram_view[:, Aij_index.T.flatten()]
@@ -135,7 +135,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the geometry parameters and the system matrix and channel indices
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        Aij_value, Aij_channel = ParallelBeamModel.compute_sparse_Aij_single_view(pixel_indices, angle, projector_params)
+        Aij_value, Aij_channel = ParallelBeamModel.compute_sparse_A_single_view(pixel_indices, angle, projector_params)
 
         # Add axes to be able to broadcast while multiplying.
         # sinogram_values has shape num_indices x (2p+1) x num_slices
@@ -147,15 +147,15 @@ class ParallelBeamModel(TomographyModel):
 
         # Apply the vectorized update function with a vmap over slices
         # sinogram_view is num_det_rows x num_det_channels, sinogram_values is num_indices x (2p+1) x num_det_rows
-        sinogram_values = sinogram_values.transpose((2, 0, 1)).reshape((num_det_rows, -1))
-        sinogram_view = sinogram_view.at[:, Aij_channel.flatten()].add(sinogram_values)
+        sinogram_values = sinogram_values.transpose((2, 0, 1))
+        sinogram_view = sinogram_view.at[:, Aij_channel].add(sinogram_values)
         del Aij_value, Aij_channel
         return sinogram_view
 
 
     @staticmethod
     @partial(jax.jit, static_argnums=3)
-    def compute_sparse_Aij_single_view(pixel_indices, angle, projector_params, p=1):
+    def compute_sparse_A_single_view(pixel_indices, angle, projector_params, p=1):
         """
         Calculate the sparse system matrix for a subset of voxels and a single view.
         The function returns a sparse matrix specified by the matrix values and associated detector column index.
@@ -175,7 +175,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, det_channel_offset, delta_pixel_recon = geometry_params
+        delta_det_channel, det_channel_offset, delta_voxel_xy = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         num_recon_rows, num_recon_cols = projector_params[1][:2]
@@ -186,8 +186,8 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute the x,y position of the voxel relative to the center of rotation
         # Assumes: rows index top to bottom; slice is viewed from the top; rotation of object is clockwise
-        y_pos = -delta_pixel_recon * (row_index - ((num_recon_rows - 1.0) / 2.0))  # length = num_indices
-        x_pos = delta_pixel_recon * (col_index - ((num_recon_cols - 1.0) / 2.0))
+        y_pos = delta_voxel_xy * (row_index - ((num_recon_rows - 1.0) / 2.0))  # length = num_indices
+        x_pos = delta_voxel_xy * (col_index - ((num_recon_cols - 1.0) / 2.0))
 
         # Compute projection of the scalar center-of-rotation onto the detector in ALUs
         channel_center = (delta_det_channel * (num_det_channels - 1.0) / 2.0) + det_channel_offset
@@ -197,14 +197,14 @@ class ParallelBeamModel(TomographyModel):
         sine = jnp.sin(angle)      # length = num_views
 
         # Rotate coordinates of pixel
-        x_pos_rot = cosine * x_pos + sine * y_pos  # length = num_indices
-        # y_pos_rot = -sine*x_pos + cosine*y_pos
+        x_pos_rot = cosine * x_pos - sine * y_pos  # length = num_indices
+        # y_pos_rot = sine*x_pos + cosine*y_pos
 
         # Calculate cos alpha = cos ( smallest angle between source-voxel line and voxel edge )
         cos_alpha = jnp.maximum(jnp.abs(cosine), jnp.abs(sine))  # length = num_indices
 
         # Calculate W = length of projection of flattened voxel on detector
-        W = delta_pixel_recon * cos_alpha  # length = num_indices
+        W = delta_voxel_xy * cos_alpha  # length = num_indices
 
         # Compute the location on the detector in ALU of the projected center of the voxel
         x_pos_on_detector = x_pos_rot + channel_center  # length = num_indices
@@ -228,7 +228,7 @@ class ParallelBeamModel(TomographyModel):
         Lv = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta), 0)  # Should be num_indices x 2p+1
 
         # Compute the values of Aij
-        Aij_value = (delta_pixel_recon / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
+        Aij_value = (delta_voxel_xy / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
         Aij_value = Aij_value * (Aij_channel >= 0) * (Aij_channel < num_det_channels)
 
         # jax.debug.breakpoint()

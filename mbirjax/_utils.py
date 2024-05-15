@@ -16,7 +16,8 @@ _forward_model_defaults_dict = {
 _recon_model_defaults_dict = {
     'recon_shape': {'val': None, 'recompile_flag': True},
     'magnification': {'val': 1.0, 'recompile_flag': True},
-    'delta_pixel_recon': {'val': 1.0, 'recompile_flag': True},
+    'delta_voxel_xy': {'val': 1.0, 'recompile_flag': True},
+    'delta_voxel_z': {'val': 1.0, 'recompile_flag': True},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
     'p': {'val': 2.0, 'recompile_flag': False},
