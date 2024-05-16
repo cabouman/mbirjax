@@ -226,7 +226,7 @@ def debug_plot_partitions(partitions, recon_shape):
             ax = axes[i]
 
         cax = ax.imshow(image, cmap='nipy_spectral', interpolation='nearest')
-        ax.set_title(f'{len(partition)} Partitions')
+        ax.set_title(f'{len(partition)} Subsets')
         ax.axis('off')  # Turn off axis labels
 
     plt.tight_layout()

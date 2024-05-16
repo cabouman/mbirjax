@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    #cone_model.set_params(positivity_flag=True)
+    parallel_model.set_params(partition_sequence=[0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3])
 
     # Print out model parameters
     parallel_model.print_params()
@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
-    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 2, 4, 8, 16])
+    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
     pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
