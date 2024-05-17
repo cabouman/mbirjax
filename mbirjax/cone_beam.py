@@ -75,7 +75,6 @@ class ConeBeamModel(TomographyModel):
         # if (source_to_iso_dist - y) < 1e-3>:
         #     raise ValueError("Invalid geometry: Recon volume extends too close to source.")
 
-
     def get_geometry_parameters(self):
         """
         Function to get a list of the primary geometry parameters for projection.
@@ -265,7 +264,7 @@ class ConeBeamModel(TomographyModel):
 
         # Compute projected voxel width along columns and rows
         W_col = pixel_mag * (delta_voxel_xy / delta_det_channel) * (cos_alpha_col / jnp.cos(cone_angle_channel))
-        W_row = pixel_mag * (delta_voxel_xy / delta_det_row) * (cos_alpha_row / jnp.cos(cone_angle_row))
+        W_row = pixel_mag * (delta_voxel_z / delta_det_row) * (cos_alpha_row / jnp.cos(cone_angle_row))
 
         # ################
         # Compute the Bij matrix entries
@@ -313,6 +312,43 @@ class ConeBeamModel(TomographyModel):
         Cij_value = Cij_value * (Cij_row >= 0) * (Cij_row < num_det_rows)
 
         return Bij_value, Bij_channel, Cij_value, Cij_row
+
+    @staticmethod
+    @jax.jit
+    def compute_sparse_A_row_one_pixel(pixel_index, angle, projector_params, p=1):
+
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
+         magnification, delta_voxel_xy, delta_voxel_z, recon_slice_offset) = geometry_params
+
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        recon_shape = projector_params[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+
+        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
+        row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
+
+        slice_index = jnp.arange(num_recon_slices)
+
+        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel_xy, delta_voxel_z,
+                                                 recon_shape, recon_slice_offset, angle)
+
+        # Convert from xyz to coordinates on detector
+        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, source_detector_dist, magnification)
+        # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
+        m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, delta_det_channel, delta_det_row, det_channel_offset,
+                                                   det_row_offset, num_det_rows, num_det_channels, det_rotation)
+        m_p_center = jnp.round(m_p)
+
+        # Get the length of projection of flattened voxel on detector (in fraction of detector size)
+        W_row = pixel_mag * (delta_voxel_z / delta_det_row) * jnp.clip(jnp.abs(v_p) / source_detector_dist, a_min=1)
+
+        # Compute vertical cone angle of pixel
+        cone_angle_row = jnp.arctan2(v_p, source_detector_dist)
+
+        # Compute cos alpha for row and columns
+        cos_alpha_row = jnp.maximum(jnp.abs(jnp.cos(cone_angle_row)), jnp.abs(jnp.sin(cone_angle_row)))
 
     @staticmethod
     @partial(jax.jit, static_argnums=2)
@@ -396,7 +432,7 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     @partial(jax.jit, static_argnames='det_rotation')
     def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
-                          num_det_channels, det_rotation):
+                          num_det_channels, det_rotation=0):
         # Account for small rotation of the detector
         # TODO:  In addition to including the rotation, we'd need to adjust the calculation of the channel as a
         #  function of slice.
