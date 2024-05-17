@@ -34,7 +34,7 @@ Below are tips on important and useful features:
   You can do this by setting the following parameters:
 
   - ``num_recon_rows`` and  ``num_recon_cols`` -  These will default to the number of detector channels, but you can change their values to reconstruct a rectangular region.
-  - ``delta_pixel_recon`` - This defaults to 1.0 and sets the spacing between voxels in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
+  - ``delta_voxel`` - This defaults to 1.0 and sets the spacing between voxels in ALU in x, y, and z directions. (See :ref:`ALU conversion <ALU_conversion_label>`).
   - ``delta_det_channel`` and ``delta_det_row`` - These default to 1.0 and set the spacing between detector channels and rows in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
 
 - **Calibrate and Control Model:**
