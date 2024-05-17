@@ -22,7 +22,7 @@ if __name__ == "__main__":
     num_det_channels = 128
     magnification = 1.
     source_detector_distance = np.Inf
-    delta_voxel_xy = 1
+    delta_voxel = 1
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
     end_angle = jnp.pi + extra_angle
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, magnification)
-    conebeam_model.set_params(delta_voxel_xy=delta_voxel_xy)
+    conebeam_model.set_params(delta_voxel=delta_voxel)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')

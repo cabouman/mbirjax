@@ -75,10 +75,10 @@ class ParallelBeamModel(TomographyModel):
         Function to get a list of the primary geometry parameters for projection.
 
         Returns:
-            List of delta_det_channel, det_channel_offset, delta_voxel_xy,
+            List of delta_det_channel, det_channel_offset, delta_voxel,
             num_recon_rows, num_recon_cols, num_recon_slices
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel_xy'])
+        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
         return geometry_params
 
@@ -175,7 +175,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, det_channel_offset, delta_voxel_xy = geometry_params
+        delta_det_channel, det_channel_offset, delta_voxel = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         num_recon_rows, num_recon_cols = projector_params[1][:2]
@@ -186,8 +186,8 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute the x,y position of the voxel relative to the center of rotation
         # Assumes: rows index top to bottom; slice is viewed from the top; rotation of object is clockwise
-        y_pos = delta_voxel_xy * (row_index - ((num_recon_rows - 1.0) / 2.0))  # length = num_indices
-        x_pos = delta_voxel_xy * (col_index - ((num_recon_cols - 1.0) / 2.0))
+        y_pos = delta_voxel * (row_index - ((num_recon_rows - 1.0) / 2.0))  # length = num_indices
+        x_pos = delta_voxel * (col_index - ((num_recon_cols - 1.0) / 2.0))
 
         # Compute projection of the scalar center-of-rotation onto the detector in ALUs
         channel_center = (delta_det_channel * (num_det_channels - 1.0) / 2.0) + det_channel_offset
@@ -204,7 +204,7 @@ class ParallelBeamModel(TomographyModel):
         cos_alpha = jnp.maximum(jnp.abs(cosine), jnp.abs(sine))  # length = num_indices
 
         # Calculate W = length of projection of flattened voxel on detector
-        W = delta_voxel_xy * cos_alpha  # length = num_indices
+        W = delta_voxel * cos_alpha  # length = num_indices
 
         # Compute the location on the detector in ALU of the projected center of the voxel
         x_pos_on_detector = x_pos_rot + channel_center  # length = num_indices
@@ -228,7 +228,7 @@ class ParallelBeamModel(TomographyModel):
         Lv = jnp.maximum(tmp1 - jnp.maximum(jnp.abs(tmp2), delta), 0)  # Should be num_indices x 2p+1
 
         # Compute the values of Aij
-        Aij_value = (delta_voxel_xy / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
+        Aij_value = (delta_voxel / cos_alpha) * (Lv / delta_det_channel)  # Should be num_indices x 2p+1
         Aij_value = Aij_value * (Aij_channel >= 0) * (Aij_channel < num_det_channels)
 
         # jax.debug.breakpoint()
