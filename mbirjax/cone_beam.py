@@ -48,8 +48,7 @@ class ConeBeamModel(TomographyModel):
                              "same length.")
         super().__init__(sinogram_shape, source_detector_dist=source_detector_dist,
                          recon_slice_offset=recon_slice_offset, det_rotation=det_rotation,
-                         view_params_array=view_params_array, **kwargs)
-        self.set_params(magnification=magnification)
+                         view_params_array=view_params_array, magnification=magnification, **kwargs)
 
     def verify_valid_params(self):
         """
@@ -62,12 +61,6 @@ class ConeBeamModel(TomographyModel):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
-            raise ValueError(error_message)
-
-        recon_shape = self.get_params('recon_shape')
-        if recon_shape[2] != sinogram_shape[1]:
-            error_message = "Number of recon slices must match number of sinogram rows. \n"
-            error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
             raise ValueError(error_message)
 
         # TODO:  Check for recon volume extending into the source
@@ -129,7 +122,6 @@ class ConeBeamModel(TomographyModel):
 
         # Create sinogram_array with shape (Nv x psf_width x psf_width)
         sinogram_array = sinogram_view[rows_expanded, channels_expanded]
-
         # Compute back projection
         # coeff_power = 1 normally; coeff_power = 2 when computing diagonal of hessian
         back_projection = jnp.sum(sinogram_array * ((Bij_value_expanded * Cij_value_expanded) ** coeff_power),
@@ -153,8 +145,11 @@ class ConeBeamModel(TomographyModel):
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
         """
-        if voxel_values.ndim != 2:
-            raise ValueError('voxel_values must have shape (num_indices, num_slices)')
+        recon_shape = projector_params[1]
+        num_recon_slices = recon_shape[2]
+        if voxel_values.shape[0] != pixel_indices.shape[0] or len(voxel_values.shape) < 2 or \
+                voxel_values.shape[1] != num_recon_slices:
+            raise ValueError('voxel_values must have shape[0:2] = (num_indices, num_slices)')
         pixel_indices = pixel_indices.reshape((-1, 1))
 
         # Get the geometry parameters and the system matrix and channel indices
@@ -288,6 +283,12 @@ class ConeBeamModel(TomographyModel):
         Bij_value = (delta_voxel / cos_alpha_col) * L_channel
         Bij_value = Bij_value * (Bij_channel >= 0) * (Bij_channel < num_det_channels)
 
+        # ## DEBUG CODE
+        # one_column = jnp.ones(Bij_value.shape[0:2])
+        # Bij_value = jnp.stack([0*one_column, one_column, 0*one_column], axis=2)
+        # warnings.warn('Modified Bij_value for debugging only.')
+        # ##
+
         # ################
         # Compute the Cij matrix entries
         # Compute a jnp row index array with shape [(num pixels)*(num slices)]x1
@@ -314,8 +315,30 @@ class ConeBeamModel(TomographyModel):
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
     @staticmethod
+    def forward_project_vertical_fan_beam_one_view(voxel_values, pixel_indices, angle, projector_params):
+
+        pixel_map = jax.vmap(ConeBeamModel.forward_project_vertical_fan_beam_one_pixel, in_axes=(0, 0, None, None))
+        new_pixels = pixel_map(voxel_values, pixel_indices, angle, projector_params)
+
+        return new_pixels
+
+    @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def forward_project_vertical_fan_beam_one_pixel(voxel_values, pixel_index, angle, projector_params, p=1):
+        """
+        Apply a vertical fan beam transformation to a single voxel cylinder and return the column vector
+        of the resulting values.
+
+        Args:
+            voxel_values:
+            pixel_index:
+            angle:
+            projector_params:
+            p:
+
+        Returns:
+
+        """
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
