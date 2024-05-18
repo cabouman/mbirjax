@@ -45,6 +45,6 @@ Data Generation
 .. automethod:: mbirjax.TomographyModel.gen_weights
    :no-index:
 
-.. automethod:: mbirjax.TomographyModel.gen_3d_sl_phantom
+.. automethod:: mbirjax.TomographyModel.gen_modified_3d_sl_phantom
    :no-index:
 

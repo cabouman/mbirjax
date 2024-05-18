@@ -733,7 +733,7 @@ class TomographyModel:
     @staticmethod
     def gen_weights(sinogram, weight_type):
         """
-        Compute the weights used in MBIR reconstruction.
+        Compute the optional weights used in MBIR reconstruction.
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
