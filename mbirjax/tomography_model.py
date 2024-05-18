@@ -27,12 +27,14 @@ class TomographyModel:
     def __init__(self, sinogram_shape, recon_shape=None, **kwargs):
 
         self.params = utils.get_default_params()
-        self.add_new_params(**kwargs)
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
+        self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, recon_shape=recon_shape, **kwargs)
+        magnification = self.get_params('magnification')
         if recon_shape is None:
-            self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)  # Determine auto image size
-        self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
+            self.auto_set_recon_size(sinogram_shape, magnification=magnification, no_compile=True, no_warning=True)
+
+        self.verify_valid_params()
         self.create_projectors()
 
     def create_projectors(self):
@@ -323,12 +325,13 @@ class TomographyModel:
 
         # Set all the given parameters
         for key, val in kwargs.items():
+            # Default to forcing a recompile for new parameters
+            recompile_flag = True
+
             if key in self.params.keys():
                 recompile_flag = self.params[key]['recompile_flag']
-                new_entry = {'val': val, 'recompile_flag': recompile_flag}
-                self.params[key] = new_entry
-            else:
-                raise NameError('"{}" not a recognized argument'.format(key))
+            new_entry = {'val': val, 'recompile_flag': recompile_flag}
+            self.params[key] = new_entry
 
             # Handle special cases
             if recompile_flag:
@@ -385,22 +388,6 @@ class TomographyModel:
             else:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
-
-    def add_new_params(self, **kwargs):
-        """
-        Add parameters using keyword arguments.
-
-        Args:
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
-
-        """
-        # Set all the given parameters
-        for key, val in kwargs.items():
-            if key in self.params.keys():
-                raise NameError('"{}" is an existing parameter - use set_params to set the value'.format(key))
-            else:
-                new_entry = {'val': val, 'recompile_flag': True}
-                self.params[key] = new_entry
 
     def verify_valid_params(self):
         """

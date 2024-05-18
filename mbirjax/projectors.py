@@ -194,7 +194,8 @@ class Projectors:
             # jax.lax.scan applies a function to each entry indexed by the leading dimension of its input, then
             # incorporates the output of that function into an accumulator.  Here we apply backproject_accumulate to
             # one sinogram view and the corresponding view_params.
-            initial_bp = jnp.zeros((pixel_indices.shape[0], sinogram.shape[1]))
+            num_recon_slices = recon_shape[2]
+            initial_bp = jnp.zeros((pixel_indices.shape[0], num_recon_slices))
             extra_args = pixel_indices, coeff_power
             initial_carry = [extra_args, initial_bp]
             sino_view_params = (sinogram, view_params_array)

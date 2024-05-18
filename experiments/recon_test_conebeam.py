@@ -19,7 +19,7 @@ if __name__ == "__main__":
     num_det_rows = 10
     num_det_channels = 128
     source_detector_dist = 1000
-    magnification = 1.0
+    magnification = 2.0
     start_angle = -np.pi*(1/2)
     end_angle = np.pi*(1/2)
     sharpness = 0.0
