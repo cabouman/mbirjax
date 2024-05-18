@@ -62,7 +62,7 @@ if __name__ == "__main__":
     # center = np.where(np.amax(projection1, axis=0) > 0)[0][1]
     # projection1 = projection1[:, center]
     # voxel_values = voxel_values.reshape(-1)
-    # projection2 = conebeam_model.forward_project_vertical_fan_beam_one_pixel(voxel_values, pixel_indices, angle, projector_params)
+    # projection2 = conebeam_model.forward_project_vertical_fan_beam_one_pixel_one_view(voxel_values, pixel_indices, angle, projector_params)
     # A = np.amax(np.abs(projection2 / projection1 - projection2[0] / projection1[0]))
     # print(A)
     ##
