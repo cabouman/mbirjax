@@ -149,40 +149,13 @@ class ConeBeamModel(TomographyModel):
         if voxel_values.shape[0] != pixel_indices.shape[0] or len(voxel_values.shape) < 2 or \
                 voxel_values.shape[1] != num_recon_slices:
             raise ValueError('voxel_values must have shape[0:2] = (num_indices, num_slices)')
-        pixel_indices = pixel_indices.reshape((-1, 1))
 
-        # Get the geometry parameters and the system matrix and channel indices
-        num_views, num_det_rows, num_det_channels = projector_params[0]
-        Bij_value, Bij_channel, Cij_value, Cij_row = ConeBeamModel.compute_sparse_Bij_Cij_single_view(pixel_indices,
-                                                                                                      angle,
-                                                                                                      projector_params)
-
-        # Determine the size of the sinogram based on max indices + 1 for 0-based indexing
-        Nr = num_det_rows
-        Nc = num_det_channels
-
-        # Allocate the sinogram array
-        sinogram_view = jnp.zeros((Nr, Nc))
-
-        # Compute the outer products and scale by voxel_values
-        # First, compute the outer product of Bij_value and Cij_value
-        outer_products = jnp.einsum('kmi,kmj->kmij', Cij_value, Bij_value)
-        sinogram_entries = outer_products * voxel_values[:, :, None, None]
-
-        # Expand Cij_row and Cij_channel for broadcasting
-        rows_expanded = Cij_row[:, :, :, None]  # Shape (Nv, 2p+1, 1)
-        channels_expanded = Bij_channel[:, :, None, :]  # Shape (Nv, 1, 2p+1)
-
-        # Flatten the arrays to index into sinogram view
-        flat_sinogram_entries = sinogram_entries.reshape(-1)
-        flat_rows = jnp.tile(rows_expanded, reps=(1, 1, 1, sinogram_entries.shape[3]))
-        flat_rows = flat_rows.reshape(-1)
-        flat_channels = jnp.tile(channels_expanded, reps=(1, 1, sinogram_entries.shape[2], 1))
-        flat_channels = flat_channels.reshape(-1)
-
-        # Aggregate the results into sinogram_view
-        sinogram_view = sinogram_view.at[flat_rows, flat_channels].add(flat_sinogram_entries)
+        new_voxel_values = ConeBeamModel.forward_project_vertical_fan_beam_one_view(voxel_values, pixel_indices, angle,
+                                                                                     projector_params)
+        sinogram_view = ConeBeamModel.forward_project_horizontal_fan_beam_one_view(new_voxel_values, pixel_indices,
+                                                                                  angle, projector_params)
         return sinogram_view
+
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -350,10 +323,13 @@ class ConeBeamModel(TomographyModel):
                                                        recon_shape, recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
-        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, source_detector_dist, magnification)
-        # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
-        _, n_p = ConeBeamModel.detector_uv_to_mn(u_p, v_p, delta_det_channel, delta_det_row, det_channel_offset,
-                                                 det_row_offset, num_det_rows, num_det_channels, det_rotation)
+        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)
+        # Compute the physical position that this voxel projects onto the detector
+        u_p = pixel_mag * x_p
+        det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
+
+        # Calculate indices on the detector grid
+        n_p = (u_p / delta_det_channel) + det_center_channel + det_channel_offset
         n_p_center = jnp.round(n_p).astype(int)
 
         # Compute horizontal cone angle of pixel
@@ -365,13 +341,20 @@ class ConeBeamModel(TomographyModel):
 
         # Compute projected voxel width along columns and rows
         W_p_c = pixel_mag * (delta_voxel / delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
-        for m in jnp.arange(num_det_rows):
-            for n in jnp.arange(start=n_p_center-p, stop=n_p_center+p+1):
-                abs_delta_p_c_n = jnp.abs(n_p - n)
-                L_p_c_n = jnp.clip( )
+        # TODO:  convert to vmap over m / z
+        for n_offset in jnp.arange(start=-p, stop=p+1):
+            n = n_p_center + n_offset
+            abs_delta_p_c_n = jnp.abs(n_p - n)
+            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+            A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n *= (n >= 0) * (n < num_det_channels)
+            sinogram_view = sinogram_view.at[:, n].add(A_chan_n[None, :] * voxel_values.T)
+
+        return sinogram_view
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
