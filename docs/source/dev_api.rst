@@ -22,8 +22,8 @@ Documentation for all methods is available at the following links:
    :maxdepth: 4
    :caption: Classes
 
-   TomographyModel_dev
-   ParallelBeamModel_dev
-   Projectors_dev
+   dev_tomography_model
+   dev_parallel_beam_model
+   dev_projectors
 
 

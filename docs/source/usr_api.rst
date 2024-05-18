@@ -36,7 +36,7 @@ for manipulating sinograms and reconstructions.
    :maxdepth: 4
    :caption: Classes
 
-   TomographyModel
-   ParallelBeamModel
+   usr_tomography_model
+   usr_parallel_beam_model
 
 
