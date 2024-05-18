@@ -4,14 +4,15 @@ User API
 
 MBIRJAX is designed to give reconstructions using just a few lines of code.
 
-The first step is to create an instance with a specific geometry. This is done by initializing a class such as
+The first step is to create an instance with a specific geometry. This is done by initializing one of the following geometry a classes:
 
 .. autosummary::
 
    mbirjax.ParallelBeamModel
+   mbirjax.ConeBeamModel
 
-:ref:`ParallelBeamModelDocs` and classes for other geometries are derived from :ref:`TomographyModelDocs`, which includes several methods
-for manipulating sinograms and reconstructions.
+Each geometry class is derived from :ref:`TomographyModelDocs`, which includes a number of powerful methods listed below for manipulating sinograms and reconstructions.
+Detailed documentation for each geometry class is provided in :ref:`ParallelBeamModelDocs` and :ref:`ConeBeamModelDocs`.
 
 .. autosummary::
 
@@ -38,5 +39,4 @@ for manipulating sinograms and reconstructions.
 
    usr_tomography_model
    usr_parallel_beam_model
-
-
+   usr_cone_beam_model
