@@ -19,7 +19,9 @@ class TomographyModel:
 
     Args:
         sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
+        recon_shape (tuple): The shape of the reconstruction array (num_rows, num_cols, num_slices).
         **kwargs (dict): Arbitrary keyword arguments for setting model parameters dynamically.
+            See the full list of parameters and their descriptions at :ref:`detailed-parameter-docs`.
 
     Sets up the reconstruction size and parameters.
     """
