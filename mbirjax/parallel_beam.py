@@ -52,6 +52,10 @@ class ParallelBeamModel(TomographyModel):
                              "same length.")
         super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
 
+    def get_magnification(self):
+        magnification = 1.0
+        return magnification
+    
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.

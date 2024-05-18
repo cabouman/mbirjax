@@ -15,11 +15,11 @@ if __name__ == "__main__":
     pixel_batch_size = 10000
 
     # Set parameters
-    num_views = 64
-    num_det_rows = 10
+    num_views = 128
+    num_det_rows = 40
     num_det_channels = 128
     source_detector_dist = 1000
-    magnification = 2.0
+    source_iso_distance = 1000
     start_angle = -np.pi*(1/2)
     end_angle = np.pi*(1/2)
     sharpness = 0.0
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, magnification=magnification)
+    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_distance)
 
     # Here are other things you might want to do
     cone_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)

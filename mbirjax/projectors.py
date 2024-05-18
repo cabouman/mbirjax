@@ -41,28 +41,6 @@ class Projectors:
         view_params_array = self.tomography_model.get_params('view_params_array')
         pixel_batch_size, view_batch_size = self.tomography_model.get_params(['pixel_batch_size', 'view_batch_size'])
 
-        def sparse_forward_project_fcn2(voxel_values, pixel_indices):
-            num_pixels = len(pixel_indices)
-            forward_vmap = jax.vmap(forward_project_pixels_to_one_view, in_axes=(0, 0))
-            if pixel_batch_size is None or pixel_batch_size >= num_pixels:
-                sinogram_view = forward_vmap(voxel_values, pixel_indices)
-            else:
-                num_batches = num_pixels // pixel_batch_size
-                length_of_batches = num_batches * pixel_batch_size
-                indices_batched = jnp.reshape(indices[:length_of_batches], (num_batches, pixel_batch_size))
-
-                def backward_map(indices_batch):
-                    return back_project_to_voxels_scan(sinogram, indices_batch, coeff_power=coeff_power)
-
-                voxel_values = jax.lax.map(backward_map, indices_batched)
-                voxel_values = voxel_values.reshape((length_of_batches, -1))
-                num_remaining = num_pixels - num_batches * pixel_batch_size
-                if num_remaining > 0:
-                    end_batch = indices[-num_remaining:]
-                    end_values = backward_map(end_batch)
-                    voxel_values = jnp.concatenate((voxel_values, end_values), axis=0)
-            return voxel_values
-
         def sparse_forward_project_fcn(voxel_values, pixel_indices):
             """
             Compute the sinogram obtained by forward projecting the specified voxels. The voxels

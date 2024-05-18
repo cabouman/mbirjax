@@ -32,9 +32,8 @@ class TomographyModel:
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, recon_shape=recon_shape, **kwargs)
-        magnification = self.get_params('magnification')
         if recon_shape is None:
-            self.auto_set_recon_size(sinogram_shape, magnification=magnification, no_compile=True, no_warning=True)
+            self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
         self.verify_valid_params()
         self.create_projectors()
@@ -200,7 +199,8 @@ class TomographyModel:
         """
 
         # Get parameters
-        snr_db, magnification = self.get_params(['snr_db', 'magnification'])
+        snr_db = self.get_params('snr_db')
+        magnification = self.get_magnification()
         delta_voxel, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_channel'])
 
         # Compute indicator function for sinogram support
@@ -241,12 +241,13 @@ class TomographyModel:
         sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
-    def auto_set_recon_size(self, sinogram_shape, magnification=1.0, no_compile=True, no_warning=False):
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         delta_voxel = self.get_params('delta_voxel')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
+        magnification = self.get_magnification()
         num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
         num_recon_cols = num_recon_rows
         num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
@@ -391,6 +392,9 @@ class TomographyModel:
                 raise NameError('"{}" not a recognized argument'.format(name))
         return values
 
+    def get_magnification(self):
+        raise NotImplementedError('get_magnification is not implemented.')
+    
     def verify_valid_params(self):
         """
         Verify any conditions that must be satisfied among parameters for correct projections.
@@ -473,7 +477,7 @@ class TomographyModel:
         # Get parameters
         delta_det_channel = self.get_params('delta_det_channel')
         sharpness = self.get_params('sharpness')
-        magnification = self.get_params('magnification')
+        magnification = self.get_magnification()
         num_det_channels = sinogram.shape[-1]
 
         # Compute indicator function for sinogram support
