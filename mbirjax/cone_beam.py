@@ -23,6 +23,7 @@ class ConeBeamModel(TomographyModel):
         angles (jnp.ndarray):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
+        source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
         det_row_offset (float, optional, default=0): Distance = (detector iso row) - (center of detector rows) in ALU.
         det_channel_offset (float, optional, default=0): Distance = (detector iso channel) - (center of detector channels) in ALU.
         recon_slice_offset (float, optional, default=0): Vertical offset of the image in ALU.
@@ -35,7 +36,7 @@ class ConeBeamModel(TomographyModel):
             Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
     """
 
-    def __init__(self, sinogram_shape, angles, source_detector_dist, magnification,
+    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
                  recon_slice_offset=0.0, det_rotation=0.0, **kwargs):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
@@ -46,9 +47,11 @@ class ConeBeamModel(TomographyModel):
         except ValueError as e:
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
+        magnification = source_detector_dist / source_iso_dist
         super().__init__(sinogram_shape, source_detector_dist=source_detector_dist,
                          recon_slice_offset=recon_slice_offset, det_rotation=det_rotation,
-                         view_params_array=view_params_array, magnification=magnification, **kwargs)
+                         view_params_array=view_params_array, magnification=magnification,
+                         source_iso_dist=source_iso_dist, **kwargs)
 
     def verify_valid_params(self):
         """
@@ -62,6 +65,11 @@ class ConeBeamModel(TomographyModel):
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
+
+        magnification, source_detector_dist, source_iso_dist = self.get_params(['magnification', 'source_detector_dist', 'source_iso_dist'])
+        if jnp.abs(magnification - source_detector_dist / source_iso_dist) > 1e-6:
+            raise ValueError('Magnification must be computed automatically from source_detector_dist and source_iso_dist')
+
 
         # TODO:  Check for recon volume extending into the source
         # # Check for a potential division by zero or very small denominator
@@ -323,7 +331,7 @@ class ConeBeamModel(TomographyModel):
                                                        recon_shape, recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
-        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)
+        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)  # This should be kept in terms of magnification
         # Compute the physical position that this voxel projects onto the detector
         u_p = pixel_mag * x_p
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols

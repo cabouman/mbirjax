@@ -20,8 +20,8 @@ if __name__ == "__main__":
     num_views = 128
     num_det_rows = 20
     num_det_channels = 128
-    magnification = 2.
     source_detector_distance = 1000
+    source_iso_distance = 500
     delta_voxel = 1
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, magnification)
+    conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, source_iso_distance)
     conebeam_model.set_params(delta_voxel=delta_voxel)
 
     # Generate phantom

@@ -71,6 +71,10 @@ class ParallelBeamModel(TomographyModel):
             error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
             raise ValueError(error_message)
 
+        magnification = self.get_params('magnification')
+        if jnp.abs(magnification - 1) > 1e-6:
+            raise ValueError("Magnification must be 1 for ParallelBeam.  Got {}".format(magnification))
+
     def get_geometry_parameters(self):
         """
         Function to get a list of the primary geometry parameters for projection.
