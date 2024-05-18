@@ -361,6 +361,8 @@ class ConeBeamModel(TomographyModel):
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
         # TODO:  convert to vmap over m / z
+        # Computed values needed to finish the forward projection:
+        # n_p_center, n_p, W_p_c, cos_alpha_p_xy
         for n_offset in jnp.arange(start=-p, stop=p+1):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
