@@ -192,7 +192,7 @@ class ConeBeamModel(TomographyModel):
         return sinogram_view
 
     @staticmethod
-    @partial(jax.jit, static_argnums=2)
+    @partial(jax.jit, static_argnames='projector_params')
     def compute_sparse_Bij_Cij_single_view(pixel_indices, angle, projector_params, p=1):
         """
         Calculate the separable sparse system matrices for a subset of voxels and a single view.
@@ -314,8 +314,8 @@ class ConeBeamModel(TomographyModel):
         return Bij_value, Bij_channel, Cij_value, Cij_row
 
     @staticmethod
-    @jax.jit
-    def compute_sparse_A_row_one_pixel(pixel_index, angle, projector_params, p=1):
+    @partial(jax.jit, static_argnames='projector_params')
+    def forward_project_vertical_fan_beam_one_pixel(voxel_values, pixel_index, angle, projector_params, p=1):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
@@ -331,26 +331,42 @@ class ConeBeamModel(TomographyModel):
         slice_index = jnp.arange(num_recon_slices)
 
         x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel,
-                                                 recon_shape, recon_slice_offset, angle)
+                                                       recon_shape, recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
         u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, source_detector_dist, magnification)
         # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
         m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, delta_det_channel, delta_det_row, det_channel_offset,
-                                                   det_row_offset, num_det_rows, num_det_channels, det_rotation)
-        m_p_center = jnp.round(m_p)
-
-        # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_row = pixel_mag * (delta_voxel / delta_det_row) * jnp.clip(jnp.abs(v_p) / source_detector_dist, a_min=1)
+                                                 det_row_offset, num_det_rows, num_det_channels, det_rotation)
+        m_p_center = jnp.round(m_p).astype(int)
 
         # Compute vertical cone angle of pixel
-        cone_angle_row = jnp.arctan2(v_p, source_detector_dist)
+        phi_p = jnp.arctan2(v_p, source_detector_dist)
 
         # Compute cos alpha for row and columns
-        cos_alpha_row = jnp.maximum(jnp.abs(jnp.cos(cone_angle_row)), jnp.abs(jnp.sin(cone_angle_row)))
+        cos_phi_p = jnp.cos(phi_p)
+        cos_alpha_p_z = jnp.maximum(cos_phi_p, jnp.abs(jnp.sin(phi_p)))
+
+        # Get the length of projection of flattened voxel on detector (in fraction of detector size)
+        W_p_r = pixel_mag * (delta_voxel / delta_det_row) * cos_alpha_p_z / cos_phi_p
+
+        new_voxel_cylinder = jnp.zeros(num_det_rows)
+        L_max = jnp.minimum(1, W_p_r)
+
+        # Computed values needed to finish the forward projection:
+        # m_p_center, m_p, W_p_r, cos_alpha_p_z
+        for m_offset in jnp.arange(start=-p, stop=p+1):
+            m = m_p_center + m_offset
+            abs_delta_p_r_m = jnp.abs(m_p - m)
+            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+            A_row_m = L_p_r_m / cos_alpha_p_z
+            A_row_m *= (m >= 0) * (m < num_det_rows)
+            new_voxel_cylinder = new_voxel_cylinder.at[m].add(A_row_m * voxel_values)
+
+        return new_voxel_cylinder
 
     @staticmethod
-    @partial(jax.jit, static_argnums=2)
+    @partial(jax.jit, static_argnames='projector_params')
     def compute_sparse_Bij_Cij_single_view_new(pixel_indices, angle, projector_params, p=1):
         """
         Calculate the separable sparse system matrices for a subset of voxels and a single view.

@@ -20,8 +20,8 @@ if __name__ == "__main__":
     num_views = 128
     num_det_rows = 20
     num_det_channels = 128
-    magnification = 1.
-    source_detector_distance = np.Inf
+    magnification = 2.
+    source_detector_distance = 1000
     delta_voxel = 1
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
@@ -47,6 +47,25 @@ if __name__ == "__main__":
     full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
     num_subsets = 5
     subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+
+    ###
+    # # Test vertical fan beam
+    #
+    # geometry_params = conebeam_model.get_geometry_parameters()
+    # sinogram_shape, recon_shape = conebeam_model.get_params(['sinogram_shape', 'recon_shape'])
+    # projector_params = (tuple(sinogram_shape), tuple(recon_shape), tuple(geometry_params))
+    # angle = angles[10]
+    # pixel_indices = full_indices[0][12000:12001]
+    # voxel_values = np.random.rand(1, recon_shape[2])
+    #
+    # projection1 = conebeam_model.forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params)
+    # center = np.where(np.amax(projection1, axis=0) > 0)[0][1]
+    # projection1 = projection1[:, center]
+    # voxel_values = voxel_values.reshape(-1)
+    # projection2 = conebeam_model.forward_project_vertical_fan_beam_one_pixel(voxel_values, pixel_indices, angle, projector_params)
+    # A = np.amax(np.abs(projection2 / projection1 - projection2[0] / projection1[0]))
+    # print(A)
+    ##
 
     # ##########################
     # Show the forward and back projection from a single pixel
