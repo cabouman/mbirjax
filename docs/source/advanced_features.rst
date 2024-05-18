@@ -34,7 +34,7 @@ Below are tips on important and useful features:
   You can do this by setting the following parameters:
 
   - ``num_recon_rows`` and  ``num_recon_cols`` -  These will default to the number of detector channels, but you can change their values to reconstruct a rectangular region.
-  - ``delta_pixel_recon`` - This defaults to 1.0 and sets the spacing between voxels in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
+  - ``delta_voxel`` - This defaults to 1.0 and sets the spacing between voxels in ALU in x, y, and z directions. (See :ref:`ALU conversion <ALU_conversion_label>`).
   - ``delta_det_channel`` and ``delta_det_row`` - These default to 1.0 and set the spacing between detector channels and rows in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
 
 - **Calibrate and Control Model:**
@@ -51,10 +51,10 @@ Below are tips on important and useful features:
   So MBIRJAX provides some parameters for processing data in manageable batches:
 
   - ``view_batch_size`` - This defaults to None and sets the maximum number of views that are processed together.
-  - ``voxel_batch_size`` - This defaults to None and sets the maximum number of voxel cylinders that are processed together.
+  - ``pixel_batch_size`` - This defaults to None and sets the maximum number of voxel cylinders that are processed together.
 
   If you are running out of memory, we recommend that you set these parameters to smaller values.
-  Depending on the size of your problem, you might try ``view_batch_size=1000`` and ``voxel_batch_size=100000``
+  Depending on the size of your problem and memory, you might try ``view_batch_size=1000`` and ``pixel_batch_size=100000``
   or even smaller.
 
 

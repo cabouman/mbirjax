@@ -121,7 +121,7 @@ if __name__ == "__main__":
     """
     eval_types = ['Forward_projection', 'Backward_projection_0', 'Backward_projection_1', 'Backward_projection_2']
     eval_type_index = 0
-    voxel_batch_size = None
+    pixel_batch_size = None
 
     # Set up the independent variable values
     num_views = [1024, 2048]  # [256, 512, 768]
@@ -163,11 +163,11 @@ if __name__ == "__main__":
                     # Set up parallel beam model
                     sinogram_shape = (nv, nr, nc)
                     parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
-                    parallel_model.set_params(voxel_batch_size=voxel_batch_size)
+                    parallel_model.set_params(pixel_batch_size=pixel_batch_size)
 
                     # Generate phantom for forward projection
                     recon_shape = parallel_model.get_params('recon_shape')
-                    phantom = mbirjax.gen_phantom(recon_shape)
+                    phantom = mbirjax.gen_cube_phantom(recon_shape)
 
                     # Get a subset of the given size
                     indices = np.arange(ni, dtype=int)

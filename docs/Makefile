@@ -10,8 +10,7 @@ BUILDDIR      = build
 
 # Put it first so that "make" without argument is like "make help".
 help:
-	@echo "Make sure all required dependencies for docs are installed by 'pip install -r requirements.txt'."
-	@echo "Use 'SVMBIR_BUILD_DOCS=true make html' to build html locally".
+	@echo "Make sure all required dependencies for docs are installed."
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
 .PHONY: help Makefile

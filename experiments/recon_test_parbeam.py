@@ -9,6 +9,11 @@ if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
+    # ##########################
+    # Test batch size feature
+    view_batch_size = 100
+    pixel_batch_size = 10000
+
     # Set parameters
     num_views = 256
     num_det_rows = 20
@@ -24,8 +29,15 @@ if __name__ == "__main__":
     # Set up parallel beam model
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
+    # Here are other things you might want to do
+    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
+    #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
+    #cone_model.set_params(delta_voxel=1.0)    # You can change the pixel pitch
+    #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
+
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_sl_phantom()
+    phantom = parallel_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
@@ -35,7 +47,7 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    # parallel_model.set_params(positivity_flag=True)
+    # cone_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()
@@ -50,11 +62,8 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
-    # Reshape recon into 3D form
-    recon_3d = parallel_model.reshape_recon(recon)
-
     # Display results
-    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 
     # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon_3d)
+    #pu.display_slices(phantom, sinogram, recon)

@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_sl_phantom()
+    phantom = parallel_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    # parallel_model.set_params(positivity_flag=True)
+    # cone_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()
