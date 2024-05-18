@@ -52,6 +52,10 @@ class ParallelBeamModel(TomographyModel):
                              "same length.")
         super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
 
+    def get_magnification(self):
+        magnification = 1.0
+        return magnification
+    
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
@@ -70,10 +74,6 @@ class ParallelBeamModel(TomographyModel):
             error_message = "Number of recon slices must match number of sinogram rows. \n"
             error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
             raise ValueError(error_message)
-
-        magnification = self.get_params('magnification')
-        if jnp.abs(magnification - 1) > 1e-6:
-            raise ValueError("Magnification must be 1 for ParallelBeam.  Got {}".format(magnification))
 
     def get_geometry_parameters(self):
         """

@@ -48,10 +48,21 @@ class ConeBeamModel(TomographyModel):
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
         magnification = source_detector_dist / source_iso_dist
-        super().__init__(sinogram_shape, source_detector_dist=source_detector_dist,
+        super().__init__(sinogram_shape, view_params_array=view_params_array,
+                         source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          recon_slice_offset=recon_slice_offset, det_rotation=det_rotation,
-                         view_params_array=view_params_array, magnification=magnification,
-                         source_iso_dist=source_iso_dist, **kwargs)
+                         **kwargs)
+
+    def get_magnification(self):
+        """
+        Returns the magnification for the cone beam geometry.
+
+        Returns:
+            magnification = source_detector_dist / source_iso_dist
+        """
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        magnification = source_detector_dist / source_iso_dist
+        return magnification
 
     def verify_valid_params(self):
         """
@@ -65,11 +76,6 @@ class ConeBeamModel(TomographyModel):
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
-
-        magnification, source_detector_dist, source_iso_dist = self.get_params(['magnification', 'source_detector_dist', 'source_iso_dist'])
-        if jnp.abs(magnification - source_detector_dist / source_iso_dist) > 1e-6:
-            raise ValueError('Magnification must be computed automatically from source_detector_dist and source_iso_dist')
-
 
         # TODO:  Check for recon volume extending into the source
         # # Check for a potential division by zero or very small denominator
@@ -85,7 +91,8 @@ class ConeBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset', 'det_rotation',
-             'source_detector_dist', 'magnification', 'delta_voxel','recon_slice_offset'])
+             'source_detector_dist', 'delta_voxel','recon_slice_offset'])
+        geometry_params.append(self.get_magnification())
 
         return geometry_params
 
@@ -188,7 +195,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         magnification, delta_voxel, recon_slice_offset) = geometry_params
+         delta_voxel, recon_slice_offset, magnification) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -317,7 +324,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         magnification, delta_voxel, recon_slice_offset) = geometry_params
+         delta_voxel, recon_slice_offset, magnification) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -386,7 +393,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         magnification, delta_voxel, recon_slice_offset) = geometry_params
+         delta_voxel, recon_slice_offset, magnification) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
