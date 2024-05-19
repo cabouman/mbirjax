@@ -10,6 +10,8 @@ build:
   os: ubuntu-22.04
   tools:
     python: "mambaforge-latest"
+  commands:
+    prebuild: git lfs pull
 
 submodules:
   include: all
