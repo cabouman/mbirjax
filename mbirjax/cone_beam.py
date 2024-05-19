@@ -382,7 +382,7 @@ class ConeBeamModel(TomographyModel):
         return sinogram_view
 
     @staticmethod
-    # @partial(jax.jit, static_argnames='projector_params')
+    @partial(jax.jit, static_argnames='projector_params')
     def back_project_horizontal_fan_beam_one_view(sinogram_view, pixel_index, angle, projector_params, p=1, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
