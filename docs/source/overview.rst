@@ -35,14 +35,21 @@ We also have a bash install script at `[mbirjax/demo] <https://github.com/caboum
 Also, installing JAX is not too difficult on most platforms and is getting easier.
 
 
-**Geometry**
+**Geometries**
 
-Right now MBIRJAX supports *parallel-beam* imaging geometry as shown below, but more geometries are on the way.
+MBIRJAX supports the *parallel-beam* and *cone-beam* imaging geometries shown below.
+However, new geometries can be added by constructing a new class with the associated sparse forward and back projection code.
 
 .. list-table::
 
-    * - .. figure:: figs/geom-parallel.jpg
+    * - .. figure:: figs/geom-parallel.png
            :align: center
            :width: 75%
 
            Parallel-beam geometry
+
+      - .. figure:: figs/geom-cone-beam.png
+           :align: center
+           :width: 75%
+
+           Cone-beam geometry
