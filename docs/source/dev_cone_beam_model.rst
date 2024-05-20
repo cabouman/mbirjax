@@ -1,4 +1,4 @@
-.. _ParallelBeamModelDevDocs:
+.. _ConeBeamModelDevDocs:
 
 ============================
 ConeBeamModel Developer Docs
