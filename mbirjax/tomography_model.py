@@ -42,19 +42,19 @@ class TomographyModel:
         """
         Creates an instance of the Projectors class and set the local instance variables needed for forward
         and back projection and compute_hessian_diagonal.  This method requires that the current geometry has
-        implementations of :meth:`forward_project_pixels_to_one_view` and :meth:`back_project_one_view_to_pixel`
+        implementations of :meth:`forward_project_pixel_batch_to_one_view` and :meth:`back_project_one_view_to_pixel_batch`
 
         Returns:
             Nothing, but creates jit-compiled functions.
         """
-        projector_functions = mbirjax.Projectors(self, self.forward_project_pixels_to_one_view,
-                                                 self.back_project_one_view_to_pixel)
+        projector_functions = mbirjax.Projectors(self, self.forward_project_pixel_batch_to_one_view,
+                                                 self.back_project_one_view_to_pixel_batch)
         self._sparse_forward_project = projector_functions.sparse_forward_project
         self._sparse_back_project = projector_functions.sparse_back_project
         self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
-    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -75,7 +75,7 @@ class TomographyModel:
         return None
 
     @staticmethod
-    def back_project_one_view_to_pixel(sinogram_view, voxel_index, view_params, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
 
@@ -84,8 +84,8 @@ class TomographyModel:
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected
-            voxel_index: the integer index into flattened recon - need to apply unravel_index(pixel_index, recon_shape) to get i, j, k
-            view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 for compute_hessian_diagonal.
@@ -393,13 +393,25 @@ class TomographyModel:
         return values
 
     def get_magnification(self):
+        """
+        Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
+        its projection on the detector.  For parallel beam, this is 1, but it may be parameter-dependent
+        for other geometries.
+
+        Returns:
+            (float): magnification
+        """
         raise NotImplementedError('get_magnification is not implemented.')
     
     def verify_valid_params(self):
         """
         Verify any conditions that must be satisfied among parameters for correct projections.
+
         Subclasses of TomographyModel should call super().verify_valid_params() before checking any
         subclass-specific conditions.
+
+        Note:
+            Raises ValueError for invalid parameters.
         """
 
         sinogram_shape = self.get_params('sinogram_shape')

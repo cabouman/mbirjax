@@ -34,6 +34,18 @@ class TemplateModel(TomographyModel):
 
         super().__init__(sinogram_shape, param1=param1, param2=param2, view_params_array=view_params_array, **kwargs)
 
+    def get_magnification(self):
+        """
+        Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
+        its projection on the detector.  For parallel beam, this is 1, but it may be parameter-dependent
+        for other geometries.
+
+        Returns:
+            (float): magnification
+        """
+        magnification = 1.0
+        return magnification
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
@@ -53,7 +65,7 @@ class TemplateModel(TomographyModel):
         Required function to get a list of the view independent geometry parameters required for projection.
 
         Returns:
-            List of any parameters required for back_project_one_view_to_pixel or forward_project_pixels_to_one_view.
+            List of any parameters required for back_project_one_view_to_pixel_batch or forward_project_pixel_batch_to_one_view.
             This does not need to include view dependent parameters, or sinogram_shape or recon_shape, which
             are passed in automatically to projector_params.
         """
@@ -62,7 +74,7 @@ class TemplateModel(TomographyModel):
         return geometry_params
 
     @staticmethod
-    def back_project_one_view_to_pixel(sinogram_view, pixel_index, single_view_params, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and various parameters.
         This code uses the distance driven projector.
@@ -71,7 +83,7 @@ class TemplateModel(TomographyModel):
 
         Args:
             sinogram_view (2D jax array): one view of the sinogram to be back projected
-            pixel_index (int):  index into flattened array of size num_rows x num_cols.
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for the view being back projected.
             projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
@@ -89,7 +101,7 @@ class TemplateModel(TomographyModel):
         return voxel_values_cylinder
 
     @staticmethod
-    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
         """
         Forward project a set of voxels determined by indices into a single view.
 

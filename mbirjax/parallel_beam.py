@@ -53,12 +53,23 @@ class ParallelBeamModel(TomographyModel):
         super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
 
     def get_magnification(self):
+        """
+        Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
+        its projection on the detector.  For parallel beam, this is 1, but it may be parameter-dependent
+        for other geometries.
+
+        Returns:
+            (float): magnification
+        """
         magnification = 1.0
         return magnification
     
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
+
+        Note:
+            Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
@@ -86,6 +97,28 @@ class ParallelBeamModel(TomographyModel):
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
         return geometry_params
+
+    @staticmethod
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+        """
+        Use vmap to do a backprojection from one view to multiple pixels (voxel cylinders).
+
+        Args:
+            sinogram_view (2D jax array): one view of the sinogram to be back projected
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            single_view_params: These are the view dependent parameters for the view being back projected.
+            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
+
+        Returns:
+            The voxel values for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
+
+        """
+        bp_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_pixel, in_axes=(None, 0, None, None, None))
+        bp = bp_vmap(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
+        return bp
 
     @staticmethod
     def back_project_one_view_to_pixel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
@@ -120,7 +153,7 @@ class ParallelBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Forward project a set of voxel cylinders determined by indices into the flattened array of size 
         num_rows x num_cols.

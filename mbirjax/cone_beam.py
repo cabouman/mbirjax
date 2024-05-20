@@ -67,6 +67,9 @@ class ConeBeamModel(TomographyModel):
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
+
+        Note:
+            Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
@@ -97,6 +100,29 @@ class ConeBeamModel(TomographyModel):
         return geometry_params
 
     @staticmethod
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+        """
+        Use vmap to do a backprojection from one view to multiple pixels (voxel cylinders).
+
+        Args:
+            sinogram_view (2D jax array): one view of the sinogram to be back projected.
+                2D jax array of shape (num_det_rows)x(num_det_channels)
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            single_view_params: These are the view dependent parameters for the view being back projected.
+            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
+
+        Returns:
+            The voxel values for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
+
+        """
+        bp_vmap = jax.vmap(ConeBeamModel.back_project_one_view_to_pixel, in_axes=(None, 0, None, None, None))
+        bp = bp_vmap(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
+        return bp
+
+    @staticmethod
     def back_project_one_view_to_pixel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
         """
         Calculate the backprojection at a specified recon pixel cylinder given a sinogram view and model parameters.
@@ -104,9 +130,9 @@ class ConeBeamModel(TomographyModel):
 
         Args:
             sinogram_view (jax array): one view of the sinogram to be back projected.
-                2D jnp array of shape (num_det_rows)x(num_det_channels)
+                2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_index (int): Index of pixel cylinder to back project.  This index is converted to a 2D index
-             using i, j = unravel_index(pixel_index, (num_recon_rows, num_recon_cols)).
+                using i, j = unravel_index(pixel_index, (num_recon_rows, num_recon_cols)).
             angle (float): The angle in radians for this view.
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): Normally 1, but should be 2 when computing diagonal hessian 2.
@@ -127,7 +153,7 @@ class ConeBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -137,7 +163,6 @@ class ConeBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            sinogram_shape (tuple): Sinogram shape (num_views, num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -149,14 +174,30 @@ class ConeBeamModel(TomographyModel):
             raise ValueError('voxel_values must have shape[0:2] = (num_indices, num_slices)')
 
         new_voxel_values = ConeBeamModel.forward_project_vertical_fan_beam_one_view(voxel_values, pixel_indices, angle,
-                                                                                     projector_params)
+                                                                                    projector_params)
         sinogram_view = ConeBeamModel.forward_project_horizontal_fan_beam_one_view(new_voxel_values, pixel_indices,
-                                                                                  angle, projector_params)
+                                                                                   angle, projector_params)
         return sinogram_view
 
     @staticmethod
     def forward_project_vertical_fan_beam_one_view(voxel_values, pixel_indices, angle, projector_params):
+        """
+        Apply a fan beam forward projection in the vertical direction separately to each voxel determined by indices
+        into the flattened array of size num_rows x num_cols.  This returns an array corresponding to the same pixel
+        locations, but using values obtained from the projection of the original voxel cylinders onto a detector column,
+        so the output array has size (len(pixel_indices), num_det_rows).
 
+        Args:
+            voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
+                the flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_pixels, num_det_rows)
+        """
         pixel_map = jax.vmap(ConeBeamModel.forward_project_vertical_fan_beam_one_pixel_one_view,
                              in_axes=(0, 0, None, None))
         new_pixels = pixel_map(voxel_values, pixel_indices, angle, projector_params)
@@ -167,18 +208,21 @@ class ConeBeamModel(TomographyModel):
     @partial(jax.jit, static_argnames='projector_params')
     def forward_project_horizontal_fan_beam_one_view(voxel_values, pixel_indices, angle, projector_params, p=1):
         """
-        Apply a horizontal fan beam transformation to a single voxel cylinder that has slices aligned with detector
-        rows and return the resulting sinogram view.
+        Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
+        slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
+        This function returns the resulting sinogram view.
 
         Args:
-            voxel_values:
-            pixel_indices:
-            angle:
-            projector_params:
+            voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
+                the flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
             p:
 
         Returns:
-
+            jax array of shape (num_det_rows, num_det_channels)
         """
 
         # Get all the geometry parameters
@@ -312,20 +356,10 @@ class ConeBeamModel(TomographyModel):
     def forward_project_vertical_fan_beam_one_pixel_one_view(voxel_values, pixel_index, angle, projector_params,
                                                              p=1):
         """
-        Apply a vertical fan beam transformation to a single voxel cylinder and return the column vector
-        of the resulting values.
-
-        Args:
-            voxel_values:
-            pixel_index:
-            angle:
-            projector_params:
-            p:
-
-        Returns:
-
+        Helper function used in vmap in :meth:`ConeBeamModel.forward_project_vertical_fan_beam_one_view`
+        This method has the same signature and output as that method, except single int pixel_index is used
+        in place of the 1D pixel_indices, and likewise only a single voxel cylinder is returned.
         """
-
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,

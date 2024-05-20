@@ -12,10 +12,15 @@ class Projectors:
         self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = None, None, None
         self.create_projectors(forward_core, backward_core)
 
-    def create_projectors(self, forward_project_pixels_to_one_view, back_project_one_view_to_pixel):
+    def create_projectors(self, forward_project_pixel_batch_to_one_view, back_project_one_view_to_pixel_batch):
         """
         Compute the forward and back projectors for this geometry and current view parameters
+        
         Args:
+            forward_project_pixel_batch_to_one_view (callable): jit-compilable function implementing
+                :meth:`TomographyModel.forward_project_pixel_batch_to_one_view`
+            back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing
+                :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
 
         Returns:
             Nothing, but the class variables `sparse_forward_project`, `sparse_back_project`, and
@@ -32,8 +37,8 @@ class Projectors:
             give reduced execution time relative to the initial call.
 
             This method requires geometry-specific implementations of
-            :meth:`TomographyModel.forward_project_pixels_to_one_view` and
-            :meth:`TomographyModel.back_project_one_view_to_pixel`.
+            :meth:`TomographyModel.forward_project_pixel_batch_to_one_view` and
+            :meth:`TomographyModel.back_project_one_view_to_pixel_batch`.
         """
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
@@ -56,7 +61,7 @@ class Projectors:
             """
             num_pixels = len(pixel_indices)
             if pixel_batch_size is None or pixel_batch_size >= num_pixels:
-                sinogram = sparse_forward_project_voxel_batch(voxel_values, pixel_indices)
+                sinogram = sparse_forward_project_pixel_batch(voxel_values, pixel_indices)
             else:
                 num_batches = num_pixels // pixel_batch_size
                 length_of_batches = num_batches * pixel_batch_size
@@ -77,7 +82,7 @@ class Projectors:
                 if num_remaining > 0:
                     end_batch_values = voxel_values[-num_remaining:]
                     end_batch_indices = pixel_indices[-num_remaining:]
-                    sinogram += sparse_forward_project_voxel_batch(end_batch_values, end_batch_indices)
+                    sinogram += sparse_forward_project_pixel_batch(end_batch_values, end_batch_indices)
 
             return sinogram
 
@@ -93,11 +98,11 @@ class Projectors:
             """
             view_batch_size, cur_sino = carry
             voxel_values, pixel_indices = values_indices_batch
-            cur_sino += sparse_forward_project_voxel_batch(voxel_values, pixel_indices)
+            cur_sino += sparse_forward_project_pixel_batch(voxel_values, pixel_indices)
 
             return [view_batch_size, cur_sino], None
 
-        def sparse_forward_project_voxel_batch(voxel_values, pixel_indices):
+        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices):
             """
             Compute the sinogram obtained by forward projecting the specified voxels. The voxels
             are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
@@ -111,7 +116,7 @@ class Projectors:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
             """
             num_views = view_params_array.shape[0]
-            forward_vmap = jax.vmap(forward_project_pixels_to_one_view, in_axes=(None, None, 0, None))
+            forward_vmap = jax.vmap(forward_project_pixel_batch_to_one_view, in_axes=(None, None, 0, None))
 
             if view_batch_size is None or view_batch_size >= num_views:
                 sinogram = forward_vmap(voxel_values, pixel_indices, view_params_array, projector_params)
@@ -137,14 +142,14 @@ class Projectors:
         def sparse_back_project_fcn(sinogram, pixel_indices, coeff_power=1):
             num_pixels = len(pixel_indices)
             if pixel_batch_size is None or pixel_batch_size >= num_pixels:
-                voxel_values = back_project_to_voxels_scan(sinogram, pixel_indices, coeff_power=coeff_power)
+                voxel_values = back_project_to_pixels_scan(sinogram, pixel_indices, coeff_power=coeff_power)
             else:
                 num_batches = num_pixels // pixel_batch_size
                 length_of_batches = num_batches * pixel_batch_size
                 indices_batched = jnp.reshape(pixel_indices[:length_of_batches], (num_batches, pixel_batch_size))
 
                 def backward_map(indices_batch):
-                    return back_project_to_voxels_scan(sinogram, indices_batch, coeff_power=coeff_power)
+                    return back_project_to_pixels_scan(sinogram, indices_batch, coeff_power=coeff_power)
 
                 voxel_values = jax.lax.map(backward_map, indices_batched)
                 voxel_values = voxel_values.reshape((length_of_batches, -1))
@@ -155,7 +160,7 @@ class Projectors:
                     voxel_values = jnp.concatenate((voxel_values, end_values), axis=0)
             return voxel_values
 
-        def back_project_to_voxels_scan(sinogram, pixel_indices, coeff_power=1):
+        def back_project_to_pixels_scan(sinogram, pixel_indices, coeff_power=1):
             """
             Use jax.lax.scan to backproject one view at a time and accumulate the results in the specified voxels.
             The individual backprojections from each view must be added to get the full backprojection.  This is
@@ -195,28 +200,10 @@ class Projectors:
             extra_args, accumulated = carry
             sinogram_view, view_params = view_params_pair
             pixel_indices, coeff_power = extra_args
-            bp_view = back_project_one_view_to_pixels(sinogram_view, pixel_indices, view_params, coeff_power)
+            bp_view = back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, view_params, projector_params, coeff_power)
             accumulated += bp_view
             del bp_view
             return [extra_args, accumulated], None
-
-        @jax.jit
-        def back_project_one_view_to_pixels(sinogram_view, pixel_indices, view_params, coeff_power=1):
-            """
-            Use vmap to do a backprojection from one view to multiple voxels.
-
-            Args:
-                sinogram_view:
-                pixel_indices:
-                view_params:
-                coeff_power:
-
-            Returns:
-
-            """
-            bp_vmap = jax.vmap(back_project_one_view_to_pixel, in_axes=(None, 0, None, None, None))
-            bp = bp_vmap(sinogram_view, pixel_indices, view_params, projector_params, coeff_power)
-            return bp
 
         def compute_hessian_diagonal(weights=None):
             """

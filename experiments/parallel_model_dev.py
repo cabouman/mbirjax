@@ -13,8 +13,8 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 1024
-    pixel_batch_size = 10000
+    view_batch_size = None
+    pixel_batch_size = None
 
     # Initialize sinogram
     num_views = 128

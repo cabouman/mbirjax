@@ -58,7 +58,7 @@ if __name__ == "__main__":
     # pixel_indices = full_indices[0][12000:12001]
     # voxel_values = np.random.rand(1, recon_shape[2])
     #
-    # projection1 = conebeam_model.forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params)
+    # projection1 = conebeam_model.forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params)
     # center = np.where(np.amax(projection1, axis=0) > 0)[0][1]
     # projection1 = projection1[:, center]
     # voxel_values = voxel_values.reshape(-1)
