@@ -94,8 +94,11 @@ class ConeBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset', 'det_rotation',
-             'source_detector_dist', 'delta_voxel','recon_slice_offset'])
+             'source_detector_dist', 'delta_voxel', 'recon_slice_offset'])
         geometry_params.append(self.get_magnification())
+
+        p = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        geometry_params.append(p)
 
         return geometry_params
 
@@ -155,7 +158,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, p=1):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -177,7 +180,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -228,8 +231,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_vertical_fan_one_pixel_to_one_view(voxel_values, pixel_index, angle, projector_params,
-                                                   p=1):
+    def forward_vertical_fan_one_pixel_to_one_view(voxel_values, pixel_index, angle, projector_params):
         """
         Helper function used in vmap in :meth:`ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view`
         This method has the same signature and output as that method, except single int pixel_index is used
@@ -238,7 +240,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -302,7 +304,6 @@ class ConeBeamModel(TomographyModel):
             the input sinogram view.
         """
 
-        # NEW
         vertical_fan_projector = ConeBeamModel.backward_vertical_fan_pixel_batch_to_one_view
         horizontal_fan_projector = ConeBeamModel.backward_horizontal_fan_pixel_batch_to_one_view
 
@@ -311,16 +312,12 @@ class ConeBeamModel(TomographyModel):
         back_projection = vertical_fan_projector(det_voxel_cylinder, pixel_indices, single_view_params,
                                                  projector_params, coeff_power=coeff_power)
 
-        # # OLD
-        # bp_vmap = jax.vmap(ConeBeamModel._back_project_one_view_to_pixel, in_axes=(None, 0, None, None, None))
-        # bp = bp_vmap(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
-
         return back_projection
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def backward_horizontal_fan_pixel_batch_to_one_view(sinogram_view, pixel_indices, angle,
-                                                        projector_params, coeff_power=1, p=1):
+                                                        projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
         and return the resulting voxel cylinders.
@@ -340,7 +337,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -406,7 +403,7 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def back_project_vertical_fan_beam_one_pixel_one_view(detector_column_values, pixel_index, angle, projector_params,
-                                                          coeff_power=1, p=1):
+                                                          coeff_power=1):
         """
         Apply the back projection of a vertical fan beam transformation to a single voxel cylinder and return the column
         vector of the resulting values.
@@ -425,7 +422,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]

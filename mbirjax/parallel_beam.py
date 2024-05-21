@@ -96,6 +96,9 @@ class ParallelBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
+        p = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        geometry_params.append(p)
+
         return geometry_params
 
     @staticmethod
@@ -192,8 +195,8 @@ class ParallelBeamModel(TomographyModel):
 
 
     @staticmethod
-    @partial(jax.jit, static_argnums=3)
-    def compute_sparse_A_single_view(pixel_indices, angle, projector_params, p=1):
+    @partial(jax.jit, static_argnames='projector_params')
+    def compute_sparse_A_single_view(pixel_indices, angle, projector_params):
         """
         Calculate the sparse system matrix for a subset of voxels and a single view.
         The function returns a sparse matrix specified by the matrix values and associated detector column index.
@@ -213,7 +216,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, det_channel_offset, delta_voxel = geometry_params
+        delta_det_channel, det_channel_offset, delta_voxel, p = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         num_recon_rows, num_recon_cols = projector_params[1][:2]

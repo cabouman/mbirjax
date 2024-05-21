@@ -236,6 +236,6 @@ class Projectors:
 
         # Set the compiled projectors and Hessian function
         projector_functions = (jax.jit(sparse_forward_project_fcn),
-                               jax.jit(sparse_back_project_fcn, static_argnums=(2,)),
+                               jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'),
                                compute_hessian_diagonal)
         self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = projector_functions
