@@ -15,9 +15,9 @@ if __name__ == "__main__":
     pixel_batch_size = 10000
 
     # Set parameters
-    num_views = 128
-    num_det_rows = 40
-    num_det_channels = 128
+    num_views = 256
+    num_det_rows = 20
+    num_det_channels = 256
     source_detector_dist = 1000
     source_iso_distance = 1000
     start_angle = -np.pi*(1/2)
