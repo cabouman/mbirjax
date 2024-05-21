@@ -116,25 +116,38 @@ class Projectors:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
             """
             num_views = view_params_array.shape[0]
-            forward_vmap = jax.vmap(forward_project_pixel_batch_to_one_view, in_axes=(None, None, 0, None))
 
+            def forward_project_single_view(single_view_params):
+                # Use closure to define a mappable function that operates on a single view with the given voxel values.
+                return forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices,
+                                                               single_view_params, projector_params)
+
+            def forward_project_view_batch(view_params_batch):
+                # Map the single view function over a batch of views.
+                # To parallelize over views, we can use jax.vmap here instead of jax.lax.map, but this may use extra
+                # memory since the voxel values are required for each view.
+
+                # TODO: Choose one of the following:
+                # sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch)
+                sino_view_batch = jax.lax.map(forward_project_single_view, view_params_batch)
+
+                return sino_view_batch
+
+            # Apply the function on a single batch of views if the batch is small enough.
             if view_batch_size is None or view_batch_size >= num_views:
-                sinogram = forward_vmap(voxel_values, pixel_indices, view_params_array, projector_params)
+                sinogram = forward_project_view_batch(view_params_array)
+            # Otherwise break the views up into batches and apply the function to each batch use another level of map.
             else:
                 num_batches = num_views // view_batch_size
                 view_params_batched = jnp.reshape(view_params_array[0:num_batches * view_batch_size],
                                                   (num_batches, view_batch_size, -1))
 
-                @jax.jit
-                def forward_map(view_params_batch):
-                    return forward_vmap(voxel_values, pixel_indices, view_params_batch, projector_params)
-
-                sinogram = jax.lax.map(forward_map, view_params_batched)
+                sinogram = jax.lax.map(forward_project_view_batch, view_params_batched)
                 sinogram = jnp.reshape(sinogram, (num_batches * view_batch_size,) + sinogram.shape[2:])
                 num_remaining = num_views - num_batches * view_batch_size
                 if num_remaining > 0:
                     end_batch = view_params_array[-num_remaining:]
-                    end_views = forward_map(end_batch)
+                    end_views = forward_project_view_batch(end_batch)
                     sinogram = jnp.concatenate((sinogram, end_views), axis=0)
 
             return sinogram
