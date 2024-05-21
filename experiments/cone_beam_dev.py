@@ -14,15 +14,16 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 1000
-    pixel_batch_size = 10000
+    view_batch_size = 32
+    pixel_batch_size = 2048
 
     # Initialize sinogram
     num_views = 128
     num_det_rows = 200
     num_det_channels = 128
-    source_detector_distance = 1000
-    source_iso_distance = 500
+
+    source_detector_distance = 4 * num_det_channels
+    source_iso_distance = source_detector_distance
     delta_voxel = 1
     start_angle = 0
     extra_angle = 0  # jnp.atan2(magnification * num_det_channels / 2, source_detector_distance)
@@ -110,36 +111,36 @@ if __name__ == "__main__":
     # ##########################
     # Test the adjoint property
     # Get a random 3D phantom to test the adjoint property
-    key, subkey = jax.random.split(key)
-    x = jax.random.uniform(subkey, shape=bp.shape)
-    key, subkey = jax.random.split(key)
-    y = jax.random.uniform(subkey, shape=sinogram.shape)
-
-    # Do a forward projection, then a backprojection
-    voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
-    Aty = conebeam_model.sparse_back_project(y, indices[0])
-
-    # Calculate <Aty, x> and <y, Ax>
-    Aty_x = jnp.sum(Aty * x)
-    y_Ax = jnp.sum(y * Ax)
-
-    adjoint_result = np.allclose(Aty_x, y_Ax)
-    if adjoint_result:
-        print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(adjoint_result))
-    else:
-        warnings.warn('Adjoint property does not hold.')
-
-    # Clean up before further projections
-    del Ax, Aty, bp
-    del phantom
-    del x, y
-    gc.collect()
+    # key, subkey = jax.random.split(key)
+    # x = jax.random.uniform(subkey, shape=bp.shape)
+    # key, subkey = jax.random.split(key)
+    # y = jax.random.uniform(subkey, shape=sinogram.shape)
+    #
+    # # Do a forward projection, then a backprojection
+    # voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
+    # Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
+    # Aty = conebeam_model.sparse_back_project(y, indices[0])
+    #
+    # # Calculate <Aty, x> and <y, Ax>
+    # Aty_x = jnp.sum(Aty * x)
+    # y_Ax = jnp.sum(y * Ax)
+    #
+    # adjoint_result = np.allclose(Aty_x, y_Ax)
+    # if adjoint_result:
+    #     print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(adjoint_result))
+    # else:
+    #     warnings.warn('Adjoint property does not hold.')
+    #
+    # # Clean up before further projections
+    # del Ax, Aty, bp
+    # del phantom
+    # del x, y
+    # gc.collect()
 
     # ##########################
     # ## Test the hessian against a finite difference approximation ## #
-    hessian = conebeam_model.compute_hessian_diagonal()
-
+    # hessian = conebeam_model.compute_hessian_diagonal()
+    #
     x = jnp.zeros(recon_shape)
     key, subkey = jax.random.split(key)
     i, j = jax.random.randint(subkey, shape=(2,), minval=0, maxval=num_recon_rows)
@@ -148,15 +149,15 @@ if __name__ == "__main__":
 
     eps = 0.01
     x = x.at[i, j, k].set(eps)
-    voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
-    AtAx = conebeam_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
-    finite_diff_hessian = AtAx[i, j, k] / eps
-    hessian_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
-    if hessian_result:
-        print('Hessian matches finite difference: {}'.format(hessian_result))
-    else:
-        warnings.warn('Hessian does not match finite difference.')
+    # voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
+    # Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
+    # AtAx = conebeam_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
+    # finite_diff_hessian = AtAx[i, j, k] / eps
+    # hessian_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
+    # if hessian_result:
+    #     print('Hessian matches finite difference: {}'.format(hessian_result))
+    # else:
+    #     warnings.warn('Hessian does not match finite difference.')
 
     # ##########################
     # Check the time taken per forward projection

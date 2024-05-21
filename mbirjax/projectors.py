@@ -134,9 +134,7 @@ class Projectors:
                 # To parallelize over views, we can use jax.vmap here instead of jax.lax.map, but this may use extra
                 # memory since the voxel values are required for each view.
 
-                # TODO: Choose one of the following (either vmap or map):
-                # sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch)
-                sino_view_batch = jax.lax.map(forward_project_single_view, view_params_batch)
+                sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch)
 
                 return sino_view_batch
 
@@ -235,33 +233,12 @@ class Projectors:
             """
             num_pixels = pixel_indices.shape[0]
 
-            def back_project_single_view_pixel_batch(single_view, single_view_params, pixel_indices_batch):
-                return back_project_one_view_to_pixel_batch(single_view, pixel_indices_batch, single_view_params,
-                                                            projector_params, coeff_power)
-
-            def back_project_single_view_broadcast_pixel_batch(single_view_and_params, pixel_indices_batch):
-                single_view = single_view_and_params[..., 0]
-                single_view_params = single_view_and_params[..., 1].flatten()[0]
-                return back_project_one_view_to_pixel_batch(single_view, pixel_indices_batch, single_view_params,
-                                                            projector_params, coeff_power)
-
             def back_project_pixel_batch(pixel_indices_batch):
                 # Apply back_project_one_view_to_pixel_batch to each pixel batch and each view
                 # Add over the views and concatenate over the pixels
-                def back_project_single_view_broadcast_this_pixel_batch(single_view_and_params):
-                    return back_project_single_view_broadcast_pixel_batch(single_view_and_params, pixel_indices_batch)
-
-                # TODO: Choose one of the following (either vmap or map):
-                # vmap
-                bp_vmap = jax.vmap(back_project_single_view_pixel_batch, in_axes=(0, 0, None))
-                per_view_voxel_values_batch = bp_vmap(view_batch, view_params_batch, pixel_indices_batch)
-                # end vmap
-                # map:
-                # broadcast_shape = (-1,) + (1,) * (len(view_batch.shape) - 1)
-                # vp_tiled = jnp.tile(view_params_batch.reshape(broadcast_shape), (1,)+view_batch.shape[1:])
-                # view_and_params_batch = jnp.stack((view_batch, vp_tiled), axis=-1)
-                # per_view_voxel_values_batch = jax.lax.map(partial(back_project_single_view_broadcast_this_pixel_batch), view_and_params_batch)
-                # end map
+                bp_vmap = jax.vmap(back_project_one_view_to_pixel_batch, in_axes=(0, None, 0, None, None))
+                per_view_voxel_values_batch = bp_vmap(view_batch, pixel_indices_batch, view_params_batch,
+                                                      projector_params, coeff_power)
 
                 voxel_values_batch = jnp.sum(per_view_voxel_values_batch, axis=0)
                 return voxel_values_batch

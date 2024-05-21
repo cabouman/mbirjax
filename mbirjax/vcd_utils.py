@@ -148,19 +148,19 @@ def gen_cube_phantom(recon_shape):
 
 
 def ellipsoid(x0, y0, z0, a, b, c, N, M, P, angle=0, intensity=1.0):
-    x = np.linspace(-1, 1, N)
-    y = np.linspace(-1, 1, M)
-    z = np.linspace(-1, 1, P)
-    X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+    x = jnp.linspace(-1, 1, N)
+    y = jnp.linspace(-1, 1, M)
+    z = jnp.linspace(-1, 1, P)
+    X, Y, Z = jnp.meshgrid(x, y, z, indexing='ij')
 
-    cos_angle = np.cos(np.deg2rad(angle))
-    sin_angle = np.sin(np.deg2rad(angle))
+    cos_angle = jnp.cos(np.deg2rad(angle))
+    sin_angle = jnp.sin(np.deg2rad(angle))
     Xr = cos_angle * (X - x0) + sin_angle * (Y - y0)
     Yr = -sin_angle * (X - x0) + cos_angle * (Y - y0)
     Zr = Z - z0
 
     ellipsoid = (Xr**2 / a**2 + Yr**2 / b**2 + Zr**2 / c**2) <= 1
-    return ellipsoid.astype(float) * intensity
+    return ellipsoid * intensity
 
 
 def _gen_ellipsoid(x_grid, y_grid, z_grid, x0, y0, z0, a, b, c, gray_level, alpha=0, beta=0, gamma=0):
