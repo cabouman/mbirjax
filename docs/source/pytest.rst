@@ -2,8 +2,8 @@
 Running pytest
 ==============
 
-From a clean repository, install and activate the conda environment, change directory to `tests`, then run unit tests with the following::
+In order to run unit tests, install MBIRJAX using the provided install scripts, and from the root directory of the repository, activate the conda environment, and then run the following::
 
-    python main_tests.py
+    pytest
 
 This should be repeated for each supported platform.
