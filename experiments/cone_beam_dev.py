@@ -5,6 +5,7 @@ import jax
 import time
 import matplotlib.pyplot as plt
 import gc
+import warnings
 import mbirjax
 
 if __name__ == "__main__":
@@ -13,12 +14,12 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 1024
+    view_batch_size = 1000
     pixel_batch_size = 10000
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 20
+    num_det_rows = 200
     num_det_channels = 128
     source_detector_distance = 1000
     source_iso_distance = 500
@@ -30,7 +31,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
-    seed_value = np.random.randint(1000000)
+    seed_value = 0  #np.random.randint(1000000)
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
@@ -123,7 +124,11 @@ if __name__ == "__main__":
     Aty_x = jnp.sum(Aty * x)
     y_Ax = jnp.sum(y * Ax)
 
-    print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(np.allclose(Aty_x, y_Ax)))
+    adjoint_result = np.allclose(Aty_x, y_Ax)
+    if adjoint_result:
+        print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(adjoint_result))
+    else:
+        warnings.warn('Adjoint property does not hold.')
 
     # Clean up before further projections
     del Ax, Aty, bp
@@ -147,7 +152,11 @@ if __name__ == "__main__":
     Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
     AtAx = conebeam_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
     finite_diff_hessian = AtAx[i, j, k] / eps
-    print('Hessian matches finite difference: {}'.format(jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)))
+    hessian_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
+    if hessian_result:
+        print('Hessian matches finite difference: {}'.format(hessian_result))
+    else:
+        warnings.warn('Hessian does not match finite difference.')
 
     # ##########################
     # Check the time taken per forward projection

@@ -216,16 +216,21 @@ class ConeBeamModel(TomographyModel):
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
-        # TODO:  convert to vmap over m / z
+
         # Computed values needed to finish the forward projection:
         # n_p_center, n_p, W_p_c, cos_alpha_p_xy
-        for n_offset in jnp.arange(start=-p, stop=p+1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view = sinogram_view.at[:, n].add(A_chan_n[None, :] * voxel_values.T)
+        def project_slice(sinogram_view_row, voxel_values_slice):
+            for n_offset in jnp.arange(start=-p, stop=p+1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+                A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view_row = sinogram_view_row.at[n].add(A_chan_n * voxel_values_slice)
+
+            return sinogram_view_row
+
+        sinogram_view = jax.vmap(project_slice, in_axes=(0, 1))(sinogram_view, voxel_values)
 
         return sinogram_view
 
@@ -376,17 +381,21 @@ class ConeBeamModel(TomographyModel):
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
 
-        # TODO:  convert to vmap over m / z
-        # Computed values needed to finish the forward projection:
+        # Computed values needed to finish the back projection:
         # n_p_center, n_p, W_p_c, cos_alpha_p_xy
-        for n_offset in jnp.arange(start=-p, stop=p+1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n.reshape((-1, 1)) ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n * sinogram_view[:, n].T)
+        def project_slice(det_voxel_row, sinogram_view_row):
+            for n_offset in jnp.arange(start=-p, stop=p+1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+                A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                A_chan_n = A_chan_n ** coeff_power
+                det_voxel_row = jnp.add(det_voxel_row, A_chan_n * sinogram_view_row[n])
+
+            return det_voxel_row
+
+        det_voxel_cylinder = jax.vmap(project_slice, in_axes=(1, 0), out_axes=1)(det_voxel_cylinder, sinogram_view)
 
         return det_voxel_cylinder
 
