@@ -101,6 +101,19 @@ class ParallelBeamModel(TomographyModel):
 
         return geometry_params
 
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+        """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
+          the number of channels from the sinogram"""
+        delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
+        delta_voxel = self.get_params('delta_voxel')
+        num_det_rows, num_det_channels = sinogram_shape[1:3]
+        magnification = self.get_magnification()
+        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
+        num_recon_cols = num_recon_rows
+        num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+
     @staticmethod
     def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
         """
