@@ -67,17 +67,17 @@ if __name__ == "__main__":
     # print(A)
     ##
 
-    # ##########################
-    # Show the forward and back projection from a single pixel
-    i, j = num_recon_rows // 4, num_recon_cols // 3
-    x = jnp.zeros(recon_shape)
-    x = x.at[i, j, :].set(1)
-    voxel_values = x.reshape((-1, num_recon_slices))[full_indices[0]]
-
-    Ax = conebeam_model.sparse_forward_project(voxel_values, full_indices[0])
-    Ax = np.array(Ax)
-    Aty = conebeam_model.sparse_back_project(Ax, full_indices[0])
-    Aty = np.array(Aty)
+    # # ##########################
+    # # Show the forward and back projection from a single pixel
+    # i, j = num_recon_rows // 4, num_recon_cols // 3
+    # x = jnp.zeros(recon_shape)
+    # x = x.at[i, j, :].set(1)
+    # voxel_values = x.reshape((-1, num_recon_slices))[full_indices[0]]
+    #
+    # Ax = conebeam_model.sparse_forward_project(voxel_values, full_indices[0])
+    # Ax = np.array(Ax)
+    # Aty = conebeam_model.sparse_back_project(Ax, full_indices[0])
+    # Aty = np.array(Aty)
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
