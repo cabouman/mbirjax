@@ -102,6 +102,21 @@ class ConeBeamModel(TomographyModel):
 
         return geometry_params
 
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+        """ Compute the automatic recon shape cone beam reconstruction.
+        """
+        delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
+        delta_voxel = self.get_params('delta_voxel')
+        num_det_rows, num_det_channels = sinogram_shape[1:3]
+        magnification = self.get_magnification()
+
+        num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
+        num_recon_cols = num_recon_rows
+        num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
+
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+
     @staticmethod
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
