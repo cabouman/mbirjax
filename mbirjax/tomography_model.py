@@ -234,7 +234,13 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self._get_estimate_of_recon_std(sinogram)
+        # Get parameters
+        sharpness = self.get_params('sharpness')
+        recon_std = self._get_estimate_of_recon_std(sinogram)
+
+        # Compute sigma_x as a fraction of the typical recon value
+        # 0.2 is an empirically determined constant
+        sigma_x = 0.2 * (2 ** sharpness) * recon_std
         self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
 
     def auto_set_sigma_p(self, sinogram):
@@ -244,7 +250,13 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
+        # Get parameters
+        sharpness = self.get_params('sharpness')
+        recon_std = self._get_estimate_of_recon_std(sinogram)
+
+        # Compute sigma_x as a fraction of the typical recon value
+        # 0.2 is an empirically determined constant
+        sigma_p = 0.2 * (2 ** sharpness) * recon_std
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
@@ -486,20 +498,23 @@ class TomographyModel:
         """
         # Get parameters
         delta_det_channel = self.get_params('delta_det_channel')
-        sharpness = self.get_params('sharpness')
+        delta_voxel = self.get_params('delta_voxel')
+        recon_shape = self.get_params('recon_shape')
         magnification = self.get_magnification()
         num_det_channels = sinogram.shape[-1]
 
-        # Compute indicator function for sinogram support
+        # Compute a typical sinogram value
         sino_indicator = self._get_sino_indicator(sinogram)
+        typical_sinogram_value = jnp.average(sinogram, weights=sino_indicator)
+
+        # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
+        # Compute a typical projection path length
+        typical_path_length = (2*recon_shape[0] * recon_shape[1])/(recon_shape[0] + recon_shape[1])*delta_voxel
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
-        typical_img_value = np.average(sinogram, weights=sino_indicator) / (
-                num_det_channels * delta_det_channel / magnification)
+        recon_std = typical_sinogram_value / typical_path_length
 
-        # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2 ** sharpness) * typical_img_value
-        return sigma_prior
+        return recon_std
 
     def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
         """
