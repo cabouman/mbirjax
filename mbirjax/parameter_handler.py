@@ -26,7 +26,8 @@ class ParameterHandler():
             print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
 
-    def convert_arrays_to_strings(self, cur_params):
+    @staticmethod
+    def convert_arrays_to_strings(cur_params):
         """
         Replaces any jax or numpy arrays in cur_params with a flattened string representation and the array shape.
         Args:
@@ -85,7 +86,7 @@ class ParameterHandler():
         Returns:
             Nothing but creates or overwrites the specified file.
         """
-        output_params = self.convert_arrays_to_strings(self.params.copy())
+        output_params = ParameterHandler.convert_arrays_to_strings(self.params.copy())
 
         # Determine file type
         if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
@@ -101,6 +102,7 @@ class ParameterHandler():
     def load_param_dict(filename, values_only=True):
         """
         Load parameter dictionary from yaml file.
+
         Args:
             filename (str): Path to load to store the parameter dictionary.  Must end in .yml or .yaml
             values_only (bool):  If True, then extract and return the values of each entry only.

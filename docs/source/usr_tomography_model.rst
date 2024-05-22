@@ -30,7 +30,14 @@ Recon and Projection
 .. automethod:: mbirjax.TomographyModel.back_project
    :no-index:
 
+Saving and Loading
+------------------
 
+.. automethod:: mbirjax.TomographyModel.to_file
+   :no-index:
+
+.. automethod:: mbirjax.TomographyModel.from_file
+   :no-index:
 
 Parameter Handling
 ------------------
@@ -44,11 +51,6 @@ Parameter Handling
 .. automethod:: mbirjax.ParameterHandler.print_params
    :no-index:
 
-.. automethod:: mbirjax.ParameterHandler.save_params
-   :no-index:
-
-.. automethod:: mbirjax.ParameterHandler.load_params
-   :no-index:
 
 Data Generation
 ---------------
