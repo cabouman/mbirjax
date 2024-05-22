@@ -263,3 +263,7 @@ class ParameterHandler():
             error_message = "sinogram_shape must be (views, rows, channels). \n"
             error_message += "Got {} for sinogram shape.".format(sinogram_shape)
             raise ValueError(error_message)
+
+        geometry_type = self.get_params('geometry_type')
+        if geometry_type != str(type(self)):
+            raise ValueError('Parameters are associated with {}, but the current model is {}'.format(geometry_type, str(type(self))))

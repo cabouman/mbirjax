@@ -47,7 +47,7 @@ class TomographyModel(ParameterHandler):
     @classmethod
     def from_file(cls, filename):
         """
-        Construct a Tomography from parameters saved using to_file()
+        Construct a TomographyModel (or a subclass) from parameters saved using to_file()
 
         Args:
             filename (str): Name of the file containing parameters to load.

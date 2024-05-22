@@ -36,7 +36,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # conebeam_model = mbirjax.ConeBeamModel.from_file('params.yaml')
+    # conebeam_model = mbirjax.ConeBeamModel.from_file('params_conebeam.yaml')
     conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, source_iso_distance)
     # conebeam_model.to_file('params_conebeam.yaml')
 
