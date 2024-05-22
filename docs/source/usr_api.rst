@@ -14,7 +14,6 @@ The first step is to create an instance with a specific geometry. This is done b
    mbirjax.ParallelBeamModel
    mbirjax.ConeBeamModel
 
-
 Projection and Reconstruction
 -----------------------------
 
@@ -30,6 +29,17 @@ Detailed documentation for each geometry class is provided in :ref:`ParallelBeam
    mbirjax.TomographyModel.gen_weights
    mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
+Saving and Loading
+------------------
+
+Saving and loading are implemented in :ref:`TomographyModelDocs`, with methods overridden in geometry-specific models
+as needed.
+
+.. autosummary::
+
+   mbirjax.TomographyModel.to_file
+   mbirjax.TomographyModel.from_file
+
 Parameter Handling
 ------------------
 
@@ -40,8 +50,7 @@ Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the fo
    mbirjax.ParameterHandler.set_params
    mbirjax.ParameterHandler.get_params
    mbirjax.ParameterHandler.print_params
-   mbirjax.ParameterHandler.save_params
-   mbirjax.ParameterHandler.load_params
+
 
 .. automodule:: mbirjax
    :no-index:
