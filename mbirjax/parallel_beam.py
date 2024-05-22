@@ -96,8 +96,8 @@ class ParallelBeamModel(TomographyModel):
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
-        p = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
-        geometry_params.append(p)
+        psf_radius = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        geometry_params.append(psf_radius)
 
         return geometry_params
 
@@ -219,7 +219,6 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this single view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            p (int, optional, default=1):  # This is the assumed number of channels per side
 
         Returns:
             Aij_value (num indices, 2p+1), Aji_channel (num indices, 2p+1)
@@ -229,7 +228,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, det_channel_offset, delta_voxel, p = geometry_params
+        delta_det_channel, det_channel_offset, delta_voxel, psf_radius = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         num_recon_rows, num_recon_cols = projector_params[1][:2]
@@ -270,7 +269,7 @@ class ParallelBeamModel(TomographyModel):
         # Compute channel indices for 2p+1 adjacent channels at each view angle
         # Should be num_indices x 2p+1
         # Aij_channel = jnp.concatenate([Aij_channel - 1, Aij_channel, Aij_channel + 1], axis=-1)
-        Aij_channel = jnp.concatenate([Aij_channel + j for j in range(-p, p+1)], axis=-1)
+        Aij_channel = jnp.concatenate([Aij_channel + j for j in range(-psf_radius, psf_radius+1)], axis=-1)
 
         # Compute the distance of each channel from the projected center of the voxel
         delta = jnp.abs(

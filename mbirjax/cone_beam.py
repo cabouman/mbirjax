@@ -97,8 +97,8 @@ class ConeBeamModel(TomographyModel):
              'source_detector_dist', 'delta_voxel', 'recon_slice_offset'])
         geometry_params.append(self.get_magnification())
 
-        p = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
-        geometry_params.append(p)
+        psf_radius = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        geometry_params.append(psf_radius)
 
         return geometry_params
 
@@ -186,7 +186,6 @@ class ConeBeamModel(TomographyModel):
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            p:
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -195,7 +194,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -235,7 +234,7 @@ class ConeBeamModel(TomographyModel):
         # Computed values needed to finish the forward projection:
         # n_p_center, n_p, W_p_c, cos_alpha_p_xy
         def project_slice(sinogram_view_row, voxel_values_slice):
-            for n_offset in jnp.arange(start=-p, stop=p+1):
+            for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
                 n = n_p_center + n_offset
                 abs_delta_p_c_n = jnp.abs(n_p - n)
                 L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
@@ -260,7 +259,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -295,7 +294,7 @@ class ConeBeamModel(TomographyModel):
 
         # Computed values needed to finish the forward projection:
         # m_p_center, m_p, W_p_r, cos_alpha_p_z
-        for m_offset in jnp.arange(start=-p, stop=p+1):
+        for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
             m = m_p_center + m_offset
             abs_delta_p_r_m = jnp.abs(m_p - m)
             L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
@@ -348,7 +347,6 @@ class ConeBeamModel(TomographyModel):
             angle:
             projector_params:
             coeff_power:
-            p:
 
         Returns:
 
@@ -357,7 +355,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -399,7 +397,7 @@ class ConeBeamModel(TomographyModel):
         # Computed values needed to finish the back projection:
         # n_p_center, n_p, W_p_c, cos_alpha_p_xy
         def project_slice(det_voxel_row, sinogram_view_row):
-            for n_offset in jnp.arange(start=-p, stop=p+1):
+            for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
                 n = n_p_center + n_offset
                 abs_delta_p_c_n = jnp.abs(n_p - n)
                 L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
@@ -417,7 +415,7 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def backward_vertical_fan_pixel_batch_to_one_view(det_voxel_cylinder, pixel_indices, single_view_params,
-                                                      projector_params, p=1, coeff_power=1):
+                                                      projector_params, coeff_power=1):
         pixel_map = jax.vmap(ConeBeamModel.back_project_vertical_fan_beam_one_pixel_one_view,
                              in_axes=(0, 0, None, None, None))
         new_pixels = pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params, coeff_power)
@@ -437,7 +435,6 @@ class ConeBeamModel(TomographyModel):
             pixel_index:
             angle:
             projector_params:
-            p:
 
         Returns:
 
@@ -446,7 +443,7 @@ class ConeBeamModel(TomographyModel):
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
-         delta_voxel, recon_slice_offset, magnification, p) = geometry_params
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         recon_shape = projector_params[1]
@@ -481,7 +478,7 @@ class ConeBeamModel(TomographyModel):
 
         # Computed values needed to finish the back projection:
         # m_p_center, m_p, W_p_r, cos_alpha_p_z
-        for m_offset in jnp.arange(start=-p, stop=p+1):
+        for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
             m = m_p_center + m_offset
             abs_delta_p_r_m = jnp.abs(m_p - m)
             L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
