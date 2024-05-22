@@ -36,8 +36,11 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
+    # conebeam_model = mbirjax.ConeBeamModel.from_file('params.yaml')
     conebeam_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_distance, source_iso_distance)
-    conebeam_model.set_params(delta_voxel=delta_voxel)
+    # conebeam_model.to_file('params_conebeam.yaml')
+
+    # conebeam_model.set_params(delta_voxel=delta_voxel)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')

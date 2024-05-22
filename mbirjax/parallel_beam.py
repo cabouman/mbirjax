@@ -3,7 +3,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 from functools import partial
-from mbirjax import TomographyModel
+from mbirjax import TomographyModel, ParameterHandler
 
 
 class ParallelBeamModel(TomographyModel):
@@ -51,6 +51,23 @@ class ParallelBeamModel(TomographyModel):
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
         super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
+
+    @classmethod
+    def from_file(cls, filename):
+        """
+        Construct a ConeBeamModel from parameters saved using save_params()
+
+        Args:
+            filename (str): Name of the file containing parameters to load.
+
+        Returns:
+            ConeBeamModel with the specified parameters.
+        """
+        # Load the parameters and convert to use the ConeBeamModel keywords.
+        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        angles = params['view_params_array']
+        del params['view_params_array']
+        return cls(angles=angles, **params)
 
     def get_magnification(self):
         """

@@ -40,8 +40,36 @@ class TomographyModel(ParameterHandler):
         if recon_shape is None:
             self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
+        self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
         self.create_projectors()
+
+    @classmethod
+    def from_file(cls, filename):
+        """
+        Construct a Tomography from parameters saved using to_file()
+
+        Args:
+            filename (str): Name of the file containing parameters to load.
+
+        Returns:
+            ConeBeamModel with the specified parameters.
+        """
+        # Load the parameters and convert to use the ConeBeamModel keywords.
+        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        return cls(**params)
+
+    def to_file(self, filename):
+        """
+        Save parameters to yaml file.
+
+        Args:
+            filename (str): Path to file to store the parameter dictionary.  Must end in .yml or .yaml
+
+        Returns:
+            Nothing but creates or overwrites the specified file.
+        """
+        self.save_params(filename)
 
     def create_projectors(self):
         """

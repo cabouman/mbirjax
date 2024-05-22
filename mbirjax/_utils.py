@@ -1,10 +1,14 @@
 import types
 import copy
 
-# The order and content of these dictionaries must match the signatures of the corresponding tests below
+FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
+
+# The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
 _forward_model_defaults_dict = {
 
+    'geometry_type': {'val': None,  'recompile_flag': False},  # The geometry type should never change during a recon.
+    'file_format': {'val': FILE_FORMAT_NUMBER, 'recompile_flag': False},
     'sinogram_shape': {'val': None, 'recompile_flag': True},
     'delta_det_channel': {'val': 1.0, 'recompile_flag': True},
     'delta_det_row': {'val': 1.0, 'recompile_flag': True},
@@ -36,8 +40,8 @@ _reconstruction_defaults_dict = {
     'view_batch_size': {'val': 32, 'recompile_flag': True}
 }
 
-headings = ['Geometry params', 'Recon params', 'Init params', 'Noise params', 'QGGMRF params', 'Sys params',
-            'Misc params']
+# These headings should match the dictionaries
+headings = ['Forward model parameters', 'Recon parameters', 'Reconstruction parameters']
 
 dicts = [_forward_model_defaults_dict,
          _recon_model_defaults_dict,
