@@ -87,7 +87,7 @@ class ConeBeamModel(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Function to get a list of the primary geometry parameters for projection.
+        Function to get a list of the primary geometry parameters for cone beam projection.
 
         Returns:
             List of required geometry parameters.
@@ -97,13 +97,14 @@ class ConeBeamModel(TomographyModel):
              'source_detector_dist', 'delta_voxel', 'recon_slice_offset'])
         geometry_params.append(self.get_magnification())
 
+        # Append psf_radius to list of geometry params
         psf_radius = self.get_psf_radius()
         geometry_params.append(psf_radius)
 
         return geometry_params
 
     def get_psf_radius(self):
-        """Computes the integer radius of the PSF kernel.
+        """Computes the integer radius of the PSF kernel for cone beam projection.
         """
         delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])

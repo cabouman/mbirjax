@@ -88,18 +88,28 @@ class ParallelBeamModel(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Function to get a list of the primary geometry parameters for projection.
+        Function to get a list of the primary geometry parameters for for parallel beam projection.
 
         Returns:
-            List of delta_det_channel, det_channel_offset, delta_voxel,
-            num_recon_rows, num_recon_cols, num_recon_slices
+            List of required geometry parameters.
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
-        psf_radius = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        # Append psf_radius to list of geometry params
+        psf_radius = self.get_psf_radius()
         geometry_params.append(psf_radius)
 
         return geometry_params
+
+    def get_psf_radius(self):
+        """Computes the integer radius of the PSF kernel for parallel beam projection.
+        """
+        delta_det_channel, delta_voxel = self.get_params(['delta_det_channel', 'delta_voxel'])
+
+        # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
+        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel/delta_det_channel)/2))
+
+        return psf_radius
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
@@ -223,9 +233,6 @@ class ParallelBeamModel(TomographyModel):
         Returns:
             Aij_value (num indices, 2p+1), Aji_channel (num indices, 2p+1)
         """
-        warnings.warn('Compiling for indices length = {}'.format(pixel_indices.shape))
-        warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
-
         # Get all the geometry parameters
         geometry_params = projector_params[2]
         delta_det_channel, det_channel_offset, delta_voxel, psf_radius = geometry_params

@@ -28,10 +28,10 @@ if __name__ == "__main__":
     cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Here are other things you might want to do
-    recon_shape = cone_model.get_params('recon_shape')
-    recon_shape = tuple(dim // 4 for dim in recon_shape)
-    cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
-    cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
+    #recon_shape = cone_model.get_params('recon_shape')
+    #recon_shape = tuple(dim // 4 for dim in recon_shape)
+    #cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
+    #cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
     #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
@@ -42,6 +42,8 @@ if __name__ == "__main__":
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
+
+    # View sinogram
     pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
 
     # Generate weights array

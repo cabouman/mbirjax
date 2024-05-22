@@ -1,53 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
-
-
-def display_slices(phantom, sinogram, recon):
-    """
-    Displays slices of phantom, sinogram, and reconstructed image side by side for comparison.
-
-    This function iterates over each slice allowing the user to manually advance through slices by pressing Enter.
-
-    Parameters:
-        phantom (numpy array): The phantom in (row, column, slice) format.
-        sinogram (numpy array): The sinogram in (view, row, column) format.
-        recon (numpy array): The recon in (row, column, slice) format.
-    """
-    num_recon_slices = phantom.shape[2]
-    vmin = 0.0
-    vmax = phantom.max()
-    vsinomax = sinogram.max()
-
-    for slice_index in range(num_recon_slices):
-        fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
-        fig.suptitle('Demo of VCD reconstruction - Slice {}'.format(slice_index))
-
-        # Display original phantom slice
-        a0 = ax[0].imshow(phantom[:, :, slice_index], vmin=vmin, vmax=vmax, cmap='gray')
-        plt.colorbar(a0, ax=ax[0])
-        ax[0].set_title('Original Phantom')
-
-        # Display sinogram slice
-        a1 = ax[1].imshow(sinogram[:, slice_index, :], vmin=vmin, vmax=vsinomax, cmap='gray')
-        plt.colorbar(a1, ax=ax[1])
-        ax[1].set_title('Sinogram')
-
-        # Display reconstructed slice
-        a2 = ax[2].imshow(recon[:, :, slice_index], vmin=vmin, vmax=vmax, cmap='gray')
-        plt.colorbar(a2, ax=ax[2])
-        ax[2].set_title('VCD Reconstruction')
-
-        plt.show(block=False)
-        input("Press Enter to continue to the next slice or type 'exit' to quit: ").strip().lower()
-        plt.close(fig)
-        if input() == 'exit':
-            break
-
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, ax, fig, cur_fig, img
-
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):

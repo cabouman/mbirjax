@@ -25,10 +25,12 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Here are other things you might want to do
-    #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
-    #cone_model.set_params(delta_voxel=1.0)    # You can change the pixel pitch
-    #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
-    #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
+    #recon_shape = parallel_model.get_params('recon_shape')
+    #recon_shape = (recon_shape[0]//4, recon_shape[1]//4, recon_shape[2])
+    #parallel_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
+    #parallel_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
+    #parallel_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #parallel_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
@@ -37,6 +39,8 @@ if __name__ == "__main__":
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = parallel_model.forward_project(phantom)
+
+    # View sinogram
     pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
 
     # Generate weights array
@@ -44,7 +48,6 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    # cone_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()
@@ -62,6 +65,3 @@ if __name__ == "__main__":
 
     # Display results
     pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
-
-    # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon)
