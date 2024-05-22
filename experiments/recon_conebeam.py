@@ -40,9 +40,11 @@ if __name__ == "__main__":
     #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
+    print('Creating phantom')
     phantom = cone_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
+    print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
 
     # Generate weights array
@@ -57,6 +59,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
+    print('Starting recon')
     time0 = time.time()
     recon, fm_rmse = cone_model.recon(sinogram, weights=weights)
 

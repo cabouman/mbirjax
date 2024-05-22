@@ -47,7 +47,7 @@ class ConeBeamModel(TomographyModel):
         except ValueError as e:
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
-        magnification = source_detector_dist / source_iso_dist
+
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          recon_slice_offset=recon_slice_offset, det_rotation=det_rotation,

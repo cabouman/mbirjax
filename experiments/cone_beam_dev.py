@@ -19,7 +19,7 @@ if __name__ == "__main__":
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 200
+    num_det_rows = 20
     num_det_channels = 128
 
     source_detector_distance = 4 * num_det_channels

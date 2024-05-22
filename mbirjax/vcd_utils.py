@@ -93,6 +93,43 @@ def gen_pixel_partition(recon_shape, num_subsets):
     return jnp.array(indices)
 
 
+def gen_partition_sequence(partition_sequence, num_iterations):
+    """
+    Generates a sequence of voxel partitions of the specified length by extending the sequence
+    with the last element if necessary.
+    """
+    # Get sequence from params and convert it to a np array
+    partition_sequence = jnp.array(partition_sequence)
+
+    # Check if the sequence needs to be extended
+    current_length = partition_sequence.size
+    if num_iterations > current_length:
+        # Calculate the number of additional elements needed
+        extra_elements_needed = num_iterations - current_length
+        # Get the last element of the array
+        last_element = partition_sequence[-1]
+        # Create an array of the last element repeated the necessary number of times
+        extension_array = np.full(extra_elements_needed, last_element)
+        # Concatenate the original array with the extension array
+        extended_partition_sequence = np.concatenate((partition_sequence, extension_array))
+    else:
+        # If no extension is needed, slice the original array to the desired length
+        extended_partition_sequence = partition_sequence[:num_iterations]
+
+    return extended_partition_sequence
+
+
+def gen_full_indices(recon_shape):
+    """
+    Generates a full array of voxels in the region of reconstruction.
+    This is useful for computing forward projections.
+    """
+    partition = gen_pixel_partition(recon_shape, num_subsets=1)
+    full_indices = partition[0]
+
+    return full_indices
+
+
 def gen_indices_d2(recon_shape, block_width):
     """
     Generates an index array for a 2D reconstruction using a block size of block_width x block_width
