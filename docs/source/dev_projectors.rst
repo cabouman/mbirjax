@@ -1,8 +1,8 @@
 .. _ProjectorsDevDocs:
 
-=========================
-Projectors Developer Docs
-=========================
+==========
+Projectors
+==========
 
 The ``Projectors`` class uses the low-level projection functions
 implemented in a specific geometry in order to override

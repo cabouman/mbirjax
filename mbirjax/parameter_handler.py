@@ -1,6 +1,8 @@
 import jax.numpy as jnp
 import yaml
 import mbirjax._utils as utils
+import warnings
+
 
 class ParameterHandler():
     def __init__(self):
@@ -116,9 +118,12 @@ class ParameterHandler():
                     warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
                                   'It was previously disabled')
 
-        # Compare the two outputs
+        # Return a flag to signify recompiling
+        recompile_flag = False
         if recompile and not no_compile:
-            self.create_projectors()
+            recompile_flag = True
+
+        return recompile_flag
 
     def get_params(self, parameter_names):
         """

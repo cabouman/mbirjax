@@ -73,11 +73,15 @@ class TemplateModel(TomographyModel):
 
         return geometry_params
 
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+        """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
+          the number of channels from the sinogram"""
+        raise NotImplementedError('auto_set_recon_size must be implemented by each specific geometry model.')
+
     @staticmethod
     def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
         """
-        Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and various parameters.
-        This code uses the distance driven projector.
+        Calculate the backprojection value at a specified recon voxel cylinders given a sinogram view and various parameters.
 
         NOTE: This function must be able to be jit-compiled.
 

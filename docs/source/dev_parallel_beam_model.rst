@@ -1,8 +1,8 @@
 .. _ParallelBeamModelDevDocs:
 
-================================
-ParallelBeamModel Developer Docs
-================================
+=================
+ParallelBeamModel
+=================
 
 The ``ParallelBeamModel`` extends the functionalities provided by :class:`mbirjax.Tomography`.
 This class inherits all behaviors and attributes of the TomographyModel and implements projectors specific

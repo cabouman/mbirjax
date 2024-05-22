@@ -189,6 +189,22 @@ class TomographyModel(ParameterHandler):
         gc.collect()
         return hessian
 
+    def set_params(self, no_warning=False, no_compile=False, **kwargs):
+        """
+        Updates parameters using keyword arguments.
+        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
+
+        Args:
+            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
+            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
+            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+
+        Raises:
+            NameError: If any key provided in kwargs is not a recognized parameter.
+        """
+        recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
+        if recompile_flag:
+            self.create_projectors()
 
     def auto_set_regularization_params(self, sinogram, weights=1):
         """

@@ -38,9 +38,17 @@ Parameter Handling
 .. automethod:: mbirjax.TomographyModel.set_params
    :no-index:
 
-.. automethod:: mbirjax.TomographyModel.get_params
+.. automethod:: mbirjax.ParameterHandler.get_params
    :no-index:
 
+.. automethod:: mbirjax.ParameterHandler.print_params
+   :no-index:
+
+.. automethod:: mbirjax.ParameterHandler.save_params
+   :no-index:
+
+.. automethod:: mbirjax.ParameterHandler.load_params
+   :no-index:
 
 Data Generation
 ---------------
