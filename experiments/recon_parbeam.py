@@ -9,11 +9,6 @@ if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
-    # ##########################
-    # Test batch size feature
-    view_batch_size = 100
-    pixel_batch_size = 10000
-
     # Set parameters
     num_views = 256
     num_det_rows = 20
@@ -30,7 +25,6 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Here are other things you might want to do
-    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
     #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
     #cone_model.set_params(delta_voxel=1.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram

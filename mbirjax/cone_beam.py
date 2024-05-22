@@ -97,10 +97,30 @@ class ConeBeamModel(TomographyModel):
              'source_detector_dist', 'delta_voxel', 'recon_slice_offset'])
         geometry_params.append(self.get_magnification())
 
-        psf_radius = 1  # Maximum number of detector rows (or channels) on either side of the center detector hit by a voxel.
+        psf_radius = self.get_psf_radius()
         geometry_params.append(psf_radius)
 
         return geometry_params
+
+    def get_psf_radius(self):
+        """Computes the integer radius of the PSF kernel.
+        """
+        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
+        magnification = self.get_magnification()
+
+        # Compute minimum detector pitch
+        delta_det = jnp.minimum(delta_det_row, delta_det_channel)
+
+        # Compute maximum magnification
+        source_to_iso_dist = source_detector_dist/magnification
+        source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+        max_magnification = source_detector_dist/source_to_closest_pixel
+
+        # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
+        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel*max_magnification/delta_det))/2))
+
+        return psf_radius
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape cone beam reconstruction.
