@@ -9,15 +9,13 @@ if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
-    # ##########################
-    # Test batch size feature
-    view_batch_size = 100
-    pixel_batch_size = 10000
-
     # Set parameters
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
+    source_detector_dist = 4 * num_det_channels
+    source_iso_dist = source_detector_dist
+
     start_angle = -np.pi*(1/2)
     end_angle = np.pi*(1/2)
     sharpness = 0.0
@@ -27,35 +25,42 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Here are other things you might want to do
-    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
-    #cone_model.set_params(num_recon_rows=256//4)    # You can make the recon rectangular
-    #cone_model.set_params(delta_voxel=1.0)    # You can change the pixel pitch
+    #recon_shape = cone_model.get_params('recon_shape')
+    #recon_shape = tuple(dim // 4 for dim in recon_shape)
+    #cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
+    #cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
     #cone_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_modified_3d_sl_phantom()
+    print('Creating phantom')
+    phantom = cone_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
-    sinogram = parallel_model.forward_project(phantom)
+    print('Creating sinogram')
+    sinogram = cone_model.forward_project(phantom)
+
+    # View sinogram
+    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    parallel_model.set_params(sharpness=sharpness, verbose=1)
+    cone_model.set_params(sharpness=sharpness, verbose=1)
     # cone_model.set_params(positivity_flag=True)
 
     # Print out model parameters
-    parallel_model.print_params()
+    cone_model.print_params()
 
     # ##########################
     # Perform VCD reconstruction
+    print('Starting recon')
     time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
+    recon, fm_rmse = cone_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

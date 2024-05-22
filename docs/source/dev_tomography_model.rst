@@ -1,8 +1,8 @@
 .. _TomographyBeamModelDevDocs:
 
-==============================
-TomographyModel Developer Docs
-==============================
+===============
+TomographyModel
+===============
 
 The ``TomographyModel`` provides the basic interface for all specific geometries for tomographic projection
 and reconstruction.

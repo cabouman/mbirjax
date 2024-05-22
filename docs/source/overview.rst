@@ -30,19 +30,26 @@ Here are the reasons to use MBIRJAX:
     Supports proximal map interfaces, so it can be used with PnP deep neural net priors.
 
 
-We provide simple bash demo scripts located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__ that make it easy to get started.
+We provide simple demo scripts located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__ that make it easy to get started.
 We also have a bash install script at `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/dev_scripts>`__.
 Also, installing JAX is not too difficult on most platforms and is getting easier.
 
 
-**Geometry**
+**Geometries**
 
-Right now MBIRJAX supports *parallel-beam* imaging geometry as shown below, but more geometries are on the way.
+MBIRJAX supports the *parallel-beam* and *cone-beam* imaging geometries shown below.
+However, new geometries can be added by constructing a new class with the associated sparse forward and back projection code.
 
 .. list-table::
 
-    * - .. figure:: figs/geom-parallel.jpg
+    * - .. figure:: figs/geom-parallel.png
            :align: center
            :width: 75%
 
            Parallel-beam geometry
+
+      - .. figure:: figs/geom-cone-beam.png
+           :align: center
+           :width: 75%
+
+           Cone-beam geometry

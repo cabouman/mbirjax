@@ -3,7 +3,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 from functools import partial
-from mbirjax import TomographyModel
+from mbirjax import TomographyModel, ParameterHandler
 
 
 class ParallelBeamModel(TomographyModel):
@@ -52,9 +52,41 @@ class ParallelBeamModel(TomographyModel):
                              "same length.")
         super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
 
+    @classmethod
+    def from_file(cls, filename):
+        """
+        Construct a ConeBeamModel from parameters saved using save_params()
+
+        Args:
+            filename (str): Name of the file containing parameters to load.
+
+        Returns:
+            ConeBeamModel with the specified parameters.
+        """
+        # Load the parameters and convert to use the ConeBeamModel keywords.
+        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        angles = params['view_params_array']
+        del params['view_params_array']
+        return cls(angles=angles, **params)
+
+    def get_magnification(self):
+        """
+        Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
+        its projection on the detector.  For parallel beam, this is 1, but it may be parameter-dependent
+        for other geometries.
+
+        Returns:
+            (float): magnification
+        """
+        magnification = 1.0
+        return magnification
+    
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
+
+        Note:
+            Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
@@ -73,15 +105,63 @@ class ParallelBeamModel(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Function to get a list of the primary geometry parameters for projection.
+        Function to get a list of the primary geometry parameters for for parallel beam projection.
 
         Returns:
-            List of delta_det_channel, det_channel_offset, delta_voxel,
-            num_recon_rows, num_recon_cols, num_recon_slices
+            List of required geometry parameters.
         """
         geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
 
+        # Append psf_radius to list of geometry params
+        psf_radius = self.get_psf_radius()
+        geometry_params.append(psf_radius)
+
         return geometry_params
+
+    def get_psf_radius(self):
+        """Computes the integer radius of the PSF kernel for parallel beam projection.
+        """
+        delta_det_channel, delta_voxel = self.get_params(['delta_det_channel', 'delta_voxel'])
+
+        # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
+        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel/delta_det_channel)/2))
+
+        return psf_radius
+
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+        """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
+          the number of channels from the sinogram"""
+        delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
+        delta_voxel = self.get_params('delta_voxel')
+        num_det_rows, num_det_channels = sinogram_shape[1:3]
+        magnification = self.get_magnification()
+        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
+        num_recon_cols = num_recon_rows
+        num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+
+    @staticmethod
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+        """
+        Use vmap to do a backprojection from one view to multiple pixels (voxel cylinders).
+
+        Args:
+            sinogram_view (2D jax array): one view of the sinogram to be back projected
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            single_view_params: These are the view dependent parameters for the view being back projected.
+            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
+
+        Returns:
+            The voxel values for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
+
+        """
+        bp_vmap = jax.vmap(ParallelBeamModel.back_project_one_view_to_pixel, in_axes=(None, 0, None, None, None))
+        bp = bp_vmap(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
+        return bp
 
     @staticmethod
     def back_project_one_view_to_pixel(sinogram_view, pixel_index, angle, projector_params, coeff_power=1):
@@ -116,7 +196,7 @@ class ParallelBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def forward_project_pixels_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Forward project a set of voxel cylinders determined by indices into the flattened array of size 
         num_rows x num_cols.
@@ -155,8 +235,8 @@ class ParallelBeamModel(TomographyModel):
 
 
     @staticmethod
-    @partial(jax.jit, static_argnums=3)
-    def compute_sparse_A_single_view(pixel_indices, angle, projector_params, p=1):
+    @partial(jax.jit, static_argnames='projector_params')
+    def compute_sparse_A_single_view(pixel_indices, angle, projector_params):
         """
         Calculate the sparse system matrix for a subset of voxels and a single view.
         The function returns a sparse matrix specified by the matrix values and associated detector column index.
@@ -166,17 +246,13 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this single view
             projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            p (int, optional, default=1):  # This is the assumed number of channels per side
 
         Returns:
             Aij_value (num indices, 2p+1), Aji_channel (num indices, 2p+1)
         """
-        warnings.warn('Compiling for indices length = {}'.format(pixel_indices.shape))
-        warnings.warn('Using hard-coded detectors per side.  These should be set dynamically based on the geometry.')
-
         # Get all the geometry parameters
         geometry_params = projector_params[2]
-        delta_det_channel, det_channel_offset, delta_voxel = geometry_params
+        delta_det_channel, det_channel_offset, delta_voxel, psf_radius = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
         num_recon_rows, num_recon_cols = projector_params[1][:2]
@@ -217,7 +293,7 @@ class ParallelBeamModel(TomographyModel):
         # Compute channel indices for 2p+1 adjacent channels at each view angle
         # Should be num_indices x 2p+1
         # Aij_channel = jnp.concatenate([Aij_channel - 1, Aij_channel, Aij_channel + 1], axis=-1)
-        Aij_channel = jnp.concatenate([Aij_channel + j for j in range(-p, p+1)], axis=-1)
+        Aij_channel = jnp.concatenate([Aij_channel + j for j in range(-psf_radius, psf_radius+1)], axis=-1)
 
         # Compute the distance of each channel from the projected center of the voxel
         delta = jnp.abs(

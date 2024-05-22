@@ -13,8 +13,8 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 1024
-    pixel_batch_size = 10000
+    view_batch_size = 32
+    pixel_batch_size = 2048
 
     # Initialize sinogram
     num_views = 128
@@ -30,7 +30,9 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
+    # parallel_model = mbirjax.ParallelBeamModel.from_file('params_parallel.yaml')
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')

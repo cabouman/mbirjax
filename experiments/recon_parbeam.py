@@ -7,7 +7,7 @@ import mbirjax.parallel_beam
 
 if __name__ == "__main__":
     """
-    This is a script to develop, debug, and tune the parallel beam mbirjax code.
+    This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
     num_views = 256
@@ -23,6 +23,14 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+
+    # Here are other things you might want to do
+    #recon_shape = parallel_model.get_params('recon_shape')
+    #recon_shape = (recon_shape[0]//4, recon_shape[1]//4, recon_shape[2])
+    #parallel_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
+    #parallel_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
+    #parallel_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #parallel_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
@@ -46,6 +54,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
+    print('Starting recon')
     time0 = time.time()
     recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
 
@@ -56,4 +65,3 @@ if __name__ == "__main__":
 
     # Display results
     pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
-

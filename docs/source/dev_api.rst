@@ -23,7 +23,9 @@ Documentation for all methods is available at the following links:
    :caption: Classes
 
    dev_tomography_model
-   dev_parallel_beam_model
    dev_projectors
+   dev_parameter_handler
+   dev_parallel_beam_model
+   dev_cone_beam_model
 
 
