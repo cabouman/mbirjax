@@ -12,7 +12,7 @@ MBIRJAX: High-performance tomographic reconstruction
 
 
 * Vectorized Coordinate Descent algorithm for fast, robust convergence.
-* Automatic selection of MBIR parameters for good initial images, with fine-tuning through intuitive meta-parameters.
+* Automatic parameter selection, with fine-tuning using intuitive meta-parameters.
 * Support for Plug-and-Play prior models that can dramatically improve image quality [] [].
 * Modular, extensible, easy-to-use, object-oriented Python interface.
 * Fast, portable, seamless use on CPUs or GPUs through the use of JAX_.
