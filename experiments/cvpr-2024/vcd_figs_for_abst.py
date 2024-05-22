@@ -37,7 +37,6 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_iters = 10
     num_views = 256
     num_det_rows = 10
     num_det_channels = 256
@@ -53,7 +52,7 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_sl_phantom()
+    phantom = parallel_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
@@ -63,7 +62,8 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    #parallel_model.set_params(positivity_flag=True)
+    parallel_model.set_params(partition_sequence=[0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3])
+    granularity = np.array(parallel_model.get_params('granularity'))
 
     # Print out model parameters
     parallel_model.print_params()
@@ -71,22 +71,20 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     recon_vcd, fm_rmse_vcd = parallel_model.recon(sinogram, weights=weights)
-    granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
+    default_partition_sequence = parallel_model.get_params('partition_sequence')
+    partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=13)
     granularity_sequence_vcd = granularity[partition_sequence]
 
     # Perform GD reconstruction
     parallel_model.set_params(partition_sequence=[0,])
     recon_gd, fm_rmse_gd = parallel_model.recon(sinogram, weights=weights)
-    granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
+    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
     granularity_sequence_gd = granularity[partition_sequence]
 
     # Perform CD reconstruction
     parallel_model.set_params(partition_sequence=[3,])
     recon_cd, fm_rmse_cd = parallel_model.recon(sinogram, weights=weights)
-    granularity = np.array(parallel_model.get_params('granularity'))
-    partition_sequence = parallel_model.gen_partition_sequence(num_iterations=13)
+    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################
 
@@ -101,10 +99,9 @@ if __name__ == "__main__":
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
     pu.plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 
-
     # Generate sequence of partition images for Figure 1
-    parallel_model.set_params(num_recon_rows=32, num_recon_cols=32, granularity=[1, 2, 4, 8, 16])
-    partitions_fig = parallel_model.gen_set_of_voxel_partitions()
+    recon_shape = (32, 32, 1)
+    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
-    pu.debug_plot_partitions(partitions=partitions_fig, num_recon_rows=32, num_recon_cols=32)
+    pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)

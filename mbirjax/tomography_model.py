@@ -1,15 +1,14 @@
 import types
 import numpy as np
-import yaml
 import warnings
 import gc
 import jax
 import jax.numpy as jnp
 import mbirjax
-import mbirjax._utils as utils
+from mbirjax import ParameterHandler
 
 
-class TomographyModel:
+class TomographyModel(ParameterHandler):
     """
     Represents a general model for tomographic reconstruction using MBIRJAX. This class encapsulates the parameters and
     methods for the forward and back projection processes required in tomographic imaging.
@@ -19,36 +18,115 @@ class TomographyModel:
 
     Args:
         sinogram_shape (tuple): The shape of the sinogram array expected (num_views, num_det_rows, num_det_channels).
+        recon_shape (tuple): The shape of the reconstruction array (num_rows, num_cols, num_slices).
         **kwargs (dict): Arbitrary keyword arguments for setting model parameters dynamically.
+            See the full list of parameters and their descriptions at :ref:`detailed-parameter-docs`.
 
     Sets up the reconstruction size and parameters.
     """
 
-    def __init__(self, sinogram_shape, **kwargs):
+    def __init__(self, sinogram_shape, recon_shape=None, **kwargs):
 
-        self.params = utils.get_default_params()
-        self.add_new_params(**kwargs)
+        super().__init__()
         self._sparse_forward_project, self._sparse_back_project = None, None  # These are callable functions compiled in set_params
         self._compute_hessian_diagonal = None
-        self.set_params(no_compile=True, sinogram_shape=sinogram_shape, **kwargs)
-        self.auto_set_recon_size(sinogram_shape,
-                                 no_compile=True)  # Determine auto image size before processing user parameters
-        self.compile_projectors()
+        self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, recon_shape=recon_shape, **kwargs)
+        delta_voxel = self.get_params('delta_voxel')
+        if delta_voxel is None:
+            magnification = self.get_magnification()
+            delta_det_channel = self.get_params('delta_det_channel')
+            delta_voxel = delta_det_channel / magnification
+            self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
+        if recon_shape is None:
+            self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
-    def compile_projectors(self):
-        projector_functions = mbirjax.Projectors(self, self.forward_project_voxels_one_view,
-                                                 self.back_project_one_view_to_voxel)
-        self._sparse_forward_project = projector_functions._sparse_forward_project
-        self._sparse_back_project = projector_functions._sparse_back_project
-        self._compute_hessian_diagonal = projector_functions._compute_hessian_diagonal
+        self.set_params(geometry_type=str(type(self)))
+        self.verify_valid_params()
+        self.create_projectors()
+
+    @classmethod
+    def from_file(cls, filename):
+        """
+        Construct a TomographyModel (or a subclass) from parameters saved using to_file()
+
+        Args:
+            filename (str): Name of the file containing parameters to load.
+
+        Returns:
+            ConeBeamModel with the specified parameters.
+        """
+        # Load the parameters and convert to use the ConeBeamModel keywords.
+        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        return cls(**params)
+
+    def to_file(self, filename):
+        """
+        Save parameters to yaml file.
+
+        Args:
+            filename (str): Path to file to store the parameter dictionary.  Must end in .yml or .yaml
+
+        Returns:
+            Nothing but creates or overwrites the specified file.
+        """
+        self.save_params(filename)
+
+    def create_projectors(self):
+        """
+        Creates an instance of the Projectors class and set the local instance variables needed for forward
+        and back projection and compute_hessian_diagonal.  This method requires that the current geometry has
+        implementations of :meth:`forward_project_pixel_batch_to_one_view` and :meth:`back_project_one_view_to_pixel_batch`
+
+        Returns:
+            Nothing, but creates jit-compiled functions.
+        """
+        projector_functions = mbirjax.Projectors(self, self.forward_project_pixel_batch_to_one_view,
+                                                 self.back_project_one_view_to_pixel_batch)
+        self._sparse_forward_project = projector_functions.sparse_forward_project
+        self._sparse_back_project = projector_functions.sparse_back_project
+        self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
 
     @staticmethod
-    def forward_project_voxels_one_view(voxel_values, voxel_indices, view_params, geometry_params, sinogram_shape):
-        warnings.warn('Back projector not implemented for TomographyModel.')
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+        """
+        Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_det_rows, num_det_channels)
+        """
+        warnings.warn('Forward projector not implemented for TomographyModel.')
         return None
 
     @staticmethod
-    def back_project_one_view_to_voxel(sinogram_view, voxel_index, view_params, geometry_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+        """
+        Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            sinogram_view (jax array): one view of the sinogram to be back projected
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 for compute_hessian_diagonal.
+
+        Returns:
+            The value of the voxel for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
+            the input sinogram view.
+        """
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
@@ -56,12 +134,17 @@ class TomographyModel:
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
+        Note:
+            This should generally not be used in an iterative loop since it generates
+            a full set of indices on every call.
+
         Args:
             recon (jnp array): The 3D reconstruction array.
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        full_indices = self.gen_full_indices()
+        recon_shape = self.get_params('recon_shape')
+        full_indices = mbirjax.gen_full_indices(recon_shape)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         sinogram = self.sparse_forward_project(voxel_values, full_indices)
 
@@ -71,25 +154,20 @@ class TomographyModel:
         """
         Perform a full back projection at all voxels in the field-of-view.
 
+        Note:
+            This should generally not be used in an iterative loop since it generates
+            a full set of indices on every call.
+
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        full_indices = self.gen_full_indices()
-        recon_at_indices = self.sparse_back_project(sinogram, full_indices)
+        recon_shape = self.get_params('recon_shape')
+        full_indices = mbirjax.gen_full_indices(recon_shape)
+        recon = self.sparse_back_project(sinogram, full_indices)
 
-        # Get shape of recon
-        num_recon_rows, num_recon_cols, num_recon_slices = self.get_params(
-            ['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-
-        # Allocate recon of correct shape
-        recon = jnp.zeros((num_recon_rows * num_recon_cols, num_recon_slices))
-
-        # Add back projections to allocated recon
-        recon = recon.at[full_indices].add(recon_at_indices)
-
-        return recon
+        return self.reshape_recon(recon)
 
     def sparse_forward_project(self, voxel_values, indices):
         """
@@ -98,7 +176,7 @@ class TomographyModel:
         all voxels with those indices across all the slices.
 
         Args:
-            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(voxel_indices), num_recon_slices).
+            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
 
         Returns:
@@ -121,9 +199,9 @@ class TomographyModel:
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon = self._sparse_back_project(sinogram, indices).block_until_ready()
+        recon_at_indices = self._sparse_back_project(sinogram, indices).block_until_ready()
         gc.collect()
-        return recon
+        return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None):
         """
@@ -138,6 +216,23 @@ class TomographyModel:
         hessian = self._compute_hessian_diagonal(weights).block_until_ready()
         gc.collect()
         return hessian
+
+    def set_params(self, no_warning=False, no_compile=False, **kwargs):
+        """
+        Updates parameters using keyword arguments.
+        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
+
+        Args:
+            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
+            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
+            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+
+        Raises:
+            NameError: If any key provided in kwargs is not a recognized parameter.
+        """
+        recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
+        if recompile_flag:
+            self.create_projectors()
 
     def auto_set_regularization_params(self, sinogram, weights=1):
         """
@@ -164,14 +259,15 @@ class TomographyModel:
         """
 
         # Get parameters
-        snr_db, magnification = self.get_params(['snr_db', 'magnification'])
-        delta_pixel_recon, delta_det_channel = self.get_params(['delta_pixel_recon', 'delta_det_channel'])
+        snr_db = self.get_params('snr_db')
+        magnification = self.get_magnification()
+        delta_voxel, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_channel'])
 
         # Compute indicator function for sinogram support
         sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
-        signal_rms = np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
+        signal_rms = jnp.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
 
         # Convert snr to relative noise standard deviation
         rel_noise_std = 10 ** (-snr_db / 20)
@@ -179,7 +275,7 @@ class TomographyModel:
         default_pixel_pitch = delta_det_channel / magnification
 
         # Compute the recon pixel pitch relative to the default.
-        pixel_pitch_relative_to_default = delta_pixel_recon / default_pixel_pitch
+        pixel_pitch_relative_to_default = delta_voxel / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
         sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
@@ -192,7 +288,13 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_x = 0.2 * self._get_estimate_of_recon_std(sinogram)
+        # Get parameters
+        sharpness = self.get_params('sharpness')
+        recon_std = self._get_estimate_of_recon_std(sinogram)
+
+        # Compute sigma_x as a fraction of the typical recon value
+        # 0.2 is an empirically determined constant
+        sigma_x = 0.2 * (2 ** sharpness) * recon_std
         self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
 
     def auto_set_sigma_p(self, sinogram):
@@ -202,228 +304,39 @@ class TomographyModel:
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
         """
-        sigma_p = 0.2 * self._get_estimate_of_recon_std(sinogram)
+        # Get parameters
+        sharpness = self.get_params('sharpness')
+        recon_std = self._get_estimate_of_recon_std(sinogram)
+
+        # Compute sigma_x as a fraction of the typical recon value
+        # 0.2 is an empirically determined constant
+        sigma_p = 0.2 * (2 ** sharpness) * recon_std
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
-    def auto_set_recon_size(self, sinogram_shape, magnification=1.0, no_compile=True):
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
-        delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        delta_pixel_recon = self.get_params('delta_pixel_recon')
-        num_det_rows, num_det_channels = sinogram_shape[1:3]
-        num_recon_rows = int(np.ceil(num_det_channels * delta_det_channel / (delta_pixel_recon * magnification)))
-        num_recon_cols = num_recon_rows
-        num_recon_slices = int(np.round(num_det_rows * ((delta_det_row / delta_pixel_recon) / magnification)))
-
-        self.set_params(no_compile=no_compile, num_recon_rows=num_recon_rows, num_recon_cols=num_recon_cols,
-                        num_recon_slices=num_recon_slices)
-
-    def print_params(self):
-        """
-        Prints out the parameters of the model.
-        """
-        verbose = self.get_params('verbose')
-        print("----")
-        for key, entry in self.params.items():
-            if verbose < 2 and key == 'view_params_array':
-                continue
-            param_val = entry.get('val')
-            recompile_flag = entry.get('recompile_flag')
-            print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
-        print("----")
-
-    def save_params(self, fname='param_dict.npy', binaries=False):
-        """Save parameter dict to numpy/pickle file/yaml file"""
-        output_params = self.params.copy()
-        if binaries is False:
-            # Wipe the binaries before saving.
-            output_params['weights'] = None
-            output_params['prox_recon'] = None
-            output_params['init_proj'] = None
-            if not np.isscalar(output_params['init_recon']):
-                output_params['init_recon'] = None
-        # Determine file type
-        if fname[-4:] == '.npy':
-            np.save(fname, output_params)
-        elif fname[-4:] == '.yml' or fname[-5:] == '.yaml':
-            # Work through all the parameters by group, with a heading for each group
-            with open(fname, 'w') as file:
-                for heading, dic in zip(utils.headings, utils.dicts):
-                    file.write('# ' + heading + '\n')
-                    for key in dic.keys():
-                        val = self.params[key]
-                        file.write(key + ': ' + str(val) + '\n')
-        else:
-            raise ValueError('Invalid file type for saving parameters: ' + fname)
-
-    def load_params(self, fname):
-        """Load parameter dict from numpy/pickle file/yaml file, and merge into instance params"""
-        # Determine file type
-        if fname[-4:] == '.npy':
-            read_dict = np.load(fname, allow_pickle=True).item()
-            self.params = utils.get_default_params()
-            self.set_params(**read_dict)
-        elif fname[-4:] == '.yml' or fname[-5:] == '.yaml':
-            with open(fname) as file:
-                try:
-                    params = yaml.safe_load(file)
-                    self.params = utils.get_default_params()
-                    self.set_params(**params)
-                except yaml.YAMLError as exc:
-                    print(exc)
-
-    def set_params(self, no_warning=False, no_compile=False, **kwargs):
-        """
-        Updates parameters using keyword arguments.
-        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
-
-        Args:
-            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
-            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
-
-        Raises:
-            NameError: If any key provided in kwargs is not a recognized parameter.
-        """
-        # Get initial geometry parameters
-        recompile = False
-        regularization_parameter_change = False
-        meta_parameter_change = False
-
-        # Set all the given parameters
-        for key, val in kwargs.items():
-            if key in self.params.keys():
-                recompile_flag = self.params[key]['recompile_flag']
-                new_entry = {'val': val, 'recompile_flag': recompile_flag}
-                self.params[key] = new_entry
-            else:
-                raise NameError('"{}" not a recognized argument'.format(key))
-
-            # Handle special cases
-            if recompile_flag:
-                recompile = True
-            elif key in ["sigma_y", "sigma_x", "sigma_p"]:
-                regularization_parameter_change = True
-            elif key in ["sharpness", "snr_db"]:
-                meta_parameter_change = True
-
-        # Check for valid parameters
-        self.verify_valid_params()
-
-        # Handle case if any regularization parameter changed
-        if regularization_parameter_change:
-            self.set_params(auto_regularize_flag=False)
-            if not no_warning:
-                warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
-                              'This is an advanced feature that will disable auto-regularization.')
-
-        # Handle case if any meta regularization parameter changed
-        if meta_parameter_change:
-            if self.get_params('auto_regularize_flag') is False:
-                self.set_params(auto_regularize_flag=True)
-                if not no_warning:
-                    warnings.warn('You have re-enabled auto-regularization by setting sharpness or snr_db. '
-                                  'It was previously disabled')
-
-        # Compare the two outputs
-        if recompile and not no_compile:
-            self.compile_projectors()
-
-    def get_params(self, parameter_names):
-        """
-        Get the values of the listed parameter names.
-        Raises an exception if a parameter name is not defined in parameters.
-
-        Args:
-            parameter_names: String or list of strings
-
-        Returns:
-            Single value or list of values
-        """
-        if isinstance(parameter_names, str):
-            if parameter_names in self.params.keys():
-                value = self.params[parameter_names]['val']
-            else:
-                raise NameError('"{}" not a recognized argument'.format(parameter_names))
-            return value
-        values = []
-        for name in parameter_names:
-            if name in self.params.keys():
-                values.append(self.params[name]['val'])
-            else:
-                raise NameError('"{}" not a recognized argument'.format(name))
-        return values
-
-    def add_new_params(self, **kwargs):
-        """
-        Add parameters using keyword arguments.
-
-        Args:
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
-
-        """
-        # Set all the given parameters
-        for key, val in kwargs.items():
-            if key in self.params.keys():
-                raise NameError('"{}" is an existing parameter - use set_params to set the value'.format(key))
-            else:
-                new_entry = {'val': val, 'recompile_flag': True}
-                self.params[key] = new_entry
-
-    def verify_valid_params(self):
-        """
-        Verify any conditions that must be satisfied among parameters for correct projections.
-        Subclasses of TomographyModel should call super().verify_valid_params() before checking any
-        subclass-specific conditions.
-        """
-
-        sinogram_shape = self.get_params('sinogram_shape')
-        if len(sinogram_shape) != 3:
-            error_message = "sinogram_shape must be (views, rows, channels). \n"
-            error_message += "Got {} for sinogram shape.".format(sinogram_shape)
-            raise ValueError(error_message)
+        raise NotImplementedError('auto_set_recon_size must be implemented by each specific geometry model.')
 
     def get_voxels_at_indices(self, recon, indices):
         """
         Retrieves voxel values from a reconstruction array at specified indices.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the values are retrieved
+        using all voxels with those indices across all the slices.
 
         Args:
             recon (jnp array): The 3D reconstruction array.
-            indices (jnp array): Indices for which voxel values are required.
+            indices (numpy.ndarray): Array of indices specifying which voxels to project.
 
         Returns:
             numpy.ndarray or jax.numpy.DeviceArray: Array of voxel values at the specified indices.
         """
-        # Get number of rows in detector
-        shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
 
-        # Set number of detector rows
-        num_det_rows = shape[1]
-
-        # Retrieve values of recon at the indices locations
-        voxel_values = recon.reshape((-1, num_det_rows))[indices]
+        # Flatten the recon along the first two dimensions, then retrieve values of recon at the indices locations
+        voxel_values = recon.reshape((-1,) + recon_shape[2:])[indices]
 
         return voxel_values
-
-    def get_forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
-        """
-        Calculate the loss function for the forward model from the error_sinogram and weights.
-        The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
-
-        Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array): 3D weights array with same shape as sinogram
-
-        Returns:
-            [loss].
-        """
-        if normalize:
-            avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y') ** 2)) * jnp.mean(
-                (error_sinogram * error_sinogram) * (weights / avg_weight)))
-        else:
-            loss = (1.0 / (2 * self.get_params('sigma_y') ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
-        return loss
 
     @staticmethod
     def _get_sino_indicator(sinogram):
@@ -451,20 +364,23 @@ class TomographyModel:
         """
         # Get parameters
         delta_det_channel = self.get_params('delta_det_channel')
-        sharpness = self.get_params('sharpness')
-        magnification = self.get_params('magnification')
+        delta_voxel = self.get_params('delta_voxel')
+        recon_shape = self.get_params('recon_shape')
+        magnification = self.get_magnification()
         num_det_channels = sinogram.shape[-1]
 
-        # Compute indicator function for sinogram support
+        # Compute a typical sinogram value
         sino_indicator = self._get_sino_indicator(sinogram)
+        typical_sinogram_value = jnp.average(sinogram, weights=sino_indicator)
+
+        # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
+        # Compute a typical projection path length
+        typical_path_length = (2*recon_shape[0] * recon_shape[1])/(recon_shape[0] + recon_shape[1])*delta_voxel
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
-        typical_img_value = np.average(sinogram, weights=sino_indicator) / (
-                num_det_channels * delta_det_channel / magnification)
+        recon_std = typical_sinogram_value / typical_path_length
 
-        # Compute sigma_x as a fraction of the typical recon value
-        sigma_prior = (2 ** sharpness) * typical_img_value
-        return sigma_prior
+        return recon_std
 
     def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
         """
@@ -484,41 +400,16 @@ class TomographyModel:
         self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
-        partitions = self.gen_set_of_voxel_partitions()
+        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity)
 
         # Generate sequence of partitions to use
-        partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
+        partition_sequence = self.get_params('partition_sequence')
+        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
 
         # Compute reconstruction
         recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                         init_recon=init_recon)
-
-        return recon, fm_rmse
-
-    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
-        """
-        Proximal Map function for use in Plug-and-Play applications.
-        This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_p.
-
-        Args:
-            prox_input (jax array): proximal map input with same shape as reconstruction.
-            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
-            num_iterations (int): number of iterations of the VCD algorithm to perform.
-            init_recon (jax array): optional reconstruction to be used for initialization.
-
-        Returns:
-            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
-        """
-        # Generate set of voxel partitions
-        partitions = self.gen_set_of_voxel_partitions()
-
-        # Generate sequence of partitions to use
-        partition_sequence = self.gen_partition_sequence(num_iterations=num_iterations)
-
-        # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
-                                        init_recon=init_recon, prox_input=prox_input)
 
         return recon, fm_rmse
 
@@ -539,16 +430,14 @@ class TomographyModel:
         """
         # Get required parameters
         num_iters = partition_sequence.size
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
+        recon_shape = self.get_params('recon_shape')
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
-            recon = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+            recon = jnp.zeros(recon_shape)
             error_sinogram = sinogram
         else:
             # Make sure that init_recon has the correct shape and type
-            recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
             if init_recon.shape != recon_shape:
                 error_message = "init_recon does not have the correct shape. \n"
                 error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
@@ -623,9 +512,7 @@ class TomographyModel:
         positivity_flag = self.get_params('positivity_flag')
 
         # Recover recon shape parameters and make sure that recon has a 3D shape
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
+        recon = self.reshape_recon(recon)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -637,9 +524,10 @@ class TomographyModel:
                 raise ValueError(error_message)
 
             # If used, make sure that prox_input has the correct a 3D shape and type
-            prox_input = jnp.array(prox_input.reshape((num_recon_rows, num_recon_cols, num_recon_slices)))
+            prox_input = jnp.array(prox_input.reshape(recon.shape))
 
         # flatten the hessian if it is not already flat
+        num_recon_slices = recon.shape[2]
         fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
@@ -694,17 +582,68 @@ class TomographyModel:
 
         # Perform sparse updates at index locations, and reshape as 3D array
         recon = recon.at[indices].add(alpha * delta_recon_at_indices)
-        recon = recon.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
+        recon = self.reshape_recon(recon)
 
         # Update sinogram
         error_sinogram = error_sinogram - alpha * delta_sinogram
 
         return error_sinogram, recon
 
+    def get_forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
+        """
+        Calculate the loss function for the forward model from the error_sinogram and weights.
+        The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
+
+        Args:
+            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            weights (jax array, optional, default=1.0): 3D weights array with same shape as sinogram
+            normalize (bool, optional, default=True):  If true, then
+
+        Returns:
+            [loss].
+        """
+        if normalize:
+            avg_weight = jnp.average(weights)
+            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y') ** 2)) * jnp.mean(
+                (error_sinogram * error_sinogram) * (weights / avg_weight)))
+        else:
+            loss = (1.0 / (2 * self.get_params('sigma_y') ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+        return loss
+
+    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
+        """
+        Proximal Map function for use in Plug-and-Play applications.
+        This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_p.
+
+        Args:
+            prox_input (jax array): proximal map input with same shape as reconstruction.
+            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            num_iterations (int): number of iterations of the VCD algorithm to perform.
+            init_recon (jax array): optional reconstruction to be used for initialization.
+
+        Returns:
+            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
+        """
+        # TODO:  Refactor to operate on a subset of pixels and to use previous state
+        # Generate set of voxel partitions
+        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity)
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.get_params('partition_sequence')
+        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
+
+        # Compute reconstruction
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+                                        init_recon=init_recon, prox_input=prox_input)
+
+        return recon, fm_rmse
+
     @staticmethod
     def gen_weights(sinogram, weight_type):
         """
-        Compute the weights used in MBIR reconstruction.
+        Compute the optional weights used in MBIR reconstruction.
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
@@ -733,71 +672,15 @@ class TomographyModel:
 
         return weights
 
-    def gen_set_of_voxel_partitions(self):
+    def gen_modified_3d_sl_phantom(self):
         """
-        Generates a collection of voxel partitions for an array of specified partition sizes.
-        This function creates a tuple of randomly generated 2D voxel partitions.
-
-        Returns:
-            tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
-        """
-        # Convert granularity to an np array
-        granularity = np.array(self.get_params('granularity'))
-        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
-        partitions = ()
-        for size in granularity:
-            partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, size)
-            partitions += (partition,)
-
-        return partitions
-
-    def gen_full_indices(self):
-        """
-        Generates a full array of voxels in the region of reconstruction.
-        This is useful for computing forward projections.
-        """
-        # Convert granularity to an np array
-        num_recon_rows, num_recon_cols = self.get_params(['num_recon_rows', 'num_recon_cols'])
-        partition = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets=1)
-        full_indices = partition[0]
-
-        return full_indices
-
-    def gen_partition_sequence(self, num_iterations):
-        """
-        Generates a sequence of voxel partitions of the specified length by extending the sequence
-        with the last element if necessary.
-        """
-        # Get sequence from params and convert it to a np array
-        partition_sequence = np.array(self.get_params('partition_sequence'))
-
-        # Check if the sequence needs to be extended
-        current_length = partition_sequence.size
-        if num_iterations > current_length:
-            # Calculate the number of additional elements needed
-            extra_elements_needed = num_iterations - current_length
-            # Get the last element of the array
-            last_element = partition_sequence[-1]
-            # Create an array of the last element repeated the necessary number of times
-            extension_array = np.full(extra_elements_needed, last_element)
-            # Concatenate the original array with the extension array
-            extended_partition_sequence = np.concatenate((partition_sequence, extension_array))
-        else:
-            # If no extension is needed, slice the original array to the desired length
-            extended_partition_sequence = partition_sequence[:num_iterations]
-
-        return extended_partition_sequence
-
-    def gen_3d_sl_phantom(self):
-        """
-        Generates a 3D Shepp-Logan phantom.
+        Generates a simplified, low-dynamic range version of the 3D Shepp-Logan phantom.
 
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        phantom = mbirjax.generate_3d_shepp_logan(num_recon_rows, num_recon_cols, num_recon_slices)
+        recon_shape = self.get_params('recon_shape')
+        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
         return phantom
 
     def reshape_recon(self, recon):
@@ -807,9 +690,8 @@ class TomographyModel:
         Args:
             recon (ndarray or jnp.array): A 3D numpy array of shape specified by (num_recon_rows, num_recon_cols, num_recon_slices)
         """
-        num_recon_rows, num_recon_cols, num_recon_slices = \
-            self.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices'])
-        return recon.reshape(num_recon_rows, num_recon_cols, num_recon_slices)
+        recon_shape = self.get_params('recon_shape')
+        return recon.reshape(recon_shape)
 
 
 @jax.jit
@@ -862,7 +744,7 @@ def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, 
     b /= jnp.sum(b)
 
     # Extract the shape of the reconstruction array.
-    num_rows, num_cols, num_slices = recon.shape
+    num_rows, num_cols, num_slices = recon.shape[:3]
 
     # Convert flat indices to 2D indices for row and column access.
     row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
@@ -873,7 +755,8 @@ def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, 
     # Define relative positions for accessing neighborhood voxels.
     offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
-    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that location over all slices.
+    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that
+    # location over all slices.
     xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
 
     # Shift slices up with zero padding
@@ -918,18 +801,15 @@ def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
     Returns:
         first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
     """
-    # Compute the prior model gradient at all voxels
-    pm_gradient = (1.0 / (sigma_p ** 2.0)) * (recon - prox_input)
-
-    # Extract the shape of the reconstruction array.
-    num_rows, num_cols, num_slices = recon.shape
-
     # Convert flat indices to 2D indices for row and column access.
+    num_rows, num_cols = recon.shape[:2]
     row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
 
-    # Access the gradient's values at the given indices. Shape of pm_gradient is (num indices)x(num slices)
-    pm_gradient = pm_gradient[row_index, col_index]
+    # Compute the prior model gradient at all voxels
+    cur_diff = recon[row_index, col_index] - prox_input[row_index, col_index]
+    pm_gradient = (1.0 / (sigma_p ** 2.0)) * cur_diff
 
+    # Shape of pm_gradient is (num indices)x(num slices)
     return pm_gradient
 
 

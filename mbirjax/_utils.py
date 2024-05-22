@@ -1,26 +1,27 @@
 import types
 import copy
 
-# The order and content of these dictionaries must match the signatures of the corresponding tests below
+FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
+
+# The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
 _forward_model_defaults_dict = {
 
+    'geometry_type': {'val': None,  'recompile_flag': False},  # The geometry type should never change during a recon.
+    'file_format': {'val': FILE_FORMAT_NUMBER, 'recompile_flag': False},
     'sinogram_shape': {'val': None, 'recompile_flag': True},
     'delta_det_channel': {'val': 1.0, 'recompile_flag': True},
     'delta_det_row': {'val': 1.0, 'recompile_flag': True},
-    'det_channel_offset': {'val': 0.0, 'recompile_flag': False},
+    'det_row_offset': {'val': 0.0, 'recompile_flag': True},
+    'det_channel_offset': {'val': 0.0, 'recompile_flag': True},
     'sigma_y': {'val': 1.0, 'recompile_flag': False},
 }
 
 _recon_model_defaults_dict = {
-    'prox_recon': {'val': None, 'recompile_flag': False},
-    'num_recon_rows': {'val': None, 'recompile_flag': True},
-    'num_recon_cols': {'val': None, 'recompile_flag': True},
-    'num_recon_slices': {'val': None, 'recompile_flag': True},
-    'delta_pixel_recon': {'val': 1.0, 'recompile_flag': False},
+    'recon_shape': {'val': None, 'recompile_flag': True},
+    'delta_voxel': {'val': None, 'recompile_flag': True},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
     'sigma_p': {'val': 1.0, 'recompile_flag': False},
-    'magnification': {'val': 1.0, 'recompile_flag': False},
     'p': {'val': 2.0, 'recompile_flag': False},
     'q': {'val': 1.2, 'recompile_flag': False},
     'T': {'val': 1.0, 'recompile_flag': False},
@@ -35,12 +36,12 @@ _reconstruction_defaults_dict = {
     'granularity': {'val': [1, 8, 64, 256], 'recompile_flag': False},
     'partition_sequence': {'val': [0, 1, 2, 3, 2, 3, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 0, 'recompile_flag': False},
-    'voxel_batch_size': {'val': None, 'recompile_flag': True},
-    'view_batch_size': {'val': None, 'recompile_flag': True}
+    'pixel_batch_size': {'val': 2048, 'recompile_flag': True},  # TODO: Determine batch sizes dynamically.
+    'view_batch_size': {'val': 32, 'recompile_flag': True}
 }
 
-headings = ['Geometry params', 'Recon params', 'Init params', 'Noise params', 'QGGMRF params', 'Sys params',
-            'Misc params']
+# These headings should match the dictionaries
+headings = ['Forward model parameters', 'Recon parameters', 'Reconstruction parameters']
 
 dicts = [_forward_model_defaults_dict,
          _recon_model_defaults_dict,

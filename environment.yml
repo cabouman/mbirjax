@@ -4,6 +4,7 @@ channels:
   - defaults
 dependencies:
   - python>=3.10
+  - pytest
   - matplotlib
   - numpy
   - scipy

@@ -24,34 +24,44 @@ if __name__ == "__main__":
     # Set up parallel beam model
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
 
+    # Here are other things you might want to do
+    #recon_shape = parallel_model.get_params('recon_shape')
+    #recon_shape = (recon_shape[0]//4, recon_shape[1]//4, recon_shape[2])
+    #parallel_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
+    #parallel_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
+    #parallel_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    #parallel_model.set_params(granularity=[1, 8, 64, 256], partition_sequence=[0, 1, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
+
     # Generate 3D Shepp Logan phantom
+    print('Creating phantom')
     phantom = parallel_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
+    print('Creating sinogram')
     sinogram = parallel_model.forward_project(phantom)
+
+    # View sinogram
+    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
 
     # Generate weights array
     weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    # cone_model.set_params(positivity_flag=True)
 
     # Print out model parameters
     parallel_model.print_params()
 
     # ##########################
-    # Test proximal map for fixed point
-    # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-    parallel_model.auto_set_regularization_params(sinogram, weights=weights)
-    init_recon = phantom + 1.0
-    recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon, num_iterations=13)
+    # Perform VCD reconstruction
+    print('Starting recon')
+    time0 = time.time()
+    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
 
-    # Reshape recon into 3D form
-    recon_3d = parallel_model.reshape_recon(recon)
+    recon.block_until_ready()
+    elapsed = time.time() - time0
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+    # ##########################
 
     # Display results
-    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
-
-    # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon_3d)
+    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')

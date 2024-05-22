@@ -10,7 +10,7 @@ The best way to start is to:
 
 - **Install MBIRJAX** in a conda environment and activate this environment using the instructions provided on the :ref:`Installation Page <installation_label>`.
 
-- **Run Demo** using the Python program entitled ``demo_3D_shepp_logan.py`` located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
+- **Run Demo** using the Python program entitled ``demo_parbeam_shepp_logan.py`` located in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
 You can then modify the Python script to suit your needs.
 
@@ -40,9 +40,7 @@ Below are simple instructions on how to do your first reconstruction:
 
 - **Reconstruct:**
 
-  - Run ``recon = model.recon(sinogram)`` to reconstruct using MBIR.
+  - Run ``recon = model.recon(sinogram)`` to reconstruct a volume in  ``(rows, columns, slices)`` format using MBIR.
 
-  - Then run ``recon_3d = parallel_model.reshape_recon(recon)`` to reshape your reconstruction into ``(rows, columns, slices)`` format.
-
-  Even the default parameter setting will usually produce a good quality reconstruction.
+  Even the default parameter settings will usually produce a good quality reconstruction.
 

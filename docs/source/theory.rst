@@ -19,7 +19,7 @@ MBIR reconstruction works by solving the following optimization problem
     {\hat x} = \arg \min_x \left\{ f(x) + h(x) \right\}
 
 where :math:`f(x)` is the forward model term and :math:`h(x)` is the prior model term.
-The super-voxel algorithm is then used to efficiently perform this optimization.
+The Multi-Granular Vectorized Coordinate Descent (VCD) algorithm is then used to efficiently perform this optimization.
 
 
 **Forward Model:**
@@ -32,7 +32,10 @@ The forward model term has the form,
 where :math:`y` is the sinogram data, 
 where :math:`x` is the unknown image to be reconstructed, 
 :math:`A` is the linear projection operator for the specified imaging geometry, 
-:math:`\Lambda` is the diagonal matrix of sinogram weights, :math:`\Vert y \Vert_\Lambda^2 = y^T \Lambda y`, and :math:`\sigma_y` is a parameter controling the assumed standard deviation of the measurement noise.
+:math:`\Lambda` is the diagonal matrix of sinogram weights, :math:`\Vert y \Vert_\Lambda^2 = y^T \Lambda y`, and
+:math:`\sigma_y` is a parameter controlling the assumed standard deviation of the measurement noise.  More details
+about the forward model for specific geometries is available by downloading the associated
+`zip file <https://engineering.purdue.edu/~bouman/data_repository/data/tomography_geometry.zip>`_.
 
 These quantities correspond to the following python variables:
 
@@ -51,7 +54,7 @@ For many new users, it is easier to use one of the automatic weight settings sho
 Option "unweighted" provides unweighted reconstruction; Option "transmission" is the correct weighting for transmission CT with constant dosage; Option "transmission_root" is commonly used with transmission CT data to improve image homogeneity; Option "emmission" is appropriate for emission CT data. 
 
 **Prior Model:**
-The ``svmbir`` function allows the prior model to be set either as a qGGMRF or a proximal map prior. 
+MBIRJAX allows the prior model to be set either as a qGGMRF or a proximal map prior.
 The qGGRMF prior is the default method recommended for new users. 
 Alternatively, the proximal map prior is an advanced feature required for the implementation of the Plug-and-Play algorithm. The Plug-and-Play algorithm allows the modular use of a wide variety of advanced prior models including priors implemented with machine learning methods such as deep neural networks.
 

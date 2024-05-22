@@ -13,6 +13,9 @@ if __name__ == "__main__":
     num_views = 256
     num_det_rows = 20
     num_det_channels = 256
+    source_detector_dist = 4 * num_det_channels
+    source_iso_dist = source_detector_dist
+
     start_angle = -np.pi*(1/2)
     end_angle = np.pi*(1/2)
     sharpness = 0.0
@@ -22,39 +25,39 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_3d_sl_phantom()
+    print('Creating phantom')
+    phantom = cone_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
-    sinogram = parallel_model.forward_project(phantom)
+    print('Creating sinogram')
+    sinogram = cone_model.forward_project(phantom)
+
+    # View sinogram
+    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    parallel_model.set_params(sharpness=sharpness, verbose=1)
-    # parallel_model.set_params(positivity_flag=True)
+    cone_model.set_params(sharpness=sharpness, verbose=1)
 
     # Print out model parameters
-    parallel_model.print_params()
+    cone_model.print_params()
 
     # ##########################
     # Perform VCD reconstruction
+    print('Starting recon')
     time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
+    recon, fm_rmse = cone_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
-    # Reshape recon into 3D form
-    recon_3d = parallel_model.reshape_recon(recon)
-
     # Display results
-    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 
-    # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon_3d)

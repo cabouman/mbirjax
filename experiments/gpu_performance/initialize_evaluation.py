@@ -3,7 +3,7 @@ import numpy as np
 import mbirjax
 
 
-def initialize_evaluation(eval_type_index, voxel_batch_size, num_views, num_channels, num_det_rows, num_indices):
+def initialize_evaluation(eval_type_index, pixel_batch_size, num_views, num_channels, num_det_rows, num_indices):
 
     eval_types = ['Forward_projection', 'Backward_projection']
 
@@ -17,7 +17,7 @@ def initialize_evaluation(eval_type_index, voxel_batch_size, num_views, num_chan
 
     filename = 'GB_secs_used_for_' + eval_types[eval_type_index]
     np.savez(filename, mem_values=mem_values, time_values=time_values, eval_type_index=np.array(eval_type_index),
-             voxel_batch_size=np.array(voxel_batch_size),
+             pixel_batch_size=np.array(pixel_batch_size),
              max_percent_used_gb=np.array(max_percent_used_gb), max_avail_gb=np.array(max_avail_gb),
              num_views=np.array(num_views), num_channels=np.array(num_channels),
              num_det_rows=np.array(num_det_rows), num_indices=np.array(num_indices), allow_pickle=True)

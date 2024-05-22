@@ -13,12 +13,12 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 100
-    voxel_batch_size = 10000
+    view_batch_size = 32
+    pixel_batch_size = 2048
 
     # Initialize sinogram
     num_views = 128
-    num_det_rows = 128
+    num_det_rows = 20
     num_det_channels = 128
     start_angle = 0
     end_angle = jnp.pi
@@ -30,30 +30,30 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
+    # parallel_model = mbirjax.ParallelBeamModel.from_file('params_parallel.yaml')
     parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
-    num_recon_rows, num_recon_cols, num_recon_slices = (
-        parallel_model.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices']))
-    phantom = mbirjax.gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices)
+    recon_shape = parallel_model.get_params('recon_shape')
+    num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
+    phantom = mbirjax.gen_cube_phantom(recon_shape)
 
-    # Generate indices of voxels
+    # Generate indices of pixels
     num_subsets = 1
-    full_indices = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
+    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
     num_subsets = 5
-    subset_indices = mbirjax.gen_voxel_partition(num_recon_rows, num_recon_cols, num_subsets)
+    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
 
     # Generate sinogram data
-    voxel_values = phantom.reshape((-1, num_recon_slices))[full_indices]
+    voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
-    parallel_model.set_params(view_batch_size=view_batch_size, voxel_batch_size=voxel_batch_size)
+    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     print('Starting forward projection')
     sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0])
 
     # Determine resulting number of views, slices, and channels and image size
-    num_recon_rows, num_recon_cols, num_recon_slices = (
-        parallel_model.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices']))
     print('Sinogram shape: {}'.format(sinogram.shape))
     print('Memory stats after forward projection')
     mbirjax.get_gpu_memory_stats(print_results=True)
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     # ## Test the hessian against a finite difference approximation ## #
     hessian = parallel_model.compute_hessian_diagonal()
 
-    x = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+    x = jnp.zeros(recon_shape)
     key, subkey = jax.random.split(key)
     i, j = jax.random.randint(subkey, shape=(2,), minval=0, maxval=num_recon_rows)
     key, subkey = jax.random.split(key)
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     # ##########################
     # Show the forward and back projection from a single pixel
     i, j = num_recon_rows // 4, num_recon_cols // 3
-    x = jnp.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
+    x = jnp.zeros(recon_shape)
     x = x.at[i, j, :].set(1)
     voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
 

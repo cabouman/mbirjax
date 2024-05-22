@@ -15,7 +15,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
     mem_values = data['mem_values']
     time_values = data['time_values']
     eval_type_index = data['eval_type_index']
-    voxel_batch_size = data['voxel_batch_size']
+    pixel_batch_size = data['pixel_batch_size']
     max_percent_used_gb = data['max_percent_used_gb']
     max_avail_gb = data['max_avail_gb']
     num_views = data['num_views']
@@ -39,16 +39,15 @@ def evaluate_over_indices(filename, nv, nc, nr):
         # Set up parallel beam
         sinogram_shape = (nv, nr, nc)
         parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
-        parallel_model.set_params(voxel_batch_size=voxel_batch_size)
+        parallel_model.set_params(pixel_batch_size=pixel_batch_size)
 
         # Generate phantom for forward projection
-        num_recon_rows, num_recon_cols, num_recon_slices = (
-            parallel_model.get_params(['num_recon_rows', 'num_recon_cols', 'num_recon_slices']))
-        phantom = mbirjax.gen_phantom(num_recon_rows, num_recon_cols, num_recon_slices)
+        recon_shape = parallel_model.get_params('recon_shape')
+        phantom = mbirjax.gen_cube_phantom(recon_shape)
 
         # Get a subset of the given size
         indices = np.arange(ni, dtype=int)
-        voxel_values = phantom.reshape((-1, num_recon_slices))[indices]
+        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[indices]
 
         if eval_type_index == 0:
             print(
@@ -105,7 +104,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
     print('Max percentage GB used = {}%'.format(max_percent_used_gb))
 
     np.savez(filename, mem_values=mem_values, time_values=time_values, eval_type_index=np.array(eval_type_index),
-             voxel_batch_size=np.array(voxel_batch_size),
+             pixel_batch_size=np.array(pixel_batch_size),
              max_percent_used_gb=np.array(max_percent_used_gb), max_avail_gb=np.array(max_avail_gb),
              num_views=np.array(num_views), num_channels=np.array(num_channels),
              num_det_rows=np.array(num_det_rows), num_indices=np.array(num_indices))

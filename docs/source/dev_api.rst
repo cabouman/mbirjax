@@ -5,6 +5,7 @@ Documentation for all methods is available at the following links:
 
 * :ref:`TomographyBeamModelDevDocs`
 * :ref:`ParallelBeamModelDevDocs`
+* :ref:`ProjectorsDevDocs`
 
 **MBIRJAX** can be extended to include other geometries by following the outline in new_model_template.py:
 
@@ -21,7 +22,10 @@ Documentation for all methods is available at the following links:
    :maxdepth: 4
    :caption: Classes
 
-   TomographyModel_dev
-   ParallelBeamModel_dev
+   dev_tomography_model
+   dev_projectors
+   dev_parameter_handler
+   dev_parallel_beam_model
+   dev_cone_beam_model
 
 
