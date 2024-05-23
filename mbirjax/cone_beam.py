@@ -233,44 +233,16 @@ class ConeBeamModel(TomographyModel):
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
          delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
-
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        recon_shape = projector_params[1]
-        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
-        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
-        slice_index = jnp.arange(num_recon_slices)
-
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel,
-                                                       recon_shape, recon_slice_offset, angle)
-
-        # Convert from xyz to coordinates on detector
-        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)  # This should be kept in terms of magnification
-        # Compute the physical position that this voxel projects onto the detector
-        u_p = pixel_mag * x_p
-        det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
-
-        # Calculate indices on the detector grid
-        n_p = (u_p / delta_det_channel) + det_center_channel + det_channel_offset
-        n_p_center = jnp.round(n_p).astype(int)
-
-        # Compute horizontal cone angle of pixel
-        theta_p = jnp.arctan2(u_p, source_detector_dist)
-
-        # Compute cos alpha for row and columns
-        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
-                                    jnp.abs(jnp.sin(angle - theta_p)))
-
-        # Compute projected voxel width along columns and rows
-        W_p_c = pixel_mag * (delta_voxel / delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        # Get the data needed for horizontal projection
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
-        # Computed values needed to finish the forward projection:
-        # n_p_center, n_p, W_p_c, cos_alpha_p_xy
+        # Define the horizontal projector, which will be vmapped over slices.
         def project_slice(sinogram_view_row, voxel_values_slice):
             for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
                 n = n_p_center + n_offset
@@ -290,7 +262,22 @@ class ConeBeamModel(TomographyModel):
     @partial(jax.jit, static_argnames='projector_params')
     def forward_vertical_fan_one_pixel_to_one_view(voxel_values, pixel_index, angle, projector_params):
         """
-        Helper function used in vmap in :meth:`ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view`
+        Apply a fan beam forward projection in the vertical direction to the pixel determined by indices
+        into the flattened array of size num_rows x num_cols.  This returns a vector obtained from the projection of
+        the original voxel cylinder onto a detector column, so the output vector has length num_det_rows.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_index (int):  Index into the flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view.
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_pixels, num_det_rows)
+
+        Note:
+            This is a helper function used in vmap in :meth:`ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view`
         This method has the same signature and output as that method, except single int pixel_index is used
         in place of the 1D pixel_indices, and likewise only a single voxel cylinder is returned.
         """
@@ -298,40 +285,17 @@ class ConeBeamModel(TomographyModel):
         geometry_params = projector_params[2]
         (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
          delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
-
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        recon_shape = projector_params[1]
-        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
-        row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
-        slice_index = jnp.arange(num_recon_slices)
-
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel,
-                                                       recon_shape, recon_slice_offset, angle)
-
-        # Convert from xyz to coordinates on detector
-        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, source_detector_dist, magnification)
-        # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
-        m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, delta_det_channel, delta_det_row, det_channel_offset,
-                                                 det_row_offset, num_det_rows, num_det_channels, det_rotation)
-        m_p_center = jnp.round(m_p).astype(int)
-
-        # Compute vertical cone angle of pixel
-        phi_p = jnp.arctan2(v_p, source_detector_dist)
-
-        # Compute cos alpha for row and columns
-        cos_phi_p = jnp.cos(phi_p)
-        cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
-
-        # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_p_r = pixel_mag * (delta_voxel / delta_det_row) * cos_alpha_p_z / cos_phi_p
-
-        new_voxel_cylinder = jnp.zeros(num_det_rows)
+        # Get the data needed for vertical projection
+        m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, angle,
+                                                                                                 projector_params)
         L_max = jnp.minimum(1, W_p_r)
 
-        # Computed values needed to finish the forward projection:
-        # m_p_center, m_p, W_p_r, cos_alpha_p_z
+        # Allocate the output cylinder
+        new_voxel_cylinder = jnp.zeros(num_det_rows)
+
+        # Do the vertical projection
         for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
             m = m_p_center + m_offset
             abs_delta_p_r_m = jnp.abs(m_p - m)
@@ -352,7 +316,7 @@ class ConeBeamModel(TomographyModel):
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the view dependent parameters for the view being back projected.
-            projector_params (1D jax array): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
 
@@ -361,8 +325,8 @@ class ConeBeamModel(TomographyModel):
             the input sinogram view.
         """
 
-        vertical_fan_projector = ConeBeamModel.backward_vertical_fan_pixel_batch_to_one_view
-        horizontal_fan_projector = ConeBeamModel.backward_horizontal_fan_pixel_batch_to_one_view
+        vertical_fan_projector = ConeBeamModel.back_vertical_fan_pixel_batch_to_one_view
+        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_pixel_batch_to_one_view
 
         det_voxel_cylinder = horizontal_fan_projector(sinogram_view, pixel_indices, single_view_params,
                                                       projector_params, coeff_power=coeff_power)
@@ -373,19 +337,20 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def backward_horizontal_fan_pixel_batch_to_one_view(sinogram_view, pixel_indices, angle,
-                                                        projector_params, coeff_power=1):
+    def back_horizontal_fan_pixel_batch_to_one_view(sinogram_view, pixel_indices, angle,
+                                                    projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
         and return the resulting voxel cylinders.
 
         Args:
-            sinogram_view:
-            pixel_indices:
-            angle:
-            projector_params:
-            coeff_power:
-
+            sinogram_view (2D jax array): one view of the sinogram to be back projected.
+                2D jax array of shape (num_det_rows)x(num_det_channels)
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            angle (float): The projection angle in radians for this view.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
         Returns:
 
         """
@@ -396,44 +361,16 @@ class ConeBeamModel(TomographyModel):
          delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
 
         num_views, num_det_rows, num_det_channels = projector_params[0]
-        recon_shape = projector_params[1]
-        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
-
         num_pixels = pixel_indices.shape[0]
 
-        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
-        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
-        slice_index = jnp.arange(num_recon_slices)
-
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel,
-                                                       recon_shape, recon_slice_offset, angle)
-
-        # Convert from xyz to coordinates on detector
-        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)  # This should be kept in terms of magnification
-        # Compute the physical position that this voxel projects onto the detector
-        u_p = pixel_mag * x_p
-        det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
-
-        # Calculate indices on the detector grid
-        n_p = (u_p / delta_det_channel) + det_center_channel + det_channel_offset
-        n_p_center = jnp.round(n_p).astype(int)
-
-        # Compute horizontal cone angle of pixel
-        theta_p = jnp.arctan2(u_p, source_detector_dist)
-
-        # Compute cos alpha for row and columns
-        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
-                                    jnp.abs(jnp.sin(angle - theta_p)))
-
-        # Compute projected voxel width along columns and rows
-        W_p_c = pixel_mag * (delta_voxel / delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        # Get the data needed for horizontal projection
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
 
-        # Computed values needed to finish the back projection:
-        # n_p_center, n_p, W_p_c, cos_alpha_p_xy
+        # Define the horizontal projector, which will be vmapped over slices.
         def project_slice(det_voxel_row, sinogram_view_row):
             for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
                 n = n_p_center + n_offset
@@ -452,9 +389,27 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def backward_vertical_fan_pixel_batch_to_one_view(det_voxel_cylinder, pixel_indices, single_view_params,
-                                                      projector_params, coeff_power=1):
-        pixel_map = jax.vmap(ConeBeamModel.back_project_vertical_fan_beam_one_pixel_one_view,
+    def back_vertical_fan_pixel_batch_to_one_view(det_voxel_cylinder, pixel_indices, single_view_params,
+                                                  projector_params, coeff_power=1):
+        """
+        Apply a fan beam backward projection in the vertical direction to the pixel determined by indices
+        into the flattened array of size num_rows x num_cols.  This returns a vector obtained from the projection of
+        the detector-based voxel cylinders onto voxel cylinders in recon space, so the output vector has length
+        num_recon_slices.
+
+        Args:
+            det_voxel_cylinder (2D jax array): 2D array of shape (num_pixels, num_det_rows) of voxel values, where
+                det_voxel_cylinder[i, j] is the value of the voxel in row j at the location determined by indices[i].
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            single_view_params: These are the view dependent parameters for the view being back projected.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
+
+        Returns:
+            2D jax array of shape (num_pixels, num_recon_slices) of voxel values.
+        """
+        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_one_pixel_one_view,
                              in_axes=(0, 0, None, None, None))
         new_pixels = pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params, coeff_power)
 
@@ -462,20 +417,65 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_project_vertical_fan_beam_one_pixel_one_view(detector_column_values, pixel_index, angle, projector_params,
-                                                          coeff_power=1):
+    def back_vertical_fan_one_pixel_one_view(detector_column_values, pixel_index, angle, projector_params,
+                                             coeff_power=1):
         """
         Apply the back projection of a vertical fan beam transformation to a single voxel cylinder and return the column
         vector of the resulting values.
 
         Args:
-            detector_column_values:
-            pixel_index:
-            angle:
-            projector_params:
+            detector_column_values (1D jax array): 1D array of shape (num_det_rows,) of voxel values, where
+                detector_column_values[i, j] is the value of the voxel in row j at the location determined by indices[i].
+            pixel_index (int):  Index into flattened array of size num_rows x num_cols.
+            angle (float): The projection angle in radians for this view.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 when computing Hessian diagonal.
 
         Returns:
+            1D jax array of shape (num_recon_slices,) of voxel values.
+        """
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        recon_shape = projector_params[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
+        # Get the data needed for vertical projection
+        m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, angle,
+                                                                                                 projector_params)
+        L_max = jnp.minimum(1, W_p_r)
+
+        # Allocate space
+        recon_voxel_cylinder = jnp.zeros(num_recon_slices)
+
+        # Do the vertical projection for this pixel.
+        for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
+            m = m_p_center + m_offset
+            abs_delta_p_r_m = jnp.abs(m_p - m)
+            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+            A_row_m = L_p_r_m / cos_alpha_p_z
+            A_row_m *= (m >= 0) * (m < num_det_rows)
+            A_row_m = A_row_m ** coeff_power
+            recon_voxel_cylinder = jnp.add(recon_voxel_cylinder, A_row_m * detector_column_values[m])
+
+        return recon_voxel_cylinder
+
+    @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
+    def compute_vertical_data_single_pixel(pixel_index, angle, projector_params):
+        """
+        Compute the quantities m_p, m_p_center, W_p_r, cos_alpha_p_z needed for vertical projection.
+
+        Args:
+            pixel_index (int):  Index into flattened array of size num_rows x num_cols.
+            angle (float): The projection angle in radians for this view.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+
+        Returns:
+            m_p, m_p_center, W_p_r, cos_alpha_p_z
         """
 
         # Get all the geometry parameters
@@ -511,26 +511,72 @@ class ConeBeamModel(TomographyModel):
         # Get the length of projection of flattened voxel on detector (in fraction of detector size)
         W_p_r = pixel_mag * (delta_voxel / delta_det_row) * cos_alpha_p_z / cos_phi_p
 
-        recon_voxel_cylinder = jnp.zeros(num_recon_slices)
-        L_max = jnp.minimum(1, W_p_r)
+        vertical_data = (m_p, m_p_center, W_p_r, cos_alpha_p_z)
 
-        # Computed values needed to finish the back projection:
-        # m_p_center, m_p, W_p_r, cos_alpha_p_z
-        for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
-            m = m_p_center + m_offset
-            abs_delta_p_r_m = jnp.abs(m_p - m)
-            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-            A_row_m = L_p_r_m / cos_alpha_p_z
-            A_row_m *= (m >= 0) * (m < num_det_rows)
-            A_row_m = A_row_m ** coeff_power
-            recon_voxel_cylinder = jnp.add(recon_voxel_cylinder, A_row_m * detector_column_values[m])
+        return vertical_data
 
-        return recon_voxel_cylinder
+    @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
+    def compute_horizontal_data(pixel_indices, angle, projector_params):
+        """
+        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+
+        Args:
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            angle (float): The projection angle in radians for this view.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+
+        Returns:
+            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+        """
+
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, det_rotation, source_detector_dist,
+         delta_voxel, recon_slice_offset, magnification, psf_radius) = geometry_params
+
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        recon_shape = projector_params[1]
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+
+        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
+        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
+        slice_index = jnp.arange(num_recon_slices)
+
+        x_p, y_p, _ = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, delta_voxel,
+                                                       recon_shape, recon_slice_offset, angle)
+
+        # Convert from xyz to coordinates on detector
+        pixel_mag = 1 / (1 / magnification - y_p / source_detector_dist)  # This should be kept in terms of magnification
+        # Compute the physical position that this voxel projects onto the detector
+        u_p = pixel_mag * x_p
+        det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
+
+        # Calculate indices on the detector grid
+        n_p = (u_p / delta_det_channel) + det_center_channel + det_channel_offset
+        n_p_center = jnp.round(n_p).astype(int)
+
+        # Compute horizontal and vertical cone angle of pixel
+        theta_p = jnp.arctan2(u_p, source_detector_dist)
+
+        # Compute cos alpha for row and columns
+        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
+                                    jnp.abs(jnp.sin(angle - theta_p)))
+
+        # Compute projected voxel width along columns and rows (in fraction of detector size)
+        W_p_c = pixel_mag * (delta_voxel / delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+
+        horizontal_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
+
+        return horizontal_data
 
     @staticmethod
     @jax.jit
     def recon_ijk_to_xyz(i, j, k, delta_voxel, recon_shape,
                          recon_slice_offset, angle):
+        """
+        Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
+        """
 
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
@@ -552,11 +598,11 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     @jax.jit
     def geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification):
+        """
+        Convert (x, y, z) coordinates to to (u, v) detector coordinates plus the pixel-dependent magnification.
+        """
         # Compute the magnification at this specific voxel
-        # This can be done with the following 2 lines, but by taking the reciprocal of pixel_mag, we can express it in
-        # terms of magnification and source_detector_dist, which remains valid even source_detector_dist = np.Inf.
-        # source_to_iso_dist = source_detector_dist / magnification
-        # pixel_mag = source_detector_dist / (source_to_iso_dist - y)
+        # The following expression is valid even when source_detector_dist = jnp.Inf
         pixel_mag = 1 / (1 / magnification - y / source_detector_dist)
 
         # Compute the physical position that this voxel projects onto the detector
@@ -569,6 +615,15 @@ class ConeBeamModel(TomographyModel):
     @partial(jax.jit, static_argnames='det_rotation')
     def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
                           num_det_channels, det_rotation=0):
+        """
+        Convert (u, v) detector coordinates to fractional indices (m, n) into the detector.
+
+        Note:
+            This version does not account for nonzero detector rotation.
+        """
+        if det_rotation != 0:
+            raise ValueError('Nonzero det_rotation is not implemented.')
+
         # Account for small rotation of the detector
         # TODO:  In addition to including the rotation, we'd need to adjust the calculation of the channel as a
         #  function of slice.
