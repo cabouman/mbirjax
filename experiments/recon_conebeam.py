@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sinogram = cone_model.forward_project(phantom)
 
     # View sinogram
-    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram')
+    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
 
     # Generate weights array
     weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')

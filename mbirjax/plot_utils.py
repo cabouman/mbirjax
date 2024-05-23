@@ -5,7 +5,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, ax, fig, cur_fig, img
 
 
-def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
+def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice'):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
@@ -17,6 +17,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
         title (string, optional, default=''): Figure super title
         vmin (float): minimum for displayed intensity
         vmax (float): maximum for displayed intensity
+        slice_label (str): Text label to be used for a given slice.  Defaults to 'Slice'
 
     The function sets up a matplotlib figure with interactive controls to view different slices
     by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
@@ -73,10 +74,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
         if data2 is not None:
             image_divider = vmax * np.ones((data.shape[0], 5))
             cur_data = np.concatenate((data[:, :, slice_index], image_divider, data2[:, :, slice_index]), axis=1)
-            ax.set_title(f'Slice {slice_index} Comparison')
+            ax.set_title(f'{slice_label} {slice_index} Comparison')
         else:
             cur_data = data[:, :, slice_index]
-            ax.set_title(f'Slice {slice_index}')
+            ax.set_title(f'{slice_label} {slice_index}')
         im = ax.imshow(np.clip(cur_data, vmin_cur, vmax_cur), cmap='gray', vmin=vmin_cur, vmax=vmax_cur)
         if not first_pass:
             fig.axes[5].remove()
@@ -117,7 +118,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
     ax_slice_slider.set_xticks([])
 
     # Add a label below the slider
-    ax_slice_instruction.text(0.5, 0.5, 'Click and drag to change slice', ha='center', va='center', fontsize=10)
+    ax_slice_instruction.text(0.5, 0.5, f'Click and drag to change {slice_label.lower()}', ha='center', va='center', fontsize=10)
     ax_slice_instruction.set_axis_off()
 
     # Setup the interactive window in the intensity slider
