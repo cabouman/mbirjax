@@ -28,16 +28,16 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None):
 
     # Define min and max grayscale values for consistent coloring across slices
     if vmin is None:
-        vmin = min(data.min(), data2.min() if data2 is not None else data.min())
+        vmin = min(data.min(), data2.min()) if data2 is not None else data.min()
     if vmax is None:
-        vmax = max(data.max(), data2.max() if data2 is not None else data.max())
-    if vmin < vmax:
+        vmax = max(data.max(), data2.max()) if data2 is not None else data.max()
+    if vmin > vmax:
         raise ValueError('vmin must be less than or equal to vmax')
     if vmin == vmax:
         eps = 1e-6  # This is not floating point epsilon, just a small number for display purposes.
         scale = np.clip(eps * np.abs(vmax), a_min=eps, a_max=None)
-        vmin = vmin - eps
-        vmax = vmax + eps
+        vmin = vmin - scale
+        vmax = vmax + scale
 
     vmin_cur, vmax_cur = vmin, vmax
     cur_fig = None
