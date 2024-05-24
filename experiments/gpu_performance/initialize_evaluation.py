@@ -12,7 +12,7 @@ def initialize_evaluation(eval_type_index, pixel_batch_size, num_views, num_chan
     time_values = np.zeros_like(mem_values)
     max_percent_used_gb = 0
 
-    m1 = mbirjax.get_gpu_memory_stats()
+    m1 = mbirjax.get_memory_stats()
     max_avail_gb = m1[0]['bytes_limit'] / (1024 ** 3)
 
     filename = 'GB_secs_used_for_' + eval_types[eval_type_index]
