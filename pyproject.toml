@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MBIRJAX"
-version = "0.1"
+version = "0.1.0"
 description = "High-performance tomographic reconstruction"
 authors = [
     { name = "MBIRJAX development team", email = "buzzard@purdue.edu" }
