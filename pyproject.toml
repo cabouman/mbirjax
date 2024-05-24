@@ -3,9 +3,10 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "MBIRJAX"
+name = "mbirjax"
 version = "0.1.1"
 description = "High-performance tomographic reconstruction"
+keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
 license = { file = "LICENSE" }
 authors = [
@@ -13,12 +14,12 @@ authors = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Information Analysis",
     "License :: OSI Approved :: BSD 3-Clause License",
     "Operating System :: OS Independent"
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "pytest",
     "matplotlib",
     "numpy",
     "scipy",
@@ -28,6 +29,16 @@ dependencies = [
     "jaxlib",
     "ruamel.yaml",
     "psutil"
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+docs = [
+     "sphinx",
+     "sphinxcontrib-bibtex",
+     "sphinx-book-theme>=1.0.1",
+     "sphinx-design",
+     "sphinx-copybutton"
 ]
 
 [tool.setuptools.packages]
