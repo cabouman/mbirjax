@@ -6,15 +6,37 @@ build-backend = "setuptools.build_meta"
 name = "MBIRJAX"
 version = "0.1.0"
 description = "High-performance tomographic reconstruction"
+readme = "README.rst"
+license = { file = "LICENSE" }
 authors = [
     { name = "MBIRJAX development team", email = "buzzard@purdue.edu" }
 ]
-license = { file = "LICENSE" }
-readme = "README.rst"
-requires-python = ">= 3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD 3-Clause License",
+    "Operating System :: OS Independent"
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pytest",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "pyyaml",
+    "setuptools",
+    "jax",
+    "jaxlib",
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx-book-theme>=1.0.1",
+    "sphinx-design",
+    "sphinx-copybutton",
+    "ruamel.yaml",
+    "psutil"
+]
 
-[tool.setuptools]
-packages = { find = {} }
+[tool.setuptools.packages]
+find = {}
 
 [project.urls]
 homepage = "https://mbirjax.readthedocs.io"
