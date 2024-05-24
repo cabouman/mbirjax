@@ -114,36 +114,36 @@ if __name__ == "__main__":
     # ##########################
     # Test the adjoint property
     # Get a random 3D phantom to test the adjoint property
-    # key, subkey = jax.random.split(key)
-    # x = jax.random.uniform(subkey, shape=bp.shape)
-    # key, subkey = jax.random.split(key)
-    # y = jax.random.uniform(subkey, shape=sinogram.shape)
-    #
-    # # Do a forward projection, then a backprojection
-    # voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    # Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
-    # Aty = conebeam_model.sparse_back_project(y, indices[0])
-    #
-    # # Calculate <Aty, x> and <y, Ax>
-    # Aty_x = jnp.sum(Aty * x)
-    # y_Ax = jnp.sum(y * Ax)
-    #
-    # adjoint_result = np.allclose(Aty_x, y_Ax)
-    # if adjoint_result:
-    #     print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(adjoint_result))
-    # else:
-    #     warnings.warn('Adjoint property does not hold.')
-    #
-    # # Clean up before further projections
-    # del Ax, Aty, bp
-    # del phantom
-    # del x, y
-    # gc.collect()
+    key, subkey = jax.random.split(key)
+    x = jax.random.uniform(subkey, shape=bp.shape)
+    key, subkey = jax.random.split(key)
+    y = jax.random.uniform(subkey, shape=sinogram.shape)
+
+    # Do a forward projection, then a backprojection
+    voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
+    Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
+    Aty = conebeam_model.sparse_back_project(y, indices[0])
+
+    # Calculate <Aty, x> and <y, Ax>
+    Aty_x = jnp.sum(Aty * x)
+    y_Ax = jnp.sum(y * Ax)
+
+    adjoint_result = np.allclose(Aty_x, y_Ax)
+    if adjoint_result:
+        print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(adjoint_result))
+    else:
+        warnings.warn('Adjoint property does not hold.')
+
+    # Clean up before further projections
+    del Ax, Aty, bp
+    del phantom
+    del x, y
+    gc.collect()
 
     # ##########################
-    # ## Test the hessian against a finite difference approximation ## #
-    # hessian = conebeam_model.compute_hessian_diagonal()
-    #
+    ## Test the hessian against a finite difference approximation ## #
+    hessian = conebeam_model.compute_hessian_diagonal()
+
     x = jnp.zeros(recon_shape)
     key, subkey = jax.random.split(key)
     i, j = jax.random.randint(subkey, shape=(2,), minval=0, maxval=num_recon_rows)
@@ -152,15 +152,15 @@ if __name__ == "__main__":
 
     eps = 0.01
     x = x.at[i, j, k].set(eps)
-    # voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
-    # Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
-    # AtAx = conebeam_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
-    # finite_diff_hessian = AtAx[i, j, k] / eps
-    # hessian_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
-    # if hessian_result:
-    #     print('Hessian matches finite difference: {}'.format(hessian_result))
-    # else:
-    #     warnings.warn('Hessian does not match finite difference.')
+    voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
+    Ax = conebeam_model.sparse_forward_project(voxel_values, indices[0])
+    AtAx = conebeam_model.sparse_back_project(Ax, indices[0]).reshape(x.shape)
+    finite_diff_hessian = AtAx[i, j, k] / eps
+    hessian_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
+    if hessian_result:
+        print('Hessian matches finite difference: {}'.format(hessian_result))
+    else:
+        warnings.warn('Hessian does not match finite difference.')
 
     # ##########################
     # Check the time taken per forward projection

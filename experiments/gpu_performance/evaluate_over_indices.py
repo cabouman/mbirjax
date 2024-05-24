@@ -7,7 +7,7 @@ import sys
 
 def evaluate_over_indices(filename, nv, nc, nr):
 
-    if mbirjax.get_gpu_memory_stats() is None:
+    if mbirjax.get_memory_stats() is None:
         raise EnvironmentError('This script is for gpu only.')
 
     # Load the existing data
@@ -54,7 +54,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
                 'Initial forward projection for memory: nv={}, nc={}, nr={}, ni={}'.format(nv, nc, nr, ni))
             try:
                 sinogram = parallel_model.sparse_forward_project(voxel_values, indices)
-                m1 = mbirjax.get_gpu_memory_stats()
+                m1 = mbirjax.get_memory_stats()
                 peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
             except MemoryError as e:
                 print('Out of memory')
@@ -78,7 +78,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
             sinogram = np.ones((nv, nr, nc))
             try:
                 bp = parallel_model.sparse_back_project(sinogram, indices)
-                m1 = mbirjax.get_gpu_memory_stats()
+                m1 = mbirjax.get_memory_stats()
                 peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
             except MemoryError as e:
                 print('Out of memory')
