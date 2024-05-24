@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, ax, fig, cur_fig, img
+global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, ax, fig, cur_fig, img, redraw_flag
 
 
 def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice'):
@@ -23,7 +23,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
     determined by the global min and max of the entire volume.
     """
-    global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, cur_fig
+    global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, cur_fig, redraw_flag
 
     slice_index = data.shape[2] // 2  # Initial slice index
 
@@ -42,6 +42,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     vmin_cur, vmax_cur = vmin, vmax
     cur_fig = None
+    redraw_flag = False
 
     def update_slice(x):
         """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
@@ -84,15 +85,31 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         divider = make_axes_locatable(ax)
         cax = divider.append_axes('right', size='5%', pad=0.05)
 
+        # Prevent the sliders from zooming
+        ax_intensity_slider.set_xlim(vmin, vmax)
+        ax_intensity_slider.set_ylim(0, 1)
+        ax_slice_slider.set_xlim(0, data.shape[2] - 1)
+        ax_slice_slider.set_ylim(0, 1)
+
         fig.colorbar(im, cax=cax, orientation='vertical')
         fig.canvas.draw_idle()
 
     def on_press(event):
+        global redraw_flag
         """Handle mouse press events for interactive slice selection."""
         if event.inaxes == ax_slice_slider:
             update_slice(event.xdata)
+            redraw_flag = True
         if event.inaxes == ax_intensity_slider:
             update_intensity(event.xdata)
+            redraw_flag = True
+
+    def on_release(event):
+        global redraw_flag
+        """Handle mouse press release for interactive slice selection."""
+        if event.inaxes in [ax_slice_slider, ax_intensity_slider] or redraw_flag:
+            redraw_flag = False
+            redraw_fig(cur_fig)
 
     def on_motion(event):
         """Handle mouse motion events for continuous slice selection while dragging."""
@@ -138,6 +155,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     # Connect events
     fig.canvas.mpl_connect('button_press_event', on_press)
     fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    fig.canvas.mpl_connect('button_release_event', on_release)
 
     # Initial drawing
     cur_fig = fig
