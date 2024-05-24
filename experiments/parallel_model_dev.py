@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # Determine resulting number of views, slices, and channels and image size
     print('Sinogram shape: {}'.format(sinogram.shape))
     print('Memory stats after forward projection')
-    mbirjax.get_gpu_memory_stats(print_results=True)
+    mbirjax.get_memory_stats(print_results=True)
 
     # Get the vector of indices
     indices = jnp.arange(num_recon_rows * num_recon_cols)
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     bp = parallel_model.sparse_back_project(sinogram, indices[0])
     print('Recon shape: ({}, {}, {})'.format(num_recon_rows, num_recon_cols, num_recon_slices))
     print('Memory stats after back projection')
-    mbirjax.get_gpu_memory_stats(print_results=True)
+    mbirjax.get_memory_stats(print_results=True)
     # ##########################
     # Test the adjoint property
     # Get a random 3D phantom to test the adjoint property
@@ -176,6 +176,6 @@ if __name__ == "__main__":
     plt.pause(2)
 
     print('Final memory stats:')
-    mbirjax.get_gpu_memory_stats(print_results=True)
+    mbirjax.get_memory_stats(print_results=True)
     input('Press return to exit')
     a = 0
