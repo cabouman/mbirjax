@@ -93,7 +93,7 @@ MBIRJAX: High-performance tomographic reconstruction
    :caption: Developer Guide
 
    dev_api
-   pytest
+   dev_maintenance
 
 
 .. _JAX: https://jax.readthedocs.io/
