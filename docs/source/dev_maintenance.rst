@@ -4,6 +4,7 @@ Package Maintenance
 
 The following lists out procedures for basic package maintenance.
 
+
 Unit Tests
 ----------
 
@@ -34,20 +35,22 @@ This is only available for registered maintainers.
 
  3. Run one of the `demo scripts <examples.html>`_
 
- NOTE: If the install fails and you need to re-test, TEMPORARILY set the version
- number in setup.py from X.X.X to X.X.X.1 (then 2,3,etc.), for further testing.
- After the test is successful, merge any require changes into the master branch,
- re-set the version number in setup.py, delete and re-create the git tag,
- and proceed to PyPI upload.
+ NOTE: If the install fails and you need to re-test, *temporarily* set
+ the version number in setup.py from X.X.X to X.X.X.1 (then 2,3,etc.),
+ for further testing.  After the test is successful, merge any require
+ changes into the master branch, re-set the version number in
+ setup.py, delete and re-create the git tag, and proceed to PyPI
+ upload.
+
 
 Upload to PyPI and test installation
 ----------------------------------------
 
 This is only available for registered maintainers.
-If granted, you need to be registered in pypi,
+If granted, you need to be registered in PyPI,
 and for authentication you'll need to add API tokens from Account Settings.
 
- 1. Upload to pypi. NOTE you cannot upload same version more than once::
+ 1. Upload to PyPI. NOTE you cannot upload same version more than once::
 
     $ pip install twine
     $ python -m twine upload dist/*
@@ -65,6 +68,7 @@ and for authentication you'll need to add API tokens from Account Settings.
 
 Reference
 ---------
+
 More details can be found in the sources below.
 
   | [1] Packaging Python projects `[link] <https://packaging.python.org/tutorials/packaging-projects/>`__
