@@ -66,8 +66,10 @@ Data Generation
 
 Parameter Documentation
 -----------------------
+
 The following documents basic TomographyModel class parameters that are commonly used in reconstruction.
 Other parameters may be used for specific geometries.
+
 
 Basic Reconstruction Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
