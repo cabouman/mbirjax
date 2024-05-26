@@ -15,8 +15,8 @@ In order to run unit tests, install MBIRJAX using the provided install scripts, 
 This should be repeated for each supported platform.
 
 
-Uploading to PyPI
------------------
+Uploading to Test PyPI
+----------------------
 
 This is only available for registered maintainers.
 
@@ -43,12 +43,10 @@ This is only available for registered maintainers.
  upload.
 
 
-Upload to PyPI and test installation
-----------------------------------------
+Upload to PyPI
+--------------
 
 This is only available for registered maintainers.
-If granted, you need to be registered in PyPI,
-and for authentication you'll need to add API tokens from Account Settings.
 
  1. Upload to PyPI. NOTE you cannot upload same version more than once::
 
@@ -60,7 +58,7 @@ and for authentication you'll need to add API tokens from Account Settings.
 
  2. Test the uploaded package::
 
-    $ pip install svmbir    # OR, "mbirjax==0.1.1" e.g. for a specific version number
+    $ pip install mbirjax    # OR, "mbirjax==0.1.1" e.g. for a specific version number
     $ python -c "import mbirjax"     # spin the wheel
 
  3. Run one of the `demo scripts <examples.html>`_
