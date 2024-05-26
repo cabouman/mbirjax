@@ -18,7 +18,7 @@ classifiers = [
     "License :: OSI Approved :: BSD 3-Clause License",
     "Operating System :: OS Independent"
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "matplotlib",
     "numpy",
