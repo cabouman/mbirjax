@@ -325,8 +325,8 @@ class ConeBeamModel(TomographyModel):
             the input sinogram view.
         """
 
-        vertical_fan_projector = ConeBeamModel.back_vertical_fan_pixel_batch_to_one_view
-        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_pixel_batch_to_one_view
+        vertical_fan_projector = ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch
+        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
 
         det_voxel_cylinder = horizontal_fan_projector(sinogram_view, pixel_indices, single_view_params,
                                                       projector_params, coeff_power=coeff_power)
@@ -337,7 +337,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_horizontal_fan_pixel_batch_to_one_view(sinogram_view, pixel_indices, angle,
+    def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle,
                                                     projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
@@ -389,7 +389,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_vertical_fan_pixel_batch_to_one_view(det_voxel_cylinder, pixel_indices, single_view_params,
+    def back_vertical_fan_one_view_to_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,
                                                   projector_params, coeff_power=1):
         """
         Apply a fan beam backward projection in the vertical direction to the pixel determined by indices
@@ -409,7 +409,7 @@ class ConeBeamModel(TomographyModel):
         Returns:
             2D jax array of shape (num_pixels, num_recon_slices) of voxel values.
         """
-        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_one_pixel_one_view,
+        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_one_view_to_one_pixel,
                              in_axes=(0, 0, None, None, None))
         new_pixels = pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params, coeff_power)
 
@@ -417,8 +417,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_vertical_fan_one_pixel_one_view(detector_column_values, pixel_index, angle, projector_params,
-                                             coeff_power=1):
+    def back_vertical_fan_one_view_to_one_pixel(detector_column_values, pixel_index, angle, projector_params,
+                                                coeff_power=1):
         """
         Apply the back projection of a vertical fan beam transformation to a single voxel cylinder and return the column
         vector of the resulting values.
