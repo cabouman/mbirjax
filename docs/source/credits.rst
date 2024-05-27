@@ -16,7 +16,7 @@ We would like to thank the following sponsors for their financial support in the
 
 **Citation**
 
-Please use the following Bibtex citation when referencing this software. :cite:`sreehari2016plug` (coming soon) :cite:`venkatakrishnan2013plug`
+Please use the following Bibtex citation when referencing this software.
 ::
 
     @Misc {mbirjax-2024,

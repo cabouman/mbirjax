@@ -29,9 +29,9 @@ The forward model term has the form,
 
     f(x) = \frac{1}{2 \sigma_y^2} \Vert y - Ax \Vert_\Lambda^2
 
-where :math:`y` is the sinogram data, 
-where :math:`x` is the unknown image to be reconstructed, 
-:math:`A` is the linear projection operator for the specified imaging geometry, 
+where :math:`y` is the sinogram data,
+where :math:`x` is the unknown image to be reconstructed,
+:math:`A` is the linear projection operator for the specified imaging geometry,
 :math:`\Lambda` is the diagonal matrix of sinogram weights, :math:`\Vert y \Vert_\Lambda^2 = y^T \Lambda y`, and
 :math:`\sigma_y` is a parameter controlling the assumed standard deviation of the measurement noise.  More details
 about the forward model for specific geometries is available by downloading the associated
@@ -40,8 +40,8 @@ about the forward model for specific geometries is available by downloading the 
 These quantities correspond to the following python variables:
 
 * :math:`y` corresponds to ``sino``
-* :math:`\sigma_y` corresponds to ``sigma_y`` 
-* :math:`\Lambda` corresponds to ``weights`` 
+* :math:`\sigma_y` corresponds to ``sigma_y``
+* :math:`\Lambda` corresponds to ``weights``
 
 The weights can either be set automatically using the ``weight_type`` input, or they can be explicitly set to an array of precomputed weights.
 For many new users, it is easier to use one of the automatic weight settings shown below.
@@ -51,11 +51,11 @@ For many new users, it is easier to use one of the automatic weight settings sho
 * weight_type="transmission_root" => Lambda = numpy.exp(-sino/2)
 * weight_type="emmission" => Lambda = (1/(sino + 0.1))
 
-Option "unweighted" provides unweighted reconstruction; Option "transmission" is the correct weighting for transmission CT with constant dosage; Option "transmission_root" is commonly used with transmission CT data to improve image homogeneity; Option "emmission" is appropriate for emission CT data. 
+Option "unweighted" provides unweighted reconstruction; Option "transmission" is the correct weighting for transmission CT with constant dosage; Option "transmission_root" is commonly used with transmission CT data to improve image homogeneity; Option "emmission" is appropriate for emission CT data.
 
 **Prior Model:**
 MBIRJAX allows the prior model to be set either as a qGGMRF or a proximal map prior.
-The qGGRMF prior is the default method recommended for new users. 
+The qGGRMF prior is the default method recommended for new users.
 Alternatively, the proximal map prior is an advanced feature required for the implementation of the Plug-and-Play algorithm. The Plug-and-Play algorithm allows the modular use of a wide variety of advanced prior models including priors implemented with machine learning methods such as deep neural networks.
 
 The qGGMRF prior model has the form
@@ -64,7 +64,7 @@ The qGGMRF prior model has the form
 
     h(x) = \sum_{ \{s,r\} \in {\cal P}} b_{s,r} \rho ( x_s - x_r) \ ,
 
-where 
+where
 
 .. math::
 
@@ -79,14 +79,14 @@ and :math:`T` is a threshold parameter.
 These quantities correspond to the following python variables:
 
 * :math:`\sigma_x` corresponds to ``sigma_x``
-* :math:`p` corresponds to ``p`` 
-* :math:`q` corresponds to ``q`` 
-* :math:`T` corresponds to ``T`` 
+* :math:`p` corresponds to ``p``
+* :math:`q` corresponds to ``q``
+* :math:`T` corresponds to ``T``
 
 
 **Proximal Map Prior:**
 The proximal map prior is provided as a option for advanced users would would like to use plug-and-play methods.
-If ``prox_image`` is supplied, then the proximal map prior model is used, and the qGGMRF parameters are ignored. 
+If ``prox_image`` is supplied, then the proximal map prior model is used, and the qGGMRF parameters are ignored.
 In this case, the reconstruction solves the optimization problem:
 
 .. math::
@@ -127,4 +127,3 @@ Using this convention, the 3D array, ``image``, will be in units of photons/AU. 
 .. math::
 
     \mbox{image in photons/mm} = \frac{ \mbox{image in photons/ALU} }{ 5 \mbox{mm} / \mbox{ALU}}
-

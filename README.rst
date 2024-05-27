@@ -1,8 +1,9 @@
 .. docs-include-ref
 
-mbirjax
+MBIRJAX
 =======
-Model-Based Iterative Reconstruction (MBIR) for tomographic reconstruction that is based on the JAX programming language.
+
+Model-Based Iterative Reconstruction (MBIR) for tomographic reconstruction that is based on the `JAX <https://github.com/google/jax>`__ library.
 Full documentation is available at https://mbirjax.readthedocs.io .
 
 ..
