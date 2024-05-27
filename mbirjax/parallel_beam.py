@@ -196,7 +196,55 @@ class ParallelBeamModel(TomographyModel):
         return back_projection
 
     @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+        """
+        Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
+        slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
+        This function returns the resulting sinogram view.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
+                the flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view
+            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_det_rows, num_det_channels)
+        """
+
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, det_channel_offset, delta_voxel, psf_radius) = geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+
+        # Get the data needed for horizontal projection
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        L_max = jnp.minimum(1, W_p_c)
+
+        # Allocate the sinogram array
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+
+        # Define the projector, which will be vmapped over slices.
+        def project_slice(sinogram_view_row, voxel_values_slice):
+            for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+                A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view_row = sinogram_view_row.at[n].add(A_chan_n * voxel_values_slice)
+
+            return sinogram_view_row
+
+        sinogram_view = jax.vmap(project_slice, in_axes=(0, 1))(sinogram_view, voxel_values)
+
+        return sinogram_view
+
+    @staticmethod
+    def forward_project_pixel_batch_to_one_view_old(voxel_values, pixel_indices, angle, projector_params):
         """
         Forward project a set of voxel cylinders determined by indices into the flattened array of size 
         num_rows x num_cols.
@@ -232,7 +280,6 @@ class ParallelBeamModel(TomographyModel):
         sinogram_view = sinogram_view.at[:, Aij_channel].add(sinogram_values)
         del Aij_value, Aij_channel
         return sinogram_view
-
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -310,3 +357,69 @@ class ParallelBeamModel(TomographyModel):
 
         # jax.debug.breakpoint()
         return Aij_value, Aij_channel
+
+    @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
+    def compute_proj_data(pixel_indices, angle, projector_params):
+        """
+        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+
+        Args:
+            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
+            angle (float): The projection angle in radians for this view.
+            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+
+        Returns:
+            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+        """
+
+        # Get all the geometry parameters
+        geometry_params = projector_params[2]
+        (delta_det_channel, det_channel_offset, delta_voxel, psf_radius) = geometry_params
+
+        num_views, num_det_rows, num_det_channels = projector_params[0]
+        recon_shape = projector_params[1]
+
+        # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
+        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
+
+        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, delta_voxel, recon_shape, angle)
+
+        det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
+
+        # Calculate indices on the detector grid
+        n_p = (x_p / delta_det_channel) + det_center_channel + det_channel_offset
+        n_p_center = jnp.round(n_p).astype(int)
+
+        # Compute cos alpha for row and columns
+        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle)),
+                                    jnp.abs(jnp.sin(angle)))
+
+        # Compute projected voxel width along columns and rows (in fraction of detector size)
+        W_p_c = (delta_voxel / delta_det_channel) * cos_alpha_p_xy
+
+        proj_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
+
+        return proj_data
+
+    @staticmethod
+    @jax.jit
+    def recon_ij_to_x(i, j, delta_voxel, recon_shape, angle):
+        """
+        Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
+        """
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+
+        # Compute the un-rotated coordinates relative to iso
+        # Note the change in order from (i, j) to (y, x)!!
+        y_tilde = delta_voxel * (i - (num_recon_rows - 1) / 2.0)
+        x_tilde = delta_voxel * (j - (num_recon_cols - 1) / 2.0)
+
+        # Precompute cosine and sine of view angle, then do the rotation
+        cosine = jnp.cos(angle)  # length = num_views
+        sine = jnp.sin(angle)  # length = num_views
+
+        x = cosine * x_tilde - sine * y_tilde
+        y = sine * x_tilde + cosine * y_tilde
+
+        return x
