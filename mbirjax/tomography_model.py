@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import mbirjax
 from mbirjax import ParameterHandler
+from functools import partial
 
 
 class TomographyModel(ParameterHandler):
@@ -448,21 +449,41 @@ class TomographyModel(ParameterHandler):
             recon = jnp.array(init_recon)
             error_sinogram = sinogram - self.forward_project(recon)
 
+        # Test to make sure the prox_input input is correct
+        if prox_input is not None:
+            # Make sure that prox_input has the correct size
+            if prox_input.shape != recon.shape:
+                error_message = "prox_input does not have the correct size. \n"
+                error_message += "Expected {}, but got shape {} for prox_input shape.".format(recon.shape,
+                                                                                              prox_input.shape)
+                raise ValueError(error_message)
+
+            # If used, make sure that prox_input has the correct a 3D shape and type
+            prox_input = jnp.array(prox_input.reshape(recon.shape))
+
         # Initialize the diagonal of the hessian of the forward model
-        hessian = self.compute_hessian_diagonal(weights=weights)
+        num_recon_slices = recon_shape[2]
+        fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
 
         # Initialize forward model normalized RMSE error array
         fm_rmse = np.zeros(num_iters)
 
+        recon = recon.reshape((-1, num_recon_slices))
+
+        print('Starting VCD iterations')
+        mbirjax.get_memory_stats(print_results=True)
+
         for i in range(num_iters):
             error_sinogram, recon = self.vcd_partition_iteration(error_sinogram, recon,
-                                                                 partitions[partition_sequence[i]], hessian,
+                                                                 partitions[partition_sequence[i]], fm_hessian,
                                                                  weights=weights, prox_input=prox_input)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
             if self.get_params('verbose') >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
+            mbirjax.get_memory_stats(print_results=True)
+            print('--------')
 
-        return recon, fm_rmse
+        return self.reshape_recon(recon), fm_rmse
 
     def vcd_partition_iteration(self, error_sinogram, recon, partition, fm_hessian, weights=1.0, prox_input=None):
         """
@@ -475,7 +496,7 @@ class TomographyModel(ParameterHandler):
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             partition (int array): (K, N_indices) an integer index arrays that partitions
                 the voxels into K arrays, each of which indexes into a flattened recon.
-            recon (jax array): 3D array reconstruction with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+            recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
             fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
             weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
 
@@ -511,24 +532,9 @@ class TomographyModel(ParameterHandler):
         # Get positivity flag
         positivity_flag = self.get_params('positivity_flag')
 
-        # Recover recon shape parameters and make sure that recon has a 3D shape
-        recon = self.reshape_recon(recon)
-
-        # Test to make sure the prox_input input is correct
-        if prox_input is not None:
-            # Make sure that prox_input has the correct size
-            if prox_input.size != recon.size:
-                error_message = "prox_input does not have the correct size. \n"
-                error_message += "Expected {}, but got shape {} for prox_input shape.".format(recon.size,
-                                                                                              prox_input.size)
-                raise ValueError(error_message)
-
-            # If used, make sure that prox_input has the correct a 3D shape and type
-            prox_input = jnp.array(prox_input.reshape(recon.shape))
-
         # flatten the hessian if it is not already flat
-        num_recon_slices = recon.shape[2]
-        fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
+        # num_recon_slices = recon.shape[2]
+        # fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
 
         # Compute the forward model gradient and hessian at each pixel in the index set.
         # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
@@ -538,11 +544,12 @@ class TomographyModel(ParameterHandler):
         fm_sparse_hessian = constant * fm_hessian[indices]
 
         # Compute the prior model gradient and hessian (i.e., second derivative) terms
+        recon_shape = self.get_params('recon_shape')
         if prox_input is None:
             # This is for the qGGMRF prior
             # Compute the prior model gradient and hessian at each pixel in the index set.
             sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
-            pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b)
+            pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(recon, recon_shape, indices, sigma_x, p, q, T, b)
         else:
             # This is for the proximal map prior
             sigma_p = self.get_params('sigma_p')
@@ -564,9 +571,6 @@ class TomographyModel(ParameterHandler):
                     jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
         # TODO: test for alpha<0 and terminate.
 
-        # Flatten recon for next steps
-        recon = recon.reshape((-1, num_recon_slices))
-
         # Enforce positivity constraint if desired
         # Greg, this may result in excess compilation. Not sure.
         if positivity_flag is True:
@@ -582,7 +586,7 @@ class TomographyModel(ParameterHandler):
 
         # Perform sparse updates at index locations, and reshape as 3D array
         recon = recon.at[indices].add(alpha * delta_recon_at_indices)
-        recon = self.reshape_recon(recon)
+        # recon = self.reshape_recon(recon)
 
         # Update sinogram
         error_sinogram = error_sinogram - alpha * delta_sinogram
@@ -720,13 +724,14 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
     return pm_first_derivative, pm_second_derivative
 
 
-@jax.jit
-def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, b):
+@partial(jax.jit, static_argnames='recon_shape')
+def pm_qggmrf_gradient_and_hessian_at_indices(recon, recon_shape, indices, sigma_x, p, q, T, b):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
     Args:
-        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
         indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
         sigma_x (float): Standard deviation parameter of the qGGMRF prior.
         p (float): Norm parameter p in the qGGMRF prior.
@@ -744,20 +749,23 @@ def pm_qggmrf_gradient_and_hessian_at_indices(recon, indices, sigma_x, p, q, T, 
     b /= jnp.sum(b)
 
     # Extract the shape of the reconstruction array.
-    num_rows, num_cols, num_slices = recon.shape[:3]
+    num_rows, num_cols, num_slices = recon_shape[:3]
 
     # Convert flat indices to 2D indices for row and column access.
     row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
 
     # Access the central voxels' values at the given indices. Shape of xs is (num indices)x(num slices)
-    xs = recon[row_index, col_index]
+    xs = recon[indices]
 
     # Define relative positions for accessing neighborhood voxels.
     offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
     # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that
     # location over all slices.
-    xr = [recon[row_index + offset[0], col_index + offset[1]] for offset in offsets]
+    xr = []
+    for offset in offsets:
+        new_indices = jnp.ravel_multi_index([row_index + offset[0], col_index + offset[1]], dims=(num_rows, num_cols), mode='clip')
+        xr.append(recon[new_indices])
 
     # Shift slices up with zero padding
     xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(0)
@@ -793,20 +801,17 @@ def pm_prox_gradient_at_indices(recon, prox_input, indices, sigma_p):
     Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
     Args:
-        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
-        recon (jax.array): 3D reconstructed image array with shape (num_recon_rows, num_recon_cols, num_recon_slices).
+        recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        prox_input (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
         indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
         sigma_p (float): Standard deviation parameter of the proximal map.
 
     Returns:
         first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
     """
-    # Convert flat indices to 2D indices for row and column access.
-    num_rows, num_cols = recon.shape[:2]
-    row_index, col_index = jnp.unravel_index(indices, shape=(num_rows, num_cols))
 
     # Compute the prior model gradient at all voxels
-    cur_diff = recon[row_index, col_index] - prox_input[row_index, col_index]
+    cur_diff = recon[indices] - prox_input[indices]
     pm_gradient = (1.0 / (sigma_p ** 2.0)) * cur_diff
 
     # Shape of pm_gradient is (num indices)x(num slices)
