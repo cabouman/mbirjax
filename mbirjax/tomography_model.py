@@ -170,7 +170,7 @@ class TomographyModel(ParameterHandler):
 
         return self.reshape_recon(recon)
 
-    def sparse_forward_project(self, voxel_values, indices):
+    def sparse_forward_project(self, voxel_values, indices, view_indices=()):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -179,15 +179,17 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+                If None, then all views are used.
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self._sparse_forward_project(voxel_values, indices).block_until_ready()
+        sinogram = self._sparse_forward_project(voxel_values, indices, view_indices=view_indices).block_until_ready()
         gc.collect()
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices):
+    def sparse_back_project(self, sinogram, indices, view_indices=()):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -196,25 +198,29 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             indices (jnp array): Array of indices specifying which voxels to back project.
+            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+                If None, then all views are used.
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon_at_indices = self._sparse_back_project(sinogram, indices).block_until_ready()
+        recon_at_indices = self._sparse_back_project(sinogram, indices, view_indices=view_indices).block_until_ready()
         gc.collect()
         return recon_at_indices
 
-    def compute_hessian_diagonal(self, weights=None):
+    def compute_hessian_diagonal(self, weights=None, view_indices=()):
         """
         Computes the diagonal elements of the Hessian matrix for given weights.
 
         Args:
             weights (jnp array): Sinogram Weights for the Hessian computation.
+            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+                If None, then all views are used.
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self._compute_hessian_diagonal(weights).block_until_ready()
+        hessian = self._compute_hessian_diagonal(weights, view_indices=view_indices).block_until_ready()
         gc.collect()
         return hessian
 
