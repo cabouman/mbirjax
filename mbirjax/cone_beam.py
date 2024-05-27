@@ -352,7 +352,7 @@ class ConeBeamModel(TomographyModel):
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
         Returns:
-
+            jax array of shape (len(pixel_indices), num_det_rows)
         """
 
         # Get all the geometry parameters
