@@ -10,8 +10,8 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_views = 256
-    num_det_rows = 20
+    num_views = 128
+    num_det_rows = 256
     num_det_channels = 256
     source_detector_dist = 4 * num_det_channels
     source_iso_dist = source_detector_dist
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     #cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
     #cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
-    # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
+    # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3]) # You can change the partition sequence and granularity
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sinogram = cone_model.forward_project(phantom)
 
     # View sinogram
-    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
+    # pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
 
     # Generate weights array
     weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')

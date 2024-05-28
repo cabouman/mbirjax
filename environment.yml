@@ -7,8 +7,6 @@ dependencies:
   - pytest
   - matplotlib
   - numpy
-  - scipy
-  - pyyaml
   - setuptools
   - jax
   - jaxlib
