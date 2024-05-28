@@ -34,7 +34,7 @@ if __name__ == "__main__":
     #cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
     #cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
     #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
-    # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3], num_iterations=13) # You can change the iterations
+    # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3]) # You can change the partition sequence and granularity
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
