@@ -6,20 +6,22 @@ import jax.numpy as jnp
 
 class Projectors:
 
-    def __init__(self, tomography_model, forward_core, backward_core):
+    def __init__(self, tomography_model):
 
         self.tomography_model = tomography_model
         self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = None, None, None
-        self.create_projectors(forward_core, backward_core)
+        self.create_projectors(tomography_model)
 
-    def create_projectors(self, forward_project_pixel_batch_to_one_view, back_project_one_view_to_pixel_batch):
+    def create_projectors(self, tomography_model):
         """
         Compute the forward and back projectors for this geometry and current view parameters
-        
+
         Args:
-            forward_project_pixel_batch_to_one_view (callable): jit-compilable function implementing
+            tomography_model (mbirjax.TomographyModel): An instance describing the current geometry and implementing
+            the following 2 functions:
+                * forward_project_pixel_batch_to_one_view (callable): jit-compilable function implementing
                 :meth:`TomographyModel.forward_project_pixel_batch_to_one_view`
-            back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing
+                * back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing
                 :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
 
         Returns:
@@ -40,6 +42,9 @@ class Projectors:
             :meth:`TomographyModel.forward_project_pixel_batch_to_one_view` and
             :meth:`TomographyModel.back_project_one_view_to_pixel_batch`.
         """
+        forward_project_pixel_batch_to_one_view = tomography_model.forward_project_pixel_batch_to_one_view
+        back_project_one_view_to_pixel_batch = tomography_model.back_project_one_view_to_pixel_batch
+
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
         projector_params = (tuple(sinogram_shape), tuple(recon_shape), tuple(geometry_params))

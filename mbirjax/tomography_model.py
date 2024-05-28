@@ -81,8 +81,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but creates jit-compiled functions.
         """
-        projector_functions = mbirjax.Projectors(self, self.forward_project_pixel_batch_to_one_view,
-                                                 self.back_project_one_view_to_pixel_batch)
+        projector_functions = mbirjax.Projectors(self)
         self._sparse_forward_project = projector_functions.sparse_forward_project
         self._sparse_back_project = projector_functions.sparse_back_project
         self._compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
