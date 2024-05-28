@@ -1,32 +1,43 @@
 import matplotlib.pyplot as plt
+import numpy
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
+from matplotlib.widgets import RangeSlider, Slider
 
-global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, ax_data, ax_data2, fig, cur_fig, img, redraw_flag
 
-
-def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice'):
+def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_axis=2,
+                 cmap='gray'):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
-    Allows interactive selection of slices via a draggable line on a colorbar-like axis. If two images are provided,
-    they are displayed side by side for comparative purposes.
+    Allows interactive selection of slices and intensity window. If two images are provided,
+    they are displayed side by side for comparative purposes.  If the two images have the same shape, then zoom
+    and pan will be applied to each image simultaneously.  If not pan and zoom are applied to one image at a time.
 
     Args:
-        data (numpy.ndarray or jax.numpy.DeviceArray): 3D image volume with shape (height, width, depth).
-        data2 (numpy.ndarray or jax.numpy.DeviceArray, optional): Second 3D image volume with the same shape as the first.
+        data (ndarray or jax array): 3D image volume with shape (height, width, depth).
+        data2 (numpy array or jax array): Second 3D image volume with the same shape as the first.
         title (string, optional, default=''): Figure super title
         vmin (float): minimum for displayed intensity
         vmax (float): maximum for displayed intensity
         slice_label (str): Text label to be used for a given slice.  Defaults to 'Slice'
+        slice_axis (int): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
+            displayed images will be data[:, slice_index, :]
 
-    The function sets up a matplotlib figure with interactive controls to view different slices
-    by clicking and dragging on a custom colorbar. Each slice is displayed using the same grayscale range
-    determined by the global min and max of the entire volume.
+    Example:
+        data1 = np.random.rand(100, 100, 50)  # Random 3D volume
+        data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
+        slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
-    global slice_index, slice_line, vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, cur_fig, redraw_flag
+    if data.ndim != 3 or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
+        error_msg = 'The input data must be a 3D array, and if data2 is provided, then data.shape[slice_axis] '
+        error_msg += 'must equal data2.shape[slice_axis])'
+        raise ValueError(error_msg)
 
-    slice_index = data.shape[2] // 2  # Initial slice index
+    # Move the specified slice axis into the last position
+    data = numpy.moveaxis(data, slice_axis, 2)
+    if data2 is not None:
+        data2 = numpy.moveaxis(data2, slice_axis, 2)
 
     # Define min and max grayscale values for consistent coloring across slices
     if vmin is None:
@@ -41,159 +52,91 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         vmin = vmin - scale
         vmax = vmax + scale
 
-    vmin_cur, vmax_cur = vmin, vmax
-    cur_fig = None
-    redraw_flag = False
-
-    def update_slice(x):
-        """Update the displayed slice based on the position of the mouse click or drag on the colorbar axis."""
-        global slice_index, slice_line, cur_fig
-        slice_index = int(0.5 + x / ax_slice_slider.get_xlim()[1] * (data.shape[2] - 1))
-        slice_line.set_xdata([slice_index, slice_index])
-        redraw_fig(cur_fig)
-
-    def update_intensity(x):
-        global vmin_cur, vmax_cur, vmin_line, vmax_line, intensity_line, cur_fig
-        # Determine whether x is closer to vmin_cur or vmax_cur and set the line appropriately
-        if x - vmin_cur < vmax_cur - x:
-            vmin_cur = x
-            vmin_line.set_xdata([vmin_cur, vmin_cur])
-        else:
-            vmax_cur = x
-            vmax_line.set_xdata([vmax_cur, vmax_cur])
-
-        xmin_cur = (vmin_cur - vmin) / (vmax - vmin)
-        xmax_cur = (vmax_cur - vmin) / (vmax - vmin)
-
-        intensity_line.set_xdata([xmin_cur, xmax_cur])
-        redraw_fig(cur_fig)
-
-    def redraw_fig(fig, first_pass=False):
-        """Redraw the figure to update the slice and its display.
-        The colorbar is drawn only at initialization.
-        """
-        ax_data.clear()
-        cur_data = np.clip(data[:, :, slice_index], vmin_cur, vmax_cur)
-        im = ax_data.imshow(cur_data, cmap='gray', vmin=vmin_cur, vmax=vmax_cur)
-        ax_data.set_title(f'{slice_label} {slice_index}')
-
-        if data2 is not None:
-            ax_data2.clear()
-            cur_data2 = np.clip(data2[:, :, slice_index], vmin_cur, vmax_cur)
-            ax_data2.imshow(cur_data2, cmap='gray', vmin=vmin_cur, vmax=vmax_cur)
-            ax_data2.set_title(f'{slice_label} {slice_index}')
-
-        divider = None
-        if not first_pass:
-            fig.axes[-1].remove()  # Remove the previous colobar before adding it again.
-            if data2 is not None:
-                fig.axes[-1].remove()
-        divider = make_axes_locatable(ax_data)
-        cax = divider.append_axes('right', size='5%', pad=0.05)
-        if data2 is not None:
-            divider2 = make_axes_locatable(ax_data2)
-            cax.axis('off')
-            cax = divider2.append_axes('right', size='5%', pad=0.05)
-
-        # Prevent the sliders from zooming
-        ax_intensity_slider.set_xlim(vmin, vmax)
-        ax_intensity_slider.set_ylim(0, 1)
-        ax_slice_slider.set_xlim(0, data.shape[2] - 1)
-        ax_slice_slider.set_ylim(0, 1)
-
-        fig.colorbar(im, cax=cax, orientation='vertical')
-        fig.canvas.draw_idle()
-
-    def on_press(event):
-        global redraw_flag
-        """Handle mouse press events for interactive slice selection."""
-        if event.inaxes == ax_slice_slider:
-            update_slice(event.xdata)
-            redraw_flag = True
-        if event.inaxes == ax_intensity_slider:
-            update_intensity(event.xdata)
-            redraw_flag = True
-
-    def on_release(event):
-        global redraw_flag
-        """Handle mouse press release for interactive slice selection."""
-        if event.inaxes in [ax_slice_slider, ax_intensity_slider] or redraw_flag:
-            redraw_flag = False
-            redraw_fig(cur_fig)
-
-    def on_motion(event):
-        """Handle mouse motion events for continuous slice selection while dragging."""
-        if event.inaxes == ax_slice_slider and event.button == 1:
-            update_slice(event.xdata)
-        if event.inaxes == ax_intensity_slider and event.button == 1:
-            update_intensity(event.xdata)
-
-    # Setup the plot
-    plt.ion()  # Turn on interactive mode
-    fig = plt.figure(figsize=(6,6))
+    # Set up the plot
+    figwidth = 6 if data2 is None else 10
+    fig = plt.figure(figsize=(figwidth, 6))
     fig.suptitle(title)
-    gs = gridspec.GridSpec(nrows=5, ncols=2, height_ratios=[10, 1, 0.5, 1, 0.5])
+
+    # Set up the subplots. One or two images in the first row along with colorbars.
+    gs = gridspec.GridSpec(nrows=3, ncols=2, height_ratios=[10, 1, 1])
     ax_data, ax_data2 = None, None
     if data2 is None:
         ax_data = fig.add_subplot(gs[0, :])
     else:
         ax_data = fig.add_subplot(gs[0, 0])
-        ax_data2 = fig.add_subplot(gs[0, 1], sharex=ax_data, sharey=ax_data)
+        share_axis = ax_data if data.shape == data2.shape else None
+        ax_data2 = fig.add_subplot(gs[0, 1], sharex=share_axis, sharey=share_axis)
+
+    # Show the initial slice
+    slice_index = data.shape[2] // 2
+    im = ax_data.imshow(data[:, :, slice_index], cmap=cmap, vmin=vmin, vmax=vmax)
+    im2 = None
+    if data2 is not None:
+        im2 = ax_data2.imshow(data2[:, :, slice_index], cmap=cmap, vmin=vmin, vmax=vmax)
+        ax_data2.set_title(f'{slice_label} {slice_index}')
+
+    # Set up a colorbar next to the rightmost image, but add extra space to both to make them the same size.
+    divider = make_axes_locatable(ax_data)
+    cax = divider.append_axes('right', size='5%', pad=0.05)
+    if data2 is not None:
+        divider2 = make_axes_locatable(ax_data2)
+        cax.axis('off')
+        cax = divider2.append_axes('right', size='5%', pad=0.05)
+
+    fig.colorbar(im, cax=cax, orientation='vertical')
+
+    # Then add the slice slider
     ax_slice_slider = fig.add_subplot(gs[1, :])
-    ax_slice_slider.set_navigate(False)
-    ax_slice_instruction = fig.add_subplot(gs[2, :])
-    ax_slice_instruction.set_navigate(False)
-    ax_intensity_slider = fig.add_subplot(gs[3, :])
-    ax_intensity_slider.set_navigate(False)
-    ax_intensity_instructions = fig.add_subplot(gs[4, :])
-    ax_intensity_instructions.set_navigate(False)
+    slice_slider = Slider(ax=ax_slice_slider, label=slice_label, valmin=0, valmax=data.shape[2],
+                          valinit=slice_index, valfmt='%0.0f')
 
-    # Setup the interactive vertical line in the slice slider
-    ax_slice_slider.set_xlim(0, data.shape[2] - 1)
-    ax_slice_slider.set_ylim(0, 1)
-    slice_line = ax_slice_slider.axvline(slice_index, color='black', linewidth=4)  # Movable line
-    ax_slice_slider.set_facecolor('white')
-    ax_slice_slider.set_yticks([])
-    ax_slice_slider.set_xticks([])
+    # Then the intensity slider
+    ax_intensity_slider = fig.add_subplot(gs[2, :])
+    log_intensity_range = np.log10(vmax - vmin)
+    num_digits = max(- int(np.round(log_intensity_range)) + 2, 0)
+    valfmt = '%0.' + str(num_digits) + 'f'
+    valinit = (vmin, vmax)
+    intensity_slider = RangeSlider(ax_intensity_slider, "Intensity\nrange", vmin, vmax,
+                                   valinit=valinit, valfmt=valfmt)
 
-    # Add a label below the slider
-    ax_slice_instruction.text(0.5, 0.5, f'Click and drag to change {slice_label.lower()}', ha='center', va='center', fontsize=10)
-    ax_slice_instruction.set_axis_off()
+    ax_data.set_title(f'{slice_label} {slice_index}')
 
-    # Setup the interactive window in the intensity slider
-    ax_intensity_slider.set_xlim(vmin, vmax)
-    ax_intensity_slider.set_ylim(0, 1)
-    intensity_line = ax_intensity_slider.axhline(y=0.5, color='red', linewidth=4)
-    ax_intensity_slider.set_facecolor('white')
-    ax_intensity_slider.set_yticks([])
-    ax_intensity_slider.set_xticks([vmin, vmax])
-    vmin_line = ax_intensity_slider.axvline(vmin, color='blue', linewidth=4)  # Movable line
-    vmax_line = ax_intensity_slider.axvline(vmax, color='red', linewidth=4)
+    fig.text(0.01, 0.95, 'Close plot \nto continue')
 
-    # Add a label below the slider
-    ax_intensity_instructions.text(0.5, 0.5, 'Click and drag to change intensity window', ha='center', va='center', fontsize=10)
-    ax_intensity_instructions.set_axis_off()
+    # Set up the callback functions for the sliders
+    def update_intensity(val):
+        # The val passed to a callback by the RangeSlider will
+        # be a tuple of (min, max), which are used to set vmin and vmax for both images.
 
-    # Connect events
-    fig.canvas.mpl_connect('button_press_event', on_press)
-    fig.canvas.mpl_connect('motion_notify_event', on_motion)
-    fig.canvas.mpl_connect('button_release_event', on_release)
+        # Update the image's colormap
+        im.norm.vmin = val[0]
+        im.norm.vmax = val[1]
 
-    # Initial drawing
-    cur_fig = fig
-    redraw_fig(fig, first_pass=True)  # Call redraw to handle initial display for single or dual images
+        if data2 is not None:
+            im2.norm.vmin = val[0]
+            im2.norm.vmax = val[1]
 
-    plt.pause(0.1)  # Delay to ensure window stays open
-    input("Press any key to close ")
+        # Redraw the figure to ensure it updates
+        fig.canvas.draw_idle()
 
-    plt.ioff()  # Turn off interactive mode
-    plt.close()
+    def update_slice(val):
+        # The val passed to a callback by the Slider is a single float.  We cast it to an int to index the slice.
+        cur_slice = int(np.round(val))
+        im.set_data(data[:, :, cur_slice])
+        ax_data.set_title(f'{slice_label} {cur_slice}')
+        if data2 is not None:
+            im2.set_data(data2[:, :, cur_slice])
+            ax_data2.set_title(f'{slice_label} {cur_slice}')
 
+        # Redraw the figure to ensure it updates
+        fig.canvas.draw_idle()
 
-# Example usage:
-# data1 = np.random.rand(100, 100, 50)  # Random 3D volume
-# data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
-# slice_viewer(data1, data2)  # View slices of both volumes side by side
+    # Connect the sliders to the callback functions
+    intensity_slider.on_changed(update_intensity)
+    slice_slider.on_changed(update_slice)
+
+    plt.tight_layout()
+    plt.show()
 
 
 def debug_plot_partitions(partitions, recon_shape):
