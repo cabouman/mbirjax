@@ -14,14 +14,14 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 32  # Reduce this for large detector row/channel count, increase for smaller
+    view_batch_size = 2  # Reduce this for large detector row/channel count, increase for smaller
     pixel_batch_size = 2048
 
     # Initialize sinogram parameters
     num_views = 128
     num_det_rows = 128
     num_det_channels = 128
-    view_step_size = 8
+    view_step_size = None  # Set to a small, positive integer to subsample the views
 
     view_indices = np.arange(start=0, stop=num_views, step=view_step_size)
 

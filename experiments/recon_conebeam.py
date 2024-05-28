@@ -10,8 +10,8 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_views = 256
-    num_det_rows = 20
+    num_views = 128
+    num_det_rows = 256
     num_det_channels = 256
     source_detector_dist = 4 * num_det_channels
     source_iso_dist = source_detector_dist
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sinogram = cone_model.forward_project(phantom)
 
     # View sinogram
-    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
+    # pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
 
     # Generate weights array
     weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')

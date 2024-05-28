@@ -17,12 +17,10 @@ class Projectors:
         Compute the forward and back projectors for this geometry and current view parameters
 
         Args:
-            tomography_model (mbirjax.TomographyModel): An instance describing the current geometry and implementing
-            the following 2 functions:
-                * forward_project_pixel_batch_to_one_view (callable): jit-compilable function implementing
-                :meth:`TomographyModel.forward_project_pixel_batch_to_one_view`
-                * back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing
-                :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
+            tomography_model (mbirjax.TomographyModel): An instance describing the current geometry and implementing the following 2 functions:
+
+                * forward_project_pixel_batch_to_one_view (callable): jit-compilable function implementing :meth:`TomographyModel.forward_project_pixel_batch_to_one_view`
+                * back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
 
         Returns:
             Nothing, but the class variables `sparse_forward_project`, `sparse_back_project`, and
@@ -41,6 +39,7 @@ class Projectors:
             This method requires geometry-specific implementations of
             :meth:`TomographyModel.forward_project_pixel_batch_to_one_view` and
             :meth:`TomographyModel.back_project_one_view_to_pixel_batch`.
+
         """
         forward_project_pixel_batch_to_one_view = tomography_model.forward_project_pixel_batch_to_one_view
         back_project_one_view_to_pixel_batch = tomography_model.back_project_one_view_to_pixel_batch
