@@ -6,12 +6,17 @@ MBIRJAX
 Model-Based Iterative Reconstruction (MBIR) for tomographic reconstruction that is based on the `JAX <https://github.com/google/jax>`__ library.
 Full documentation is available at https://mbirjax.readthedocs.io .
 
-..
-    Include more detailed description here.
+Installing from PyPI
+--------------------
 
-Installing
-----------
-1. *Clone or download the repository:*
+    .. code-block::
+
+        pip install mbirjax
+
+Installing from Source
+----------------------
+
+1. *Clone the repository:*
 
     .. code-block::
 

@@ -12,7 +12,7 @@ In order to install from PyPI, simply use the following command::
     pip install mbirjax
 
 
-**Downloading and installing from source**
+**Installing from source**
 
 1. Download the source code
 
