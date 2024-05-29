@@ -131,37 +131,6 @@ def gen_full_indices(recon_shape):
     return full_indices
 
 
-def gen_indices_d2(recon_shape, block_width):
-    """
-    Generates an index array for a 2D reconstruction using a block size of block_width x block_width
-
-    Args:
-        recon_shape (tuple): Shape of recon in (rows, columns, slices)
-        block_width (int): side length of block
-
-    Returns:
-
-    """
-    num_recon_rows, num_recon_cols = recon_shape[:2]
-    max_index_val = num_recon_rows * num_recon_cols
-
-    # Make sure rows and columns are divisible by block_width, but make sure to round up
-    num_recon_rows = block_width * ((num_recon_rows // block_width) + (num_recon_rows % block_width))
-    num_recon_cols = block_width * ((num_recon_cols // block_width) + (num_recon_cols % block_width))
-
-    # Generate an array, but make sure its values don't go outside the valid range
-    indices = np.arange(num_recon_rows * num_recon_cols) % max_index_val
-
-    indices = indices.reshape(num_recon_rows, num_recon_cols // block_width, block_width)
-    indices = np.transpose(indices, axes=(2, 1, 0))
-    indices = indices.reshape(block_width, num_recon_cols // block_width, num_recon_rows // block_width, block_width)
-    indices = np.transpose(indices, axes=(0, 3, 2, 1))
-    indices = indices.reshape(block_width * block_width,
-                              (num_recon_rows // block_width) * (num_recon_cols // block_width))
-
-    return jnp.array(indices)
-
-
 def gen_cube_phantom(recon_shape):
     """Code to generate a simple phantom """
     # Compute phantom height and width
@@ -185,6 +154,7 @@ def gen_cube_phantom(recon_shape):
     return jnp.array(phantom)
 
 
+@jax.jit
 def add_ellipsoid(current_volume, grids, z_locations, x0, y0, z0, a, b, c, angle=0, intensity=1.0):
     """
     Add an ellipsoid to an existing jax array.  This is done using lax.scan over the z slices to avoid
@@ -217,22 +187,11 @@ def add_ellipsoid(current_volume, grids, z_locations, x0, y0, z0, a, b, c, angle
     # Determine which xy locations will be updated for this ellipsoid
     xy_norm = Xr**2 / a**2 + Yr**2 / b**2
 
-    xy_indices = jnp.where(xy_norm <= 1)
-    cur_i_grid = i_grid[xy_indices]
-    cur_j_grid = j_grid[xy_indices]
-    cur_xy_norm = xy_norm[xy_indices]
+    def add_slice_vmap(volume_slice, z):
+        return volume_slice + intensity * ((xy_norm + (z - z0)**2 / c**2) <= 1).astype(float)
 
-    # Set up a function for lax.scan to add the ellipsoid to the volume, one slice at a time
-    def add_slice(carry, k):
-        z = z_locations[k] - z0
-        carry = carry.at[cur_i_grid, cur_j_grid, k].add(intensity * ((cur_xy_norm + z**2 / c**2) <= 1).astype(float))
-        return carry, None
-
-    # Do the scan
-    initial_carry = current_volume
-    z_indices = jnp.where((z_locations**2 / c**2) < 1)
-    indices = z_indices[0]
-    current_volume, _ = jax.lax.scan(add_slice, initial_carry, indices)
+    volume_map = jax.vmap(add_slice_vmap, in_axes=(2, 0), out_axes=2)
+    current_volume = volume_map(current_volume, z_locations)
 
     return current_volume
 
@@ -242,9 +201,9 @@ def _gen_ellipsoid(x_grid, y_grid, z_grid, x0, y0, z0, a, b, c, gray_level, alph
     Return an image with a 3D ellipsoid in a 3D plane with a center of [x0,y0,z0] and ...
 
     Args:
-        x_grid(float): 3D grid of X coordinate values.
-        y_grid(float): 3D grid of Y coordinate values.
-        z_grid(float): 3D grid of Z coordinate values.
+        x_grid(jax array): 3D grid of X coordinate values.
+        y_grid(jax array): 3D grid of Y coordinate values.
+        z_grid(jax array): 3D grid of Z coordinate values.
         x0(float): horizontal center of ellipsoid.
         y0(float): vertical center of ellipsoid.
         z0(float): normal center of ellipsoid.
@@ -281,9 +240,7 @@ def generate_3d_shepp_logan_reference(phantom_shape):
     Kak AC, Slaney M. Principles of computerized tomographic imaging. Page.102. IEEE Press, New York, 1988. https://engineering.purdue.edu/~malcolm/pct/CTI_Ch03.pdf
 
     Args:
-        num_rows: int, number of rows.
-        num_cols: int, number of cols.
-        num_slices: int, number of slices.
+        phantom_shape (tuple or list of ints): num_rows, num_cols, num_slices
 
     Return:
         out_image: 3D array, num_slices*num_rows*num_cols
@@ -346,7 +303,7 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     z_locations = jnp.linspace(-1, 1, P)
     x_grid, y_grid = jnp.meshgrid(x_locations, y_locations, indexing='xy')
     i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='xy')
-    grids = [x_grid, y_grid, i_grid, j_grid]
+    grids = (x_grid, y_grid, i_grid, j_grid)
 
     # Main ellipsoid
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, 0, 0, 0.69, 0.92, 0.9, intensity=1)
@@ -360,4 +317,4 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     phantom = add_ellipsoid(phantom, grids, z_locations, -0.08, -0.605, 0, 0.046, 0.023, 0.02, angle=0, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.605, 0, 0.023, 0.023, 0.02, angle=0, intensity=0.1)
 
-    return phantom
+    return phantom.transpose((1, 0, 2))
