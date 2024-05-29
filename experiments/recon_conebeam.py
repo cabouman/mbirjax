@@ -22,11 +22,11 @@ if __name__ == "__main__":
     sharpness = 0.0
 
     # Initialize sinogram
-    sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    cone_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Here are other things you might want to do
     #recon_shape = cone_model.get_params('recon_shape')
@@ -39,10 +39,11 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     phantom = cone_model.gen_modified_3d_sl_phantom()
-
+    # mbirjax.slice_viewer(phantom)
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
+    # del phantom
 
     # View sinogram
     # pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
@@ -67,9 +68,18 @@ if __name__ == "__main__":
     elapsed = time.time() - time0
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
+    with open('recon timing.txt', 'a') as f:
+        print('\n-------------------------', file=f)
+        print('Current stats:', file=f)
+        print('Sinogram shape = {}'.format(sinogram.shape), file=f)
+        print('Recon shape = {}'.format(recon.shape), file=f)
+        print('Elapsed time for recon is {:.3f} seconds'.format(elapsed), file=f)
+        mbirjax.get_memory_stats(print_results=True, file=f)
+        print('-------------------------', file=f)
 
     # Display results
-    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    # pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    pu.slice_viewer(recon, title='VCD Recon')
 
     # You can also display individual slides with the sinogram
     #pu.display_slices(phantom, sinogram, recon)
