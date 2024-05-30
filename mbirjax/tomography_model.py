@@ -472,51 +472,86 @@ class TomographyModel(ParameterHandler):
         fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
 
         # Initialize forward model normalized RMSE error array
-        fm_rmse = np.zeros(num_iters)
+
 
         flat_recon = recon.reshape((-1, num_recon_slices))
+        vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
+        vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
+        seed = np.random.randint(10000000)
+        key = jax.random.PRNGKey(seed)
 
         print('Starting VCD iterations')
         mbirjax.get_memory_stats(print_results=True)
         print('--------')
 
+        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
+
+        fm_rmse = np.zeros(num_iters)
         for i in range(num_iters):
-            error_sinogram, flat_recon = self.vcd_partition_iteration(error_sinogram, flat_recon,
-                                                                 partitions[partition_sequence[i]], fm_hessian,
-                                                                 weights=weights, prox_input=prox_input)
-            fm_rmse[i] = self.get_forward_model_loss(error_sinogram)
-            if self.get_params('verbose') >= 1:
+            partition = partitions[partition_sequence[i]]
+            subset_indices = np.random.permutation(partition.shape[0])
+            error_sinogram, flat_recon = vcd_partition_iterator([error_sinogram, flat_recon, partition], subset_indices)
+            fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y)
+            if verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
-            mbirjax.get_memory_stats(print_results=True)
-            print('--------')
+                mbirjax.get_memory_stats(print_results=True)
+                print('--------')
 
         return self.reshape_recon(flat_recon), fm_rmse
 
-    def vcd_partition_iteration(self, error_sinogram, flat_recon, partition, fm_hessian, weights=1.0, prox_input=None):
+    @staticmethod
+    def create_vcd_partition_iterator(vcd_subset_iterator):
         """
-        Calculate an iteration of the VCD algorithm for each subset of the partition
-        Each iteration of the algorithm should return a better reconstructed recon. The error_sinogram should always be:
-        error_sinogram = measured_sinogram - forward_proj(recon)
-        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+        Create a jit-compiled function to update all the pixels in the recon and error sinogram by applying
+        the supplied vcd_subset_iterator to each subset in a partition.
 
         Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            partition (int array): (K, N_indices) an integer index arrays that partitions
-                the voxels into K arrays, each of which indexes into a flattened recon.
-            flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            vcd_subset_iterator (callable):  The function returned by create_vcd_subset_iterator.
 
         Returns:
-            [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+            (callable) vcd_partition_iterator(error_sinogram, flat_recon, partition, subset_indices
         """
-        for subset in np.random.permutation(partition.shape[0]):
-            error_sinogram, flat_recon = self.vcd_subset_iteration(error_sinogram, flat_recon, partition[subset], fm_hessian,
-                                                              weights=weights, prox_input=prox_input)
 
-        return error_sinogram, flat_recon
+        def vcd_partition_iterator(sinogram_recon_partition, subset_indices):
+            """
+            Calculate a full iteration of the VCD algorithm by scanning over the subsets of the partition.
+            Each iteration of the algorithm should return a better reconstructed recon.
+            The error_sinogram should always be:  error_sinogram = measured_sinogram - forward_proj(recon)
+            where measured_sinogram is the measured sinogram and recon is the current reconstruction.
 
-    def create_vcd_subset_iterator(self):
+            Args:
+                sinogram_recon_partition (list): 3 element tuple containing
+
+                    * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+                    * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+                    * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
+
+                subset_indices (jax array): An array of indices into the partition - this gives the order in which the subsets are updated.
+
+            Returns:
+                [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+            """
+
+            # Scan over the subsets of the partition, using the subset_indices to order them.
+            sinogram_recon_partition, _ = jax.lax.scan(vcd_subset_iterator, sinogram_recon_partition, subset_indices)
+
+            error_sinogram, flat_recon, _ = sinogram_recon_partition
+            return error_sinogram, flat_recon
+
+        return jax.jit(vcd_partition_iterator)
+
+    def create_vcd_subset_iterator(self, fm_hessian, weights=1.0, prox_input=None):
+        """
+        Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
+
+        Args:
+            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
+            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            prox_input (jax array): optional input for proximal map with same shape as reconstruction.
+
+        Returns:
+            (callable) vcd_subset_iterator(error_sinogram, flat_recon, pixel_indices) that updates the recon.
+        """
 
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
@@ -527,8 +562,29 @@ class TomographyModel(ParameterHandler):
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
 
-        def vcd_subset_iteration_new(error_sinogram, flat_recon, pixel_indices, fm_hessian,
-                                     weights=1.0, prox_input=None):
+        def vcd_subset_iterator(sinogram_recon_partition, subset_index):
+            """
+            Calculate an iteration of the VCD algorithm on a single subset of the partition
+            Each iteration of the algorithm should return a better reconstructed recon.
+            The combination of (error_sinogram, recon) forms an overcomplete state that makes computation efficient.
+            However, it is important that at each application the state should meet the constraint that:
+            error_sinogram = measured_sinogram - forward_proj(recon)
+            where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
+
+            Args:
+                sinogram_recon_partition (list): 3 element tuple containing
+
+                    * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+                    * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+                    * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
+
+                subset_index (int): integer index of the subset within the partition.
+
+            Returns:
+                [error_sinogram, flat_recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+            """
+            error_sinogram, flat_recon, partition = sinogram_recon_partition
+            pixel_indices = partition[subset_index]
 
             def delta_recon_batch(index_batch):
                 # Compute the forward model gradient and hessian at each pixel in the index set.
@@ -601,125 +657,19 @@ class TomographyModel(ParameterHandler):
             # Update sinogram
             error_sinogram = error_sinogram - alpha * delta_sinogram
 
-            return error_sinogram, flat_recon
+            return [error_sinogram, flat_recon, partition], None
 
-        return jax.jit(vcd_subset_iteration_new)
+        return jax.jit(vcd_subset_iterator)
 
-    def vcd_subset_iteration(self, error_sinogram, flat_recon, pixel_indices, fm_hessian, weights=1.0, prox_input=None):
-        """
-        Calculate an iteration of the VCD algorithm on a single subset of the partition
-        Each iteration of the algorithm should return a better reconstructed recon.
-        The combination of (error_sinogram, recon) form an overcomplete state that make computation efficient.
-        However, it is important that at each application the state should meet the constraint that:
-        error_sinogram = measured_sinogram - forward_proj(recon)
-        where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
-
-        Args:
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-            pixel_indices (int array): (N_indices) integer index array of voxels to be updated in a flattened recon.
-            flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-            fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
-            prox_input (jax array): optional input for proximal map with same shape as reconstruction.
-
-        Returns:
-            [error_sinogram, flat_recon]: Both have the same shape as above, but are updated to reduce overall loss function.
-        """
-        recon_params = get_vcd_recon_parameters(self)
-        vcd_subset_iterator = self.create_vcd_subset_iterator()
-        error_sinogram, flat_recon = vcd_subset_iterator(error_sinogram, flat_recon, pixel_indices,
-                                                         fm_hessian, weights, prox_input)
-
-        return error_sinogram, flat_recon
-
-        # Get positivity flag
-        positivity_flag = self.get_params('positivity_flag')
-        fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
-        sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
-        sigma_p = self.get_params('sigma_p')
-        pixel_batch_size = self.get_params('pixel_batch_size')
-
-        def delta_recon_batch(index_batch):
-            # Compute the forward model gradient and hessian at each pixel in the index set.
-            # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-            fm_gradient = -fm_constant * self.sparse_back_project(error_sinogram * weights, index_batch)
-            fm_sparse_hessian = fm_constant * fm_hessian[index_batch]
-
-            # Compute the prior model gradient and hessian (i.e., second derivative) terms
-            recon_shape = self.get_params('recon_shape')
-            if prox_input is None:
-                # This is for the qGGMRF prior - compute the prior model gradient and hessian at each pixel in the index set.
-                pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, index_batch, sigma_x, p, q, T, b)
-            else:
-                # This is for the proximal map prior - compute the prior model gradient at each pixel in the index set.
-                pm_hessian = sigma_p ** 2
-                pm_gradient = pm_prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_p)
-
-            # Compute update vector update direction in recon domain
-            delta_recon_at_indices_batch = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
-            return delta_recon_at_indices_batch
-
-        # Apply the function on a single batch of pixels if the batch is small enough
-        num_pixels = len(pixel_indices)
-        max_index_subsets = 10
-        pixel_batch_size = max(pixel_batch_size, flat_recon.shape[0] // (max_index_subsets - 1))
-        if pixel_batch_size >= num_pixels:
-            delta_recon_at_indices = delta_recon_batch(pixel_indices)
-
-        # Otherwise batch the pixels and map over the batches.
-        else:
-            num_batches = num_pixels // pixel_batch_size
-            length_of_batches = num_batches * pixel_batch_size
-            pixel_indices_batched = jnp.reshape(pixel_indices[:length_of_batches], (num_batches, pixel_batch_size))
-
-            batched_voxel_values = jax.lax.map(delta_recon_batch, pixel_indices_batched)
-            delta_recon_at_indices = batched_voxel_values.reshape((length_of_batches,) + batched_voxel_values.shape[2:])
-
-            # Add in any leftover pixels
-            num_remaining = num_pixels - num_batches * pixel_batch_size
-            if num_remaining > 0:
-                end_batch_indices = pixel_indices[-num_remaining:]
-                end_batch_voxel_values = delta_recon_batch(end_batch_indices)
-                delta_recon_at_indices = jnp.concatenate((delta_recon_at_indices, end_batch_voxel_values), axis=0)
-
-        # Compute update direction in sinogram domain
-        delta_sinogram = self.sparse_forward_project(delta_recon_at_indices, pixel_indices)
-
-        # Compute "optimal" update step
-        # This is really only optimal for the forward model component.
-        # We can compute the truly optimal update, but it's complicated so maybe this is good enough
-        alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (
-                    jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
-        # TODO: test for alpha<0 and terminate.
-
-        # Enforce positivity constraint if desired
-        # Greg, this may result in excess compilation. Not sure.
-        if positivity_flag is True:
-            # Get recon at index_batch
-            recon_at_indices = flat_recon[pixel_indices]
-
-            # Clip updates to ensure non-negativity
-            pos_constant = 1.0 / (alpha + jnp.finfo(np.float32).eps)
-            delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
-
-            # Recompute sinogram projection
-            delta_sinogram = self.sparse_forward_project(delta_recon_at_indices, pixel_indices)
-
-        # Perform sparse updates at index locations, and reshape as 3D array
-        flat_recon = flat_recon.at[pixel_indices].add(alpha * delta_recon_at_indices)
-
-        # Update sinogram
-        error_sinogram = error_sinogram - alpha * delta_sinogram
-
-        return error_sinogram, flat_recon
-
-    def get_forward_model_loss(self, error_sinogram, weights=1.0, normalize=True):
+    @staticmethod
+    def get_forward_model_loss(error_sinogram, sigma_y, weights=1.0, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
 
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sigma_y (float): Estimate obtained from auto_set_sigma_y or get_params('sigma_y')
             weights (jax array, optional, default=1.0): 3D weights array with same shape as sinogram
             normalize (bool, optional, default=True):  If true, then
 
@@ -728,10 +678,10 @@ class TomographyModel(ParameterHandler):
         """
         if normalize:
             avg_weight = jnp.average(weights)
-            loss = jnp.sqrt((1.0 / (self.get_params('sigma_y') ** 2)) * jnp.mean(
+            loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
-            loss = (1.0 / (2 * self.get_params('sigma_y') ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
@@ -816,18 +766,6 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
         return recon.reshape(recon_shape)
-
-
-VCDReconParameters = namedtuple('VCDReconParameters',
-                                ['positivity_flag', 'sigma_y',
-                                 'sigma_x', 'p', 'q', 'T', 'b', 'sigma_p', 'pixel_batch_size',
-                                 'recon_shape'])
-
-
-def get_vcd_recon_parameters(tomography_model):
-    vcd_recon_values = tomography_model.get_params(VCDReconParameters._fields)
-    return VCDReconParameters(*tuple(vcd_recon_values))
-
 
 @jax.jit
 def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
