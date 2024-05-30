@@ -26,9 +26,11 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             displayed images will be data[:, slice_index, :]
 
     Example:
-        data1 = np.random.rand(100, 100, 50)  # Random 3D volume
-        data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
-        slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
+        .. code-block:: python
+
+            data1 = np.random.rand(100, 100, 50)  # Random 3D volume
+            data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
+            slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
     if data.ndim != 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
         error_msg = 'The input data must be a 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
