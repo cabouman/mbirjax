@@ -34,7 +34,7 @@ This is only available for registered maintainers.
     pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax==0.1.1  # change version no.
     python -c "import mbirjax"     # spin the wheel
 
-3. Run one of the `demo scripts <examples.html>`_
+3. Run one of the demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
    NOTE: If the install fails and you need to re-test, *temporarily* set
    the version number in `pyproject.toml` from X.X.X to X.X.X.1 (then 2, 3, etc.),
@@ -43,10 +43,16 @@ This is only available for registered maintainers.
    then delete and re-create the git tag, and proceed to PyPI upload.
 
 
-Upload to PyPI
---------------
+Uploading to PyPI
+-----------------
 
 This is only available for registered maintainers.
+
+0. First, make sure you have installed the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
+
+    rm -r dist
+    python -m build
+
 
 1. Upload to PyPI.  As above, you will need an API token, this time from PyPI.  NOTE: You cannot upload the same version more than once::
 
