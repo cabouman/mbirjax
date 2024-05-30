@@ -6,8 +6,8 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
 
 
-def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_axis=2,
-                 cmap='gray'):
+def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None,
+                 slice_axis=2, slice_axis2=None, cmap='gray'):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices and intensity window. If two images are provided,
@@ -16,28 +16,36 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     Args:
         data (ndarray or jax array): 3D image volume with shape (height, width, depth).
-        data2 (numpy array or jax array): Second 3D image volume with the same shape as the first.
+        data2 (numpy array or jax array, optional): Second 3D image volume with the same shape as the first.
         title (string, optional, default=''): Figure super title
-        vmin (float): minimum for displayed intensity
-        vmax (float): maximum for displayed intensity
-        slice_label (str): Text label to be used for a given slice.  Defaults to 'Slice'
-        slice_axis (int): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
+        vmin (float, optional): minimum for displayed intensity
+        vmax (float, optional): maximum for displayed intensity
+        slice_label (str, optional): Text label to be used for a given slice.  Defaults to 'Slice'
+        slice_label2 (str, optional): Text label to be used for a given slice for data2.  Defaults to slice_label.
+        slice_axis (int, optional): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
             displayed images will be data[:, slice_index, :]
+        slice_axis2 (int, optional): The dimension of data to use for the slice index for data2.
 
     Example:
-        data1 = np.random.rand(100, 100, 50)  # Random 3D volume
-        data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
-        slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
+        .. code-block:: python
+
+            data1 = np.random.rand(100, 100, 50)  # Random 3D volume
+            data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
+            slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
-    if data.ndim != 3 or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
-        error_msg = 'The input data must be a 3D array, and if data2 is provided, then data.shape[slice_axis] '
-        error_msg += 'must equal data2.shape[slice_axis])'
+    if data.ndim != 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
+        error_msg = 'The input data must be a 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
+        # error_msg += 'must equal data2.shape[slice_axis])'
         raise ValueError(error_msg)
 
     # Move the specified slice axis into the last position
     data = numpy.moveaxis(data, slice_axis, 2)
     if data2 is not None:
-        data2 = numpy.moveaxis(data2, slice_axis, 2)
+        if slice_axis2 is None:
+            slice_axis2 = slice_axis
+        data2 = numpy.moveaxis(data2, slice_axis2, 2)
+        if slice_label2 is None:
+            slice_label2 = slice_label
 
     # Define min and max grayscale values for consistent coloring across slices
     if vmin is None:
@@ -72,8 +80,9 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     im = ax_data.imshow(data[:, :, slice_index], cmap=cmap, vmin=vmin, vmax=vmax)
     im2 = None
     if data2 is not None:
-        im2 = ax_data2.imshow(data2[:, :, slice_index], cmap=cmap, vmin=vmin, vmax=vmax)
-        ax_data2.set_title(f'{slice_label} {slice_index}')
+        slice_index2 = data2.shape[2] // 2
+        im2 = ax_data2.imshow(data2[:, :, slice_index2], cmap=cmap, vmin=vmin, vmax=vmax)
+        ax_data2.set_title(f'{slice_label2} {slice_index2}')
 
     # Set up a colorbar next to the rightmost image, but add extra space to both to make them the same size.
     divider = make_axes_locatable(ax_data)
@@ -125,8 +134,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         im.set_data(data[:, :, cur_slice])
         ax_data.set_title(f'{slice_label} {cur_slice}')
         if data2 is not None:
-            im2.set_data(data2[:, :, cur_slice])
-            ax_data2.set_title(f'{slice_label} {cur_slice}')
+            slice_fraction = cur_slice / data.shape[2]
+            cur_slice2 = int(np.round(slice_fraction * data2.shape[2]))
+            im2.set_data(data2[:, :, cur_slice2])
+            ax_data2.set_title(f'{slice_label2} {cur_slice2}')
 
         # Redraw the figure to ensure it updates
         fig.canvas.draw_idle()

@@ -47,7 +47,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, fm_rmse = parallel_model.recon(sinogram, weights=weights)
+    recon, recon_params = parallel_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

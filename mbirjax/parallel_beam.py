@@ -1,8 +1,7 @@
-import warnings
-
 import jax
 import jax.numpy as jnp
 from functools import partial
+from collections import namedtuple
 from mbirjax import TomographyModel, ParameterHandler
 
 
@@ -16,12 +15,12 @@ class ParallelBeamModel(TomographyModel):
     like setting parameters and performing projections and reconstructions.
 
     Args:
-        angles (jnp.ndarray):
-            A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         sinogram_shape (tuple):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
+        angles (jnp.ndarray):
+            A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         **kwargs (dict):
             Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
             include settings and configurations specific to the tomography model such as noise models or image dimensions.
@@ -63,7 +62,7 @@ class ParallelBeamModel(TomographyModel):
         Returns:
             ConeBeamModel with the specified parameters.
         """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
+        # Load the parameters and convert to use the ParallelBeamModel keywords.
         params = ParameterHandler.load_param_dict(filename, values_only=True)
         angles = params['view_params_array']
         del params['view_params_array']
@@ -108,13 +107,19 @@ class ParallelBeamModel(TomographyModel):
         Function to get a list of the primary geometry parameters for for parallel beam projection.
 
         Returns:
-            List of required geometry parameters.
+            namedtuple of required geometry parameters.
         """
-        geometry_params = self.get_params(['delta_det_channel', 'det_channel_offset', 'delta_voxel'])
+        # First get the parameters managed by ParameterHandler
+        geometry_param_names = ['delta_det_channel', 'det_channel_offset', 'delta_voxel']
+        geometry_param_values = self.get_params(geometry_param_names)
 
-        # Append psf_radius to list of geometry params
-        psf_radius = self.get_psf_radius()
-        geometry_params.append(psf_radius)
+        # Then get additional parameters:
+        geometry_param_names += ['psf_radius']
+        geometry_param_values.append(self.get_psf_radius())
+
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
+        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
+        geometry_params = GeometryParams(*tuple(geometry_param_values))
 
         return geometry_params
 
@@ -155,16 +160,15 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
-            projector_params (tuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
         """
-
-        # Get all the geometry parameters
-        geometry_params = projector_params[2]
-        (delta_det_channel, det_channel_offset, delta_voxel, psf_radius) = geometry_params
-        num_views, num_det_rows, num_det_channels = projector_params[0]
+        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        gp = projector_params.geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
@@ -175,11 +179,11 @@ class ParallelBeamModel(TomographyModel):
 
         # Define the projector, which will be vmapped over slices.
         def project_slice(sinogram_view_row, voxel_values_slice):
-            for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
                 n = n_p_center + n_offset
                 abs_delta_p_c_n = jnp.abs(n_p - n)
                 L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-                A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
                 A_chan_n *= (n >= 0) * (n < num_det_channels)
                 sinogram_view_row = sinogram_view_row.at[n].add(A_chan_n * voxel_values_slice)
 
@@ -190,6 +194,7 @@ class ParallelBeamModel(TomographyModel):
         return sinogram_view
 
     @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
     def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, projector_params, coeff_power=1):
         """
         Apply parallel back projection to a single sinogram view and return the resulting voxel cylinders.
@@ -199,17 +204,16 @@ class ParallelBeamModel(TomographyModel):
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             angle (float): The projection angle in radians for this view.
-            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
         Returns:
             jax array of shape (len(pixel_indices), num_det_rows)
         """
-
-        # Get all the geometry parameters
-        geometry_params = projector_params[2]
-        (delta_det_channel, det_channel_offset, delta_voxel, psf_radius) = geometry_params
-        num_views, num_det_rows, num_det_channels = projector_params[0]
+        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        gp = projector_params.geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         num_pixels = pixel_indices.shape[0]
 
@@ -222,11 +226,11 @@ class ParallelBeamModel(TomographyModel):
 
         # Define the horizontal projector, which will be vmapped over slices.
         def project_slice(recon_voxel_slice, sinogram_view_row):
-            for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius+1):
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
                 n = n_p_center + n_offset
                 abs_delta_p_c_n = jnp.abs(n_p - n)
                 L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-                A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
                 A_chan_n *= (n >= 0) * (n < num_det_channels)
                 A_chan_n = A_chan_n ** coeff_power
                 recon_voxel_slice = jnp.add(recon_voxel_slice, A_chan_n * sinogram_view_row[n])
@@ -246,28 +250,27 @@ class ParallelBeamModel(TomographyModel):
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             angle (float): The projection angle in radians for this view.
-            projector_params (tuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
             n_p, n_p_center, W_p_c, cos_alpha_p_xy
         """
+        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        gp = projector_params.geometry_params
 
-        # Get all the geometry parameters
-        geometry_params = projector_params[2]
-        (delta_det_channel, det_channel_offset, delta_voxel, psf_radius) = geometry_params
-
-        num_views, num_det_rows, num_det_channels = projector_params[0]
-        recon_shape = projector_params[1]
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+        recon_shape = projector_params.recon_shape
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
 
-        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, delta_voxel, recon_shape, angle)
+        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, gp.delta_voxel, recon_shape, angle)
 
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
-        n_p = (x_p / delta_det_channel) + det_center_channel + det_channel_offset
+        n_p = (x_p / gp.delta_det_channel) + det_center_channel + gp.det_channel_offset
         n_p_center = jnp.round(n_p).astype(int)
 
         # Compute cos alpha for row and columns
@@ -275,7 +278,7 @@ class ParallelBeamModel(TomographyModel):
                                     jnp.abs(jnp.sin(angle)))
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = (delta_voxel / delta_det_channel) * cos_alpha_p_xy
+        W_p_c = (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
 
         proj_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
 

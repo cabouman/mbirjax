@@ -60,7 +60,7 @@ This is only available for registered maintainers.
     pip install mbirjax    # OR, "mbirjax==0.1.1" e.g. for a specific version number
     python -c "import mbirjax"     # spin the wheel
 
-3. Run one of the `demo scripts <examples.html>`_
+3. Run one of the demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
 Reference
 ---------

@@ -3,7 +3,7 @@ import os
 import psutil
 
 
-def get_memory_stats(print_results=False):
+def get_memory_stats(print_results=False, file=None):
     # Get all GPU devices
     gpus = [device for device in jax.devices() if 'cpu' not in device.device_kind.lower()]
 
@@ -46,10 +46,10 @@ def get_memory_stats(print_results=False):
 
     if print_results:
         for memory_stats in memory_stats_per_processor:
-            print(memory_stats['id'])
+            print(memory_stats['id'], file=file)
             for tag in ['bytes_in_use', 'peak_bytes_in_use', 'bytes_limit']:
                 cur_value = memory_stats[tag] / (1024 ** 3)
                 extra_space = ' ' * (21 - len(tag) - len(str(int(cur_value))))
-                print(f'  {tag}:{extra_space}{cur_value:.3f}GB')
+                print(f'  {tag}:{extra_space}{cur_value:.3f}GB', file=file)
 
     return memory_stats_per_processor
