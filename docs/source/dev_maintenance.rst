@@ -31,7 +31,7 @@ This is only available for registered maintainers.
 
 2. Test the uploaded package::
 
-    pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax==0.1.1  # change version no.
+    pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
     python -c "import mbirjax"     # spin the wheel
 
 3. Run one of the demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
