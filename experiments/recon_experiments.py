@@ -76,7 +76,7 @@ if __name__ == "__main__":
     phantom = ct_model.gen_modified_3d_sl_phantom()
     mbirjax.slice_viewer(phantom, phantom.transpose((0, 2, 1)),
                          title='Phantom\nLeft: single phantom slice (axial)    Right: single phantom row (coronal)',
-                         slice_label2='Recon row', slice_axis2=0)
+                         slice_label='Phantom slice', slice_label2='Phantom row', slice_axis2=0)
     # Generate synthetic sinogram data
     print('Creating sinogram: {} geometry'.format(geometry_type))
     sinogram = ct_model.forward_project(phantom)
@@ -133,6 +133,6 @@ if __name__ == "__main__":
 
     # Display results
     title = 'VCD recon ({} geometry, {} views)\nLeft: single recon slice (axial)    Right: single recon row (coronal)'.format(geometry_type, num_views)
-    mbirjax.slice_viewer(recon, recon.transpose((0, 2, 1)),
-                         title=title, slice_label2='Recon row', slice_axis2=0)
+    mbirjax.slice_viewer(recon, recon.transpose((0, 2, 1)), title=title,
+                         slice_label='Recon slice', slice_label2='Recon row', slice_axis2=0)
 
