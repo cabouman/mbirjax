@@ -46,13 +46,15 @@ if __name__ == "__main__":
     if change_voxel_pitch:
         cone_model.set_params(delta_voxel=3.0)
 
-    cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+    cone_model.set_params(det_channel_offset=2.5)    # You can change the center-of-rotation in the sinogram
     # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3]) # You can change the partition sequence and granularity
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     phantom = cone_model.gen_modified_3d_sl_phantom()
-    mbirjax.slice_viewer(phantom)
+    mbirjax.slice_viewer(phantom, phantom.transpose((2, 1, 0)),
+                         title='Left: top (axial) view left\nRight: 0 degree view toward detector',
+                         slice_label2='Recon row')
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
@@ -91,8 +93,9 @@ if __name__ == "__main__":
         print('-------------------------', file=f)
 
     # Display results
-    # pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
-    pu.slice_viewer(recon, title='VCD Recon')
+    mbirjax.slice_viewer(recon, recon.transpose((2, 1, 0)),
+                         title='VCD recon\nLeft: top (axial) view left\nRight: 0 degree view toward detector',
+                         slice_label2='Recon row')
 
     # You can also display individual slides with the sinogram
     #pu.display_slices(phantom, sinogram, recon)
