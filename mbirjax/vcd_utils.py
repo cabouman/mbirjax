@@ -301,8 +301,8 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     x_locations = jnp.linspace(-1, 1, N)
     y_locations = jnp.linspace(-1, 1, M)
     z_locations = jnp.linspace(-1, 1, P)
-    x_grid, y_grid = jnp.meshgrid(x_locations, y_locations, indexing='xy')
-    i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='xy')
+    x_grid, y_grid = jnp.meshgrid(x_locations, y_locations, indexing='ij')
+    i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='ij')
     grids = (x_grid, y_grid, i_grid, j_grid)
 
     # Main ellipsoid
@@ -317,4 +317,4 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     phantom = add_ellipsoid(phantom, grids, z_locations, -0.08, -0.605, 0, 0.046, 0.023, 0.02, angle=0, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.605, 0, 0.023, 0.023, 0.02, angle=0, intensity=0.1)
 
-    return phantom.transpose((1, 0, 2))
+    return phantom

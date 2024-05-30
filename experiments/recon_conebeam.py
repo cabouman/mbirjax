@@ -10,9 +10,9 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
     # Set parameters
-    num_views = 128
-    num_det_rows = 256
-    num_det_channels = 256
+    num_views = 32
+    num_det_rows = 32
+    num_det_channels = 64
     source_detector_dist = 4 * num_det_channels
     source_iso_dist = source_detector_dist
 
@@ -29,24 +29,37 @@ if __name__ == "__main__":
     cone_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Here are other things you might want to do
-    #recon_shape = cone_model.get_params('recon_shape')
-    #recon_shape = tuple(dim // 4 for dim in recon_shape)
-    #cone_model.set_params(recon_shape=recon_shape)    # You can make the recon rectangular
-    #cone_model.set_params(delta_voxel=3.0)    # You can change the pixel pitch
-    #cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
+
+    # Change the recon shape, which has the form (rows, columns, slices)
+    # All else being equal, a smaller recon shape will result in a smaller projection on the detector.
+    change_recon_shape = False
+    if change_recon_shape:
+        recon_shape = cone_model.get_params('recon_shape')
+        recon_shape = (64, 64, 32)  # tuple(dim // 2 for dim in recon_shape)  # Or set to whatever you like
+        cone_model.set_params(recon_shape=recon_shape)
+
+    # Change the voxel side length (voxels are cubes)
+    # The default detector side length is 1.0 (arbitrary units), and delta_voxel has the same units
+    # If you change the voxel size, you might want to view the sinogram to see the results.
+    # All else being equal, a smaller voxel size will result in a smaller projection on the detector.
+    change_voxel_pitch = False
+    if change_voxel_pitch:
+        cone_model.set_params(delta_voxel=3.0)
+
+    cone_model.set_params(det_channel_offset=10.5)    # You can change the center-of-rotation in the sinogram
     # cone_model.set_params(granularity=[1, 2, 8, 64, 256], partition_sequence=[0, 0, 1, 2, 3, 4, 2, 3, 2, 3, 3, 3, 3, 3, 3]) # You can change the partition sequence and granularity
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     phantom = cone_model.gen_modified_3d_sl_phantom()
-    # mbirjax.slice_viewer(phantom)
+    mbirjax.slice_viewer(phantom)
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
     # del phantom
 
     # View sinogram
-    # pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
+    pu.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram', slice_label='View')
 
     # Generate weights array
     weights = cone_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
