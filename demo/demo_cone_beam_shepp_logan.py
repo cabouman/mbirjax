@@ -51,7 +51,7 @@ if __name__ == "__main__":
     # Perform VCD reconstruction
     print('Starting recon')
     time0 = time.time()
-    recon, fm_rmse = cone_model.recon(sinogram, weights=weights)
+    recon, recon_params = cone_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

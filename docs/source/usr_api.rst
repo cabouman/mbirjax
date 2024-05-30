@@ -43,7 +43,8 @@ as needed.
 Parameter Handling
 ------------------
 
-Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the following methods.
+See the :ref:`Primary Parameters <ParametersDocs>` page for a description of the primary parameters.
+Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the following primary methods.
 
 .. autosummary::
 
@@ -64,5 +65,7 @@ Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the fo
    :caption: Classes
 
    usr_tomography_model
+   usr_parameters
    usr_parallel_beam_model
    usr_cone_beam_model
+   usr_plot_utils

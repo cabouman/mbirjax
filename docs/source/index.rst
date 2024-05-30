@@ -85,7 +85,6 @@ MBIRJAX: High-performance tomographic reconstruction
 
    install
    usr_api
-   usr_plot_utils
 
 .. toctree::
    :hidden:
