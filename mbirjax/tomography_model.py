@@ -100,7 +100,7 @@ class TomographyModel(ParameterHandler):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
-            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -120,7 +120,7 @@ class TomographyModel(ParameterHandler):
             sinogram_view (jax array): one view of the sinogram to be back projected
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
-            projector_params (tuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 for compute_hessian_diagonal.
 
@@ -471,14 +471,12 @@ class TomographyModel(ParameterHandler):
         num_recon_slices = recon_shape[2]
         fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
 
-        # Initialize forward model normalized RMSE error array
-
-
+        # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
+
+        # Create the finer grained recon update operators
         vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
         vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
-        seed = np.random.randint(10000000)
-        key = jax.random.PRNGKey(seed)
 
         print('Starting VCD iterations')
         mbirjax.get_memory_stats(print_results=True)
@@ -486,6 +484,7 @@ class TomographyModel(ParameterHandler):
 
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
 
+        # Do the iterations
         fm_rmse = np.zeros(num_iters)
         for i in range(num_iters):
             partition = partitions[partition_sequence[i]]

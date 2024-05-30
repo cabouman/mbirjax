@@ -1,5 +1,4 @@
-import warnings
-from functools import partial
+from collections import namedtuple
 import jax
 import jax.numpy as jnp
 
@@ -46,7 +45,13 @@ class Projectors:
 
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
-        projector_params = (tuple(sinogram_shape), tuple(recon_shape), tuple(geometry_params))
+
+        # Combine the needed parameters into a named tuple for named access compatible with jit
+        projector_param_names = ['sinogram_shape', 'recon_shape', 'geometry_params']
+        projector_param_values = (sinogram_shape, recon_shape, geometry_params)
+        ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
+        projector_params = ProjectorParams(*tuple(projector_param_values))
+
         view_params_array = self.tomography_model.get_params('view_params_array')
         pixel_batch_size, view_batch_size = self.tomography_model.get_params(['pixel_batch_size', 'view_batch_size'])
 
@@ -302,8 +307,7 @@ class Projectors:
                     (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
                     if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
                     match those indicated by view_indices.
-                weights (ndarray or None): The weights with shape (views, rows, channels)
-                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+               view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                     If None, then all views are used.
 
             Returns:
