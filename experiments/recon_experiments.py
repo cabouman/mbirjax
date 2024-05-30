@@ -74,16 +74,17 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     phantom = ct_model.gen_modified_3d_sl_phantom()
-    mbirjax.slice_viewer(phantom, phantom.transpose((2, 1, 0)),
+    mbirjax.slice_viewer(phantom, phantom.transpose((0, 2, 1)),
                          title='Phantom\nLeft: single phantom slice (axial)    Right: single phantom row (coronal)',
-                         slice_label2='Recon row')
+                         slice_label2='Recon row', slice_axis2=0)
     # Generate synthetic sinogram data
     print('Creating sinogram: {} geometry'.format(geometry_type))
     sinogram = ct_model.forward_project(phantom)
     # del phantom  # For large recons, you can delete the phantom to preserve memory.
 
     # View sinogram
-    mbirjax.slice_viewer(sinogram.transpose((1, 2, 0)), title='Original sinogram ({} geometry, {} views)'.format(geometry_type, num_views), slice_label='View')
+    title = 'Original sinogram ({} geometry, {} views)'.format(geometry_type, num_views)
+    mbirjax.slice_viewer(sinogram, title=title, slice_label='View', slice_axis=0)
 
     # Generate weights array
     weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
@@ -132,7 +133,6 @@ if __name__ == "__main__":
 
     # Display results
     title = 'VCD recon ({} geometry, {} views)\nLeft: single recon slice (axial)    Right: single recon row (coronal)'.format(geometry_type, num_views)
-    mbirjax.slice_viewer(recon, recon.transpose((2, 1, 0)),
-                         title=title,
-                         slice_label2='Recon row')
+    mbirjax.slice_viewer(recon, recon.transpose((0, 2, 1)),
+                         title=title, slice_label2='Recon row', slice_axis2=0)
 

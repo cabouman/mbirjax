@@ -6,8 +6,8 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
 
 
-def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None, slice_axis=2,
-                 cmap='gray'):
+def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None,
+                 slice_axis=2, slice_axis2=None, cmap='gray'):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices and intensity window. If two images are provided,
@@ -16,14 +16,15 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     Args:
         data (ndarray or jax array): 3D image volume with shape (height, width, depth).
-        data2 (numpy array or jax array): Second 3D image volume with the same shape as the first.
+        data2 (numpy array or jax array, optional): Second 3D image volume with the same shape as the first.
         title (string, optional, default=''): Figure super title
-        vmin (float): minimum for displayed intensity
-        vmax (float): maximum for displayed intensity
-        slice_label (str): Text label to be used for a given slice.  Defaults to 'Slice'
-        slice_label2 (str): Text label to be used for a given slice for data2.  Defaults to slice_label.
-        slice_axis (int): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
+        vmin (float, optional): minimum for displayed intensity
+        vmax (float, optional): maximum for displayed intensity
+        slice_label (str, optional): Text label to be used for a given slice.  Defaults to 'Slice'
+        slice_label2 (str, optional): Text label to be used for a given slice for data2.  Defaults to slice_label.
+        slice_axis (int, optional): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
             displayed images will be data[:, slice_index, :]
+        slice_axis2 (int, optional): The dimension of data to use for the slice index for data2.
 
     Example:
         .. code-block:: python
@@ -40,7 +41,9 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     # Move the specified slice axis into the last position
     data = numpy.moveaxis(data, slice_axis, 2)
     if data2 is not None:
-        data2 = numpy.moveaxis(data2, slice_axis, 2)
+        if slice_axis2 is None:
+            slice_axis2 = slice_axis
+        data2 = numpy.moveaxis(data2, slice_axis2, 2)
         if slice_label2 is None:
             slice_label2 = slice_label
 
