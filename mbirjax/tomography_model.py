@@ -249,12 +249,22 @@ class TomographyModel(ParameterHandler):
             sinogram (jnp.array): 3D jax array containing the sinogram with shape (num_views, num_det_rows, num_det_channels).
             weights (scalar or jnp.array, optional): Scalar value or 3D weights array with the same shape as the sinogram. Defaults to 1.
 
+        Returns:
+            namedtuple containing the parameters sigma_y, sigma_x, sigma_p
+
         The method adjusts the regularization parameters only if `auto_regularize_flag` is set to True within the model's parameters.
         """
         if self.get_params('auto_regularize_flag'):
             self.auto_set_sigma_y(sinogram, weights)
             self.auto_set_sigma_x(sinogram)
             self.auto_set_sigma_p(sinogram)
+
+        auto_param_names = ['sigma_y', 'sigma_x', 'sigma_p']
+        AutoParams = namedtuple('AutoParams', auto_param_names)
+        auto_param_values = self.get_params(auto_param_names)
+        auto_params = AutoParams(*tuple(auto_param_values))
+
+        return auto_params
 
     def auto_set_sigma_y(self, sinogram, weights=1):
         """
@@ -404,7 +414,7 @@ class TomographyModel(ParameterHandler):
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
         """
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-        self.auto_set_regularization_params(sinogram, weights=weights)
+        auto_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
@@ -418,7 +428,14 @@ class TomographyModel(ParameterHandler):
         recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                         init_recon=init_recon)
 
-        return recon, fm_rmse
+        # Return num_iterations, granularity, partition_sequence, fm_rmse values, auto_regularization_parameters
+        recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse',
+                             'auto_regularization_parameters']
+        ReconParams = namedtuple('ReconParams', recon_param_names)
+        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, auto_params]
+        recon_params = ReconParams(*tuple(recon_param_values))
+
+        return recon, recon_params
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None, prox_input=None):
         """
@@ -478,11 +495,12 @@ class TomographyModel(ParameterHandler):
         vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
         vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
 
-        print('Starting VCD iterations')
-        mbirjax.get_memory_stats(print_results=True)
-        print('--------')
-
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
+
+        if verbose >= 1:
+            print('Starting VCD iterations')
+            mbirjax.get_memory_stats(print_results=True)
+            print('--------')
 
         # Do the iterations
         fm_rmse = np.zeros(num_iters)

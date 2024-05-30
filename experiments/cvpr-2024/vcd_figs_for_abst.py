@@ -70,20 +70,23 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
-    recon_vcd, fm_rmse_vcd = parallel_model.recon(sinogram, weights=weights)
+    recon_vcd, recon_params_vcd = parallel_model.recon(sinogram, weights=weights)
+    fm_rmse_vcd = recon_params_vcd.fm_rmse
     default_partition_sequence = parallel_model.get_params('partition_sequence')
     partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=13)
     granularity_sequence_vcd = granularity[partition_sequence]
 
     # Perform GD reconstruction
     parallel_model.set_params(partition_sequence=[0,])
-    recon_gd, fm_rmse_gd = parallel_model.recon(sinogram, weights=weights)
+    recon_gd, recon_params_gd = parallel_model.recon(sinogram, weights=weights)
+    fm_rmse_gd = recon_params_gd.fm_rmse
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
     granularity_sequence_gd = granularity[partition_sequence]
 
     # Perform CD reconstruction
     parallel_model.set_params(partition_sequence=[3,])
-    recon_cd, fm_rmse_cd = parallel_model.recon(sinogram, weights=weights)
+    recon_cd, recon_params_cd = parallel_model.recon(sinogram, weights=weights)
+    fm_rmse_cd =recon_params_cd.fm_rmse
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################

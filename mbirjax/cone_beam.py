@@ -77,7 +77,10 @@ class ConeBeamModel(TomographyModel):
             magnification = source_detector_dist / source_iso_dist
         """
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        magnification = source_detector_dist / source_iso_dist
+        if jnp.isinf(source_detector_dist):
+            magnification = 1
+        else:
+            magnification = source_detector_dist / source_iso_dist
         return magnification
 
     def verify_valid_params(self):
@@ -136,9 +139,12 @@ class ConeBeamModel(TomographyModel):
         delta_det = jnp.minimum(delta_det_row, delta_det_channel)
 
         # Compute maximum magnification
-        source_to_iso_dist = source_detector_dist/magnification
-        source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
-        max_magnification = source_detector_dist/source_to_closest_pixel
+        if jnp.isinf(source_detector_dist):
+            max_magnification = 1
+        else:
+            source_to_iso_dist = source_detector_dist/magnification
+            source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            max_magnification = source_detector_dist/source_to_closest_pixel
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel*max_magnification/delta_det))/2))
