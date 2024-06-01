@@ -386,13 +386,19 @@ class TomographyModel(ParameterHandler):
         magnification = self.get_magnification()
         num_det_channels = sinogram.shape[-1]
 
-        # Compute a typical sinogram value
+        # Compute the typical magnitude of a sinogram value
         sino_indicator = self._get_sino_indicator(sinogram)
-        typical_sinogram_value = jnp.average(sinogram, weights=sino_indicator)
+        typical_sinogram_value = jnp.average(jnp.abs(sinogram), weights=sino_indicator)
 
         # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
-        # Compute a typical projection path length
-        typical_path_length = (2*recon_shape[0] * recon_shape[1])/(recon_shape[0] + recon_shape[1])*delta_voxel
+        # Compute a typical projection path length based on the soft minimum of the recon width and height
+        typical_path_length_space = (2*recon_shape[0] * recon_shape[1])/(recon_shape[0] + recon_shape[1])*delta_voxel
+
+        # Compute a typical projection path length based on the detector column width
+        typical_path_length_sino = num_det_channels * delta_det_channel / magnification
+
+        # Compute a typical projection path as the minimum of the two estimates
+        typical_path_length = jnp.minimum(typical_path_length_space, typical_path_length_sino)
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         recon_std = typical_sinogram_value / typical_path_length
@@ -411,7 +417,8 @@ class TomographyModel(ParameterHandler):
             init_recon (jax array): optional reconstruction to be used for initialization.
 
         Returns:
-            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
+            [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
+            recon_params (named tuple): num_iterations, granularity, partition_sequence, fm_rmse, auto_params
         """
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         auto_params = self.auto_set_regularization_params(sinogram, weights=weights)

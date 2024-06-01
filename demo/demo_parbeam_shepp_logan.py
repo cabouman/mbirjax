@@ -54,6 +54,11 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
+    # Print out parameters used in recon
+    print('Recon sigma_y: {}'.format(recon_params.auto_regularization_parameters.sigma_y))
+    print('Recon sigma_x: {}'.format(recon_params.auto_regularization_parameters.sigma_x))
+    print('Recon params: {}'.format(recon_params))
+
     # Display results
     pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 
