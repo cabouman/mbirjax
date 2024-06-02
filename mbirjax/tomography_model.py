@@ -166,9 +166,11 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
-        recon = self.sparse_back_project(sinogram, full_indices)
-
-        return self.reshape_recon(recon)
+        recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+        row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
+        recon = jnp.zeros(recon_shape)
+        recon = recon.at[row_index, col_index].set(recon_cylinder)
+        return recon
 
     def sparse_forward_project(self, voxel_values, indices, view_indices=()):
         """
@@ -261,7 +263,7 @@ class TomographyModel(ParameterHandler):
 
         auto_param_names = ['sigma_y', 'sigma_x', 'sigma_p']
         AutoParams = namedtuple('AutoParams', auto_param_names)
-        auto_param_values = self.get_params(auto_param_names)
+        auto_param_values = [float(val) for val in self.get_params(auto_param_names)]
         auto_params = AutoParams(*tuple(auto_param_values))
 
         return auto_params
@@ -405,7 +407,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
+    def recon(self, sinogram, weights=1.0, num_iterations=13, first_iteration=0, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -430,19 +432,22 @@ class TomographyModel(ParameterHandler):
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
         partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
+        partition_sequence = partition_sequence[first_iteration:]
 
         # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+        recon, fm_rmse, error_sinogram = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                         init_recon=init_recon)
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, auto_regularization_parameters
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse',
                              'auto_regularization_parameters']
         ReconParams = namedtuple('ReconParams', recon_param_names)
-        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, auto_params]
-        recon_params = ReconParams(*tuple(recon_param_values))
+        partition_sequence = [int(val) for val in partition_sequence]
+        fm_rmse = [float(val) for val in fm_rmse]
+        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, auto_params._asdict()]
+        recon_params = ReconParams(*tuple(recon_param_values))._asdict()
 
-        return recon, recon_params
+        return recon, recon_params, error_sinogram
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None, prox_input=None):
         """
@@ -506,8 +511,9 @@ class TomographyModel(ParameterHandler):
 
         if verbose >= 1:
             print('Starting VCD iterations')
-            mbirjax.get_memory_stats(print_results=True)
-            print('--------')
+            if verbose >= 2:
+                mbirjax.get_memory_stats()
+                print('--------')
 
         # Do the iterations
         fm_rmse = np.zeros(num_iters)
@@ -515,13 +521,16 @@ class TomographyModel(ParameterHandler):
             partition = partitions[partition_sequence[i]]
             subset_indices = np.random.permutation(partition.shape[0])
             error_sinogram, flat_recon = vcd_partition_iterator([error_sinogram, flat_recon, partition], subset_indices)
-            fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y)
+            fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
             if verbose >= 1:
                 print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
-                mbirjax.get_memory_stats(print_results=True)
-                print('--------')
+                es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
+                print(f'Error sinogram RMSE = {es_rmse}')
+                if verbose >= 2:
+                    mbirjax.get_memory_stats()
+                    print('--------')
 
-        return self.reshape_recon(flat_recon), fm_rmse
+        return self.reshape_recon(flat_recon), fm_rmse, error_sinogram
 
     @staticmethod
     def create_vcd_partition_iterator(vcd_subset_iterator):
