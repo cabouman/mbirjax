@@ -266,13 +266,13 @@ class TomographyModel(ParameterHandler):
 
         return auto_params
 
-    def auto_set_sigma_y(self, sinogram, weights=1):
+    def auto_set_sigma_y(self, sinogram, weights=None):
         """
         Sets the value of the parameter sigma_y used for use in MBIR reconstruction.
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (scalar or 3D jax array): scalar value or 3D weights array with the same shape as sinogram.
+            weights (3D jax array, optional): 3D weights array with the same shape as sinogram.  Defaults to None, which is treated as an array of 1s.
         """
 
         # Get parameters
@@ -284,6 +284,8 @@ class TomographyModel(ParameterHandler):
         sino_indicator = self._get_sino_indicator(sinogram)
 
         # Compute RMS value of sinogram excluding empty space
+        if weights is None:  # For this function, we don't need a full sinogram of 1s for default weights
+            weights = 1
         signal_rms = jnp.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
 
         # Convert snr to relative noise standard deviation
@@ -405,14 +407,14 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def recon(self, sinogram, weights=1.0, num_iterations=13, init_recon=None):
+    def recon(self, sinogram, weights=None, num_iterations=13, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
 
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to
             num_iterations (int): number of iterations of the VCD algorithm to perform.
             init_recon (jax array): optional reconstruction to be used for initialization.
 
