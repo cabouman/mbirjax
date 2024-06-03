@@ -632,7 +632,7 @@ class ConeBeamModel(TomographyModel):
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
-        m = (v_tilde / delta_det_row) + det_center_row + det_row_offset
-        n = (u_tilde / delta_det_channel) + det_center_channel + det_channel_offset
+        m = (v_tilde + det_row_offset) / delta_det_row + det_center_row
+        n = (u_tilde + det_channel_offset) / delta_det_channel + det_center_channel
 
         return m, n

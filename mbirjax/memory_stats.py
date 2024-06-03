@@ -3,7 +3,7 @@ import os
 import psutil
 
 
-def get_memory_stats(print_results=False, file=None):
+def get_memory_stats(print_results=True, file=None):
     # Get all GPU devices
     gpus = [device for device in jax.devices() if 'cpu' not in device.device_kind.lower()]
 

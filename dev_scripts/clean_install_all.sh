@@ -15,14 +15,14 @@ GPUCLUSTER="gilbreth"
 CPUCLUSTER="negishi"
 
 if [[ "$HOSTNAME" == *"$GPUCLUSTER"* ]]; then
-  module load  anaconda/2020.11-py38
+  module load  anaconda
   echo "$GPUCLUSTER setting"
   conda config --add pkgs_dirs /scratch/$GPUCLUSTER/$USER/.conda/pkgs
   CONDA_ENVS_PATH="/scratch/$GPUCLUSTER/$USER/.conda/envs"
   conda config --add envs_dirs /scratch/$GPUCLUSTER/$USER/.conda/envs
 fi
 if [[ "$HOSTNAME" == *"$CPUCLUSTER"* ]]; then
-  module load  anaconda/2020.11-py38
+  module load  anaconda
   echo "$CPUCLUSTER setting"
   conda config --add pkgs_dirs /scratch/$CPUCLUSTER/$USER/.conda/pkgs
   CONDA_ENVS_PATH="/scratch/$CPUCLUSTER/$USER/.conda/envs"

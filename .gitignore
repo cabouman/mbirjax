@@ -1,6 +1,13 @@
 
-demo/output/*
 demo/data/*
+demo/output/*
+
+experiments/data/*
+experiments/output/*
+
+# ignore jupyter notebook files
+.ipynb_checkpoints/
+*.ipynb
 
 # Mac OSX files
 .DS_Store
@@ -8,6 +15,7 @@ demo/data/*
 *.jpg
 *.pdf
 *.pptx
+*.h5
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

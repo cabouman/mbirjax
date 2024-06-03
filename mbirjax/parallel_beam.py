@@ -270,12 +270,12 @@ class ParallelBeamModel(TomographyModel):
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
-        n_p = (x_p / gp.delta_det_channel) + det_center_channel + gp.det_channel_offset
+        n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
         n_p_center = jnp.round(n_p).astype(int)
 
         # Compute cos alpha for row and columns
         cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle)),
-                                    jnp.abs(jnp.sin(angle)))
+                                     jnp.abs(jnp.sin(angle)))
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
         W_p_c = (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
