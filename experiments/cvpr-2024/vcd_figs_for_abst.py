@@ -63,34 +63,36 @@ if __name__ == "__main__":
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
     parallel_model.set_params(partition_sequence=[0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3])
-    granularity = np.array(parallel_model.get_params('granularity'))
+    granularity = np.array([1, 8, 64, 256])
 
     # Print out model parameters
     parallel_model.print_params()
 
     # ##########################
     # Perform VCD reconstruction
-    recon_vcd, recon_params_vcd = parallel_model.recon(sinogram, weights=weights)
+    num_iterations = 13
+    recon_vcd, recon_params_vcd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations)
     fm_rmse_vcd = recon_params_vcd.fm_rmse
     default_partition_sequence = parallel_model.get_params('partition_sequence')
-    partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=13)
+    partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=num_iterations)
     granularity_sequence_vcd = granularity[partition_sequence]
 
     # Perform GD reconstruction
-    parallel_model.set_params(partition_sequence=[0,])
-    recon_gd, recon_params_gd = parallel_model.recon(sinogram, weights=weights)
+    partition_sequence = [0, ]
+    parallel_model.set_params(partition_sequence=partition_sequence)
+    recon_gd, recon_params_gd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations)
     fm_rmse_gd = recon_params_gd.fm_rmse
-    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
+    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, num_iterations=num_iterations)
     granularity_sequence_gd = granularity[partition_sequence]
 
     # Perform CD reconstruction
-    parallel_model.set_params(partition_sequence=[3,])
-    recon_cd, recon_params_cd = parallel_model.recon(sinogram, weights=weights)
+    partition_sequence = [3, ]
+    parallel_model.set_params(partition_sequence=partition_sequence)
+    recon_cd, recon_params_cd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations)
     fm_rmse_cd =recon_params_cd.fm_rmse
-    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=13)
+    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, num_iterations=num_iterations)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################
-
 
     # Display reconstructions
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
