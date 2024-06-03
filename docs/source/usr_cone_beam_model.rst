@@ -4,7 +4,7 @@
 ConeBeamModel
 =============
 
-The ``ConeBeamModel`` extends the functionalities provided by :class:`mbirjax.Tomography`.
+The ``ConeBeamModel`` extends the functionalities provided by :ref:`TomographyModelDocs`.
 This class inherits all behaviors and attributes of the TomographyModel and implements projectors specific
 to cone beam CT.
 

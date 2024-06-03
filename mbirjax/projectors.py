@@ -306,7 +306,7 @@ class Projectors:
                weights (ndarray or jax array or None, optional): 3D array of shape
                     (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
                     if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
-                    match those indicated by view_indices.
+                    match those indicated by view_indices.  Defaults to all 1s.
                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                     If None, then all views are used.
 

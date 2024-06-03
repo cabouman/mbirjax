@@ -136,8 +136,8 @@ class TomographyModel(ParameterHandler):
         Perform a full forward projection at all voxels in the field-of-view.
 
         Note:
-            This should generally not be used in an iterative loop since it generates
-            a full set of indices on every call.
+            This method should generally not be used directly for iterative reconstruction.  For iterative
+            reconstruction, use :meth:`recon`.
 
         Args:
             recon (jnp array): The 3D reconstruction array.
@@ -156,8 +156,8 @@ class TomographyModel(ParameterHandler):
         Perform a full back projection at all voxels in the field-of-view.
 
         Note:
-            This should generally not be used in an iterative loop since it generates
-            a full set of indices on every call.
+            This method should generally not be used directly for iterative reconstruction.  For iterative
+            reconstruction, use :meth:`recon`.
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
@@ -215,7 +215,7 @@ class TomographyModel(ParameterHandler):
         Computes the diagonal elements of the Hessian matrix for given weights.
 
         Args:
-            weights (jnp array): Sinogram Weights for the Hessian computation.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                 If None, then all views are used.
 
@@ -243,13 +243,13 @@ class TomographyModel(ParameterHandler):
         if recompile_flag:
             self.create_projectors()
 
-    def auto_set_regularization_params(self, sinogram, weights=1):
+    def auto_set_regularization_params(self, sinogram, weights=None):
         """
         Automatically sets the regularization parameters (self.sigma_y, self.sigma_x, and self.sigma_p) used in MBIR reconstruction based on the provided sinogram and optional weights.
 
         Args:
             sinogram (jnp.array): 3D jax array containing the sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (scalar or jnp.array, optional): Scalar value or 3D weights array with the same shape as the sinogram. Defaults to 1.
+            weights (jnp.array, optional): 3D weights array with the same shape as the sinogram. Defaults to all 1s.
 
         Returns:
             namedtuple containing the parameters sigma_y, sigma_x, sigma_p
@@ -261,12 +261,12 @@ class TomographyModel(ParameterHandler):
             self.auto_set_sigma_x(sinogram)
             self.auto_set_sigma_p(sinogram)
 
-        auto_param_names = ['sigma_y', 'sigma_x', 'sigma_p']
-        AutoParams = namedtuple('AutoParams', auto_param_names)
-        auto_param_values = [float(val) for val in self.get_params(auto_param_names)]
-        auto_params = AutoParams(*tuple(auto_param_values))
+        regularization_param_names = ['sigma_y', 'sigma_x', 'sigma_p']
+        RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
+        regularization_param_values = [float(val) for val in self.get_params(regularization_param_names)]
+        regularization_params = RegularizationParams(*tuple(regularization_param_values))
 
-        return auto_params
+        return regularization_params
 
     def auto_set_sigma_y(self, sinogram, weights=None):
         """
@@ -274,7 +274,7 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (3D jax array, optional): 3D weights array with the same shape as sinogram.  Defaults to None, which is treated as an array of 1s.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
         """
 
         # Get parameters
@@ -409,23 +409,27 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None):
+    def recon(self, sinogram, weights=None, num_iterations=15, first_iteration=0, init_recon=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
+        TO restart a recon using the same partition sequence, set first_iteration to be the number of iterations
+        completed so far, and set init_recon to be the output of the previous recon.  This will continue using
+        the same partition sequence from where the previous recon left off.
 
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to
-            num_iterations (int): number of iterations of the VCD algorithm to perform.
-            init_recon (jax array): optional reconstruction to be used for initialization.
+            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
+            num_iterations (int, optional): number of iterations of the VCD algorithm to perform.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
+            init_recon (jax array, optional): Optional reconstruction to be used for initialization.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
-            recon_params (named tuple): num_iterations, granularity, partition_sequence, fm_rmse, auto_params
+            recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, regularization_params
         """
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-        auto_params = self.auto_set_regularization_params(sinogram, weights=weights)
+        regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
@@ -437,21 +441,21 @@ class TomographyModel(ParameterHandler):
         partition_sequence = partition_sequence[first_iteration:]
 
         # Compute reconstruction
-        recon, fm_rmse, error_sinogram = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                         init_recon=init_recon)
 
-        # Return num_iterations, granularity, partition_sequence, fm_rmse values, auto_regularization_parameters
+        # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse',
-                             'auto_regularization_parameters']
+                             'regularization_params']
         ReconParams = namedtuple('ReconParams', recon_param_names)
         partition_sequence = [int(val) for val in partition_sequence]
         fm_rmse = [float(val) for val in fm_rmse]
-        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, auto_params._asdict()]
-        recon_params = ReconParams(*tuple(recon_param_values))._asdict()
+        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, regularization_params._asdict()]
+        recon_params = ReconParams(*tuple(recon_param_values))
 
-        return recon, recon_params, error_sinogram
+        return recon, recon_params
 
-    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=1.0, init_recon=None, prox_input=None):
+    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -460,8 +464,9 @@ class TomographyModel(ParameterHandler):
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
-            init_recon (jax array): Initial reconstruction to use in reconstruction.
+            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
+            init_recon (jax array, optional): Initial reconstruction to use in reconstruction.
+            prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
 
         Returns:
             [recon, fm_rmse]: 3D reconstruction and array of loss for each iteration.
@@ -469,6 +474,9 @@ class TomographyModel(ParameterHandler):
         # Get required parameters
         num_iters = partition_sequence.size
         recon_shape = self.get_params('recon_shape')
+
+        if weights is None:
+            weights = jnp.ones_like(sinogram)
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
@@ -532,7 +540,7 @@ class TomographyModel(ParameterHandler):
                     mbirjax.get_memory_stats()
                     print('--------')
 
-        return self.reshape_recon(flat_recon), fm_rmse, error_sinogram
+        return self.reshape_recon(flat_recon), fm_rmse
 
     @staticmethod
     def create_vcd_partition_iterator(vcd_subset_iterator):
@@ -564,7 +572,7 @@ class TomographyModel(ParameterHandler):
                 subset_indices (jax array): An array of indices into the partition - this gives the order in which the subsets are updated.
 
             Returns:
-                [error_sinogram, recon]: Both have the same shape as above, but are updated to reduce overall loss function.
+                [error_sinogram, flat_recon]: Both have the same shape as above, but are updated to reduce overall loss function.
             """
 
             # Scan over the subsets of the partition, using the subset_indices to order them.
@@ -575,13 +583,13 @@ class TomographyModel(ParameterHandler):
 
         return jax.jit(vcd_partition_iterator)
 
-    def create_vcd_subset_iterator(self, fm_hessian, weights=1.0, prox_input=None):
+    def create_vcd_subset_iterator(self, fm_hessian, weights=None, prox_input=None):
         """
         Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
 
         Args:
             fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
@@ -671,6 +679,7 @@ class TomographyModel(ParameterHandler):
             # We can compute the truly optimal update, but it's complicated so maybe this is good enough
             alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (
                         jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
+            alpha = jnp.clip(alpha, jnp.finfo(np.float32).eps, 1)
             # TODO: test for alpha<0 and terminate.
 
             # Enforce positivity constraint if desired
@@ -697,7 +706,7 @@ class TomographyModel(ParameterHandler):
         return jax.jit(vcd_subset_iterator)
 
     @staticmethod
-    def get_forward_model_loss(error_sinogram, sigma_y, weights=1.0, normalize=True):
+    def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
@@ -705,21 +714,21 @@ class TomographyModel(ParameterHandler):
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             sigma_y (float): Estimate obtained from auto_set_sigma_y or get_params('sigma_y')
-            weights (jax array, optional, default=1.0): 3D weights array with same shape as sinogram
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             normalize (bool, optional, default=True):  If true, then
 
         Returns:
-            [loss].
+            float loss.
         """
         if normalize:
-            avg_weight = jnp.average(weights)
+            avg_weight = 1 if weights is None else jnp.average(weights)
             loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=1.0, num_iterations=3, init_recon=None):
+    def prox_map(self, prox_input, sinogram, weights=None, num_iterations=3, init_recon=None):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_p.
@@ -727,9 +736,9 @@ class TomographyModel(ParameterHandler):
         Args:
             prox_input (jax array): proximal map input with same shape as reconstruction.
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (scalar or jax array): scalar or 3D positive weights with same shape as error_sinogram.
-            num_iterations (int): number of iterations of the VCD algorithm to perform.
-            init_recon (jax array): optional reconstruction to be used for initialization.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
+            num_iterations (int, optional): number of iterations of the VCD algorithm to perform.
+            init_recon (jax array, optional): optional reconstruction to be used for initialization.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -871,11 +880,11 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
         new_indices = jnp.ravel_multi_index([row_index + offset[0], col_index + offset[1]], dims=(num_rows, num_cols), mode='clip')
         xr.append(voxel_values[new_indices])
 
-    # Shift slices up with zero padding
-    xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(0)
+    # Shift slices up with reflection
+    xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(xs[:, -1])
 
-    # Shift slices down with zero padding
-    xs_down = jnp.roll(xs, shift=1, axis=1).at[:, 0].set(0)
+    # Shift slices down with reflection
+    xs_down = jnp.roll(xs, shift=1, axis=1).at[:, 0].set(xs[:, 0])
 
     # Append the up-down differences to xr
     xr = xr + [xs_up, xs_down]
