@@ -1,7 +1,7 @@
 Package Maintenance
 ===================
 
-The following lists out procedures for basic package maintenance.
+The following describes procedures for basic package maintenance.
 
 Unit Tests
 ----------
@@ -15,9 +15,10 @@ This should be repeated for each supported platform.
 Uploading to Test PyPI
 ----------------------
 
-This is only available for registered maintainers.
+This is only available for registered maintainers.  Typically, you would perform these steps on the prerelease branch before the final commit to main.
 
-0. First, make sure you have installed the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
+0. Install the newest versions of `setuptools`, `wheel`, `build`, and `twine`.
+Then from the main mbirjax directory, delete any previous build and then build the project::
 
     rm -r dist
     python -m build
@@ -34,7 +35,7 @@ This is only available for registered maintainers.
     pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
     python -c "import mbirjax"     # spin the wheel
 
-3. Run one of the `demo scripts <examples.html>`_
+3. Run one of the demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
    NOTE: If the install fails and you need to re-test, *temporarily* set
    the version number in `pyproject.toml` from X.X.X to X.X.X.1 (then 2, 3, etc.),
@@ -42,11 +43,18 @@ This is only available for registered maintainers.
    `pyproject.toml`, then merge any required changes into the master branch,
    then delete and re-create the git tag, and proceed to PyPI upload.
 
+4. Verify that the `[corresponding build] <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
 
-Upload to PyPI
---------------
+Uploading to PyPI
+-----------------
 
 This is only available for registered maintainers.
+
+0. First, make sure you have installed the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
+
+    rm -r dist
+    python -m build
+
 
 1. Upload to PyPI.  As above, you will need an API token, this time from PyPI.  NOTE: You cannot upload the same version more than once::
 
@@ -61,6 +69,9 @@ This is only available for registered maintainers.
     python -c "import mbirjax"     # spin the wheel
 
 3. Run one of the demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
+
+
+4. Verify that the `[corresponding build] <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
 
 Reference
 ---------
