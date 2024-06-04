@@ -862,6 +862,39 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
     b /= jnp.sum(b)
 
     # Extract the shape of the reconstruction array.
+    num_slices = recon_shape[2]
+
+    # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
+    delta_prime = get_delta(voxel_values, recon_shape, pixel_indices)
+
+    # Reshape delta_prime for processing with the qGGMRF prior.
+    delta_prime = delta_prime.reshape((-1, b.shape[-1]))
+
+    # Compute the first and second derivatives using the qGGMRF model.
+    first_derivative, second_derivative = pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T)
+
+    # Reshape outputs to match the number of indices and slices.
+    first_derivative = first_derivative.reshape(-1, num_slices)
+    second_derivative = second_derivative.reshape(-1, num_slices)
+
+    return first_derivative, second_derivative
+
+
+@partial(jax.jit, static_argnames='recon_shape')
+def get_delta(voxel_values, recon_shape, pixel_indices):
+    """
+    Calculate the values (xs - xr) for each voxel in voxel_values[pixel_indices] and for each xr that is a neighbor of xs.
+
+    Args:
+        voxel_values (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
+        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+
+    Returns:
+        jax array of shape (N_indices, num_recon_slices, num_neighbors)
+    """
+
+    # Extract the shape of the reconstruction array.
     num_rows, num_cols, num_slices = recon_shape[:3]
 
     # Convert flat indices to 2D indices for row and column access.
@@ -890,22 +923,12 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
     xr = xr + [xs_up, xs_down]
 
     # Convert to a jnp array with shape (num index elements)x(num slices)x(6 neighbors).
-    x_neighbors_prime_new = jnp.stack(xr, axis=-1)
+    xr = jnp.stack(xr, axis=-1)
 
     # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
-    delta_prime = xs[:, :, jnp.newaxis] - x_neighbors_prime_new
+    delta = xs[:, :, jnp.newaxis] - xr
 
-    # Reshape delta_prime for processing with the qGGMRF prior.
-    delta_prime = delta_prime.reshape((-1, b.shape[-1]))
-
-    # Compute the first and second derivatives using the qGGMRF model.
-    first_derivative, second_derivative = pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T)
-
-    # Reshape outputs to match the number of indices and slices.
-    first_derivative = first_derivative.reshape(-1, num_slices)
-    second_derivative = second_derivative.reshape(-1, num_slices)
-
-    return first_derivative, second_derivative
+    return delta
 
 
 @jax.jit
