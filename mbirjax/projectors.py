@@ -158,22 +158,7 @@ class Projectors:
 
                 return sino_view_batch
 
-            # Apply the function on a single batch of views if the batch is small enough.
-            if view_batch_size is None or view_batch_size >= num_views:
-                sinogram = forward_project_view_batch(cur_view_params_array)
-            # Otherwise break the views up into batches and apply the function to each batch use another level of map.
-            else:
-                num_batches = num_views // view_batch_size
-                view_params_batched = jnp.reshape(cur_view_params_array[0:num_batches * view_batch_size],
-                                                  (num_batches, view_batch_size, -1))
-
-                sinogram = jax.lax.map(forward_project_view_batch, view_params_batched)
-                sinogram = jnp.reshape(sinogram, (num_batches * view_batch_size,) + sinogram.shape[2:])
-                num_remaining = num_views - num_batches * view_batch_size
-                if num_remaining > 0:
-                    end_batch = cur_view_params_array[-num_remaining:]
-                    end_views = forward_project_view_batch(end_batch)
-                    sinogram = jnp.concatenate((sinogram, end_views), axis=0)
+            sinogram = apply_map_in_batches(forward_project_view_batch, cur_view_params_array, view_batch_size)
 
             return sinogram
 
@@ -259,8 +244,6 @@ class Projectors:
             Returns:
 
             """
-            num_pixels = pixel_indices.shape[0]
-
             def back_project_pixel_batch(pixel_indices_batch):
                 # Apply back_project_one_view_to_pixel_batch to each pixel batch and each view
                 # Add over the views and concatenate over the pixels
@@ -271,27 +254,7 @@ class Projectors:
                 voxel_values_batch = jnp.sum(per_view_voxel_values_batch, axis=0)
                 return voxel_values_batch
 
-            # Apply the function on a single batch of pixels if the batch is small enough
-            if pixel_batch_size is None or pixel_batch_size >= num_pixels:
-
-                new_voxel_values = back_project_pixel_batch(pixel_indices)
-
-            # Otherwise batch the pixels and map over the batches.
-            else:
-                num_batches = num_pixels // pixel_batch_size
-                length_of_batches = num_batches * pixel_batch_size
-                pixel_indices_batched = jnp.reshape(pixel_indices[:length_of_batches], (num_batches, pixel_batch_size))
-
-                batched_voxel_values = jax.lax.map(back_project_pixel_batch, pixel_indices_batched)
-                new_voxel_values = batched_voxel_values.reshape((length_of_batches,) + batched_voxel_values.shape[2:])
-
-                # Add in any leftover pixels
-                num_remaining = num_pixels - num_batches * pixel_batch_size
-                if num_remaining > 0:
-                    end_batch_indices = pixel_indices[-num_remaining:]
-                    end_batch_voxel_values = back_project_pixel_batch(end_batch_indices)
-                    new_voxel_values = jnp.concatenate((new_voxel_values, end_batch_voxel_values), axis=0)
-
+            new_voxel_values = apply_map_in_batches(back_project_pixel_batch, pixel_indices, pixel_batch_size)
             return new_voxel_values
 
         def compute_hessian_diagonal(weights=None, view_indices=()):
@@ -334,3 +297,48 @@ class Projectors:
                                jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'),
                                compute_hessian_diagonal)
         self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = projector_functions
+
+
+def apply_map_in_batches(batch_map, data_to_batch, batch_size):
+    """
+    Apply a given function to a set of data, batching over the first index, using the given batch size.  The map
+    and data should operate using calls of the form batch_map(data_to_batch[start:start+batch_size]).  The output
+    of batch_map should be a jax array, with the first index of the output corresponding to the first index of the input.
+
+    Args:
+        batch_map (callable): A function of a single input to be mapped over batches of the input data.
+        data_to_batch (jax array): An array of data to be batched and sent to batch_map.
+        batch_size (int): The maximum number of entries to process at one time.
+
+    Returns:
+        A jax array of shape (data_to_batch.shape[0],) + data_to_batch.shape[1:]
+    """
+    num_input_points = data_to_batch.shape[0]
+    # Apply the function on a single batch of views if the batch is small enough.
+    if batch_size is None or batch_size >= num_input_points:
+        output_data = batch_map(data_to_batch)
+
+    # Otherwise break the views up into batches and apply the function to each batch use another level of map.
+    else:
+        num_batches = num_input_points // batch_size
+        length_of_batches = num_batches * batch_size
+        if data_to_batch.ndim == 1:
+            batched_shape = (num_batches, batch_size)
+        else:
+            batched_shape = (num_batches, batch_size,) + data_to_batch.shape[1:]
+        input_data_batched = jnp.reshape(data_to_batch[0:length_of_batches], batched_shape)
+
+        output_data = jax.lax.map(batch_map, input_data_batched)
+        output_shape = (num_batches * batch_size,)
+        if len(output_data.shape) > 2:
+            output_shape += output_data.shape[2:]
+        output_data = jnp.reshape(output_data, output_shape)
+        num_remaining = num_input_points - num_batches * batch_size
+
+        # Add in any leftovers
+        if num_remaining > 0:
+            end_batch = data_to_batch[-num_remaining:]
+            end_views = batch_map(end_batch)
+            output_data = jnp.concatenate((output_data, end_views), axis=0)
+
+    return output_data

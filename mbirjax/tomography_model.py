@@ -648,28 +648,8 @@ class TomographyModel(ParameterHandler):
                 delta_recon_at_indices_batch = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
                 return delta_recon_at_indices_batch
 
-            # Apply the function on a single batch of pixels if the batch is small enough
-            num_pixels = len(pixel_indices)
-            max_index_subsets = 10
-            cur_pixel_batch_size = max(pixel_batch_size, flat_recon.shape[0] // (max_index_subsets - 1))
-            if cur_pixel_batch_size >= num_pixels:
-                delta_recon_at_indices = delta_recon_batch(pixel_indices)
-
-            # Otherwise batch the pixels and map over the batches.
-            else:
-                num_batches = num_pixels // cur_pixel_batch_size
-                length_of_batches = num_batches * cur_pixel_batch_size
-                pixel_indices_batched = jnp.reshape(pixel_indices[:length_of_batches], (num_batches, cur_pixel_batch_size))
-
-                batched_voxel_values = jax.lax.map(delta_recon_batch, pixel_indices_batched)
-                delta_recon_at_indices = batched_voxel_values.reshape((length_of_batches,) + batched_voxel_values.shape[2:])
-
-                # Add in any leftover pixels
-                num_remaining = num_pixels - num_batches * cur_pixel_batch_size
-                if num_remaining > 0:
-                    end_batch_indices = pixel_indices[-num_remaining:]
-                    end_batch_voxel_values = delta_recon_batch(end_batch_indices)
-                    delta_recon_at_indices = jnp.concatenate((delta_recon_at_indices, end_batch_voxel_values), axis=0)
+            # Get the update direction
+            delta_recon_at_indices = mbirjax.apply_map_in_batches(delta_recon_batch, pixel_indices, pixel_batch_size)
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
@@ -678,8 +658,8 @@ class TomographyModel(ParameterHandler):
             # This is really only optimal for the forward model component.
             # We can compute the truly optimal update, but it's complicated so maybe this is good enough
             alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (
-                        jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(np.float32).eps)
-            alpha = jnp.clip(alpha, jnp.finfo(np.float32).eps, 1)
+                        jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(jnp.float32).eps)
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, 1)
             # TODO: test for alpha<0 and terminate.
 
             # Enforce positivity constraint if desired
@@ -689,7 +669,7 @@ class TomographyModel(ParameterHandler):
                 recon_at_indices = flat_recon[pixel_indices]
 
                 # Clip updates to ensure non-negativity
-                pos_constant = 1.0 / (alpha + jnp.finfo(np.float32).eps)
+                pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
@@ -954,9 +934,10 @@ def pm_prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_p):
     return pm_gradient
 
 
-def _get_rho(delta, b, sigma_x, p, q, T):
+@jax.jit
+def compute_qggmrf_cost(delta, b, sigma_x, p, q, T):
     """
-    Computes the sum of the neighboring qGGMRF prior potential functions rho for a given delta.
+    Computes the cost for the qGGMRF prior potential functions rho for a given delta.
 
     Args:
         delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
@@ -966,7 +947,7 @@ def _get_rho(delta, b, sigma_x, p, q, T):
     """
 
     # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
+    eps_float32 = jnp.finfo(jnp.float32).eps
     delta = abs(delta) + sigma_x * eps_float32
 
     # Compute terms of complex expression
@@ -974,7 +955,10 @@ def _get_rho(delta, b, sigma_x, p, q, T):
     second_term = (delta / (T * sigma_x)) ** (q - p)
     third_term = second_term / (1 + second_term)
 
-    result = np.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+    result = jnp.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+
+    result = result / 2  # We divide by 2 here because each pixel is counted twice in the symmetric sum
+
     return result
 
 
@@ -992,7 +976,7 @@ def _get_btilde(delta_prime, b, sigma_x, p, q, T):
     """
 
     # Smallest single precision float
-    eps_float32 = np.finfo(np.float32).eps
+    eps_float32 = jnp.finfo(jnp.float32).eps
     delta_prime = abs(delta_prime) + sigma_x * eps_float32
 
     # first_term is the product of the first three terms reorganized for numerical stability when q=0.
@@ -1022,7 +1006,7 @@ def get_transpose(linear_map, input_shape):
     """
     # print('Defining transpose map')
     # t0 = time.time()
-    input_info = types.SimpleNamespace(shape=input_shape, dtype=np.dtype(np.float32))
+    input_info = types.SimpleNamespace(shape=input_shape, dtype=jnp.dtype(jnp.float32))
     transpose = jax.linear_transpose(linear_map, input_info)
     # print('Done: ' + str(time.time() - t0))
     return transpose
