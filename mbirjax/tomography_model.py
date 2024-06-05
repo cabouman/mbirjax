@@ -263,7 +263,7 @@ class TomographyModel(ParameterHandler):
 
         regularization_param_names = ['sigma_y', 'sigma_x', 'sigma_p']
         RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
-        regularization_param_values = [float(val) for val in self.get_params(regularization_param_names)]
+        regularization_param_values = [float(val) for val in self.get_params(regularization_param_names)]  # These should be floats, but the user may have set them to jnp.float
         regularization_params = RegularizationParams(*tuple(regularization_param_values))
 
         return regularization_params
@@ -288,7 +288,7 @@ class TomographyModel(ParameterHandler):
         # Compute RMS value of sinogram excluding empty space
         if weights is None:  # For this function, we don't need a full sinogram of 1s for default weights
             weights = 1
-        signal_rms = jnp.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5
+        signal_rms = float(jnp.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5)
 
         # Convert snr to relative noise standard deviation
         rel_noise_std = 10 ** (-snr_db / 20)
@@ -299,7 +299,7 @@ class TomographyModel(ParameterHandler):
         pixel_pitch_relative_to_default = delta_voxel / default_pixel_pitch
 
         # Compute sigma_y and scale by relative pixel pitch
-        sigma_y = rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5)
+        sigma_y = np.float32(rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5))
         self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
 
     def auto_set_sigma_x(self, sinogram):
@@ -315,7 +315,7 @@ class TomographyModel(ParameterHandler):
 
         # Compute sigma_x as a fraction of the typical recon value
         # 0.2 is an empirically determined constant
-        sigma_x = 0.2 * (2 ** sharpness) * recon_std
+        sigma_x = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
 
     def auto_set_sigma_p(self, sinogram):
@@ -331,7 +331,7 @@ class TomographyModel(ParameterHandler):
 
         # Compute sigma_x as a fraction of the typical recon value
         # 0.2 is an empirically determined constant
-        sigma_p = 0.2 * (2 ** sharpness) * recon_std
+        sigma_p = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_p=sigma_p, auto_regularize_flag=True)
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
@@ -599,6 +599,7 @@ class TomographyModel(ParameterHandler):
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
         sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
+        b = tuple(b)
         sigma_p = self.get_params('sigma_p')
         pixel_batch_size = self.get_params('pixel_batch_size')
         recon_shape = self.get_params('recon_shape')
@@ -638,7 +639,9 @@ class TomographyModel(ParameterHandler):
                 # Compute the prior model gradient and hessian (i.e., second derivative) terms
                 if prox_input is None:
                     # This is for the qGGMRF prior - compute the prior model gradient and hessian at each pixel in the index set.
-                    pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, index_batch, sigma_x, p, q, T, b)
+                    pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape,
+                                                                                        index_batch, b, sigma_x, p, q,
+                                                                                        T)
                 else:
                     # This is for the proximal map prior - compute the prior model gradient at each pixel in the index set.
                     pm_hessian = sigma_p ** 2
@@ -791,7 +794,8 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         return recon.reshape(recon_shape)
 
-@jax.jit
+
+@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
 def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
     """
     Computes the first and second derivatives of the surrogate function at a pixel for the qGGMRF prior model.
@@ -817,8 +821,8 @@ def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
     return pm_first_derivative, pm_second_derivative
 
 
-@partial(jax.jit, static_argnames='recon_shape')
-def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_indices, sigma_x, p, q, T, b):
+@partial(jax.jit, static_argnames=['recon_shape', 'b', 'sigma_x', 'p', 'q', 'T'])
+def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_indices, b, sigma_x, p, q, T):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
@@ -826,11 +830,11 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
         voxel_values (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
         pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        b (tuple of 6 float): list of 6 qGGMRF prior neightborhood weights.
         sigma_x (float): Standard deviation parameter of the qGGMRF prior.
         p (float): Norm parameter p in the qGGMRF prior.
         q (float): Norm parameter q in the qGGMRF prior.
         T (float): Scaling parameter in the qGGMRF prior.
-        b (list of 6 float): list of 6 qGGMRF prior neightborhood weights.
 
     Returns:
         tuple: Contains two arrays (first_derivative, second_derivative) each of shape (N_indices, num_recon_slices)
@@ -872,6 +876,9 @@ def get_delta(voxel_values, recon_shape, pixel_indices):
 
     Returns:
         jax array of shape (N_indices, num_recon_slices, num_neighbors)
+
+    Note:
+        This function returns an array that is 6 times as large as the input voxel_values.
     """
 
     # Extract the shape of the reconstruction array.
@@ -934,7 +941,7 @@ def pm_prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_p):
     return pm_gradient
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
 def compute_qggmrf_cost(delta, b, sigma_x, p, q, T):
     """
     Computes the cost for the qGGMRF prior potential functions rho for a given delta.
@@ -962,7 +969,7 @@ def compute_qggmrf_cost(delta, b, sigma_x, p, q, T):
     return result
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
 def _get_btilde(delta_prime, b, sigma_x, p, q, T):
     """
     Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
