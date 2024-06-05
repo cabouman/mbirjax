@@ -649,7 +649,7 @@ class TomographyModel(ParameterHandler):
                 return delta_recon_at_indices_batch
 
             # Get the update direction
-            delta_recon_at_indices = mbirjax.apply_map_in_batches(delta_recon_batch, pixel_indices, pixel_batch_size)
+            delta_recon_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices, pixel_batch_size)
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)

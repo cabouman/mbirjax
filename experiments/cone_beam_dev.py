@@ -14,7 +14,7 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 2  # Reduce this for large detector row/channel count, increase for smaller
+    view_batch_size = 4  # Reduce this for large detector row/channel count, increase for smaller
     pixel_batch_size = 2048
 
     # Initialize sinogram parameters
