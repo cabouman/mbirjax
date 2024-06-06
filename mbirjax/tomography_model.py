@@ -638,17 +638,17 @@ class TomographyModel(ParameterHandler):
 
                 # Compute the prior model gradient and hessian (i.e., second derivative) terms
                 if prox_input is None:
-                    # This is for the qGGMRF prior - compute the prior model gradient and hessian at each pixel in the index set.
-                    pm_gradient, pm_hessian = pm_qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape,
-                                                                                        index_batch, b, sigma_x, p, q,
-                                                                                        T)
+                    # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+                    prior_gradient, prior_hessian = qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape,
+                                                                                           index_batch, b, sigma_x, p,
+                                                                                           q, T)
                 else:
-                    # This is for the proximal map prior - compute the prior model gradient at each pixel in the index set.
-                    pm_hessian = sigma_p ** 2
-                    pm_gradient = pm_prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_p)
+                    # Proximal map prior - compute the prior model gradient at each pixel in the index set.
+                    prior_hessian = sigma_p ** 2
+                    prior_gradient = prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_p)
 
                 # Compute update vector update direction in recon domain
-                delta_recon_at_indices_batch = (- fm_gradient - pm_gradient) / (fm_sparse_hessian + pm_hessian)
+                delta_recon_at_indices_batch = (- fm_gradient - prior_gradient) / (fm_sparse_hessian + prior_hessian)
                 return delta_recon_at_indices_batch
 
             # Get the update direction
@@ -795,36 +795,63 @@ class TomographyModel(ParameterHandler):
         return recon.reshape(recon_shape)
 
 
-@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
-def pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T):
+@partial(jax.jit, static_argnames=['sigma_p'])
+def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_p):
     """
-    Computes the first and second derivatives of the surrogate function at a pixel for the qGGMRF prior model.
-    Calculations taken from Figure 8.5 (page 119) of FCI for the qGGMRF prior model.
+    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
 
     Args:
-        delta_prime (float or np.array): (batch_size, N) array of pixel differences between center and each of N neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+        recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        prox_input (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        sigma_p (float): Standard deviation parameter of the proximal map.
 
     Returns:
-        float or np.array: (batch_size,) array of first derivatives of the surrogate function at pixel.
-        float or np.array: (batch_size,) array of second derivatives of the surrogate function at pixel.
+        first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
     """
-    # Compute the btilde values required for quadratic surrogate
-    btilde = _get_btilde(delta_prime, b, sigma_x, p, q, T)
 
-    # Compute first derivative
-    pm_first_derivative = jnp.sum(2 * btilde * delta_prime, axis=-1)
+    # Compute the prior model gradient at all voxels
+    cur_diff = recon[pixel_indices] - prox_input[pixel_indices]
+    pm_gradient = (1.0 / (sigma_p ** 2.0)) * cur_diff
 
-    # Compute second derivative
-    pm_second_derivative = jnp.sum(2 * btilde, axis=-1)
+    # Shape of pm_gradient is (num indices)x(num slices)
+    return pm_gradient
 
-    return pm_first_derivative, pm_second_derivative
+
+@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
+def qggmrf_cost(delta, b, sigma_x, p, q, T):
+    """
+    Computes the cost for the qGGMRF prior potential functions rho for a given delta.
+
+    Args:
+        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
+        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+    Returns:
+        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
+    """
+
+    # Smallest single precision float
+    eps_float32 = jnp.finfo(jnp.float32).eps
+    delta = abs(delta) + sigma_x * eps_float32
+
+    # Compute terms of complex expression
+    first_term = ((delta / sigma_x) ** p) / p
+    second_term = (delta / (T * sigma_x)) ** (q - p)
+    third_term = second_term / (1 + second_term)
+
+    result = jnp.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+
+    result = result / 2  # We divide by 2 here because each pixel is counted twice in the symmetric sum
+
+    return result
 
 
 @partial(jax.jit, static_argnames=['recon_shape', 'b', 'sigma_x', 'p', 'q', 'T'])
-def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_indices, b, sigma_x, p, q, T):
+def qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_indices, b, sigma_x, p, q, T):
     """
-    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
+    Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
+    the qGGMRF prior.
+    Calculations taken from Figure 8.5 (page 119) of FCI for the qGGMRF prior model.
 
     Args:
         voxel_values (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
@@ -841,7 +868,7 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
                representing the gradient and Hessian values at specified indices.
     """
     # Initialize the neighborhood weights for averaging surrounding pixel values.
-    # Order is (I think) [row+1, row-1, col+1, col-1, slice+1, slice-1]
+    # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1]
     b = jnp.array(b).reshape(1, -1)
     b /= jnp.sum(b)
 
@@ -855,13 +882,47 @@ def pm_qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_i
     delta_prime = delta_prime.reshape((-1, b.shape[-1]))
 
     # Compute the first and second derivatives using the qGGMRF model.
-    first_derivative, second_derivative = pm_gradient_and_hessian(delta_prime, b, sigma_x, p, q, T)
+    btilde = _get_btilde(delta_prime, b, sigma_x, p, q, T)
+
+    # Compute first derivative
+    first_derivative = jnp.sum(2 * btilde * delta_prime, axis=-1)
+
+    # Compute second derivative
+    second_derivative = jnp.sum(2 * btilde, axis=-1)
 
     # Reshape outputs to match the number of indices and slices.
     first_derivative = first_derivative.reshape(-1, num_slices)
     second_derivative = second_derivative.reshape(-1, num_slices)
 
     return first_derivative, second_derivative
+
+
+@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
+def _get_btilde(delta_prime, b, sigma_x, p, q, T):
+    """
+    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
+
+    Args:
+        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
+        b (float or jax array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+
+    Returns:
+        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
+    """
+
+    # Scale by T * sigma_x and get powers
+    # Note that |delta|^r = T^r sigma_x^r |delta / (T sigma_x)|^r for any r, so we use a scaled version of delta_prime
+    eps_float32 = jnp.finfo(jnp.float32).eps  # Smallest single precision float
+    scaled_delta_prime = abs(delta_prime) / (T * sigma_x) + eps_float32  # Avoid delta=0 in delta**(q-p) since q < p
+    delta_prime_q_minus_2 = scaled_delta_prime ** (q - 2.0)
+    delta_prime_q_minus_p = scaled_delta_prime ** (q - p)
+
+    numerator = delta_prime_q_minus_2 * ((q / p) + delta_prime_q_minus_p)
+    denominator = (1 + delta_prime_q_minus_p) ** 2
+    scale = (T ** (p - 2)) / (2 * sigma_x * sigma_x)
+
+    b_tilde = b * scale * numerator / denominator
+    return b_tilde
 
 
 @partial(jax.jit, static_argnames='recon_shape')
@@ -916,85 +977,6 @@ def get_delta(voxel_values, recon_shape, pixel_indices):
     delta = xs[:, :, jnp.newaxis] - xr
 
     return delta
-
-
-@jax.jit
-def pm_prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_p):
-    """
-    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
-
-    Args:
-        recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-        prox_input (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
-        sigma_p (float): Standard deviation parameter of the proximal map.
-
-    Returns:
-        first_derivative of shape (N_indices, num_recon_slices) representing the gradient of the prox term at specified indices.
-    """
-
-    # Compute the prior model gradient at all voxels
-    cur_diff = recon[pixel_indices] - prox_input[pixel_indices]
-    pm_gradient = (1.0 / (sigma_p ** 2.0)) * cur_diff
-
-    # Shape of pm_gradient is (num indices)x(num slices)
-    return pm_gradient
-
-
-@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
-def compute_qggmrf_cost(delta, b, sigma_x, p, q, T):
-    """
-    Computes the cost for the qGGMRF prior potential functions rho for a given delta.
-
-    Args:
-        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-    Returns:
-        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
-    """
-
-    # Smallest single precision float
-    eps_float32 = jnp.finfo(jnp.float32).eps
-    delta = abs(delta) + sigma_x * eps_float32
-
-    # Compute terms of complex expression
-    first_term = ((delta / sigma_x) ** p) / p
-    second_term = (delta / (T * sigma_x)) ** (q - p)
-    third_term = second_term / (1 + second_term)
-
-    result = jnp.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
-
-    result = result / 2  # We divide by 2 here because each pixel is counted twice in the symmetric sum
-
-    return result
-
-
-@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
-def _get_btilde(delta_prime, b, sigma_x, p, q, T):
-    """
-    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
-
-    Args:
-        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
-
-    Returns:
-        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
-    """
-
-    # Smallest single precision float
-    eps_float32 = jnp.finfo(jnp.float32).eps
-    delta_prime = abs(delta_prime) + sigma_x * eps_float32
-
-    # first_term is the product of the first three terms reorganized for numerical stability when q=0.
-    first_term = (delta_prime ** (q - 2.0)) / (2.0 * (sigma_x ** p) * (T * sigma_x ** (q - p)))
-
-    # third_term is the third term in formula.
-    second_term = (delta_prime / (T * sigma_x)) ** (q - p)
-    third_term = ((q / p) + second_term) / ((1 + second_term) ** 2.0)
-
-    result = b * (first_term * third_term)  # Broadcast b over batch_size dimension
-    return result
 
 
 def get_transpose(linear_map, input_shape):
