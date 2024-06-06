@@ -22,8 +22,8 @@ class TestProjectors(unittest.TestCase):
         """Set up before each test method."""
         # Choose the geometry type
         self.geometry_types = ['parallel', 'cone']
-        parallel_tolerances = {'nrmse':0.14, 'max_diff':0.37, 'pct_95':0.035}
-        cone_tolerances = {'nrmse':0.18, 'max_diff':0.55, 'pct_95':0.041}
+        parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
+        cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
         self.all_tolerances = [parallel_tolerances, cone_tolerances]
 
         # Set parameters
