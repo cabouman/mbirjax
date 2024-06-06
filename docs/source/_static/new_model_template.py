@@ -29,7 +29,11 @@ class TemplateModel(TomographyModel):
     """
 
     # TODO: Adjust the signature as needed for a particular geometry and update the docstring to match.
-    def __init__(self, sinogram_shape, param1, param2, view_dependent_vec1, view_dependent_vec2, **kwargs):
+    # Don't include any additional unspecified keyword arguments in the form of **kwargs - use only the parameters that
+    # are required for the geometry.  Any changes to existing parameters should be done by the user with set_params,
+    # which checks for invalid parameter names.  There is no check for invalid parameter names here because the
+    # geometry may need to define new parameters.
+    def __init__(self, sinogram_shape, param1, param2, view_dependent_vec1, view_dependent_vec2):
         # Convert the view-dependent vectors to an array
         view_dependent_vecs = [vec.flatten() for vec in [view_dependent_vec1, view_dependent_vec2]]
         try:
@@ -38,7 +42,7 @@ class TemplateModel(TomographyModel):
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
 
-        super().__init__(sinogram_shape, param1=param1, param2=param2, view_params_array=view_params_array, **kwargs)
+        super().__init__(sinogram_shape, param1=param1, param2=param2, view_params_array=view_params_array)
 
     @classmethod
     def from_file(cls, filename):

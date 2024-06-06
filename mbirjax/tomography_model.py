@@ -27,20 +27,20 @@ class TomographyModel(ParameterHandler):
     Sets up the reconstruction size and parameters.
     """
 
-    def __init__(self, sinogram_shape, recon_shape=None, **kwargs):
+    def __init__(self, sinogram_shape, **kwargs):
 
         super().__init__()
         self.sparse_forward_project, self.sparse_back_project = None, None  # These are callable functions compiled in set_params
         self.compute_hessian_diagonal = None
-        self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, recon_shape=recon_shape, **kwargs)
+        self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
         delta_voxel = self.get_params('delta_voxel')
         if delta_voxel is None:
             magnification = self.get_magnification()
             delta_det_channel = self.get_params('delta_det_channel')
             delta_voxel = delta_det_channel / magnification
             self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
-        if recon_shape is None:
-            self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
+
+        self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()

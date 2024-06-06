@@ -160,6 +160,13 @@ class ParameterHandler():
 
             if key in self.params.keys():
                 recompile_flag = self.params[key]['recompile_flag']
+            elif not no_warning:
+                error_message = '{} is not a recognized parameter'.format(key)
+                error_message += '\nValid parameters are: \n'
+                for valid_key in self.params.keys():
+                    error_message += '   {}\n'.format(valid_key)
+                raise ValueError(error_message)
+
             new_entry = {'val': val, 'recompile_flag': recompile_flag}
             self.params[key] = new_entry
 
