@@ -15,6 +15,15 @@ Below are tips on important and useful features:
   - ``sharpness`` -  default = 0. A larger value of ``sharpness=1.0`` or greater will increase sharpness, and a negative value will reduce noise.
   - ``snr_db`` - default = 30.0. A larger value will increase resolution, but start with ``sharpness``.
 
+- **Change Reconstruction Size and Shape:**
+
+  MBIRJAX will automatically set the reconstruction array size and voxel pitch to reasonable values.
+  However, if you are doing tilt beam reconstruction or other specialized geometries, you may want to reconstruct a rectangular region-of-interest.
+  You can do this by setting the following parameters:
+
+  - ``recon_shape`` -  The recon shape is a 3-tuple (num_rows, num_cols, num_slices). It defaults to something reasonable, but you can change its value to change the region of reconstruction.
+  - ``delta_voxel`` - This defaults to 1.0 and sets the spacing between voxels in ALU in x, y, and z directions. (See :ref:`ALU conversion <ALU_conversion_label>`).
+  - ``delta_det_channel`` and ``delta_det_row`` - These default to 1.0 and set the spacing between detector channels and rows in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
 
 - **Set Sinogram Weights:**
 
@@ -27,34 +36,13 @@ Below are tips on important and useful features:
   The weights array has the same shape as the sinogram, and it represents the assumed inverse noise variance for each sinogram entry.
   If you use the transmission options, it is critical that the sinogram be properly scaled to -log attenuation units, or you will get crazy results.
 
-- **Change Reconstruction Size and Shape:**
-
-  MBIRJAX will automatically set the reconstruction array size and voxel pitch to reasonable values.
-  However, if you are doing tilt beam reconstruction or other specialized geometries, you may want to reconstruct a rectangular region-of-interest.
-  You can do this by setting the following parameters:
-
-  - ``num_recon_rows`` and  ``num_recon_cols`` -  These will default to the number of detector channels, but you can change their values to reconstruct a rectangular region.
-  - ``delta_voxel`` - This defaults to 1.0 and sets the spacing between voxels in ALU in x, y, and z directions. (See :ref:`ALU conversion <ALU_conversion_label>`).
-  - ``delta_det_channel`` and ``delta_det_row`` - These default to 1.0 and set the spacing between detector channels and rows in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
-
 - **Calibrate and Control Model:**
 
   MBIRJAX will allow you to compensate for non-ideal data with the following parameters:
 
   - ``det_channel_offset`` - This defaults to 0.0 and sets offset in the center of rotation in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
-  - ``verbose`` - default = 0 will be quiet. Set ``verbose=1`` or 2 for more feedback.
+  - ``verbose`` - default = 1 to print out basic information. Set ``verbose=0`` for quiet or 2 for more feedback.
   - ``model.print_params()`` - This method will print out all the parameters in the model so you can monitor what's happening.
 
-- **Manage Memory:**
-
-  Large reconstruction can exceed the available memory, particularly on GPUs.
-  So MBIRJAX provides some parameters for processing data in manageable batches:
-
-  - ``view_batch_size`` - This defaults to None and sets the maximum number of views that are processed together.
-  - ``pixel_batch_size`` - This defaults to None and sets the maximum number of voxel cylinders that are processed together.
-
-  If you are running out of memory, we recommend that you set these parameters to smaller values.
-  Depending on the size of your problem and memory, you might try ``view_batch_size=1`` and ``pixel_batch_size=1000``
-  or even smaller.
 
 
