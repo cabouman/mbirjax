@@ -598,8 +598,9 @@ class TomographyModel(ParameterHandler):
 
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
-        sigma_x, p, q, T, b = self.get_params(['sigma_x', 'p', 'q', 'T', 'b'])
+        b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
         b = tuple(b)
+        qggmrf_params = (b, sigma_x, p, q, T)
         sigma_p = self.get_params('sigma_p')
         pixel_batch_size = self.get_params('pixel_batch_size')
         recon_shape = self.get_params('recon_shape')
@@ -640,8 +641,7 @@ class TomographyModel(ParameterHandler):
                 if prox_input is None:
                     # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                     prior_gradient, prior_hessian = qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape,
-                                                                                           index_batch, b, sigma_x, p,
-                                                                                           q, T)
+                                                                                           index_batch, qggmrf_params)
                 else:
                     # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                     prior_hessian = sigma_p ** 2
@@ -846,101 +846,104 @@ def qggmrf_cost(delta, b, sigma_x, p, q, T):
     return result
 
 
-@partial(jax.jit, static_argnames=['recon_shape', 'b', 'sigma_x', 'p', 'q', 'T'])
-def qggmrf_gradient_and_hessian_at_indices(voxel_values, recon_shape, pixel_indices, b, sigma_x, p, q, T):
+@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
+def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
     Calculations taken from Figure 8.5 (page 119) of FCI for the qGGMRF prior model.
 
     Args:
-        voxel_values (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        flat_recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
         pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
-        b (tuple of 6 float): list of 6 qGGMRF prior neightborhood weights.
-        sigma_x (float): Standard deviation parameter of the qGGMRF prior.
-        p (float): Norm parameter p in the qGGMRF prior.
-        q (float): Norm parameter q in the qGGMRF prior.
-        T (float): Scaling parameter in the qGGMRF prior.
+        qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
 
     Returns:
         tuple: Contains two arrays (first_derivative, second_derivative) each of shape (N_indices, num_recon_slices)
                representing the gradient and Hessian values at specified indices.
     """
     # Initialize the neighborhood weights for averaging surrounding pixel values.
-    # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1]
-    b = jnp.array(b).reshape(1, -1)
-    b /= jnp.sum(b)
+    # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
+    b, sigma_x, p, q, T = qggmrf_params
+    b = jnp.array(b)
+    b = tuple(b / jnp.sum(b))
 
-    # Extract the shape of the reconstruction array.
-    num_slices = recon_shape[2]
+    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
+    qggmrf_params = (b, sigma_x, p, q, T)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
+    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
 
-    # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
-    delta_prime = get_delta(voxel_values, recon_shape, pixel_indices)
+    # Then work on slices - add in the contributions from neighbors in the same slice
+    slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
+    gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
 
-    # Reshape delta_prime for processing with the qGGMRF prior.
-    delta_prime = delta_prime.reshape((-1, b.shape[-1]))
-
-    # Compute the first and second derivatives using the qGGMRF model.
-    btilde = _get_btilde(delta_prime, b, sigma_x, p, q, T)
-
-    # Compute first derivative
-    first_derivative = jnp.sum(2 * btilde * delta_prime, axis=-1)
-
-    # Compute second derivative
-    second_derivative = jnp.sum(2 * btilde, axis=-1)
-
-    # Reshape outputs to match the number of indices and slices.
-    first_derivative = first_derivative.reshape(-1, num_slices)
-    second_derivative = second_derivative.reshape(-1, num_slices)
-
-    return first_derivative, second_derivative
+    return gradient, hessian
 
 
-@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
-def _get_btilde(delta_prime, b, sigma_x, p, q, T):
+@partial(jax.jit, static_argnames='qggmrf_params')
+def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
     """
-    Compute the quadratic surrogate coefficients btilde from page 117 of FCI for the qGGMRF prior model.
+    Compute the qggmrf gradient and diagonal Hessian at each voxel of a voxel_cylinder.
 
     Args:
-        delta_prime (float or np.array): (batch_size, P) array of pixel differences between center and each of P neighboring pixels.
-        b (float or jax array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+        voxel_cylinder (jax array): 1D array of voxel values
+        qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
 
     Returns:
-        float or np.array: (batch_size, P) array of surrogate coefficients btilde.
+        tuple of gradient and Hessian, each of which is a 1D jax array of the same length as voxel_cylinder
     """
+    b, sigma_x, p, q, T = qggmrf_params
+    b_at_slice_plus_one, b_at_slice_minus_one = b[4:6]
 
-    # Scale by T * sigma_x and get powers
-    # Note that |delta|^r = T^r sigma_x^r |delta / (T sigma_x)|^r for any r, so we use a scaled version of delta_prime
-    eps_float32 = jnp.finfo(jnp.float32).eps  # Smallest single precision float
-    scaled_delta_prime = abs(delta_prime) / (T * sigma_x) + eps_float32  # Avoid delta=0 in delta**(q-p) since q < p
-    delta_prime_q_minus_2 = scaled_delta_prime ** (q - 2.0)
-    delta_prime_q_minus_p = scaled_delta_prime ** (q - p)
+    # Voxel cylinder is 1D.
+    # Compute the differences delta[j] = voxel_cylinder[j+1] - voxel_cylinder[j], then add 0s at both ends to
+    # represent reflected boundaries at 0 and the end.
+    # Get v[0]-v[-1], v[1]-v[0], v[2]-v[1], ..., v[n]-v[n-1]  (where v[-1] = v[0], v[n]=v[n-1] in this case).
+    zero = jnp.zeros(1)
+    delta = jnp.concatenate((zero, jnp.diff(voxel_cylinder), zero))
 
-    numerator = delta_prime_q_minus_2 * ((q / p) + delta_prime_q_minus_p)
-    denominator = (1 + delta_prime_q_minus_p) ** 2
-    scale = (T ** (p - 2)) / (2 * sigma_x * sigma_x)
+    # Compute the primary quantity used for the gradient and Hessian
+    # Use b_for_delta = 1 here and scale by b_slice below.
+    b_tilde_times_2 = get_2_b_tilde(delta, 1, qggmrf_params)
+    b_tilde_times_2_times_delta = b_tilde_times_2 * delta
 
-    b_tilde = b * scale * numerator / denominator
-    return b_tilde
+    # The gradient_cylinder gets a term from each neighbor, slice+1 and slice-1
+    # First do the gradient and Hessian for slice+1.  Here delta[1:] has v[1]-v[0], v[2]-v[1], so we need to use
+    # -delta since delta is supposed to be xs - xr, where xs is the current point of interest.
+    gradient_cylinder = -b_at_slice_plus_one * b_tilde_times_2_times_delta[1:]
+    hessian_cylinder = b_at_slice_plus_one * b_tilde_times_2[1:]
+
+    # For slice-1, we use delta[0:], which has v[0]-v[-1], v[1]-v[0] and hence has the correct sign.
+    gradient_cylinder += b_at_slice_minus_one * b_tilde_times_2_times_delta[:-1]
+    hessian_cylinder += b_at_slice_minus_one * b_tilde_times_2[:-1]
+
+    return gradient_cylinder, hessian_cylinder
 
 
-@partial(jax.jit, static_argnames='recon_shape')
-def get_delta(voxel_values, recon_shape, pixel_indices):
+@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
+def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indices, qggmrf_params,
+                                      initial_gradient_slice, initial_hessian_slice):
     """
-    Calculate the values (xs - xr) for each voxel in voxel_values[pixel_indices] and for each xr that is a neighbor of xs.
+    Compute the qggmrf gradient and diagonal Hessian at each voxel of a slice of voxels.  The results are added
+    to initial_gradient_slice, initial_hessian_slice.
 
     Args:
-        voxel_values (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        flat_recon_slice (jax array): 1D array of voxels in a single slice of a recon.
+        The locations of flat_recon_slice[pixel_indices] within the recon are given by
+        row_index, col_index = jnp.unravel_index(pixel_indices, shape=(num_rows, num_cols))
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a
+        flattened recon.
+        qggmrf_params: b, sigma_x, p, q, T
+        initial_gradient_slice (jax array): Array of the same shape as flat_recon_slice
+        initial_hessian_slice (jax array): Array of the same shape as flat_recon_slice
 
     Returns:
-        jax array of shape (N_indices, num_recon_slices, num_neighbors)
 
-    Note:
-        This function returns an array that is 6 times as large as the input voxel_values.
     """
+    # Get the parameters
+    b, sigma_x, p, q, T = qggmrf_params
 
     # Extract the shape of the reconstruction array.
     num_rows, num_cols, num_slices = recon_shape[:3]
@@ -948,35 +951,64 @@ def get_delta(voxel_values, recon_shape, pixel_indices):
     # Convert flat indices to 2D indices for row and column access.
     row_index, col_index = jnp.unravel_index(pixel_indices, shape=(num_rows, num_cols))
 
-    # Access the central voxels' values at the given pixel_indices. Shape of xs is (num indices)x(num slices)
-    xs = voxel_values[pixel_indices]
-
     # Define relative positions for accessing neighborhood voxels.
-    offsets = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+    row_plus_one, row_minus_one = [1, 0], [-1, 0]
+    col_plus_one, col_minus_one = [0, 1], [0, -1]
+    b_row_plus_one, b_row_minus_one = b[0:2]
+    b_col_plus_one, b_col_minus_one = b[2:4]
 
-    # Create a list derived from 4 neighbors, each entry in list is a 1D vector containing the recon values at that
-    # location over all slices.
-    xr = []
-    for offset in offsets:
-        new_indices = jnp.ravel_multi_index([row_index + offset[0], col_index + offset[1]], dims=(num_rows, num_cols), mode='clip')
-        xr.append(voxel_values[new_indices])
+    offsets = [row_plus_one, row_minus_one, col_plus_one, col_minus_one]
+    b_values = [b_row_plus_one, b_row_minus_one, b_col_plus_one, b_col_minus_one]
 
-    # Shift slices up with reflection
-    xs_up = jnp.roll(xs, shift=-1, axis=1).at[:, -1].set(xs[:, -1])
+    # Access the central voxels' values at the given pixel_indices. Length of xs0 is (num indices)
+    xs0 = flat_recon_slice[pixel_indices]
 
-    # Shift slices down with reflection
-    xs_down = jnp.roll(xs, shift=1, axis=1).at[:, 0].set(xs[:, 0])
+    # Loop over the offsets and accumulate the gradients and Hessian diagonal entries.
+    for offset, b_value in zip(offsets, b_values):
+        offset_indices = jnp.ravel_multi_index([row_index + offset[0], col_index + offset[1]],
+                                               dims=(num_rows, num_cols), mode='clip')
+        delta = xs0 - flat_recon_slice[offset_indices]
 
-    # Append the up-down differences to xr
-    xr = xr + [xs_up, xs_down]
+        # Compute the primary quantity used for the gradient and Hessian
+        b_tilde_times_2 = get_2_b_tilde(delta, b_value, qggmrf_params)
 
-    # Convert to a jnp array with shape (num index elements)x(num slices)x(6 neighbors).
-    xr = jnp.stack(xr, axis=-1)
+        # Update the gradient and Hessian for this delta
+        initial_gradient_slice += b_tilde_times_2 * delta
+        initial_hessian_slice += b_tilde_times_2
 
-    # Compute differences between the central voxels and their neighbors. (BTW, xs is broadcast.)
-    delta = xs[:, :, jnp.newaxis] - xr
+    return initial_gradient_slice, initial_hessian_slice
 
-    return delta
+
+@partial(jax.jit, static_argnames='qggmrf_params')
+def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
+    """
+    Compute rho'(delta) / (2 delta) from page 153 of FCI for the qGGMRF prior model.
+
+    Args:
+        delta (float or jax array): (batch_size, P) array of pixel differences between center and each of P neighboring
+        pixels.
+        b_for_delta (float): The value of b associated with this delta.
+        qggmrf_params (tuple): Parameters in the form (b, sigma_x, p, q, T)
+
+    Returns:
+        float or jax array: rho'(delta) / (2 delta)
+    """
+    b, sigma_x, p, q, T = qggmrf_params
+
+    # Scale by T * sigma_x and get powers
+    # Note that |delta|^r = T^r sigma_x^r |delta / (T sigma_x)|^r for any r, so we use a scaled version of delta_prime
+    eps_float32 = jnp.finfo(jnp.float32).eps  # Smallest single precision float
+    scaled_delta = abs(delta) / (T * sigma_x) + eps_float32  # Avoid delta=0 in delta**(q-p) since q < p
+    delta_q_minus_2 = scaled_delta ** (q - 2.0)
+    delta_q_minus_p = scaled_delta ** (q - p)
+
+    numerator = delta_q_minus_2 * ((q / p) + delta_q_minus_p)
+    denominator = (1 + delta_q_minus_p) ** 2
+    scale = (T ** (p - 2)) / (sigma_x * sigma_x)
+
+    rho_prime_over_delta = scale * numerator / denominator
+    b_tilde_times_2 = b_for_delta * rho_prime_over_delta
+    return b_tilde_times_2
 
 
 def get_transpose(linear_map, input_shape):

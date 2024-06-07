@@ -25,7 +25,7 @@ _recon_model_defaults_dict = {
     'p': {'val': 2.0, 'recompile_flag': False},
     'q': {'val': 1.2, 'recompile_flag': False},
     'T': {'val': 1.0, 'recompile_flag': False},
-    'b': {'val': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 'recompile_flag': False},
+    'b': {'val': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 'recompile_flag': False},  # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1]
 }
 
 _reconstruction_defaults_dict = {
