@@ -64,17 +64,30 @@ class TestQGGMRF(unittest.TestCase):
                       [1021.4198, 510.99796, 1020.9037],
                       [1531.5032, 1021.65314, 1530.8649]], dtype=np.float32))
 
-        np.random.seed(0)
-        p = np.random.rand(1)[0] + 1
-        q = p - 0.9 * np.random.rand(1)[0]
-        T = 0.5 + np.random.rand(1)[0]
-        sigma_x = 0.1 + np.random.rand(1)[0]
+        # The values below were obtained using the commented out code, and the results above were obtained
+        # using these values on a verified working version of the code.
+        # np.random.seed(0)
+        p = 1.5488135039273248  # np.random.rand(1)[0] + 1
+        q = 0.9051430741921472  # p - 0.9 * np.random.rand(1)[0]
+        T = 1.102763376071644  # 0.5 + np.random.rand(1)[0]
+        sigma_x = 0.6448831829968968  # 0.1 + np.random.rand(1)[0]
         b = (1, 1, 1, 1, 1, 1)
         qggmrf_params = (b, sigma_x, p, q, T)
 
         recon_shape = (3, 3, 3)
-        flat_recon = np.random.rand(recon_shape[0] * recon_shape[1], recon_shape[2])
-        flat_recon = flat_recon.reshape((recon_shape[0] * recon_shape[1], recon_shape[2]))
+        # flat_recon = np.random.rand(recon_shape[0] * recon_shape[1], recon_shape[2])
+        # flat_recon = flat_recon.reshape((recon_shape[0] * recon_shape[1], recon_shape[2]))
+        flat_recon = (
+            np.array([[0.4236548, 0.64589411, 0.43758721],
+                      [0.891773, 0.96366276, 0.38344152],
+                      [0.79172504, 0.52889492, 0.56804456],
+                      [0.92559664, 0.07103606, 0.0871293],
+                      [0.0202184, 0.83261985, 0.77815675],
+                      [0.87001215, 0.97861834, 0.79915856],
+                      [0.46147936, 0.78052918, 0.11827443],
+                      [0.63992102, 0.14335329, 0.94466892],
+                      [0.52184832, 0.41466194, 0.26455561]])
+        )
         pixel_indices = np.arange(flat_recon.shape[0])
 
         grad, hess = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
