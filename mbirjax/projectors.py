@@ -239,55 +239,104 @@ class Projectors:
 def concatenate_function_in_batches(function, data_to_batch, batch_size):
     """
     Apply a given function to a set of data, batching over the first index, concatenating the results along axis=0.
-    The function and data should operate using calls of the form function(data_to_batch[start:start+batch_size]).  The
-    output of function should be an array, with axis 0 the output corresponding to axis 0 the input.
+    The function should operate on subsets of the form data_to_batch[start:start+batch_size] when function takes a
+    single input or on analogous subsets of each element data_to_batch[j] when function takes multiple
+    inputs.  The output of function should be an array or tuple of arrays.  These output are concatenated along
+    the leading axis.
+
+    The shape of each array is determined by the output(s) of function, which
+    is concatenated along the leading axis.  If function returns a fixed shape output, then the result has
+    size given by the total number batches (full or partial) times the length of the leading axis of the output.
 
     Args:
-        function (callable): A function of a single input to be mapped over batches of the input data.
-        data_to_batch (jax array): An array of data to be batched and sent to function.
+        function (callable): A function to be mapped over batches of the input data.  This will be called on
+        the unpacked elements of data_to_batch (after batching) using a call of the form
+        output_data = function(batch) when data_to_batch is a single array or
+        output_data = function(*batch) when data_to_batch is a tuple.
+        data_to_batch (jax array or tuple of arrays): An array of data to be batched and sent to function. If a tuple,
+        then each element should have the same size leading axis.
         batch_size (int): The maximum number of entries to process at one time.
 
     Returns:
-        A jax array of shape (data_to_batch.shape[0],) + data_to_batch.shape[1:]
+        An array or tuple of arrays.
     """
-    num_input_points = data_to_batch.shape[0]
-    # Apply the function on a single batch of views if the batch is small enough.
-    if batch_size is None or batch_size >= num_input_points:
-        output_data = function(data_to_batch)
+    data_to_batch = ensure_tuple(data_to_batch)
 
-    # Otherwise break the views up into batches and apply the function to each batch use another level of map.
-    else:
-        num_batches = num_input_points // batch_size
-        length_of_batches = num_batches * batch_size
-        batched_shape = (num_batches, batch_size) + data_to_batch.shape[1:]
-        input_data_batched = jnp.reshape(data_to_batch[0:length_of_batches], batched_shape)
+    # Apply the batch projector directly to an initial batch
+    num_input_points = data_to_batch[0].shape[0]
+    batch_size = num_input_points if batch_size is None else batch_size
+    num_remaining = num_input_points % batch_size
 
-        # Apply the function in batches and reshape
-        output_data = jax.lax.map(function, input_data_batched)
-        output_shape = (num_batches * batch_size,) + output_data.shape[2:]
-        output_data = jnp.reshape(output_data, output_shape)
-        num_remaining = num_input_points - num_batches * batch_size
+    # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
+    initial_batch_size = batch_size if num_remaining == 0 else num_remaining
 
-        # Add in any leftovers
-        if num_remaining > 0:
-            end_batch = data_to_batch[-num_remaining:]
-            end_views = function(end_batch)
-            output_data = jnp.concatenate((output_data, end_views), axis=0)
+    initial_batch = [data[:initial_batch_size] for data in data_to_batch]
+    output_data = function(*initial_batch)
+
+    # Then deal with the batches if there are any
+    if batch_size < num_input_points:
+        def wrapped_function(arg_list):
+            return function(*arg_list)
+
+        num_batches = (num_input_points - initial_batch_size) // batch_size
+        output_shape = (num_batches, batch_size,)
+        data_batched = [jnp.reshape(data[initial_batch_size:], output_shape + data.shape[1:])
+                        for data in data_to_batch]
+
+        # Apply the function in batches
+        output_data_batched = jax.lax.map(wrapped_function, data_batched)
+
+        # The output data may be a single array or a tuple or list of arrays
+        # First unbatch the data by reshaping the first 2 dims to be the number of points in all the batches.
+        # Using tree_map, this can be done on either a single array or a tuple of arrays and get either a
+        # single array or a tuple back
+        output_unbatched = jax.tree_util.tree_map(unbatch, output_data_batched)
+
+        # Now stack the first partial batch with this unbatched result
+        output_data = jax.tree_util.tree_map(concatenate_arrays, *(output_data, output_unbatched))
 
     return output_data
+
+
+def unbatch(array):
+    """
+    Reshape a jax array from (n0, n1, ...) to (n0*n1, ...)
+
+    Args:
+        array (jax array): array to be reshaped
+
+    Returns:
+        jax array
+    """
+    return jax.numpy.reshape(array, (array.shape[0] * array.shape[1],) + array.shape[2:])
+
+
+def concatenate_arrays(*arrays):
+    """
+    Helper function to concatenate a list or tuple of arrays along the leading axis.
+
+    Args:
+        *arrays: list of arrays, with compatible dimensions arrays[j].shape[1:]
+
+    Returns:
+        array of shape (n, ) + arrays[0].shape[1:], where n is the sum over j of arrays[j].shape[0]
+    """
+    return jax.numpy.concatenate(arrays, axis=0)
 
 
 def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_args=()):
     """
     Apply a given function to a set of data, batching over the first index, summing the results.
-    The function and data should operate using calls of the form function(data_to_batch[start:start+batch_size]).  The
-    output of function should be a scalar or fixed size array.
+    The function should operate on subsets of the form data_to_batch[start:start+batch_size] when function takes a
+    single input or on analogous subsets of each element data_to_batch[j] when function takes multiple
+    inputs.  The output of function should be a scalar or fixed size array.
 
     Args:
         function_to_sum (callable): A function to be mapped over batches of the input data.  This will be called on
         the unpacked elements of data_to_batch (after batching) and extra_args using a call of the form
-        summed_data += function_to_sum(*batched_data, *fixed_data).
-        data_to_batch (array or tuple of arrays): The data to be processed in batches.  If a tuple, then each element
+        summed_data += function_to_sum(batched_data, *fixed_data) when data_to_batch is a single array or
+        summed_data += function_to_sum(*batched_data, *fixed_data) when data_to_batch is a tuple.
+        data_to_batch (jax array or tuple of arrays): The data to be processed in batches.  If a tuple, then each element
         should have the same size leading axis.
         batch_size (int): The maximum batch size.
         extra_args (tuple): Any additional arguments needed by function_to_sum
@@ -317,7 +366,8 @@ def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_ar
         """
         summed_data = summed_and_fixed_data[0]
         fixed_data = summed_and_fixed_data[1:]
-        summed_data += function_to_sum(*batched_data, *fixed_data)
+        output_to_add = function_to_sum(*batched_data, *fixed_data)
+        summed_data = jax.tree_util.tree_map(jnp.add, *(summed_data, output_to_add))
 
         return [summed_data, *fixed_data], None
 
@@ -364,4 +414,4 @@ def ensure_tuple(var_args):
         return tuple(var_args)
     # Assume var_args is a single item if it's neither a list nor a tuple
     else:
-        return (var_args,)
+        return (var_args, )

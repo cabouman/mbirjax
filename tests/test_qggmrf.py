@@ -1,5 +1,3 @@
-# test_qggmrf.py
-
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -90,8 +88,8 @@ class TestQGGMRF(unittest.TestCase):
         )
         pixel_indices = np.arange(flat_recon.shape[0])
 
-        grad, hess = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                    qggmrf_params)
+        grad, hess, cost = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                           qggmrf_params)
         assert (jnp.allclose(grad, gradient))
         assert (jnp.allclose(hess, hessian))
 

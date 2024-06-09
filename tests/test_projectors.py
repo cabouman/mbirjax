@@ -1,7 +1,4 @@
-# test_projectors.py
-
 import numpy as np
-import gc
 import jax
 import jax.numpy as jnp
 import mbirjax
