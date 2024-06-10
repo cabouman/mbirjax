@@ -20,6 +20,8 @@ class TestUtilities(unittest.TestCase):
 
     def test_concatenate_function_in_batches(self):
 
+        print('Testing concatenate_function_in_batches')
+
         # Test multiple inputs, multiple outputs, batch size that divides the total ("even") and that doesn't ("odd")
         # Outputs that are the same size and outputs that are different
         def identity(j):
@@ -60,6 +62,9 @@ class TestUtilities(unittest.TestCase):
             assert (jnp.allclose(output[1], target[1]))
 
     def test_sum_function_in_batches(self):
+
+        print('Testing sum_function_in_batches')
+
         # Test multiple inputs, multiple outputs, batch size that divides the total ("even") and that doesn't ("odd")
         # Outputs that are the same size and outputs that are different
         def simple_sum(j):
