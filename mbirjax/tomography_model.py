@@ -855,30 +855,39 @@ def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_p):
     return pm_gradient
 
 
-@partial(jax.jit, static_argnames=['b', 'sigma_x', 'p', 'q', 'T'])
-def qggmrf_cost(delta, b, sigma_x, p, q, T):
+# @partial(jax.jit, static_argnames='qggmrf_params')
+def qggmrf_cost(full_recon, qggmrf_params):
     """
-    Computes the cost for the qGGMRF prior potential functions rho for a given delta.
+    Computes the cost for the qGGMRF prior for a given recon.  This is meant only for relatively small recons
+    for debugging and demo purposes.
 
     Args:
-        delta (float or np.array): (batch_size, P) array of pixel differences between center pixel and each of P neighboring pixels.
-        b (float or np.array): (1,N) array of neighbor pixel weights that usually sums to 1.0.
+
     Returns:
-        float or np.array: (batch_size,) array of locally summed potential function rho values for the given pixel.
+        float
     """
+    # Get the parameters
+    b, sigma_x, p, q, T = qggmrf_params
 
-    # Smallest single precision float
-    eps_float32 = jnp.finfo(jnp.float32).eps
-    delta = abs(delta) + sigma_x * eps_float32
+    # Normalize b to sum to 1, then get the per-axis b.
+    b_per_axis = [(b[j] + b[j+1]) / (2 * sum(b)) for j in [0, 2, 4]]
 
-    # Compute terms of complex expression
-    first_term = ((delta / sigma_x) ** p) / p
-    second_term = (delta / (T * sigma_x)) ** (q - p)
-    third_term = second_term / (1 + second_term)
+    def rho_ref(delta):
+        # Compute rho from Table 8.1 in FCI
+        delta_scale = abs(delta / (T * sigma_x)) + jnp.finfo(jnp.float32).eps
+        ds_q_minus_p = (delta_scale ** (q - p))
+        numerator = (delta ** p) / (p * sigma_x ** p)
+        numerator *= ds_q_minus_p
+        rho_ref = numerator / (1 + ds_q_minus_p)
+        return rho_ref
 
-    result = jnp.sum(b * (first_term * third_term), axis=-1)  # Broadcast b over batch_size dimension
+    # Add rho over all the neighbor differences
+    cost = 0
+    for axis in [0, 1, 2]:
+        cur_delta = jnp.diff(full_recon, axis=axis)
+        cost += jnp.sum(b_per_axis[axis] * rho_ref(cur_delta))
 
-    result = result / 2  # We divide by 2 here because each pixel is counted twice in the symmetric sum
+    return cost
 
     return result
 

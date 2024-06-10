@@ -29,19 +29,22 @@ class TestQGGMRF(unittest.TestCase):
         qggmrf_params = (b, sigma_x, p, q, T)
 
         # Get the calculated value of b_tilde
-        b_tilde = mbirjax.get_2_b_tilde(delta, b[0], qggmrf_params) / 2
+        b_tilde_2 = mbirjax.get_2_b_tilde(delta, b[0], qggmrf_params)
+        b_tilde = b_tilde_2 / 2
 
-        # Compute from scratch
-        delta_scale = delta / (T * sigma_x)
+        # Compute b_tilde from Eq. 8.19 and Table 8.1 in FCI
+        # b_tilde = b = rho'(delta) / (2 delta)
+        delta_scale = abs(delta / (T * sigma_x)) + jnp.finfo(jnp.float32).eps
         ds_q_minus_p = (delta_scale ** (q - p))
-        c1 = (delta ** (p - 2)) / (2 * sigma_x ** p)
-        c1 *= ds_q_minus_p * ((q / p) + ds_q_minus_p)
-        b_tilde_ref = c1 / (1 + ds_q_minus_p) ** 2
+        numerator = (delta ** (p - 2)) / (2 * sigma_x ** p)
+        numerator *= ds_q_minus_p * ((q / p) + ds_q_minus_p)
+        b_tilde_ref = numerator / (1 + ds_q_minus_p) ** 2
+        b_tilde_ref *= b[0]
 
-        assert (jnp.allclose(b_tilde, b_tilde_ref))
+        assert(jnp.allclose(b_tilde, b_tilde_ref))
 
     def test_gradient_and_hessian(self):
-        gradient = (
+        grad_ref = (
             np.array([[-0.28758478, 0.17966035, 0.06372651],
                       [0.21930355, 0.42724127, -0.33447355],
                       [-0.03735046, -0.3333393, 0.04014717],
@@ -51,7 +54,7 @@ class TestQGGMRF(unittest.TestCase):
                       [-0.2730683, 0.41404432, -0.17601134],
                       [0.3569668, -0.5147747, 0.40523687],
                       [-0.09706858, -0.00686641, -0.2859974]], dtype=np.float32))
-        hessian = (
+        hess_ref = (
             np.array([[1530.8113, 1021.26227, 1531.6426],
                       [1021.8176, 512.0654, 1021.831],
                       [1531.7743, 1021.9556, 1531.9774],
@@ -88,10 +91,42 @@ class TestQGGMRF(unittest.TestCase):
         )
         pixel_indices = np.arange(flat_recon.shape[0])
 
-        grad, hess, cost = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices,
+        grad0, hess0, cost = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices,
                                                                            qggmrf_params)
-        assert (jnp.allclose(grad, gradient))
-        assert (jnp.allclose(hess, hessian))
+        assert (jnp.allclose(grad0, grad_ref))
+        assert (jnp.allclose(hess0, hess_ref))
+
+    def test_cost_and_gradient(self):
+        p = 2
+        q = 1.2
+        T = 1
+        sigma_x = 1
+        b = (1, 1, 1, 1, 1, 1)
+        qggmrf_params = (b, sigma_x, p, q, T)
+
+        # Get a random recon, x
+        recon_shape = (3, 3, 3)
+        recon0 = np.random.rand(*recon_shape)
+        flat_recon0 = recon0.reshape((-1, recon_shape[2]))
+        pixel_indices = np.arange(flat_recon0.shape[0])
+        grad0, hess0, _ = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon0, recon_shape, pixel_indices,
+                                                                          qggmrf_params)
+
+        # Then get a perturbation
+        delta = np.random.rand(*recon_shape)
+        with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
+            epsilon = 1e-7
+            recon1 = recon0 + epsilon * delta
+
+            cost0 = mbirjax.qggmrf_cost(recon0, qggmrf_params)
+            cost1 = mbirjax.qggmrf_cost(recon1, qggmrf_params)
+
+            # Verify (cost(x + eps * delta) - cost(x)) / epsilon = grad(x)^T delta
+
+            finite_diff = (cost1 - cost0) / epsilon
+            taylor = jnp.sum(grad0.flatten() * delta.flatten())
+
+        assert(jnp.allclose(finite_diff, taylor, rtol=1e-3))
 
 
 if __name__ == '__main__':
