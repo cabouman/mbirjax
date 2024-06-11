@@ -72,9 +72,9 @@ if __name__ == "__main__":
     # Perform VCD reconstruction
     num_iterations = 10
     recon_vcd, recon_params_vcd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_cost=True)
+                                                       compute_prior_loss=True)
     fm_rmse_vcd = recon_params_vcd.fm_rmse
-    prior_loss_vcd = recon_params_vcd.prior_cost
+    prior_loss_vcd = recon_params_vcd.prior_loss
     default_partition_sequence = parallel_model.get_params('partition_sequence')
     partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=num_iterations)
     granularity_sequence_vcd = granularity[partition_sequence]
@@ -83,9 +83,9 @@ if __name__ == "__main__":
     partition_sequence = [0, ]
     parallel_model.set_params(partition_sequence=partition_sequence)
     recon_gd, recon_params_gd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_cost=True)
+                                                       compute_prior_loss=True)
     fm_rmse_gd = recon_params_gd.fm_rmse
-    prior_loss_gd = recon_params_gd.prior_cost
+    prior_loss_gd = recon_params_gd.prior_loss
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, num_iterations=num_iterations)
     granularity_sequence_gd = granularity[partition_sequence]
 
@@ -93,9 +93,9 @@ if __name__ == "__main__":
     partition_sequence = [3, ]
     parallel_model.set_params(partition_sequence=partition_sequence)
     recon_cd, recon_params_cd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_cost=True)
+                                                       compute_prior_loss=True)
     fm_rmse_cd = recon_params_cd.fm_rmse
-    prior_loss_cd = recon_params_cd.prior_cost
+    prior_loss_cd = recon_params_cd.prior_loss
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, num_iterations=num_iterations)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################

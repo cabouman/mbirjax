@@ -173,7 +173,7 @@ class ParameterHandler():
             # Handle special cases
             if recompile_flag:
                 recompile = True
-            elif key in ["sigma_y", "sigma_x", "sigma_p"]:
+            elif key in ["sigma_y", "sigma_x", "sigma_prox"]:
                 regularization_parameter_change = True
             elif key in ["sharpness", "snr_db"]:
                 meta_parameter_change = True
@@ -186,7 +186,7 @@ class ParameterHandler():
         if regularization_parameter_change:
             self.set_params(auto_regularize_flag=False)
             if not no_warning:
-                warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_p. '
+                warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_prox. '
                               'This is an advanced feature that will disable auto-regularization.')
 
         # Handle case if any meta regularization parameter changed

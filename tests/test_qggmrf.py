@@ -5,7 +5,7 @@ import mbirjax
 import unittest
 
 
-def compute_hessian(full_recon, qggmrf_params):
+def compute_qggmrf_hessian(full_recon, qggmrf_params):
     # Get the parameters
     b, sigma_x, p, q, T = qggmrf_params
 
@@ -43,13 +43,13 @@ def compute_hessian(full_recon, qggmrf_params):
         num_points = cur_b_tilde.shape[axis]
         b_tilde_plus = jax.lax.slice_in_dim(cur_b_tilde, 1, num_points, axis=axis)
         b_tilde_minus = jax.lax.slice_in_dim(cur_b_tilde, 0, num_points-1, axis=axis)
-        hess += b_per_axis[axis] * (b_tilde_plus + b_tilde_minus)
+        hess += 2 * b_per_axis[axis] * (b_tilde_plus + b_tilde_minus)
 
         cur_delta_plus = jax.lax.slice_in_dim(cur_delta, 1, num_points, axis=axis)
         cur_delta_minus = jax.lax.slice_in_dim(cur_delta, 0, num_points-1, axis=axis)
-        grad += b_per_axis[axis] * (- b_tilde_plus * cur_delta_plus + b_tilde_minus * cur_delta_minus)
+        grad += 2 * b_per_axis[axis] * (- b_tilde_plus * cur_delta_plus + b_tilde_minus * cur_delta_minus)
 
-    return 2 * grad, 2 * hess
+    return grad, hess
 
 
 class TestQGGMRF(unittest.TestCase):
@@ -143,8 +143,8 @@ class TestQGGMRF(unittest.TestCase):
         assert (jnp.allclose(grad0, grad_ref))
         assert (jnp.allclose(hess0, hess_ref))
 
-    def test_cost_and_gradient(self):
-        # Compare the cost and gradient using a finite difference approximation on cost and a reference
+    def test_loss_and_gradient(self):
+        # Compare the loss and gradient using a finite difference approximation on loss and a reference
         # implementation of the gradient.  Also compare the hessian to a reference implementation.
         p = 2.0413
         q = 1.124
@@ -167,16 +167,16 @@ class TestQGGMRF(unittest.TestCase):
             epsilon = 1e-7
             recon1 = recon0 + epsilon * delta
 
-            cost0 = mbirjax.qggmrf_cost(recon0, qggmrf_params)
-            cost1 = mbirjax.qggmrf_cost(recon1, qggmrf_params)
+            loss0 = mbirjax.qggmrf_loss(recon0, qggmrf_params)
+            loss1 = mbirjax.qggmrf_loss(recon1, qggmrf_params)
 
-            # Verify (cost(x + eps * delta) - cost(x)) / epsilon = grad(x)^T delta
-            finite_diff = (cost1 - cost0) / epsilon
+            # Verify (loss(x + eps * delta) - loss(x)) / epsilon = grad(x)^T delta
+            finite_diff = (loss1 - loss0) / epsilon
             taylor = jnp.sum(grad0.flatten() * delta.flatten())
 
         assert(jnp.allclose(finite_diff, taylor, rtol=1e-3))
 
-        grad_direct, hess_direct = compute_hessian(recon0, qggmrf_params)
+        grad_direct, hess_direct = compute_qggmrf_hessian(recon0, qggmrf_params)
         assert(jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
         assert(jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
 

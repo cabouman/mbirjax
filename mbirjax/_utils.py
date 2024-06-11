@@ -21,7 +21,7 @@ _recon_model_defaults_dict = {
     'recon_shape': {'val': None, 'recompile_flag': True},
     'delta_voxel': {'val': None, 'recompile_flag': True},
     'sigma_x': {'val': 1.0, 'recompile_flag': False},
-    'sigma_p': {'val': 1.0, 'recompile_flag': False},
+    'sigma_prox': {'val': 1.0, 'recompile_flag': False},
     'p': {'val': 2.0, 'recompile_flag': False},
     'q': {'val': 1.2, 'recompile_flag': False},
     'T': {'val': 1.0, 'recompile_flag': False},

@@ -68,7 +68,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_cost=True)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=True)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
