@@ -875,12 +875,14 @@ def qggmrf_cost(full_recon, qggmrf_params):
 
     def rho_ref(delta):
         # Compute rho from Table 8.1 in FCI
-        delta_scale = abs(delta / (T * sigma_x)) + jnp.finfo(jnp.float32).eps
+        a_min = T * sigma_x * jnp.finfo(jnp.float32).eps
+        abs_delta = jnp.clip(abs(delta), a_min=a_min, a_max=None)
+        delta_scale = abs_delta / (T * sigma_x)  # delta_scale has a min of eps
         ds_q_minus_p = (delta_scale ** (q - p))
-        numerator = (delta ** p) / (p * sigma_x ** p)
+        numerator = (abs_delta ** p) / (p * sigma_x ** p)
         numerator *= ds_q_minus_p
-        rho_ref = numerator / (1 + ds_q_minus_p)
-        return rho_ref
+        rho_value = numerator / (1 + ds_q_minus_p)
+        return rho_value
 
     # Add rho over all the neighbor differences
     cost = 0
@@ -1029,7 +1031,7 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
 @partial(jax.jit, static_argnames='qggmrf_params')
 def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
     """
-    Compute rho'(delta) / (2 delta) from page 153 of FCI for the qGGMRF prior model.
+    Compute rho'(delta) / delta from page 153 of FCI for the qGGMRF prior model.
 
     Args:
         delta (float or jax array): (batch_size, P) array of pixel differences between center and each of P neighboring
