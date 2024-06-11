@@ -91,8 +91,8 @@ class TestQGGMRF(unittest.TestCase):
         )
         pixel_indices = np.arange(flat_recon.shape[0])
 
-        grad0, hess0, cost = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params)
+        grad0, hess0 = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                       qggmrf_params)
         assert (jnp.allclose(grad0, grad_ref))
         assert (jnp.allclose(hess0, hess_ref))
 
@@ -109,8 +109,8 @@ class TestQGGMRF(unittest.TestCase):
         recon0 = np.random.rand(*recon_shape)
         flat_recon0 = recon0.reshape((-1, recon_shape[2]))
         pixel_indices = np.arange(flat_recon0.shape[0])
-        grad0, hess0, _ = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon0, recon_shape, pixel_indices,
-                                                                          qggmrf_params)
+        grad0, hess0 = mbirjax.qggmrf_gradient_hessian_cost_at_indices(flat_recon0, recon_shape, pixel_indices,
+                                                                       qggmrf_params)
 
         # Then get a perturbation
         delta = np.random.rand(*recon_shape)

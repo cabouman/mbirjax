@@ -429,7 +429,7 @@ class TomographyModel(ParameterHandler):
             restarting a recon using init_recon.
             init_recon (jax array, optional): Optional reconstruction to be used for initialization.
             compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.  This will
-            lead to marginally slower reconstructions.
+            lead to slower reconstructions and is meant only for small recons.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
@@ -523,10 +523,8 @@ class TomographyModel(ParameterHandler):
         flat_recon = recon.reshape((-1, num_recon_slices))
 
         # Create the finer grained recon update operators
-        vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input,
-                                                              compute_prior_cost=compute_prior_cost)
-        vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator,
-                                                                               compute_prior_cost=compute_prior_cost)
+        vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
+        vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
 
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
 
@@ -542,15 +540,21 @@ class TomographyModel(ParameterHandler):
         for i in range(num_iters):
             partition = partitions[partition_sequence[i]]
             subset_indices = np.random.permutation(partition.shape[0])
-            cost = 0
-            vcd_data = [error_sinogram, flat_recon, partition, cost]
-            error_sinogram, flat_recon, cost = vcd_partition_iterator(vcd_data, subset_indices)
+            vcd_data = [error_sinogram, flat_recon, partition]
+            error_sinogram, flat_recon = vcd_partition_iterator(vcd_data, subset_indices)
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
-            pm_cost[i] = cost
             if verbose >= 1:
-                print(f'VCD iteration={i}; Loss={fm_rmse[i]}')
+                if compute_prior_cost:
+                    b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
+                    b = tuple(b)
+                    qggmrf_params = (b, sigma_x, p, q, T)
+                    pm_cost[i] = mbirjax.qggmrf_cost(flat_recon.reshape(recon.shape), qggmrf_params)
+                    print('VCD iteration={}; Forward loss={:.3f}, Prior loss={:.3f}, Total loss={:.3f}'.
+                          format(i, fm_rmse[i], pm_cost[i], fm_rmse[i] + pm_cost[i]))
+                else:
+                    print('VCD iteration={}; Loss={:.3f}'.format(i, fm_rmse[i]))
                 es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
-                print(f'Error sinogram RMSE = {es_rmse}')
+                print(f'Error sino RMSE={es_rmse:.3f}')
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
@@ -558,14 +562,13 @@ class TomographyModel(ParameterHandler):
         return self.reshape_recon(flat_recon), fm_rmse
 
     @staticmethod
-    def create_vcd_partition_iterator(vcd_subset_iterator, compute_prior_cost=False):
+    def create_vcd_partition_iterator(vcd_subset_iterator):
         """
         Create a jit-compiled function to update all the pixels in the recon and error sinogram by applying
         the supplied vcd_subset_iterator to each subset in a partition.
 
         Args:
             vcd_subset_iterator (callable):  The function returned by create_vcd_subset_iterator.
-            compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.
 
         Returns:
             (callable) vcd_partition_iterator(error_sinogram, flat_recon, partition, subset_indices
@@ -584,26 +587,23 @@ class TomographyModel(ParameterHandler):
                     * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                     * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                     * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
-                    * prior_cost (float): Surrogate cost at the input point, evaluated on previous partitions.
 
                 subset_indices (jax array): An array of indices into the partition - this gives the order in which the subsets are updated.
 
             Returns:
-                [error_sinogram, flat_recon, prior_cost]: The first two have the same shape as above, but
-                are updated to reduce overall loss function.  The prior_cost is calculated over all pixels in the
-                partition (some pixels may be counted more than once), unless compute_prior_cost is False,
-                in which case it is left as 0.
+                [error_sinogram, flat_recon]: The first two have the same shape as above, but
+                are updated to reduce overall loss function.
             """
 
             # Scan over the subsets of the partition, using the subset_indices to order them.
             sinogram_recon_partition, _ = jax.lax.scan(vcd_subset_iterator, sinogram_recon_partition, subset_indices)
 
-            error_sinogram, flat_recon, _, cost = sinogram_recon_partition
-            return error_sinogram, flat_recon, cost
+            error_sinogram, flat_recon, _ = sinogram_recon_partition
+            return error_sinogram, flat_recon
 
         return jax.jit(vcd_partition_iterator)
 
-    def create_vcd_subset_iterator(self, fm_hessian, weights=None, prox_input=None, compute_prior_cost=False):
+    def create_vcd_subset_iterator(self, fm_hessian, weights=None, prox_input=None):
         """
         Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
 
@@ -611,7 +611,6 @@ class TomographyModel(ParameterHandler):
             fm_hessian (jax array): Array with same shape as recon containing diagonal of hessian for forward model loss.
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
-            compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.
 
         Returns:
             (callable) vcd_subset_iterator(error_sinogram, flat_recon, pixel_indices) that updates the recon.
@@ -643,44 +642,41 @@ class TomographyModel(ParameterHandler):
                     * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                     * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                     * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
-                    * prior_cost (float): Surrogate cost at the input point, evaluated on previous partitions.
 
                 subset_index (int): integer index of the subset within the partition.
 
             Returns:
-                [error_sinogram, flat_recon, partition, prior_cost]: The first two have the same shape as above, but
-                are updated to reduce overall loss function.  The prior_cost is updated to include the pixels in the
-                current subset, unless compute_prior_cost is False, in which case it is left as 0.
+                [error_sinogram, flat_recon, partition]: The first two have the same shape as above, but
+                are updated to reduce overall loss function.
             """
-            error_sinogram, flat_recon, partition, prev_prior_cost = sinogram_recon_partition
+            error_sinogram, flat_recon, partition = sinogram_recon_partition
             pixel_indices = partition[subset_index]
 
             def delta_recon_batch(index_batch):
                 # Compute the forward model gradient and hessian at each pixel in the index set.
                 # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-                fm_gradient = -fm_constant * sparse_back_project(error_sinogram * weights, index_batch)
-                fm_sparse_hessian = fm_constant * fm_hessian[index_batch]
+                forward_grad_batch = -fm_constant * sparse_back_project(error_sinogram * weights, index_batch)
+                forward_hess_batch = fm_constant * fm_hessian[index_batch]
 
                 # Compute the prior model gradient and hessian (i.e., second derivative) terms
                 if prox_input is None:
                     # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                    prior_gradient, prior_hessian, prior_cost = (
-                        qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, index_batch, qggmrf_params,
-                                                                compute_prior_cost))
+                    prior_grad_batch, prior_hess_batch = (
+                        qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, index_batch, qggmrf_params))
                 else:
                     # Proximal map prior - compute the prior model gradient at each pixel in the index set.
-                    prior_hessian = sigma_p ** 2
-                    prior_gradient = prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_p)
-                    prior_cost = -1  # TODO:  fix prox and calculate cost
+                    prior_hess_batch = sigma_p ** 2
+                    prior_grad_batch = prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_p)
 
                 # Compute update vector update direction in recon domain
-                delta_recon_at_indices_batch = (- fm_gradient - prior_gradient) / (fm_sparse_hessian + prior_hessian)
-                prior_grad_delta = jnp.sum(prior_gradient * delta_recon_at_indices_batch)
-                prior_hessian_delta_sq = 0.5 * jnp.sum(prior_hessian *
+                delta_recon_at_indices_batch = - ((forward_grad_batch + prior_grad_batch) /
+                                                  (forward_hess_batch + prior_hess_batch))
+                prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
+                prior_hessian_delta_sq = 0.5 * jnp.sum(prior_hess_batch *
                                                        delta_recon_at_indices_batch * delta_recon_at_indices_batch)
                 prior_grad_delta = prior_grad_delta.reshape((1, 1))
                 prior_hessian_delta_sq = prior_hessian_delta_sq.reshape((1, 1))
-                return delta_recon_at_indices_batch, prior_grad_delta, prior_hessian_delta_sq, prior_cost
+                return delta_recon_at_indices_batch, prior_grad_delta, prior_hessian_delta_sq
 
             # Get the update direction
             batch_update_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices,
@@ -688,7 +684,7 @@ class TomographyModel(ParameterHandler):
             delta_recon_at_indices = batch_update_at_indices[0]
 
             # Then add the scalars over the batched outputs
-            prior_linear, prior_quadratic, prior_cost = [jnp.sum(r) for r in batch_update_at_indices[1:]]
+            prior_linear, prior_quadratic = [jnp.sum(r) for r in batch_update_at_indices[1:]]
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
@@ -719,9 +715,8 @@ class TomographyModel(ParameterHandler):
 
             # Update sinogram and cost
             error_sinogram = error_sinogram - alpha * delta_sinogram
-            prior_cost += prev_prior_cost
 
-            return [error_sinogram, flat_recon, partition, prior_cost], None
+            return [error_sinogram, flat_recon, partition], None
 
         return jax.jit(vcd_subset_iterator)
 
@@ -893,8 +888,7 @@ def qggmrf_cost(full_recon, qggmrf_params):
 
 
 @partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params', 'compute_prior_cost'])
-def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params,
-                                            compute_prior_cost=False):
+def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
@@ -905,7 +899,6 @@ def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indic
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
         pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
-        compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.
 
     Returns:
         tuple of two arrays and a float (first_derivative, second_derivative, cost).  The first two entries have shape
@@ -919,17 +912,16 @@ def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indic
 
     # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
     qggmrf_params = (b, sigma_x, p, q, T)
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, None))
-    gradient, hessian, cost_vector = cylinder_map(flat_recon[pixel_indices], qggmrf_params, compute_prior_cost)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
+    gradient, hessian, cost_vector = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
     cost = jnp.sum(cost_vector)
 
     # Then work on slices - add in the contributions from neighbors in the same slice
-    slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1, None), out_axes=1)
-    gradient, hessian, cost_vector = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian,
-                                               compute_prior_cost)
+    slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
+    gradient, hessian, cost_vector = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
     cost += jnp.sum(cost_vector)
 
-    return gradient, hessian, cost.reshape((1, 1))
+    return gradient, hessian
 
 
 @partial(jax.jit, static_argnames=['qggmrf_params', 'compute_prior_cost'])
