@@ -242,7 +242,7 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     plt.show()
 
 
-def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity_ylim=None, loss_ylim=None,
+def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None, loss_ylim=None,
                               fig_title=None):
     """
     Plots multiple granularity and loss data sets on a single figure.
@@ -261,8 +261,8 @@ def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity
     if num_plots == 1:
         axes = [axes]  # Make it iterable for a single subplot scenario
 
-    for ax, granularity_sequence, loss, label in zip(axes, granularity_sequences, losses, labels):
-        index = list(range(len(granularity_sequence)))
+    for ax, granularity_sequence, fm_loss, prior_loss, label in zip(axes, granularity_sequences, fm_losses, prior_losses, labels):
+        index = list(1 + np.arange(len(granularity_sequence)))
 
         # Plot granularity sequence on the first y-axis
         ax1 = ax
@@ -274,7 +274,8 @@ def plot_granularity_and_loss(granularity_sequences, losses, labels, granularity
 
         # Create a second y-axis for the loss
         ax2 = ax1.twinx()
-        ax2.plot(index, loss, label='Loss', color='r')
+        ax2.plot(index, fm_loss, label='Data loss', color='r')
+        ax2.plot(index, prior_loss, label='Prior loss', color='g')
         ax2.set_ylabel('Loss', color='r')
         ax2.tick_params(axis='y', labelcolor='r')
         ax2.set_yscale('log')
