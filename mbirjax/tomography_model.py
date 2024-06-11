@@ -555,8 +555,13 @@ class TomographyModel(ParameterHandler):
                     qggmrf_params = (b, sigma_x, p, q, T)
                     pm_cost[i] = mbirjax.qggmrf_cost(flat_recon.reshape(recon.shape), qggmrf_params)
                     pm_cost[i] /= flat_recon.size
-                    print('VCD iteration={}; Forward loss={:.3f}, Prior loss={:.3f}, Total loss={:.3f}'.
-                          format(i, fm_rmse[i], pm_cost[i], fm_rmse[i] + pm_cost[i]))
+                    # Each loss is scaled by the number of elements, but the optimization uses unscaled values.
+                    # To provide an accurate, yet properly scaled total loss, first remove the scaling and add,
+                    # then scale by the average number of elements between the two.
+                    total_cost = ((fm_rmse[i] * sinogram.size + pm_cost[i] * flat_recon.size) /
+                                  (0.5 * (sinogram.size + flat_recon.size)))
+                    print('VCD iteration={}; Forward loss={:.3f}, Prior loss={:.3f}, Weighted total loss={:.3f}'.
+                          format(i, fm_rmse[i], pm_cost[i], total_cost))
                 else:
                     print('VCD iteration={}; Loss={:.3f}'.format(i, fm_rmse[i]))
                 es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
