@@ -399,7 +399,7 @@ class TomographyModel(ParameterHandler):
         # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
         # Compute a typical projection path length based on the soft minimum of the recon width and height
         typical_path_length_space = (2 * recon_shape[0] * recon_shape[1]) / (
-                    recon_shape[0] + recon_shape[1]) * delta_voxel
+                recon_shape[0] + recon_shape[1]) * delta_voxel
 
         # Compute a typical projection path length based on the detector column width
         typical_path_length_sino = num_det_channels * delta_det_channel / magnification
@@ -433,7 +433,7 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
-            recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, regularization_params
+            recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_cost, regularization_params
         """
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
@@ -452,12 +452,17 @@ class TomographyModel(ParameterHandler):
                                              init_recon=init_recon, compute_prior_cost=compute_prior_cost)
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
-        recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse',
+        recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_cost',
                              'regularization_params']
         ReconParams = namedtuple('ReconParams', recon_param_names)
         partition_sequence = [int(val) for val in partition_sequence]
-        fm_rmse = [float(val) for val in cost_vectors]
-        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, regularization_params._asdict()]
+        fm_rmse = [float(val) for val in cost_vectors[0]]
+        if compute_prior_cost:
+            prior_cost = [float(val) for val in cost_vectors[1]]
+        else:
+            prior_cost = [0]
+        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_cost,
+                              regularization_params._asdict()]
         recon_params = ReconParams(*tuple(recon_param_values))
 
         return recon, recon_params
@@ -549,6 +554,7 @@ class TomographyModel(ParameterHandler):
                     b = tuple(b)
                     qggmrf_params = (b, sigma_x, p, q, T)
                     pm_cost[i] = mbirjax.qggmrf_cost(flat_recon.reshape(recon.shape), qggmrf_params)
+                    pm_cost[i] /= flat_recon.size
                     print('VCD iteration={}; Forward loss={:.3f}, Prior loss={:.3f}, Total loss={:.3f}'.
                           format(i, fm_rmse[i], pm_cost[i], fm_rmse[i] + pm_cost[i]))
                 else:
@@ -559,7 +565,7 @@ class TomographyModel(ParameterHandler):
                     mbirjax.get_memory_stats()
                     print('--------')
 
-        return self.reshape_recon(flat_recon), fm_rmse
+        return self.reshape_recon(flat_recon), (fm_rmse, pm_cost)
 
     @staticmethod
     def create_vcd_partition_iterator(vcd_subset_iterator):
@@ -662,7 +668,7 @@ class TomographyModel(ParameterHandler):
                 if prox_input is None:
                     # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                     prior_grad_batch, prior_hess_batch = (
-                        qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, index_batch, qggmrf_params))
+                        qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, index_batch, qggmrf_params))
                 else:
                     # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                     prior_hess_batch = sigma_p ** 2
@@ -768,10 +774,10 @@ class TomographyModel(ParameterHandler):
         partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
 
         # Compute reconstruction
-        recon, fm_rmse = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
-                                        init_recon=init_recon, prox_input=prox_input)
+        recon, cost_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+                                             init_recon=init_recon, prox_input=prox_input)
 
-        return recon, fm_rmse
+        return recon, cost_vectors
 
     @staticmethod
     def gen_weights(sinogram, weight_type):
@@ -865,7 +871,7 @@ def qggmrf_cost(full_recon, qggmrf_params):
     b, sigma_x, p, q, T = qggmrf_params
 
     # Normalize b to sum to 1, then get the per-axis b.
-    b_per_axis = [(b[j] + b[j+1]) / (2 * sum(b)) for j in [0, 2, 4]]
+    b_per_axis = [(b[j] + b[j + 1]) / (2 * sum(b)) for j in [0, 2, 4]]
 
     def rho_ref(delta):
         # Compute rho from Table 8.1 in FCI
@@ -884,11 +890,9 @@ def qggmrf_cost(full_recon, qggmrf_params):
 
     return cost
 
-    return result
 
-
-@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params', 'compute_prior_cost'])
-def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
+@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
+def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
@@ -913,26 +917,23 @@ def qggmrf_gradient_hessian_cost_at_indices(flat_recon, recon_shape, pixel_indic
     # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
     qggmrf_params = (b, sigma_x, p, q, T)
     cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
-    gradient, hessian, cost_vector = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
-    cost = jnp.sum(cost_vector)
+    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
 
     # Then work on slices - add in the contributions from neighbors in the same slice
     slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
-    gradient, hessian, cost_vector = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
-    cost += jnp.sum(cost_vector)
+    gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
 
     return gradient, hessian
 
 
-@partial(jax.jit, static_argnames=['qggmrf_params', 'compute_prior_cost'])
-def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params, compute_prior_cost=False):
+@partial(jax.jit, static_argnames='qggmrf_params')
+def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
     """
     Compute the qggmrf gradient and diagonal Hessian at each voxel of a voxel_cylinder.
 
     Args:
         voxel_cylinder (jax array): 1D array of voxel values
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
-        compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.
 
     Returns:
         tuple of gradient and Hessian, each of which is a 1D jax array of the same length as voxel_cylinder
@@ -962,20 +963,12 @@ def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params, compute_
     gradient_cylinder += b_at_slice_minus_one * b_tilde_times_2_times_delta[:-1]
     hessian_cylinder += b_at_slice_minus_one * b_tilde_times_2[:-1]
 
-    cost = 0
-    if compute_prior_cost:
-        # The cost is essentially the same as the gradient except we need an extra factor of delta, and
-        # factor of 1/2, and a sum
-        b_tilde_times_2_times_delta_sq = b_tilde_times_2_times_delta * delta
-        cost += jnp.sum(b_at_slice_plus_one * b_tilde_times_2_times_delta_sq[1:])
-        cost /= 2  # Divide by 2 since the sum will be over all ordered pairs of points
-
-    return gradient_cylinder, hessian_cylinder, float(cost)
+    return gradient_cylinder, hessian_cylinder
 
 
-@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params', 'compute_prior_cost'])
+@partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
 def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indices, qggmrf_params,
-                                      initial_gradient_slice, initial_hessian_slice, compute_prior_cost=False):
+                                      initial_gradient_slice, initial_hessian_slice):
     """
     Compute the qggmrf gradient and diagonal Hessian (and optionally cost) at each voxel of a slice of voxels.
     The results are added to initial_gradient_slice, initial_hessian_slice (and initial_cost).
@@ -990,7 +983,6 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
         qggmrf_params: b, sigma_x, p, q, T
         initial_gradient_slice (jax array): Array of the same shape as flat_recon_slice
         initial_hessian_slice (jax array): Array of the same shape as flat_recon_slice
-        compute_prior_cost (bool, optional):  Set true to calculate and return the prior model cost.
 
     Returns:
         tuple of gradient, hessian, cost
@@ -1031,14 +1023,7 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
         initial_gradient_slice += b_tilde_times_2_times_delta
         initial_hessian_slice += b_tilde_times_2
 
-        if compute_prior_cost:
-            # The cost is essentially the same as the gradient except we need an extra factor of delta, and
-            # factor of 1/2, and a sum
-            cur_cost = jnp.sum(b_tilde_times_2_times_delta * delta)
-            cur_cost /= 2  # Divide by 2 since the sum will be over all ordered pairs of points
-            cost += cur_cost
-
-    return initial_gradient_slice, initial_hessian_slice, cost.reshape((1, 1))
+    return initial_gradient_slice, initial_hessian_slice
 
 
 @partial(jax.jit, static_argnames='qggmrf_params')
