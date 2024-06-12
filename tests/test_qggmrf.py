@@ -4,52 +4,7 @@ import jax.numpy as jnp
 import mbirjax
 import unittest
 
-
-def compute_qggmrf_hessian(full_recon, qggmrf_params):
-    # Get the parameters
-    b, sigma_x, p, q, T = qggmrf_params
-
-    # Normalize b to sum to 1, then get the per-axis b.
-    b_per_axis = [(b[j] + b[j + 1]) / (2 * sum(b)) for j in [0, 2, 4]]
-
-    def b_tilde(delta):
-        # Compute b_tilde = rho'(delta) / (2 delta) from Table 8.1 in FCI
-        a_min = T * sigma_x * jnp.finfo(jnp.float32).eps
-        abs_delta = jnp.clip(abs(delta), a_min=a_min, a_max=None)
-        delta_scale = abs_delta / (T * sigma_x)  # delta_scale has a min of eps
-
-        ds_q_minus_p = (delta_scale ** (q - p))
-        ds_p_minus_2 = (abs_delta ** (p - 2))
-
-        numerator = ds_p_minus_2 / (2 * sigma_x ** p)
-        numerator *= ds_q_minus_p * ((q / p) + ds_q_minus_p)
-        b_tilde_value = numerator / (1 + ds_q_minus_p) ** 2
-        return b_tilde_value
-
-    # Add hessian over all the neighbor differences
-    hess = jnp.zeros_like(full_recon)
-    grad = jnp.zeros_like(full_recon)
-    for axis in [0, 1, 2]:
-        cur_delta = jnp.diff(full_recon, axis=axis)
-        new_shape = list(full_recon.shape)
-        new_shape[axis] = 1
-        zero = jnp.zeros(new_shape)
-
-        # Evaluate b_tilde over all differences in this axis
-        cur_delta = jnp.concatenate((zero, cur_delta, zero), axis=axis)  # Include 0 differences for reflected boundaries
-        cur_b_tilde = b_tilde(cur_delta)
-
-        # Sum b_tilde evaluated over forward and backward differences
-        num_points = cur_b_tilde.shape[axis]
-        b_tilde_plus = jax.lax.slice_in_dim(cur_b_tilde, 1, num_points, axis=axis)
-        b_tilde_minus = jax.lax.slice_in_dim(cur_b_tilde, 0, num_points-1, axis=axis)
-        hess += 2 * b_per_axis[axis] * (b_tilde_plus + b_tilde_minus)
-
-        cur_delta_plus = jax.lax.slice_in_dim(cur_delta, 1, num_points, axis=axis)
-        cur_delta_minus = jax.lax.slice_in_dim(cur_delta, 0, num_points-1, axis=axis)
-        grad += 2 * b_per_axis[axis] * (- b_tilde_plus * cur_delta_plus + b_tilde_minus * cur_delta_minus)
-
-    return grad, hess
+from mbirjax import b_tilde_by_definition, evaluate_surrogate_and_grad, compute_qggmrf_grad_and_hessian
 
 
 class TestQGGMRF(unittest.TestCase):
@@ -65,6 +20,45 @@ class TestQGGMRF(unittest.TestCase):
         """Clean up after each test method."""
         pass
 
+    def test_alpha_derivative(self):
+        # Make some random qggmrf parameters
+        p = np.random.rand(1)[0] + 1
+        q = p - 0.9 * np.random.rand(1)[0]
+        T = 0.5 + np.random.rand(1)[0]
+        sigma_x = 0.1 + np.random.rand(1)[0]
+        b = (1, 1, 1, 1, 1, 1)
+        qggmrf_params = (b, sigma_x, p, q, T)
+
+        # Get a random recon, x
+        recon_shape = (3, 3, 3)
+        recon0 = np.random.rand(*recon_shape)
+        flat_shape = (recon_shape[0] * recon_shape[1], recon_shape[2])
+
+        # Then get a perturbation to verify a finite difference approximation
+        delta = np.random.rand(*recon_shape)
+        pixel_indices = np.arange(flat_shape[0])
+
+        with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
+            epsilon = 1e-7
+            alpha = 0.6
+            recon_alpha = recon0 + alpha * delta
+            recon_alpha_eps = recon_alpha + epsilon * delta
+
+            x_prime = recon0
+            gradient0, _ = mbirjax.qggmrf_gradient_and_hessian_at_indices(recon0.reshape(flat_shape), recon_shape,
+                                                                                 pixel_indices, qggmrf_params)
+            _, gradient0 = evaluate_surrogate_and_grad(recon0, x_prime, qggmrf_params)
+            _, gradient_delta = evaluate_surrogate_and_grad(delta, x_prime, qggmrf_params)
+            surrogate_alpha, _ = evaluate_surrogate_and_grad(recon_alpha, x_prime, qggmrf_params)
+            surrogate_alpha_eps, _ = evaluate_surrogate_and_grad(recon_alpha_eps, x_prime, qggmrf_params)
+
+            # Verify (surrogate(x + (alpha + eps) * delta) - surrogate(x + alpha * delta)) / epsilon =
+            #                 grad(x)^T delta + grad(delta)^T delta
+            finite_diff = (surrogate_alpha_eps - surrogate_alpha) / epsilon   # Deriv wrt alpha of Q(x + alpha delta; x'=x))
+            taylor = jnp.sum(gradient0.flatten() * delta.flatten()) + alpha * jnp.sum(gradient_delta.flatten() * delta.flatten())
+
+            assert (jnp.allclose(finite_diff, taylor))
+
     def test_b_tilde(self):
         # Make some random qggmrf parameters
         p = np.random.rand(1)[0] + 1
@@ -77,18 +71,12 @@ class TestQGGMRF(unittest.TestCase):
 
         # Get the calculated value of b_tilde
         b_tilde_2 = mbirjax.get_2_b_tilde(delta, b[0], qggmrf_params)
-        b_tilde = b_tilde_2 / 2
 
         # Compute b_tilde from Eq. 8.19 and Table 8.1 in FCI
         # b_tilde = b = rho'(delta) / (2 delta)
-        delta_scale = abs(delta / (T * sigma_x)) + jnp.finfo(jnp.float32).eps
-        ds_q_minus_p = (delta_scale ** (q - p))
-        numerator = (delta ** (p - 2)) / (2 * sigma_x ** p)
-        numerator *= ds_q_minus_p * ((q / p) + ds_q_minus_p)
-        b_tilde_ref = numerator / (1 + ds_q_minus_p) ** 2
-        b_tilde_ref *= b[0]
+        b_tilde_ref = b[0] * b_tilde_by_definition(delta, sigma_x, p, q, T)
 
-        assert(jnp.allclose(b_tilde, b_tilde_ref))
+        assert (jnp.allclose(b_tilde_2 / 2, b_tilde_ref))
 
     def test_gradient_and_hessian(self):
         # Compare the gradient and hessian against a known baseline
@@ -139,7 +127,7 @@ class TestQGGMRF(unittest.TestCase):
         pixel_indices = np.arange(flat_recon.shape[0])
 
         grad0, hess0 = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                      qggmrf_params)
+                                                                             qggmrf_params)
         assert (jnp.allclose(grad0, grad_ref))
         assert (jnp.allclose(hess0, hess_ref))
 
@@ -159,7 +147,7 @@ class TestQGGMRF(unittest.TestCase):
         flat_recon0 = recon0.reshape((-1, recon_shape[2]))
         pixel_indices = np.arange(flat_recon0.shape[0])
         grad0, hess0 = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon0, recon_shape, pixel_indices,
-                                                                      qggmrf_params)
+                                                                             qggmrf_params)
 
         # Then get a perturbation to verify a finite difference approximation
         delta = np.random.rand(*recon_shape)
@@ -174,11 +162,11 @@ class TestQGGMRF(unittest.TestCase):
             finite_diff = (loss1 - loss0) / epsilon
             taylor = jnp.sum(grad0.flatten() * delta.flatten())
 
-        assert(jnp.allclose(finite_diff, taylor, rtol=1e-3))
+        assert (jnp.allclose(finite_diff, taylor, rtol=1e-3))
 
-        grad_direct, hess_direct = compute_qggmrf_hessian(recon0, qggmrf_params)
-        assert(jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
-        assert(jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
+        grad_direct, hess_direct = compute_qggmrf_grad_and_hessian(recon0, qggmrf_params)
+        assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
+        assert (jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
 
 
 if __name__ == '__main__':
