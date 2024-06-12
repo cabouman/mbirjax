@@ -247,7 +247,7 @@ def b_tilde_by_definition(delta, sigma_x, p, q, T):
 
 
 @partial(jax.jit, static_argnames='qggmrf_params')
-def evaluate_surrogate_and_grad(x, x_prime, qggmrf_params):
+def compute_surrogate_and_grad(x, x_prime, qggmrf_params):
     # This is a reference implementation to compute the value and full gradient of the surrogate
     # in the form Q(x; x') and \nabla_x Q(x; x')
     # x and x_prime must be arrays in the shape of a full 3D reconstruction.

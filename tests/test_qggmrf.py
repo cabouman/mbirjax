@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import mbirjax
 import unittest
 
-from mbirjax import b_tilde_by_definition, evaluate_surrogate_and_grad, compute_qggmrf_grad_and_hessian
+from mbirjax import b_tilde_by_definition, compute_surrogate_and_grad, compute_qggmrf_grad_and_hessian
 
 
 class TestQGGMRF(unittest.TestCase):
@@ -47,10 +47,10 @@ class TestQGGMRF(unittest.TestCase):
             x_prime = recon0
             gradient0, _ = mbirjax.qggmrf_gradient_and_hessian_at_indices(recon0.reshape(flat_shape), recon_shape,
                                                                                  pixel_indices, qggmrf_params)
-            _, gradient0 = evaluate_surrogate_and_grad(recon0, x_prime, qggmrf_params)
-            _, gradient_delta = evaluate_surrogate_and_grad(delta, x_prime, qggmrf_params)
-            surrogate_alpha, _ = evaluate_surrogate_and_grad(recon_alpha, x_prime, qggmrf_params)
-            surrogate_alpha_eps, _ = evaluate_surrogate_and_grad(recon_alpha_eps, x_prime, qggmrf_params)
+            _, gradient0 = compute_surrogate_and_grad(recon0, x_prime, qggmrf_params)
+            _, gradient_delta = compute_surrogate_and_grad(delta, x_prime, qggmrf_params)
+            surrogate_alpha, _ = compute_surrogate_and_grad(recon_alpha, x_prime, qggmrf_params)
+            surrogate_alpha_eps, _ = compute_surrogate_and_grad(recon_alpha_eps, x_prime, qggmrf_params)
 
             # Verify (surrogate(x + (alpha + eps) * delta) - surrogate(x + alpha * delta)) / epsilon =
             #                 grad(x)^T delta + grad(delta)^T delta
