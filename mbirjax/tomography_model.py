@@ -629,6 +629,8 @@ class TomographyModel(ParameterHandler):
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
         b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
+        sharpness = self.get_params('sharpness')
+        alpha_clip_value = jnp.clip(1.3 - 0.2 * sharpness, a_min=0.8, a_max=1.6)
         b = tuple(b)
         qggmrf_params = (b, sigma_x, p, q, T)
         sigma_prox = self.get_params('sigma_prox')
@@ -681,32 +683,53 @@ class TomographyModel(ParameterHandler):
                 # Compute update vector update direction in recon domain
                 delta_recon_at_indices_batch = - ((forward_grad_batch + prior_grad_batch) /
                                                   (forward_hess_batch + prior_hess_batch))
+
+                # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
                 prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
-                prior_hessian_delta_sq = 0.5 * jnp.sum(prior_hess_batch *
-                                                       delta_recon_at_indices_batch * delta_recon_at_indices_batch)
                 prior_grad_delta = prior_grad_delta.reshape((1, 1))
-                prior_hessian_delta_sq = prior_hessian_delta_sq.reshape((1, 1))
-                return delta_recon_at_indices_batch, prior_grad_delta, prior_hessian_delta_sq
+                # Estimated upper bound for hessian
+                prior_hess_max_delta = 0.5 * jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2)
+                prior_hess_max_delta = prior_hess_max_delta.reshape((1, 1))
+                return delta_recon_at_indices_batch, prior_grad_delta, prior_hess_max_delta
 
             # Get the update direction
             batch_update_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices,
                                                                               pixel_batch_size)
             delta_recon_at_indices = batch_update_at_indices[0]
 
-            # Then add the scalars over the batched outputs
-            prior_linear, prior_quadratic = [jnp.sum(r) for r in batch_update_at_indices[1:]]
+            # Then sum over the batched outputs to get delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            prior_linear = jnp.sum(batch_update_at_indices[1])
+            prior_quadratic_approx = jnp.sum(batch_update_at_indices[2])
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
+            forward_linear = jnp.sum(fm_constant * error_sinogram * delta_sinogram * weights)
+            forward_quadratic = jnp.sum(fm_constant * delta_sinogram * delta_sinogram * weights)
 
-            # Compute "optimal" update step
-            # This is really only optimal for the forward model component.
-            # We can compute the truly optimal update, but it's complicated so maybe this is good enough
-            alpha = jnp.sum(error_sinogram * delta_sinogram * weights) / (
-                    jnp.sum(delta_sinogram * delta_sinogram * weights) + jnp.finfo(jnp.float32).eps)
-            # jax.debug.print('{alpha}', alpha=alpha)
-            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, 1)
-            # TODO: test for alpha<0 and terminate.
+            # Compute optimal update step
+            alpha_numerator = forward_linear - prior_linear
+            alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
+            alpha = alpha_numerator / alpha_denominator
+            alpha = jnp.clip(alpha, a_min=jnp.finfo(jnp.float32).eps, a_max=1.5)  # a_max=alpha_clip_value
+
+            # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
+            # x_prime = flat_recon.reshape(recon_shape)
+            # delta = jnp.zeros_like(flat_recon)
+            # delta = delta.at[pixel_indices].set(delta_recon_at_indices)
+            # delta = delta.reshape(recon_shape)
+            # _, grad_at_delta = mbirjax.compute_surrogate_and_grad(delta, x_prime, qggmrf_params)
+            # grad_at_delta = grad_at_delta.reshape(flat_recon.shape)[pixel_indices]
+            # prior_quadratic = jnp.sum(delta_recon_at_indices * grad_at_delta)
+            # alpha_denominator_exact = forward_quadratic + prior_quadratic
+            # alpha_exact = alpha_numerator / alpha_denominator_exact
+            # jax.debug.print('---')
+            # jax.debug.print('ae:{alpha_exact}, \ta:{alpha}', alpha_exact=alpha_exact, alpha=alpha)
+            # jax.debug.print('fl:{forward_linear}, \tfq:{forward_quadratic}',
+            #                 forward_linear=forward_linear, forward_quadratic=forward_quadratic)
+            # jax.debug.print('pl:{prior_linear}, \tpq:{prior_quadratic}, \tpqa:{pqa}',
+            #                 prior_linear=prior_linear, prior_quadratic=prior_quadratic, pqa=prior_quadratic_approx)
+            # alpha = alpha_exact
+            # # End debug/demo code
 
             # Enforce positivity constraint if desired
             # Greg, this may result in excess compilation. Not sure.
