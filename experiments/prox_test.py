@@ -45,7 +45,7 @@ if __name__ == "__main__":
     # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
     parallel_model.auto_set_regularization_params(sinogram, weights=weights)
     init_recon = phantom + 1.0
-    recon, fm_rmse = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon, num_iterations=13)
+    recon, loss_vectors = parallel_model.prox_map(phantom, sinogram, weights=weights, init_recon=init_recon, num_iterations=13)
 
     # Reshape recon into 3D form
     recon_3d = parallel_model.reshape_recon(recon)

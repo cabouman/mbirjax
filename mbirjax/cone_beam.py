@@ -36,7 +36,7 @@ class ConeBeamModel(TomographyModel):
     """
 
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
-                 recon_slice_offset=0.0, det_rotation=0.0, **kwargs):
+                 recon_slice_offset=0.0, det_rotation=0.0):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
@@ -49,8 +49,7 @@ class ConeBeamModel(TomographyModel):
 
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         recon_slice_offset=recon_slice_offset, det_rotation=det_rotation,
-                         **kwargs)
+                         recon_slice_offset=recon_slice_offset, det_rotation=det_rotation)
 
     @classmethod
     def from_file(cls, filename):

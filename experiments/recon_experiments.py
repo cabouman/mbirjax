@@ -123,6 +123,7 @@ if __name__ == "__main__":
         print('Granularity = {}'.format(recon_params.granularity))
         print('Partition sequence = {}'.format(recon_params.partition_sequence))
         print('Final RMSE = {:.3f}'.format(recon_params.fm_rmse[-1]))
+        print('Final prior loss = {:.3f}'.format(recon_params.prior_loss[-1]))
         print('Elapsed time for recon is {:.3f} seconds'.format(elapsed), file=file)
         mbirjax.get_memory_stats(print_results=True, file=file)
         print('-------------------------', file=file)

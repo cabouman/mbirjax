@@ -16,8 +16,8 @@ if __name__ == "__main__":
 
     # Set parameters
     num_views = 64
-    num_det_rows = 40
-    num_det_channels = 128
+    num_det_rows = 64
+    num_det_channels = 64
     sharpness = 0.0
     
     # These can be adjusted to describe the geometry in the cone beam case.
@@ -46,7 +46,9 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    recon_shape = ct_model.get_params('recon_shape')
+    phantom = np.zeros(recon_shape)  # ct_model.gen_modified_3d_sl_phantom()
+    phantom[16:48, 16:48, 16:48] = 1
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
@@ -68,7 +70,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=True)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights, num_iterations=15)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

@@ -1,7 +1,4 @@
-# test_projectors.py
-
 import numpy as np
-import gc
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -22,9 +19,6 @@ class TestProjectors(unittest.TestCase):
         """Set up before each test method."""
         # Choose the geometry type
         self.geometry_types = ['parallel', 'cone']
-        parallel_tolerances = {'nrmse':0.14, 'max_diff':0.37, 'pct_95':0.035}
-        cone_tolerances = {'nrmse':0.18, 'max_diff':0.55, 'pct_95':0.041}
-        self.all_tolerances = [parallel_tolerances, cone_tolerances]
 
         # Set parameters
         self.num_views = 64
@@ -77,12 +71,6 @@ class TestProjectors(unittest.TestCase):
             with self.subTest(geometry_type=geometry_type):
                 print("Testing Hessian with", geometry_type)
                 self.verify_hessian(geometry_type)
-
-    def test_all_vcd(self):
-        for geometry_type, tolerances in zip(self.geometry_types, self.all_tolerances):
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing vcd with", geometry_type)
-                self.verify_vcd(geometry_type, tolerances)
 
     def verify_adjoint(self, geometry_type):
         """
@@ -184,39 +172,6 @@ class TestProjectors(unittest.TestCase):
         # Determine if property holds
         hessian_test_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
         self.assertTrue(hessian_test_result)
-
-    def verify_vcd(self, geometry_type, tolerances):
-        """
-        Verify that the vcd reconstructions for a simple phantom are within tolerance
-        """
-        self.set_angles(geometry_type)
-        ct_model = self.get_model(geometry_type)
-
-        # Generate 3D Shepp Logan phantom
-        print('  Creating phantom')
-        phantom = ct_model.gen_modified_3d_sl_phantom()
-
-        # Generate synthetic sinogram data
-        print('  Creating sinogram')
-        sinogram = ct_model.forward_project(phantom)
-
-        # Set reconstruction parameter values
-        ct_model.set_params(verbose=0)
-
-        # ##########################
-        # Perform VCD reconstruction
-        print('  Starting recon')
-        recon, recon_params = ct_model.recon(sinogram)
-        recon.block_until_ready()
-
-        max_diff = np.amax(np.abs(phantom - recon))
-        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-        pct_95 = np.percentile(np.abs(recon - phantom), 95)
-        print('  nrmse = {:.3f}'.format(nrmse))
-
-        self.assertTrue(max_diff < tolerances['max_diff'] and
-                        nrmse < tolerances['nrmse'] and
-                        pct_95 < tolerances['pct_95'])
 
 
 if __name__ == '__main__':

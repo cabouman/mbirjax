@@ -39,7 +39,7 @@ class ParallelBeamModel(TomographyModel):
     TomographyModel : The base class from which this class inherits.
     """
 
-    def __init__(self, sinogram_shape, angles, **kwargs):
+    def __init__(self, sinogram_shape, angles):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
@@ -49,7 +49,7 @@ class ParallelBeamModel(TomographyModel):
         except ValueError as e:
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
-        super().__init__(sinogram_shape, view_params_array=view_params_array, **kwargs)
+        super().__init__(sinogram_shape, view_params_array=view_params_array)
 
     @classmethod
     def from_file(cls, filename):
