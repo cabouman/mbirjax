@@ -630,7 +630,7 @@ class TomographyModel(ParameterHandler):
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
         b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
         sharpness = self.get_params('sharpness')
-        alpha_clip_value = jnp.clip(1.3 - 0.2 * sharpness, a_min=0.8, a_max=1.6)
+        alpha_clip_value = jnp.clip(1.3 - 0.2 * sharpness, 0.8, 1.6)
         b = tuple(b)
         qggmrf_params = (b, sigma_x, p, q, T)
         sigma_prox = self.get_params('sigma_prox')
@@ -710,7 +710,7 @@ class TomographyModel(ParameterHandler):
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
-            alpha = jnp.clip(alpha, a_min=jnp.finfo(jnp.float32).eps, a_max=1.5)  # a_max=alpha_clip_value
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, 1.5)  # a_max=alpha_clip_value
 
             # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
             # x_prime = flat_recon.reshape(recon_shape)

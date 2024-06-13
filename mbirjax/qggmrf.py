@@ -47,7 +47,7 @@ def qggmrf_loss(full_recon, qggmrf_params):
     def rho_ref(delta):
         # Compute rho from Table 8.1 in FCI
         a_min = T * sigma_x * jnp.finfo(jnp.float32).eps
-        abs_delta = jnp.clip(abs(delta), a_min=a_min, a_max=None)
+        abs_delta = jnp.clip(abs(delta), a_min, None)
         delta_scale = abs_delta / (T * sigma_x)  # delta_scale has a min of eps
         ds_q_minus_p = (delta_scale ** (q - p))
         numerator = (abs_delta ** p) / (p * sigma_x ** p)
@@ -234,7 +234,7 @@ def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
 def b_tilde_by_definition(delta, sigma_x, p, q, T):
     # This is a reference implementation to compute b_tilde = rho'(delta) / (2 delta) from Table 8.1 in FCI
     a_min = T * sigma_x * jnp.finfo(jnp.float32).eps
-    abs_delta = jnp.clip(abs(delta), a_min=a_min, a_max=None)
+    abs_delta = jnp.clip(abs(delta), a_min, None)
     delta_scale = abs_delta / (T * sigma_x)  # delta_scale has a min of eps
 
     ds_q_minus_p = (delta_scale ** (q - p))
