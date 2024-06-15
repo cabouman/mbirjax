@@ -688,7 +688,9 @@ class TomographyModel(ParameterHandler):
                 prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
                 prior_grad_delta = prior_grad_delta.reshape((1, 1))
                 # Estimated upper bound for hessian
-                prior_hess_max_delta = 0.5 * jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2)
+                prior_over_relaxation_factor = 2
+                prior_hess_max_delta = ((1 / prior_over_relaxation_factor) *
+                                        jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2))
                 prior_hess_max_delta = prior_hess_max_delta.reshape((1, 1))
                 return delta_recon_at_indices_batch, prior_grad_delta, prior_hess_max_delta
 
@@ -710,7 +712,8 @@ class TomographyModel(ParameterHandler):
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
-            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, 1.5)  # a_max=alpha_clip_value
+            max_alpha = 1.5
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)  # a_max=alpha_clip_value
 
             # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
             # x_prime = flat_recon.reshape(recon_shape)
