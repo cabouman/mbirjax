@@ -14,6 +14,9 @@ class ConeBeamModel(TomographyModel):
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
     like setting parameters and performing projections and reconstructions.
 
+    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
+    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+
     Args:
         sinogram_shape (tuple):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
@@ -29,10 +32,6 @@ class ConeBeamModel(TomographyModel):
             If recon_slice_offset is positive, we reconstruct the region below iso.
         det_rotation (float, optional, default=0):  Angle in radians between the projection of the object rotation axis
             and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
-        **kwargs (dict):
-            Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
-            include settings and configurations specific to the tomography model such as noise models or image dimensions.
-            Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
     """
 
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
