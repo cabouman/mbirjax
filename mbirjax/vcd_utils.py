@@ -2,6 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
+import warnings
 
 
 def get_2d_ror_mask(recon_shape):
@@ -75,8 +76,10 @@ def gen_pixel_partition_uniform(recon_shape, num_subsets):
     mask = mask.flatten()
     indices = indices[mask == 1]
     if num_subsets > len(indices):
-        raise ValueError('The number of partition subsets is greater than the number of pixels in the region of '
-                         'reconstruction.  Reduce the granularity for this size image.')
+        num_subsets = len(indices)
+        warning = '\nThe number of partition subsets is greater than the number of pixels in the region of '
+        warning += 'reconstruction.  \nReducing the number of subsets to equal the number of indices.'
+        warnings.warn(warning)
 
     # Determine the number of indices to repeat to make the total number divisible by num_subsets
     num_indices_per_subset = int(np.ceil((len(indices) / num_subsets)))
@@ -124,8 +127,8 @@ def gen_pixel_partition(recon_shape, num_subsets):
     subset_inds = subset_inds.flatten()
     num_valid_inds = np.sum(subset_inds >= 0)
     if num_subsets > num_valid_inds:
-        raise ValueError('The number of partition subsets is greater than the number of pixels in the region of '
-                         'reconstruction.  Reduce the granularity for this size image.')
+        return gen_pixel_partition_uniform(recon_shape, num_subsets)
+
     flat_inds = []
     max_points = 0
     min_points = subset_inds.size
