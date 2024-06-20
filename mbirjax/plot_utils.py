@@ -15,8 +15,8 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     and pan will be applied to each image simultaneously.  If not pan and zoom are applied to one image at a time.
 
     Args:
-        data (ndarray or jax array): 3D image volume with shape (height, width, depth).
-        data2 (numpy array or jax array, optional): Second 3D image volume with the same shape as the first.
+        data (ndarray or jax array): 3D image volume with shape (height, width, depth) or 2D (height, width).
+        data2 (numpy array or jax array, optional): Second 2D or 3D image volume with the same constraints.
         title (string, optional, default=''): Figure super title
         vmin (float, optional): minimum for displayed intensity
         vmax (float, optional): maximum for displayed intensity
@@ -33,10 +33,18 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
             slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
-    if data.ndim != 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
-        error_msg = 'The input data must be a 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
+    if data.ndim < 2 or data.ndim > 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
+        error_msg = 'The input data must be a 2D or 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
         # error_msg += 'must equal data2.shape[slice_axis])'
         raise ValueError(error_msg)
+    elif data.ndim == 2:
+        data = data.reshape(data.shape + (1,))
+    if data2 is not None:
+        if data2.ndim < 2 or data2.ndim > 3:
+            error_msg = 'The input data2 must be a 2D or 3D array'
+            raise ValueError(error_msg)
+        elif data2.ndim == 2:
+            data2 = data2.reshape(data2.shape + (1,))
 
     # Move the specified slice axis into the last position
     data = numpy.moveaxis(data, slice_axis, 2)
