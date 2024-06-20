@@ -1,11 +1,8 @@
 import numpy as np
-import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
 import mbirjax.parallel_beam
-import mbirjax.plot_utils as pu
-from scipy import sparse, linalg, stats
 from scipy.sparse.linalg import svds, aslinearoperator, LinearOperator
 import jax
 
@@ -111,8 +108,14 @@ if __name__ == "__main__":
         assert(np.allclose(Aty.flatten(), Aty_lo))
         print('Linear operator matches known projectors')
 
-        num_sing_values = num_views * num_det_channels
-        s = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=False, solver='propack')
+        num_sing_values = 500  # num_views * num_det_channels
+        u, s, vh = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
+        vh = vh.reshape(num_sing_values, num_det_channels, num_det_channels)
+        vh = vh[::-1, :, :]
+        mbirjax.slice_viewer(vh, slice_axis=0)
+        u = u.reshape((num_det_channels, num_det_channels, num_sing_values))
+        u = u[:, :, ::-1]
+        mbirjax.slice_viewer(u, slice_axis=2)
         plt.plot(np.sort(s)[::-1], '.')
         plt.show()
         a = 0

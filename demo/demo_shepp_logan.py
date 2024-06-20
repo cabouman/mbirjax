@@ -44,6 +44,10 @@ if __name__ == "__main__":
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
+    ct_model.set_params(partition_sequence=[0, 1, 2, 3, 3, 2, 2, 2, 3, 3])
+    granularity = np.array([1, 2, 64, 512])
+    ct_model.set_params(granularity=granularity)
+
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     phantom = ct_model.gen_modified_3d_sl_phantom()

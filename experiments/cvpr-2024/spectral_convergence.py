@@ -30,6 +30,7 @@ if __name__ == "__main__":
     phantom = phantom[:, :, center_slice:center_slice+1]
 
     # Generate synthetic sinogram data
+    print('Creating sinogram')
     sinogram = parallel_model.forward_project(phantom)
 
     # Generate weights array
@@ -37,35 +38,53 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
-    parallel_model.set_params(partition_sequence=[0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3])
-    granularity = np.array([1, 8, 64, 256])
+    granularity = np.array([1, 2, 64, 512])
+    parallel_model.set_params(granularity=granularity)
 
-    vcd_partition_sequence = [0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3]
-    gd_partition_sequence = [0, ]
+    # vcd_partition_sequence = [0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3]
+    vcd_partition_sequence = [0, 1, 2, 3, 3, 2, 2, 2, 3, 3]  # 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3]
+    gd_partition_sequence =  [0, ]
     icd_partition_sequence = [3, ]
+
+    num_iterations = 5
+
     sequences = [vcd_partition_sequence, gd_partition_sequence, icd_partition_sequence]
-    residual_results = []
+    residual_fft = []
+    residual_recon = []
+    all_recons = []
 
     # ##########################
     # Perform reconstructions
-    num_iterations = 10
     for sequence in sequences:
         parallel_model.set_params(partition_sequence=sequence)
         cur_residual = np.zeros((num_iterations,) + phantom.shape[0:2])
-        cur_recon = None
+        cur_recon = np.zeros((num_iterations,) + phantom.shape[0:2])
+        recon = None
         for iteration in range(num_iterations):
-            cur_recon, cur_recon_params = parallel_model.recon(sinogram, weights=weights, num_iterations=iteration + 1,
-                                                               first_iteration=iteration, init_recon=cur_recon,
+            recon, cur_recon_params = parallel_model.recon(sinogram, weights=weights, num_iterations=iteration + 1,
+                                                               first_iteration=iteration, init_recon=recon,
                                                                compute_prior_loss=True)
-            cur_residual[iteration] = cur_recon[:, :, 0] - phantom[:, :, 0]
+            cur_residual[iteration] = recon[:, :, 0] - phantom[:, :, 0]
+            cur_recon[iteration] = recon[:, :, 0]
 
+        all_recons.append(cur_recon)
+        residual_recon.append(cur_residual)
         cur_residual_fft = np.fft.fftn(cur_residual, axes=(1, 2))
         cur_residual_fft = np.fft.fftshift(cur_residual_fft, axes=(1, 2))
-        residual_results.append(20 * np.log10(1e-6 + np.abs(cur_residual_fft)))
+        residual_fft.append(20 * np.log10(1e-6 + np.abs(cur_residual_fft)))
 
-    vcd_residual_fft, gd_residual_fft, icd_residual_fft = residual_results
-    mbirjax.slice_viewer(vcd_residual_fft, gd_residual_fft, title='Residual |FFT| in dB\nVCD left, GD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=40)
-    mbirjax.slice_viewer(vcd_residual_fft, icd_residual_fft, title='Residual |FFT| in dB\nVCD left, ICD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=40)
+    vcd_recons, gd_recons, icd_recons = all_recons
+    vcd_residual, gd_residual, icd_residual = residual_recon
+    vcd_residual_fft, gd_residual_fft, icd_residual_fft = residual_fft
+
+    mbirjax.slice_viewer(vcd_recons, gd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, gd right', slice_label='Iteration')
+    mbirjax.slice_viewer(vcd_residual, gd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, gd right', slice_label='Iteration')
+    mbirjax.slice_viewer(vcd_residual_fft, gd_residual_fft, title='Residual |FFT| in dB\nVCD left, GD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
+
+    mbirjax.slice_viewer(vcd_recons, icd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, icd right', slice_label='Iteration')
+    mbirjax.slice_viewer(vcd_residual, icd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, icd right', slice_label='Iteration')
+    mbirjax.slice_viewer(vcd_residual_fft, icd_residual_fft, title='Residual |FFT| in dB\nVCD left, ICD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
+
     # fm_rmse_vcd = cur_recon_params.fm_rmse
     # prior_loss_vcd = cur_recon_params.prior_loss
     # default_partition_sequence = parallel_model.get_params('partition_sequence')
