@@ -10,9 +10,7 @@ if __name__ == "__main__":
     small_tile_side = 16
     tile_type = 'repeat'  # 'repeat', 'permute', 'random', 'select'
 
-    num_subsets = small_tile_side * small_tile_side
-
-    indices = mbirjax.gen_pixel_partition(image_shape, num_subsets)
+    num_subsets = 1
 
     ror_mask = mbirjax.get_2d_ror_mask(image_shape)
 
@@ -84,6 +82,7 @@ if __name__ == "__main__":
     elif tile_type == 'select':
         # For each subset, select one element from each small tile.  Use a different permutation of the subsets
         # for each tile to determine which subset gets which element from each small tile.
+        num_subsets = small_tile_side ** 2
         num_small_tiles = [np.ceil(image_shape[k] / small_tile_side).astype(int) for k in [0, 1]]
         perms = [np.random.permutation(num_subsets) for j in np.arange(np.prod(num_small_tiles))]
         perms = np.array(perms).T
@@ -119,5 +118,5 @@ if __name__ == "__main__":
 
     # print('Number of points = {}'.format(np.sum(subsets, axis=(1, 2))))
     mbirjax.slice_viewer(40 * full_mask, full_mask_fft, slice_axis=0, slice_label='Subset',
-                         title='Subset mask and FFT in dB', vmin=0, vmax=40)
+                         title='Subset mask and FFT in dB', vmin=0, vmax=60)
 

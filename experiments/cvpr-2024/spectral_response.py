@@ -15,9 +15,9 @@ if __name__ == "__main__":
     with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
 
         # Initialize sinogram
-        num_views = 64
+        num_views = 128
         num_det_rows = 1
-        num_det_channels = 64
+        num_det_channels = 128
         start_angle = 0
         end_angle = jnp.pi
         sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -108,14 +108,19 @@ if __name__ == "__main__":
         assert(np.allclose(Aty.flatten(), Aty_lo))
         print('Linear operator matches known projectors')
 
-        num_sing_values = 500  # num_views * num_det_channels
-        u, s, vh = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
-        vh = vh.reshape(num_sing_values, num_det_channels, num_det_channels)
-        vh = vh[::-1, :, :]
-        mbirjax.slice_viewer(vh, slice_axis=0)
-        u = u.reshape((num_det_channels, num_det_channels, num_sing_values))
-        u = u[:, :, ::-1]
-        mbirjax.slice_viewer(u, slice_axis=2)
+        num_sing_values = 15  # num_views * num_det_channels
+        sing_vects = True
+        if sing_vects:
+            u, s, vh = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
+            vh = vh.reshape(num_sing_values, num_det_channels, num_det_channels)
+            vh = vh[::-1, :, :]
+            mbirjax.slice_viewer(vh, slice_axis=0)
+            u = u.reshape((num_det_channels, num_det_channels, num_sing_values))
+            u = u[:, :, ::-1]
+            mbirjax.slice_viewer(u, slice_axis=2)
+        else:
+            s = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=False,
+                     solver='propack')
         plt.plot(np.sort(s)[::-1], '.')
         plt.show()
         a = 0
