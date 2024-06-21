@@ -26,8 +26,6 @@ class ConeBeamModel(TomographyModel):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        det_row_offset (float, optional, default=0): Distance = (detector iso row) - (center of detector rows) in ALU.
-        det_channel_offset (float, optional, default=0): Distance = (detector iso channel) - (center of detector channels) in ALU.
         recon_slice_offset (float, optional, default=0): Vertical offset of the image in ALU.
             If recon_slice_offset is positive, we reconstruct the region below iso.
         det_rotation (float, optional, default=0):  Angle in radians between the projection of the object rotation axis
