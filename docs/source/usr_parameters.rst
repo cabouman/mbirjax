@@ -24,7 +24,8 @@ Geometry Parameters
 ^^^^^^^^^^^^^^^^^^^
 
 recon_shape : tuple (num_rows, num_cols, num_slices)
-    Array size of reconstruction. This is set automatically, but it can be modified for .
+    Array size of reconstruction. This is set automatically and is available from :meth:`get_params('recon_shape')`.
+    It is recommended to use :func:`set_params` to increase this by a factor of 10-15% when the object extends beyond the field of view.
 
 delta_det_channel : float
     Spacing between detector channels in ALU. Defaults to 1.0.
