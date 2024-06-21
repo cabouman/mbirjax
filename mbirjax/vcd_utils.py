@@ -1,6 +1,8 @@
 import numpy as np
 import jax.numpy as jnp
 import jax
+import mbirjax.bn256 as bn
+import warnings
 
 
 def get_2d_ror_mask(recon_shape):
@@ -52,7 +54,7 @@ def gen_set_of_pixel_partitions(recon_shape, granularity):
 def gen_pixel_partition(recon_shape, num_subsets):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
-    The function ensures that each subset contains an equal number of pixels, suitable VCD reconstruction.
+    The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
 
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
@@ -68,13 +70,16 @@ def gen_pixel_partition(recon_shape, num_subsets):
     num_recon_rows, num_recon_cols = recon_shape[:2]
     max_index_val = num_recon_rows * num_recon_cols
     indices = np.arange(max_index_val, dtype=np.int32)
-    if num_subsets > max_index_val:
-        raise ValueError('num_subsets must not be larger than max_index_val')
 
     # Mask off indices that are outside the region of reconstruction
     mask = get_2d_ror_mask(recon_shape)
     mask = mask.flatten()
     indices = indices[mask == 1]
+    if num_subsets > len(indices):
+        num_subsets = len(indices)
+        warning = '\nThe number of partition subsets is greater than the number of pixels in the region of '
+        warning += 'reconstruction.  \nReducing the number of subsets to equal the number of indices.'
+        warnings.warn(warning)
 
     # Determine the number of indices to repeat to make the total number divisible by num_subsets
     num_indices_per_subset = int(np.ceil((len(indices) / num_subsets)))
@@ -92,6 +97,63 @@ def gen_pixel_partition(recon_shape, num_subsets):
     indices = np.sort(indices, axis=1)
 
     return jnp.array(indices)
+
+
+def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
+    """
+    Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
+    The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
+
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices)
+        num_subsets (int): The number of subsets to divide the pixel indices into.
+
+    Raises:
+        ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
+
+    Returns:
+        jnp.array: A JAX array where each row corresponds to a subset of pixel indices, sorted within each subset.
+    """
+    pattern = bn.bn256
+    num_tiles = [np.ceil(recon_shape[k] / pattern.shape[k]).astype(int) for k in [0, 1]]
+    ror_mask = get_2d_ror_mask(recon_shape)
+
+    single_subset_inds = np.floor(pattern / (2**16 / num_subsets)).astype(int)
+
+    # Repeat each bn subset to do the tiling
+    subset_inds = np.tile(single_subset_inds, num_tiles)
+    subset_inds = subset_inds[:recon_shape[0], :recon_shape[1]]
+    subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a -1 at each location outside the mask, subset_ind at other points
+    subset_inds = subset_inds.flatten()
+    num_valid_inds = np.sum(subset_inds >= 0)
+    if num_subsets > num_valid_inds:
+        return gen_pixel_partition_uniform(recon_shape, num_subsets)
+
+    flat_inds = []
+    max_points = 0
+    min_points = subset_inds.size
+    for k in range(num_subsets):
+        cur_inds = np.where(subset_inds == k)[0]
+        flat_inds.append(cur_inds)  # Get all the indices for each subset
+        max_points = max(max_points, cur_inds.size)
+        min_points = min(min_points, cur_inds.size)
+
+    if min_points == 0:
+        return gen_pixel_partition_uniform(recon_shape, num_subsets)
+
+    extra_point_inds = np.random.randint(low=0, high=min_points, size=(max_points - min_points + 1,))
+
+    for k in range(num_subsets):
+        cur_inds = flat_inds[k]
+        num_extra_points = max_points - cur_inds.size
+        if num_extra_points > 0:
+            extra_subset_inds = (k + 1 + np.arange(num_extra_points, dtype=int)) % num_subsets
+            new_point_inds = [flat_inds[extra_subset_inds[j]][extra_point_inds[j]] for j in range(num_extra_points)]
+            flat_inds[k] = np.concatenate((cur_inds, new_point_inds))
+    flat_inds = jnp.array(flat_inds)
+    flat_inds = jnp.sort(flat_inds, axis=1)
+
+    return flat_inds
 
 
 def gen_partition_sequence(partition_sequence, num_iterations):

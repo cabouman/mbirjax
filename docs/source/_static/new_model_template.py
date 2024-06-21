@@ -11,7 +11,12 @@ class TemplateModel(TomographyModel):
     This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
     to suit the specific geometry.
 
+    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
+    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+
     Items to change for a particular geometry are highlighted with TODO.
+    It is not recommended to use **kwargs in the constructor since doing so complicates checking for valid parameter
+    names in set_params.
 
     Args:
         sinogram_shape (tuple):
@@ -22,10 +27,6 @@ class TemplateModel(TomographyModel):
             These are view-independent scalar parameters that are required for the geometry and are not already included in the parent class.
         view_dependent_vec1, view_dependent_vec2 (jnp.ndarray):
             These are view-dependent parameter vectors each with length = number of views.
-        **kwargs (dict):
-            Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
-            include settings and configurations specific to the tomography model such as noise models or image dimensions.
-            Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
     """
 
     # TODO: Adjust the signature as needed for a particular geometry and update the docstring to match.

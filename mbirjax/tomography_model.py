@@ -411,7 +411,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def recon(self, sinogram, weights=None, num_iterations=20, first_iteration=0, init_recon=None,
+    def recon(self, sinogram, weights=None, num_iterations=15, first_iteration=0, init_recon=None,
               compute_prior_loss=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
@@ -435,6 +435,11 @@ class TomographyModel(ParameterHandler):
             recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
+        if compute_prior_loss:
+            msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
+            msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
+            warnings.warn(msg)
+
         regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
         # Generate set of voxel partitions
@@ -448,7 +453,8 @@ class TomographyModel(ParameterHandler):
 
         # Compute reconstruction
         recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
-                                             init_recon=init_recon, compute_prior_loss=compute_prior_loss)
+                                             init_recon=init_recon, compute_prior_loss=compute_prior_loss,
+                                             first_iteration=first_iteration)
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
@@ -467,7 +473,7 @@ class TomographyModel(ParameterHandler):
         return recon, recon_params
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None,
-                  compute_prior_loss=False):
+                  compute_prior_loss=False, first_iteration=0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -480,6 +486,8 @@ class TomographyModel(ParameterHandler):
             init_recon (jax array, optional): Initial reconstruction to use in reconstruction.
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when
+            restarting a recon using init_recon.
 
         Returns:
             [recon, fm_rmse]: 3D reconstruction and array of loss for each iteration.
@@ -559,10 +567,10 @@ class TomographyModel(ParameterHandler):
                     # then scale by the average number of elements between the two.
                     total_loss = ((fm_rmse[i] * sinogram.size + pm_loss[i] * flat_recon.size) /
                                   (0.5 * (sinogram.size + flat_recon.size)))
-                    print('VCD iteration={}; Forward loss={:.3f}, Prior loss={:.3f}, Weighted total loss={:.3f}'.
-                          format(i, fm_rmse[i], pm_loss[i], total_loss))
+                    print('After iteration {} : Forward loss={:.3f}, Prior loss={:.3f}, Weighted total loss={:.3f}'.
+                          format(i + first_iteration, fm_rmse[i], pm_loss[i], total_loss))
                 else:
-                    print('VCD iteration={}; Loss={:.3f}'.format(i, fm_rmse[i]))
+                    print('After iteration {}: Loss={:.3f}'.format(i + first_iteration, fm_rmse[i]))
                 es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
                 print(f'Error sino RMSE={es_rmse:.3f}')
                 if verbose >= 2:
@@ -688,7 +696,9 @@ class TomographyModel(ParameterHandler):
                 prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
                 prior_grad_delta = prior_grad_delta.reshape((1, 1))
                 # Estimated upper bound for hessian
-                prior_hess_max_delta = 0.5 * jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2)
+                prior_over_relaxation_factor = 2
+                prior_hess_max_delta = ((1 / prior_over_relaxation_factor) *
+                                        jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2))
                 prior_hess_max_delta = prior_hess_max_delta.reshape((1, 1))
                 return delta_recon_at_indices_batch, prior_grad_delta, prior_hess_max_delta
 
@@ -710,7 +720,8 @@ class TomographyModel(ParameterHandler):
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
-            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, 1.5)  # a_max=alpha_clip_value
+            max_alpha = 1.5
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)  # a_max=alpha_clip_value
 
             # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
             # x_prime = flat_recon.reshape(recon_shape)
