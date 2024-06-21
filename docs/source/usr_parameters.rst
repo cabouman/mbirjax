@@ -5,8 +5,8 @@
 Base Parameters
 ===============
 
-The following documents the base parameters used by the ``TomographyModel`` class.
-Any of these parameters can be modified with :meth:`TomographyModel.set_params`.
+The following documents the base parameters used by the :ref:`TomographyModelDocs` class.
+Any of these parameters can be modified with :func:`TomographyModel.set_params`.
 
 Parameters that are specific to particular geometries are documented in the geometry's documentation.
 
