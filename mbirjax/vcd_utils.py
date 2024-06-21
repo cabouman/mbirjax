@@ -51,7 +51,7 @@ def gen_set_of_pixel_partitions(recon_shape, granularity):
     return partitions
 
 
-def gen_pixel_partition_uniform(recon_shape, num_subsets):
+def gen_pixel_partition(recon_shape, num_subsets):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
@@ -99,7 +99,7 @@ def gen_pixel_partition_uniform(recon_shape, num_subsets):
     return jnp.array(indices)
 
 
-def gen_pixel_partition(recon_shape, num_subsets):
+def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
