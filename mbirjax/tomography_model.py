@@ -458,7 +458,7 @@ class TomographyModel(ParameterHandler):
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                             'regularization_params']
+                             'regularization_params', 'nrms_recon_change']
         ReconParams = namedtuple('ReconParams', recon_param_names)
         partition_sequence = [int(val) for val in partition_sequence]
         fm_rmse = [float(val) for val in loss_vectors[0]]
@@ -466,8 +466,9 @@ class TomographyModel(ParameterHandler):
             prior_loss = [float(val) for val in loss_vectors[1]]
         else:
             prior_loss = [0]
+        nrms_recon_change = [float(val) for val in loss_vectors[2]]
         recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params._asdict()]
+                              regularization_params._asdict(), nrms_recon_change]
         recon_params = ReconParams(*tuple(recon_param_values))
 
         return recon, recon_params
