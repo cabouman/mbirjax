@@ -14,6 +14,9 @@ class ParallelBeamModel(TomographyModel):
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
     like setting parameters and performing projections and reconstructions.
 
+    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
+    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+
     Args:
         sinogram_shape (tuple):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
@@ -21,10 +24,6 @@ class ParallelBeamModel(TomographyModel):
             the detector that are assumed to be aligned with the rotation axis.
         angles (jnp.ndarray):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
-        **kwargs (dict):
-            Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
-            include settings and configurations specific to the tomography model such as noise models or image dimensions.
-            Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
 
     Examples
     --------

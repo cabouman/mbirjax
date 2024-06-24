@@ -1,35 +1,31 @@
 .. _ParametersDocs:
 
 
-==================
-Primary Parameters
-==================
+===============
+Base Parameters
+===============
 
-The ``TomographyModel`` provides the basic interface for all specific geometries for tomographic projection
-and reconstruction.
+The following documents the base parameters used by the :ref:`TomographyModelDocs` class.
+Any of these parameters can be modified with :func:`TomographyModel.set_params`.
 
-Parameter Documentation
------------------------
+Parameters that are specific to particular geometries are documented in the geometry's documentation.
 
-The following documents basic TomographyModel class parameters that are commonly used in reconstruction.
-Other parameters may be used for specific geometries.
-
-
-Basic Reconstruction Parameters
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Reconstruction Parameters
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 sharpness : float
     Specifies the sharpness of the reconstruction. Defaults to 0.0. Larger values produce sharper images. Smaller values produce softer images.
-
-snr_db : float
-    Specifies the assumed SNR of sinogram measurements in dB. Defaults to 30.0. Larger values produce sharper images.
 
 verbose : int
     Larger values produce more status information. Defaults to 0 for silent operation.
 
 
-Basic Geometry Parameters
-^^^^^^^^^^^^^^^^^^^^^^^^^
+Geometry Parameters
+^^^^^^^^^^^^^^^^^^^
+
+recon_shape : tuple (num_rows, num_cols, num_slices)
+    Array size of reconstruction. This is set automatically and is available from :meth:`get_params('recon_shape')`.
+    It is recommended to use :func:`set_params` to increase this by a factor of 10-15% when the object extends beyond the field of view.
 
 delta_det_channel : float
     Spacing between detector channels in ALU. Defaults to 1.0.
@@ -40,8 +36,8 @@ delta_det_row : float
 det_channel_offset : float
     Assumed offset between center of rotation and center of detector between detector channels in ALU. Defaults to 0.0.
 
-magnification : float
-    Ratio of (source to detector distance)/(source to iso distance). Defaults to 1.0.
+det_row_offset : float
+    Assumed offset in rows of the source-to-detector line with center of detector in ALU. Defaults to 0.0.
 
 delta_voxel : float
     Spacing between voxels in ALU. Defaults to 1.0.
@@ -55,16 +51,6 @@ sigma_y : float
 
 sigma_p : float
     Proximal map parameter. Defaults to 1.0.
-
-
-Memory Allocation Parameters
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-pixel_batch_size : int
-    Maximum number of pixels (i.e., voxel cylinders) processed simultaneously.
-
-view_batch_size : int
-    Maximum number of views processed simultaneously.
 
 
 

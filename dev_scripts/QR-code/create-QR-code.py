@@ -20,10 +20,10 @@ qr.add_data(url)
 qr.make(fit=True)
 
 # Create an image from the QR code instance
-img_qr = qr.make_image(fill='black', back_color='white').convert('RGB')
+img_qr = qr.make_image(fill='black', back_color='white').convert('RGBA')
 
 # Open the logo image
-logo = Image.open(logo_path)
+logo = Image.open(logo_path).convert('RGBA')
 
 # Resize the logo
 logo_width = 400
@@ -37,11 +37,11 @@ padding = 0
 total_height = qr_height + logo_height + padding  # Add some space between QR and logo
 
 # Create a new image with an off-white background
-bg_color = (235, 235, 230)  # Off-white
-final_image = Image.new('RGB', (qr_width, total_height), bg_color)
+bg_color = (235, 235, 230, 255)  # Off-white with full opacity
+final_image = Image.new('RGBA', (qr_width, total_height), bg_color)
 
 # Paste the QR code onto the final image
-final_image.paste(img_qr, (0, 0))
+final_image.paste(img_qr, (0, 0), mask=img_qr)
 
 # Paste the logo onto the final image
 logo_pos = ((qr_width - logo_width) // 2, qr_height + padding)  # Reduced padding
@@ -54,7 +54,7 @@ draw = ImageDraw.Draw(mask)
 draw.rounded_rectangle([(0, 0), final_image.size], radius, fill=255)
 
 # Apply rounded corners mask to the final image
-rounded_final_image = Image.new('RGB', final_image.size)
+rounded_final_image = Image.new('RGBA', final_image.size, (0, 0, 0, 0))
 rounded_final_image.paste(final_image, (0, 0), mask=mask)
 
 # Save the final image

@@ -14,6 +14,9 @@ class ConeBeamModel(TomographyModel):
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
     like setting parameters and performing projections and reconstructions.
 
+    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
+    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+
     Args:
         sinogram_shape (tuple):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
@@ -23,16 +26,10 @@ class ConeBeamModel(TomographyModel):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        det_row_offset (float, optional, default=0): Distance = (detector iso row) - (center of detector rows) in ALU.
-        det_channel_offset (float, optional, default=0): Distance = (detector iso channel) - (center of detector channels) in ALU.
         recon_slice_offset (float, optional, default=0): Vertical offset of the image in ALU.
             If recon_slice_offset is positive, we reconstruct the region below iso.
         det_rotation (float, optional, default=0):  Angle in radians between the projection of the object rotation axis
             and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
-        **kwargs (dict):
-            Additional keyword arguments that are passed to the :ref:`TomographyModelDocs` constructor. These can
-            include settings and configurations specific to the tomography model such as noise models or image dimensions.
-            Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
     """
 
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
