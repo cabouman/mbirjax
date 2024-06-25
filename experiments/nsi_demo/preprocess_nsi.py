@@ -758,11 +758,12 @@ def calc_source_detector_params(r_a, r_n, r_h, r_s, r_r):
         r_s (tuple): 3D real-valued vector from origin to the source location.
         r_r (tuple): 3D real-valued vector from origin to the center of pixel on first row and colum of detector.
     Returns:
-        3-element tuple containing:
+        4-element tuple containing:
         - **source_detector_dist** (float): Distance between the X-ray source and the detector. 
+        - **source_iso_dist** (float): Distance between the X-ray source and the center of rotation.
+        - **det_rotation (float)**: Angle between the rotation axis and the detector columns in units of radians.
         - **magnification** (float): Magnification of the cone-beam geometry defined as
             (source to detector distance)/(source to center-of-rotation distance).
-        - **det_rotation (float)**: Angle between the rotation axis and the detector columns in units of radians.
     """
     r_n = unit_vector(r_n)      # make sure r_n is normalized
     r_v = np.cross(r_n, r_h)    # r_v = r_n x r_h
@@ -791,6 +792,7 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
         delta_det_row (float): spacing between detector rows.
         num_det_channels (int): Number of detector channels.
         num_det_rows (int): Number of detector rows.
+        magnification (float): Magnification of the cone-beam geometry.
     Returns:
         2-element tuple containing:
         - **det_channel_offset** (float): Distance from center of detector to the source-detector line along a row. 
