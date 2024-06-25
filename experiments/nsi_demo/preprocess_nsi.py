@@ -780,7 +780,7 @@ def calc_source_detector_params(r_a, r_n, r_h, r_s, r_r):
     return source_detector_dist, source_iso_dist, magnification, det_rotation
 
 def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification):
-    """ Calculate the MBIRJAX geometry parameters: det_channel_offset, det_row_offset, rotation_offset. 
+    """ Calculate the MBIRJAX geometry parameters: det_channel_offset, det_row_offset. 
     Args:
         r_a (tuple): 3D real-valued unit vector in direction of rotation axis pointing down.
         r_n (tuple): 3D real-valued unit vector perpendicular to the detector plan pointing from source to detector.
@@ -792,10 +792,9 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
         num_det_channels (int): Number of detector channels.
         num_det_rows (int): Number of detector rows.
     Returns:
-        3-element tuple containing:
+        2-element tuple containing:
         - **det_channel_offset** (float): Distance from center of detector to the source-detector line along a row. 
         - **det_row_offset** (float): Distance from center of detector to the source-detector line along a column. 
-        - **rotation_offset** (float): Distance from source-detector line to axis of rotation.
     """
     r_n = unit_vector(r_n) # make sure r_n is normalized
     r_h = unit_vector(r_h) # make sure r_h is normalized
