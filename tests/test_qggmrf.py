@@ -109,6 +109,8 @@ class TestQGGMRF(unittest.TestCase):
         T = 1.102763376071644  # 0.5 + np.random.rand(1)[0]
         sigma_x = 0.6448831829968968  # 0.1 + np.random.rand(1)[0]
         b = (1, 1, 1, 1, 1, 1)
+        b = normalize_b(b)
+
         qggmrf_params = (b, sigma_x, p, q, T)
 
         recon_shape = (3, 3, 3)
@@ -139,6 +141,7 @@ class TestQGGMRF(unittest.TestCase):
         T = 1.46
         sigma_x = 0.789
         b = (1, 1, 1, 1, 1, 1)
+        b = normalize_b(b)
         qggmrf_params = (b, sigma_x, p, q, T)
 
         # Get a random recon, x
@@ -168,6 +171,11 @@ class TestQGGMRF(unittest.TestCase):
         assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
         assert (jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
 
+
+def normalize_b(b):
+    b_sum = np.sum(np.array(b))
+    b = tuple([b_entry / b_sum for b_entry in b])
+    return b
 
 if __name__ == '__main__':
     unittest.main()
