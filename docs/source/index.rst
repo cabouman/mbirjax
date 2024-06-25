@@ -11,7 +11,7 @@ MBIRJAX: High-performance tomographic reconstruction
 **Key features:**
 
 
-* Vectorized Coordinate Descent algorithm for fast, robust convergence.
+* Vectorized Coordinate Descent algorithm for fast, robust convergence :cite:`2024CV4SciencePoster`.
 * Automatic parameter selection, with fine-tuning using intuitive meta-parameters.
 * Support for Plug-and-Play prior models that can dramatically improve image quality :cite:`venkatakrishnan2013plug` :cite:`sreehari2016plug`.
 * Modular, extensible, easy-to-use, object-oriented Python interface.
