@@ -84,8 +84,6 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
     # Initialize the neighborhood weights for averaging surrounding pixel values.
     # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
     b, sigma_x, p, q, T = qggmrf_params
-    b = jnp.array(b)
-    b = tuple(b / jnp.sum(b))
 
     # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
     qggmrf_params = (b, sigma_x, p, q, T)

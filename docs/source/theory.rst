@@ -99,6 +99,13 @@ where the quantities correspond to the following python variables:
 * :math:`\sigma_p` corresponds to ``sigma_p``
 
 
+Vectorized Coordinate Descent (VCD)
+-----------------------------------
+
+At its core, MBIRJAX is based on multi-granular VCD (MG-VCD) optimization as described in :cite:`2024CV4SciencePoster`.
+For the user, this is all "under the hood", but it is critically important because it results in fast robust convergence that can be efficiently implemented in JAX and on modern GPU architectures.
+Moreover, MG-VCD does not require the selection of a geometry specific pre-conditioner, as would be typically required with gradient-based methods, so it enables MBIRJAX's unique support for multiple geometries.
+
 
 Arbitrary Length Units (ALU) Conversion
 ---------------------------------------
