@@ -431,13 +431,13 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
         - A numpy array containing the corrected sinogram data if weights is None. 
         - A tuple (sino, weights) if weights is not None
     """
-    sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=5)
+    sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     # weights not provided
     if weights is None:
         return sino
     # weights provided
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.") 
-    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=5)
+    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
 def calc_background_offset(sino, option=0, edge_width=9):
