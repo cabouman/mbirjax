@@ -5,7 +5,6 @@ import pprint
 import jax.numpy as jnp
 import mbirjax
 import mbirjax.plot_utils as pu
-import preprocess_nsi
 import demo_utils
 import pprint
 pp = pprint.PrettyPrinter(indent=4)
@@ -69,7 +68,7 @@ if __name__ == "__main__":
           "\n** Load scan images, angles, geometry params, and defective pixel information **",
           "\n********************************************************************************")
     obj_scan, blank_scan, dark_scan, angles, geo_params_jax, defective_pixel_list = \
-            preprocess_nsi.NSI_load_scans_and_params_jax(nsi_config_file_path, geom_report_path,
+            mbirjax.preprocess.NSI_load_scans_and_params_jax(nsi_config_file_path, geom_report_path,
                                                          obj_scan_path, blank_scan_path, dark_scan_path,
                                                          defective_pixel_path,
                                                          downsample_factor=downsample_factor)
@@ -85,7 +84,7 @@ if __name__ == "__main__":
           "\n********** Compute sinogram from scan images **********",
           "\n*******************************************************")
     sino, defective_pixel_list = \
-            preprocess_nsi.transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan,
+            mbirjax.preprocess.transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan,
                                                         defective_pixel_list
                                                        )
     
@@ -95,19 +94,19 @@ if __name__ == "__main__":
     print("\n*******************************************************",
           "\n********* Interpolate defective sino entries **********",
           "\n*******************************************************")
-    sino, defective_pixel_list = preprocess_nsi.interpolate_defective_pixels(sino, defective_pixel_list)
+    sino, defective_pixel_list = mbirjax.preprocess.interpolate_defective_pixels(sino, defective_pixel_list)
 
     print("\n*******************************************************",
           "\n************** Correct background offset **************",
           "\n*******************************************************")
-    background_offset = preprocess_nsi.calc_background_offset(sino)
+    background_offset = mbirjax.preprocess.calc_background_offset(sino)
     print("background_offset = ", background_offset)
     sino = sino - background_offset
 
     print("\n*******************************************************",
           "\n**** Rotate sino images w.r.t. rotation axis tilt *****",
           "\n*******************************************************")
-    sino = preprocess_nsi.correct_det_rotation(sino, det_rotation=geo_params_jax["det_rotation"])
+    sino = mbirjax.preprocess.correct_det_rotation(sino, det_rotation=geo_params_jax["det_rotation"])
      
    
     print("\n*******************************************************",
