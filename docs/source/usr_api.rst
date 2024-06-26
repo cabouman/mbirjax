@@ -78,7 +78,7 @@ Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes 
 
 .. autosummary::
 
-   mbirjax.preprocess.NSI_load_scans_and_params_jax
+   mbirjax.preprocess.NSI_load_scans_and_params
    mbirjax.preprocess.transmission_CT_compute_sino
    mbirjax.preprocess.interpolate_defective_pixels
    mbirjax.preprocess.correct_det_rotation
