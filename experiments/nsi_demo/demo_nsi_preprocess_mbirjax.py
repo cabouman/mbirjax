@@ -68,7 +68,7 @@ if __name__ == "__main__":
           "\n** Load scan images, angles, geometry params, and defective pixel information **",
           "\n********************************************************************************")
     obj_scan, blank_scan, dark_scan, angles, geo_params_jax, defective_pixel_list = \
-            mbirjax.preprocess.NSI_load_scans_and_params_jax(nsi_config_file_path, geom_report_path,
+            mbirjax.preprocess.NSI_load_scans_and_params(nsi_config_file_path, geom_report_path,
                                                          obj_scan_path, blank_scan_path, dark_scan_path,
                                                          defective_pixel_path,
                                                          downsample_factor=downsample_factor)
@@ -159,7 +159,9 @@ if __name__ == "__main__":
     recon = np.transpose(recon, (2,1,0))
     recon = recon[:,:,::-1]
    
+    vmin = 0
+    vmax = 2*np.percentile(recon, 95)
     # Display results
-    pu.slice_viewer(recon, vmin=0, vmax=0.03, slice_axis=0, slice_label='Axial Slice', title='MBIRJAX recon')
-    pu.slice_viewer(recon, vmin=0, vmax=0.03, slice_axis=1, slice_label='Coronal Slice', title='MBIRJAX recon')
-    pu.slice_viewer(recon, vmin=0, vmax=0.03, slice_axis=2, slice_label='Sagittal Slice', title='MBIRJAX recon')
+    pu.slice_viewer(recon, vmin=0, vmax=vmax, slice_axis=0, slice_label='Axial Slice', title='MBIRJAX recon')
+    pu.slice_viewer(recon, vmin=0, vmax=vmax, slice_axis=1, slice_label='Coronal Slice', title='MBIRJAX recon')
+    pu.slice_viewer(recon, vmin=0, vmax=vmax, slice_axis=2, slice_label='Sagittal Slice', title='MBIRJAX recon')

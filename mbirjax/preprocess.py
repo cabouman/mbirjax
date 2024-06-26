@@ -9,12 +9,12 @@ import scipy
 import striprtf.striprtf as striprtf
 
 ######## API functions for MBIRJAX users
-def NSI_load_scans_and_params_jax(config_file_path, geom_report_path, 
-                                  obj_scan_path, blank_scan_path, dark_scan_path,
-                                  defective_pixel_path,
-                                  downsample_factor=[1, 1], crop_region=[(0, 1), (0, 1)],
-                                  view_id_start=0, view_angle_start=0.,
-                                  view_id_end=None, subsample_view_factor=1):
+def NSI_load_scans_and_params(config_file_path, geom_report_path, 
+                              obj_scan_path, blank_scan_path, dark_scan_path,
+                              defective_pixel_path,
+                              downsample_factor=[1, 1], crop_region=[(0, 1), (0, 1)],
+                              view_id_start=0, view_angle_start=0.,
+                              view_id_end=None, subsample_view_factor=1):
     """ Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI dataset directory.
 
     The scan images will be (optionally) cropped and downsampled.
