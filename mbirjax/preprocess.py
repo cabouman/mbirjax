@@ -342,7 +342,16 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
 
     obj_scan = obj_scan - dark_scan
     blank_scan = blank_scan - dark_scan
-    sino = -np.log(obj_scan / blank_scan)
+    
+    #### compute the sinogram. 
+    # warning handler for sinogram calculation
+    def sino_warning_handler(type, flag):
+        print("mbirjax.preprocess.transmission_CT_compute_sino(): Invalid sinogram entries encountered. Please use mbirjax.preprocess.interpolate_defective_pixels() to correct the invalid entries.")
+    
+    np.seterrcall(sino_warning_handler) 
+    # If warning encountered during sinogram computation, then print out customized warning message defined in sino_warning_handler()
+    with np.errstate(invalid='call'):
+        sino = -np.log(obj_scan / blank_scan)
 
     # set the sino pixels corresponding to the provided defective list to 0.0
     if defective_pixel_list is None:
