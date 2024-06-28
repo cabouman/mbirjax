@@ -1,3 +1,4 @@
+import warnings
 import matplotlib.pyplot as plt
 import numpy
 import numpy as np
@@ -104,8 +105,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     # Then add the slice slider
     ax_slice_slider = fig.add_subplot(gs[1, :])
+    warnings.filterwarnings('ignore', category=UserWarning)
     slice_slider = Slider(ax=ax_slice_slider, label=slice_label, valmin=0, valmax=data.shape[2] - 1,
                           valinit=slice_index, valfmt='%0.0f')
+    warnings.filterwarnings('default', category=UserWarning)
 
     # Then the intensity slider
     ax_intensity_slider = fig.add_subplot(gs[2, :])
