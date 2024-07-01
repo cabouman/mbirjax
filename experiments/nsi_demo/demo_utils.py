@@ -7,7 +7,9 @@ import warnings
 def download_and_extract_tar(download_url, save_dir):
     """ Given a download url, download the tarball file from ``download_url`` , extract the tarball to ``save_dir``, and return the paths to the tarball file as well as the extracted file. 
         If the file already exists in ``save_dir``, user will be queried whether it is desired to download and overwrite the existing files.
-    
+        ``download_url`` is assumed to have the format <url/{tarball_name}>.
+        The tarball file is assumed to contain a single top-level directory.
+ 
     Args:
         download_url: An url to download the data. This url needs to be public.
         save_dir (string): Path to parent directory where downloaded file will be saved and extracted to. 
