@@ -26,8 +26,8 @@ if __name__ == "__main__":
     \n\t * Displaying the results.\n')
 
     # ###################### User defined params. Change the parameters below for your own use case.
-    save_path = './output/nsi_demo/' # path to store output recon images
-    os.makedirs(save_path, exist_ok=True) # mkdir if directory does not exist
+    output_path = './output/nsi_demo/' # path to store output recon images
+    os.makedirs(output_path, exist_ok=True) # mkdir if directory does not exist
     downsample_factor = [4, 4] # downsample factor of scan images along detector rows and detector columns.
 
     # ##### params for dataset downloading. User may change these parameters for their own datasets.
@@ -36,10 +36,8 @@ if __name__ == "__main__":
     dataset_url = 'https://engineering.purdue.edu/~bouman/data_repository/data/demo_data_nsi.tgz'
     # destination path to download and extract the NSI data and metadata.
     download_dir = './demo_data/'
-    # download dataset. The download path will be later used to define path to dataset specific files.
-    download_dir = demo_utils.download_and_extract(dataset_url, download_dir)
-    # path to NSI dataset
-    dataset_path = os.path.join(download_dir, "demo_data_nsi") # change this for different NSI datasets.
+    # Path to NSI dataset.
+    _, dataset_path = demo_utils.download_and_extract_tar(dataset_url, download_dir)
 
     # ###################### NSI specific file paths, These are derived from dataset_path.
     # User may change the variables below for a different NSI dataset.
@@ -153,7 +151,7 @@ if __name__ == "__main__":
     # Print out parameters used in recon
     pprint.pprint(recon_params._asdict())
     
-    np.save(os.path.join(save_path, "recon.npy"), recon)
+    np.save(os.path.join(output_path, "recon.npy"), recon)
 
     # change the image data shape to (slices, rows, cols), so that the rotation axis points up when viewing the coronal/sagittal slices with slice_viewer
     recon = np.transpose(recon, (2,1,0))

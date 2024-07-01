@@ -2,33 +2,39 @@ import os, sys
 import numpy as np
 import urllib.request
 import tarfile
+import warnings
 
-
-def download_and_extract(download_url, save_dir):
-    """ Given a download url, download the file from ``download_url`` , and save the file as ``save_dir``. 
+def download_and_extract_tar(download_url, save_dir):
+    """ Given a download url, download the tarball file from ``download_url`` , extract the tarball to ``save_dir``, and return the paths to the tarball file as well as the extracted file. 
         If the file already exists in ``save_dir``, user will be queried whether it is desired to download and overwrite the existing files.
-        If the downloaded file is a tarball, then it will be extracted to ``save_dir``. 
     
     Args:
         download_url: An url to download the data. This url needs to be public.
-        save_dir (string): Path to parent directory where downloaded file will be saved . 
+        save_dir (string): Path to parent directory where downloaded file will be saved and extracted to. 
     Return:
-        string: path to downloaded file. This will be ``save_dir``+ downloaded_file_name 
-            In case where no download is performed, the function will return path to the existing local file.
-            In case where a tarball file is downloaded and extracted, the function will return the path to the parent directory where the file is extracted to, which is the save as ``save_dir``. 
+        A tuple containing:
+            - path to the tarball file. This will be ``save_dir``+ downloaded_file_name.
+            - A list containing the names of the top level files 
     """
 
     is_download = True
-    local_file_name = download_url.split('/')[-1]
-    save_path = os.path.join(save_dir, local_file_name)
-    if os.path.exists(save_path):
-        is_download = query_yes_no(f"{save_path} already exists. Do you still want to download and overwrite the file?")
+    # the download url is assumed to have the format "**/{tarball_name}"
+    tarball_name = download_url.split('/')[-1]
+    # full path to the tarball file 
+    tarball_path = os.path.join(save_dir, tarball_name)
+    
+    # If the tarball already exists, then prompt user whether to download and overwrite the existing file.
+    if os.path.exists(tarball_path):
+        is_download = query_yes_no(f"{tarball_path} already exists. Do you still want to download and overwrite the file?")
+    
+    ################### Download and extract tarball file
     if is_download:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        # download the data from url.
+        # make the directory where the tarball will be saved, if necessary.
+        os.makedirs(os.path.dirname(tarball_path), exist_ok=True)
+        ###### download the tarball
         print("Downloading file ...")
         try:
-            urllib.request.urlretrieve(download_url, save_path)
+            urllib.request.urlretrieve(download_url, tarball_path)
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 raise RuntimeError(
@@ -44,21 +50,32 @@ def download_and_extract(download_url, save_dir):
                     f'HTTP status code {e.code}: {e.reason}. For more details please refer to https://en.wikipedia.org/wiki/List_of_HTTP_status_codes')
         except urllib.error.URLError as e:
             raise RuntimeError('URLError raised! Please check your internet connection.')
-        print(f"Download successful! File saved to {save_path}")
-    else:
-        print("Skipped data download and extraction step.")
-    # Extract the downloaded file if it is tarball
-    if save_path.endswith(('.tar', '.tar.gz', '.tgz')):
-        if is_download:
-            tar_file = tarfile.open(save_path)
-            print(f"Extracting tarball file to {save_dir} ...")
-            # Extract to save_dir.
+        
+        # download is successful if no exceptions occur
+        print(f"Download successful! Tarball file saved to {tarball_path}")
+        
+        ###### Extract to save_dir.
+        print(f"Extracting tarball file to {save_dir} ...")
+        try:
+            tar_file = tarfile.open(tarball_path)
+            extracted_file_name = os.path.join(save_dir, os.path.commonprefix(tar_file.getnames()))
             tar_file.extractall(save_dir)
             tar_file.close
-            print(f"Extraction successful! File extracted to {save_dir}")
-        save_path = save_dir
-    # Parse extracted dir and extract data if necessary
-    return save_path
+            print(f"Extraction successful! File extracted to {extracted_file_name}")
+        except:
+            warnings.warn(f"Extraction failed. Please make sure {tarball_path} is a tarball file.")
+            return tarball_path
+
+
+    ################### Skip download and extraction steps
+    else:
+        print("Skipped data download and extraction step.")
+        # Get top level file names without extracting the tarball
+        tar_file =  tarfile.open(tarball_path, mode='r')
+        extracted_file_name = os.path.join(save_dir, os.path.commonprefix(tar_file.getnames()))
+    
+    return tar_file, extracted_file_name
+
 
 def query_yes_no(question, default="n"):
     """Ask a yes/no question via input() and return the answer.
