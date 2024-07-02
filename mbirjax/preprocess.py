@@ -21,19 +21,19 @@ def NSI_load_scans_and_params(dataset_dir,
 
     This function is specific to NSI datasets.
 
-    **Arguments specific to file paths**:
-
+    Arguments specific to file paths:
         - dataset_dir (string): Path to an NSI scan direcotry. The directory is assumed to have the following structure:
-            - *.nsipro (NSI config file)
-            - Geometry*.rtf (geometry report)
-            - Radiographs*/ (directory containing all radiograph images)
-            - **/gain0.tif (blank scan image)
-            - **/offset.tif (dark scan image)
-            - **/*.defect (defective pixel information)
+            
+            - ``*.nsipro`` (NSI config file)
+            - ``Geometry*.rtf`` (geometry report)
+            - ``Radiographs*/`` (directory containing all radiograph images)
+            - ``**/gain0.tif`` (blank scan image)
+            - ``**/offset.tif`` (dark scan image)
+            - ``**/*.defect`` (defective pixel information)
+            
             The paths to NSI scans and metadata files will be automatically parsed from `dataset_dir`. In case multiple files of the same category exists, the user will be prompted to select the desired one.
     
-    **Arguments specific to radiograph downsampling and cropping**:
-
+    Arguments specific to radiograph downsampling and cropping:
         - downsample_factor ([int, int]): [Default=[1,1]] Down-sample factors along the detector rows and channels respectively. By default no downsampling will be performed.
 
             In case where the scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`, and then downsampled.
@@ -52,8 +52,7 @@ def NSI_load_scans_and_params(dataset_dir,
 
             For example, ``crop_region=[(0.25,0.75), (0,1)]`` will crop out the middle half of the scan image along the vertical direction.
 
-    **Arguments specific to view subsampling**:
-
+    Arguments specific to view subsampling:
         - view_id_start (int): [Default=0] view id corresponding to the first view.
         - view_id_end (int): [Default=None] view id corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
         - subsample_view_factor (int): [Default=1]: view subsample factor. By default no view subsampling will be performed.
