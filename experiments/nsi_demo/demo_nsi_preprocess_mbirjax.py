@@ -10,14 +10,6 @@ import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
 if __name__ == "__main__":
-    """
-    This script is a demonstration of the preprocessing module of NSI dataset. Demo functionality includes:
-     * downloading NSI dataset from specified urls;
-     * Loading object scans, blank scan, dark scan, view angles, and MBIRJAX geometry parameters;
-     * Computing sinogram and sino weights from object scan, blank scan, and dark scan images;
-     * Computing a 3D reconstruction from the sinogram using MBIRJAX;
-     * Displaying the results.
-    """
     print('This script is a demonstration of the preprocessing module of NSI dataset. Demo functionality includes:\
     \n\t * downloading NSI dataset from specified urls;\
     \n\t * Loading object scans, blank scan, dark scan, view angles, and MBIRJAX geometry parameters;\
@@ -28,19 +20,22 @@ if __name__ == "__main__":
     # ###################### User defined params. Change the parameters below for your own use case.
     output_path = './output/nsi_demo/' # path to store output recon images
     os.makedirs(output_path, exist_ok=True) # mkdir if directory does not exist
-    downsample_factor = [4, 4] # downsample factor of scan images along detector rows and detector columns.
 
     # ##### params for dataset downloading. User may change these parameters for their own datasets.
-    # An example NSI dataset will be downloaded from `dataset_url`, and saved to `download_dir`.
+    # An example NSI dataset (tarball) will be downloaded from `dataset_url`, and saved to `download_dir`.
     # url to NSI dataset.
     dataset_url = 'https://engineering.purdue.edu/~bouman/data_repository/data/demo_data_nsi.tgz'
     # destination path to download and extract the NSI data and metadata.
     download_dir = './demo_data/'
     # Path to NSI scan directory.
     _, dataset_dir = demo_utils.download_and_extract_tar(dataset_url, download_dir)
-    
-    # dataset_dir = "/depot/bouman/data/share_conebeam_data/new_MAR_phantom/vert_no_metal"
+    # for testing user prompt in NSI preprocessing function
+    # dataset_dir = "/depot/bouman/data/share_conebeam_data/Autoinjection-Full-LowRes/Vertical-0.5mmTin"
   
+    # #### preprocessing parameters
+    downsample_factor = [4, 4] # downsample factor of scan images along detector rows and detector columns.
+    subsample_view_factor = 1 # view subsample factor.
+    
     # #### recon parameters
     sharpness=0.0
     # ###################### End of parameters
@@ -54,7 +49,7 @@ if __name__ == "__main__":
     obj_scan, blank_scan, dark_scan, angles, geo_params_jax, defective_pixel_list = \
             mbirjax.preprocess.NSI_load_scans_and_params(dataset_dir,
                                                          downsample_factor=downsample_factor, 
-                                                         subsample_view_factor=1)
+                                                         subsample_view_factor=subsample_view_factor)
     
 
     print("MBIRJAX geometry paramemters:")
@@ -68,8 +63,8 @@ if __name__ == "__main__":
           "\n*******************************************************")
     sino, defective_pixel_list = \
             mbirjax.preprocess.transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan,
-                                                        defective_pixel_list
-                                                       )
+                                                            defective_pixel_list
+                                                           )
     
     # delete scan images to optimize memory usage
     del obj_scan, blank_scan, dark_scan
@@ -90,7 +85,6 @@ if __name__ == "__main__":
           "\n**** Rotate sino images w.r.t. rotation axis tilt *****",
           "\n*******************************************************")
     sino = mbirjax.preprocess.correct_det_rotation(sino, det_rotation=geo_params_jax["det_rotation"])
-     
    
     print("\n*******************************************************",
           "\n***************** Set up MBIRJAX model ****************",
@@ -143,7 +137,7 @@ if __name__ == "__main__":
     recon = recon[:,:,::-1]
    
     vmin = 0
-    vmax = 2*np.percentile(recon, 95)
+    vmax = downsample_factor[0]*0.008
     # Display results
     pu.slice_viewer(recon, vmin=0, vmax=vmax, slice_axis=0, slice_label='Axial Slice', title='MBIRJAX recon')
     pu.slice_viewer(recon, vmin=0, vmax=vmax, slice_axis=1, slice_label='Coronal Slice', title='MBIRJAX recon')
