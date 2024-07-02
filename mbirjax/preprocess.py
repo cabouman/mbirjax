@@ -23,13 +23,15 @@ def NSI_load_scans_and_params(dataset_dir,
 
     **Arguments specific to file paths**:
 
-        - config_file_path (string): Path to NSI configuration file. The filename extension is '.nsipro'.
-        - geom_report_path (string): Path to "Geometry Report.rtf" file. This file contains more accurate information regarding the coordinates of the first detector row and column.
-        - obj_scan_dir (string): Path to an NSI radiograph directory.
-        - blank_scan_path (string): Path to a blank scan image, e.g. 'dataset_path/Corrections/gain0.tif'
-        - dark_scan_path (string): Path to a dark scan image, e.g. 'dataset_path/Corrections/offset.tif'
-        - defective_pixel_path (string): Path to the file containing defective pixel information, e.g. 'dataset_path/Corrections/defective_pixels.defect'
-
+        - dataset_dir (string): Path to an NSI scan direcotry. The directory is assumed to have the following structure:
+            - *.nsipro (NSI config file)
+            - Geometry*.rtf (geometry report)
+            - Radiographs*/ (directory containing all radiograph images)
+            - **/gain0.tif (blank scan image)
+            - **/offset.tif (dark scan image)
+            - **/*.defect (defective pixel information)
+            The paths to NSI scans and metadata files will be automatically parsed from `dataset_dir`. In case multiple files of the same category exists, the user will be prompted to select the desired one.
+    
     **Arguments specific to radiograph downsampling and cropping**:
 
         - downsample_factor ([int, int]): [Default=[1,1]] Down-sample factors along the detector rows and channels respectively. By default no downsampling will be performed.
@@ -85,6 +87,14 @@ def NSI_load_scans_and_params(dataset_dir,
     ### automatically parse the paths to NSI metadata and scans from dataset_dir
     config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
         _NSI_parse_filenames_from_dataset_dir(dataset_dir)
+    
+    print("The following files will be used to compute the NSI reconstruction:\n",
+          f"    - NSI config file: {config_file_path}\n",
+          f"    - Geometry report: {geom_report_path}\n",
+          f"    - Radiograph directory: {obj_scan_dir}\n",
+          f"    - Blank scan image: {blank_scan_path}\n",
+          f"    - Dark scan image: {dark_scan_path}\n",
+          f"    - Defective pixel information: {defective_pixel_path}\n")
     ### NSI param tags in nsipro file
     tag_section_list = [['source', 'Result'],                           # vector from origin to source
                         ['reference', 'Result'],                        # vector from origin to first row and column of the detector
@@ -722,10 +732,10 @@ def _prompt_user_choice(file_description, file_path_list):
     choice_min = 0
     choice_max = len(file_path_list)-1
     question = f"Multiple {file_description} detected. Please select the desired one from the following candidates "
-    prompt = f"[{choice_min}-{choice_max}]:"
+    prompt = ":\n"
     for i in range(len(file_path_list)):
         prompt += f"\n    {i}: {file_path_list[i]}"
-    prompt += "\n\n"
+    prompt += f"\n[{choice_min}-{choice_max}]"
     while True:
         sys.stdout.write(question + prompt)
         try:
