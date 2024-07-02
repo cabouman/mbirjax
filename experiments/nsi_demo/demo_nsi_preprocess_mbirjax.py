@@ -47,7 +47,7 @@ if __name__ == "__main__":
           "\n** Load scan images, angles, geometry params, and defective pixel information **",
           "\n********************************************************************************")
     obj_scan, blank_scan, dark_scan, angles, geo_params_jax, defective_pixel_list = \
-            mbirjax.preprocess.NSI_load_scans_and_params(dataset_dir,
+            mbirjax.preprocess_NSI.load_scans_and_params(dataset_dir,
                                                          downsample_factor=downsample_factor, 
                                                          subsample_view_factor=subsample_view_factor)
     
