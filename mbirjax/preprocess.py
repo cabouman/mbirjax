@@ -1,6 +1,6 @@
-import os
+import os, sys
 import re
-from glob import glob
+import glob
 import numpy as np
 from PIL import Image
 import warnings
@@ -9,11 +9,9 @@ import scipy
 import striprtf.striprtf as striprtf
 
 ######## API functions for MBIRJAX users
-def NSI_load_scans_and_params(config_file_path, geom_report_path, 
-                              obj_scan_path, blank_scan_path, dark_scan_path,
-                              defective_pixel_path,
+def NSI_load_scans_and_params(dataset_dir,
                               downsample_factor=[1, 1], crop_region=[(0, 1), (0, 1)],
-                              view_id_start=0, view_angle_start=0.,
+                              view_id_start=0,
                               view_id_end=None, subsample_view_factor=1):
     """ Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI dataset directory.
 
@@ -27,7 +25,7 @@ def NSI_load_scans_and_params(config_file_path, geom_report_path,
 
         - config_file_path (string): Path to NSI configuration file. The filename extension is '.nsipro'.
         - geom_report_path (string): Path to "Geometry Report.rtf" file. This file contains more accurate information regarding the coordinates of the first detector row and column.
-        - obj_scan_path (string): Path to an NSI radiograph directory.
+        - obj_scan_dir (string): Path to an NSI radiograph directory.
         - blank_scan_path (string): Path to a blank scan image, e.g. 'dataset_path/Corrections/gain0.tif'
         - dark_scan_path (string): Path to a dark scan image, e.g. 'dataset_path/Corrections/offset.tif'
         - defective_pixel_path (string): Path to the file containing defective pixel information, e.g. 'dataset_path/Corrections/defective_pixels.defect'
@@ -55,8 +53,7 @@ def NSI_load_scans_and_params(config_file_path, geom_report_path,
     **Arguments specific to view subsampling**:
 
         - view_id_start (int): [Default=0] view id corresponding to the first view.
-        - view_angle_start (float): [Default=0.0] view angle in radian corresponding to the first view.
-        - view_id_end (int): [Default=None] view id corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_path``.
+        - view_id_end (int): [Default=None] view id corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
         - subsample_view_factor (int): [Default=1]: view subsample factor. By default no view subsampling will be performed.
 
             For example, with ``subsample_view_factor=2``, every other view will be loaded.
@@ -85,6 +82,9 @@ def NSI_load_scans_and_params(config_file_path, geom_report_path,
             - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
         - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
+    ### automatically parse the paths to NSI metadata and scans from dataset_dir
+    config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
+        _NSI_parse_filenames_from_dataset_dir(dataset_dir)
     ### NSI param tags in nsipro file
     tag_section_list = [['source', 'Result'],                           # vector from origin to source
                         ['reference', 'Result'],                        # vector from origin to first row and column of the detector
@@ -232,7 +232,7 @@ def NSI_load_scans_and_params(config_file_path, geom_report_path,
     if view_id_end is None:
         view_id_end = num_acquired_scans
     view_ids = list(range(view_id_start, view_id_end, subsample_view_factor))
-    obj_scan = _read_scan_dir(obj_scan_path, view_ids)
+    obj_scan = _read_scan_dir(obj_scan_dir, view_ids)
 
     ### Load defective pixel information
     if defective_pixel_path is not None:
@@ -289,10 +289,8 @@ def NSI_load_scans_and_params(config_file_path, geom_report_path,
                                                                                   downsample_factor=downsample_factor,
                                                                                   defective_pixel_list=defective_pixel_list)
 
-    ### compute projection angles based on angle_step and rotation direction
-    view_angle_start_deg = np.rad2deg(view_angle_start)
-    angle_step *= subsample_view_factor
-    angles = np.deg2rad(np.array([(view_angle_start_deg+n*angle_step) % 360.0 for n in range(len(view_ids))]))
+    ### compute projection angles based on angle_step and view_ids
+    angles = np.deg2rad(np.array([(view_idx*angle_step) % 360.0 for view_idx in view_ids]))
 
     ### Set 1 ALU = delta_det_channel
     source_detector_dist /= delta_det_channel # mm to ALU
@@ -528,7 +526,7 @@ def _read_scan_dir(scan_dir, view_ids=[]):
     if view_ids == []:
         warnings.warn("view_ids should not be empty.")
 
-    img_path_list = sorted(glob(os.path.join(scan_dir, '*')))
+    img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*')))
     img_path_list = [img_path_list[idx] for idx in view_ids]
     img_list = [_read_scan_img(img_path) for img_path in img_path_list]
 
@@ -662,6 +660,84 @@ def _crop_scans(obj_scan, blank_scan, dark_scan,
 ######## END subroutines for image cropping and down-sampling
 
 ######## subroutines for parsing NSI metadata
+def _NSI_parse_filenames_from_dataset_dir(dataset_dir):
+    """ Given the path to an NSI dataset directory, automatically parse the paths to the following files and directories: 
+            - NSI config file (nsipro file), 
+            - geometry report (Geometry Report.rtf), 
+            - object scan directory (Radiographs/),
+            - blank scan (Corrections/gain0.tif),
+            - dark scan (Corrections/offset.tif),
+            - defective pixel information (Corrections/defective_pixels.defect),
+        If multiple files with the same patterns are found, then the user will be prompted to select the correct file.
+    
+    Args:
+        dataset_dir (string): Path to the directory containing the NSI scans and metadata.
+    Returns:
+        6-element tuple containing:
+            - config_file_path (string): Path to the NSI config file (nsipro file).
+            - geom_report_path (string): Path to the geometry report file (Geometry Report.rtf)
+            - obj_scan_dir (string): Path to the directory containing the object scan images (radiographs).
+            - blank_scan_path (string): Path to the blank scan image.
+            - dark_scan_path (string): Path to the dark scan image.
+            - defective_pixel_path (string): Path to the file containing defective pixel information.
+    """
+    # NSI config file
+    config_file_path_list = glob.glob(os.path.join(dataset_dir, "*.nsipro"))
+    config_file_path = _prompt_user_choice("NSI config files", config_file_path_list) 
+    
+    # geometry report
+    geom_report_path_list = glob.glob(os.path.join(dataset_dir, "Geometry*.rtf"))
+    geom_report_path = _prompt_user_choice("geometry report files", geom_report_path_list) 
+     
+    # Radiograph directory
+    obj_scan_dir_list = glob.glob(os.path.join(dataset_dir, "Radiographs*"))
+    obj_scan_dir = _prompt_user_choice("radiograph directories", obj_scan_dir_list) 
+    
+    # blank scan
+    blank_scan_path_list = glob.glob(os.path.join(dataset_dir, "**/gain0.tif"))
+    blank_scan_path = _prompt_user_choice("blank scans", blank_scan_path_list) 
+     
+    # dark scan
+    dark_scan_path_list = glob.glob(os.path.join(dataset_dir, "**/offset.tif"))
+    dark_scan_path = _prompt_user_choice("dark scans", dark_scan_path_list) 
+     
+    # defective pixel file
+    defective_pixel_path_list = glob.glob(os.path.join(dataset_dir, "**/*.defect"))
+    defective_pixel_path = _prompt_user_choice("defective pixel files", defective_pixel_path_list) 
+
+    return config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path
+  
+def _prompt_user_choice(file_description, file_path_list):
+    """ Given a list of candidate files, prompt the user to select the desired one.
+        If only one candidate exists, the function will return the name of that file without any user prompts.
+    """
+    # file_path_list should contain at least one element
+    assert(len(file_path_list) > 0), f"No {file_description} found!! Please make sure you provided a valid NSI scan path."
+    
+    # if only file_path_list contains only one file, then return it without user prompt.
+    if len(file_path_list) == 1:
+        return file_path_list[0]
+
+    # file_path_list contains multiple files. Prompt the user to select the desired one.
+    choice_min = 0
+    choice_max = len(file_path_list)-1
+    question = f"Multiple {file_description} detected. Please select the desired one from the following candidates "
+    prompt = f"[{choice_min}-{choice_max}]:"
+    for i in range(len(file_path_list)):
+        prompt += f"\n    {i}: {file_path_list[i]}"
+    prompt += "\n\n"
+    while True:
+        sys.stdout.write(question + prompt)
+        try:
+            choice = int(input())
+            if choice in range(len(file_path_list)):
+                return file_path_list[choice]
+            else:
+                sys.stdout.write(f"Please respond with a number between {choice_min} and {choice_max}.\n")
+        except:
+            sys.stdout.write(f"Please respond with a number between {choice_min} and {choice_max}.\n")
+    return
+
 def _NSI_read_detector_location_from_geom_report(geom_report_path):
     """ Give the path to "Geometry Report.rtf", returns the X and Y coordinates of the first row and first column of the detector.
         It is observed that the coordinates given in "Geometry Report.rtf" is more accurate than the coordinates given in the <reference> field in nsipro file.

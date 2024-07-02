@@ -36,25 +36,11 @@ if __name__ == "__main__":
     dataset_url = 'https://engineering.purdue.edu/~bouman/data_repository/data/demo_data_nsi.tgz'
     # destination path to download and extract the NSI data and metadata.
     download_dir = './demo_data/'
-    # Path to NSI dataset.
-    _, dataset_path = demo_utils.download_and_extract_tar(dataset_url, download_dir)
-
-    # ###################### NSI specific file paths, These are derived from dataset_path.
-    # User may change the variables below for a different NSI dataset.
-    # path to NSI config file. Change dataset path params for your own NSI dataset
-    nsi_config_file_path = os.path.join(dataset_path, 'JB-033_ArtifactPhantom_Vertical_NoMetal.nsipro')
-    # path to "Geometry Report.rtf"
-    geom_report_path = os.path.join(dataset_path, 'Geometry_Report_nsi_demo.rtf')
-    # path to directory containing all object scans
-    obj_scan_path = os.path.join(dataset_path, 'Radiographs-JB-033_ArtifactPhantom_Vertical_NoMetal')
-    # path to blank scan. Usually <dataset_path>/Corrections/gain0.tif
-    blank_scan_path = os.path.join(dataset_path, 'Corrections/gain0.tif')
-    # path to dark scan. Usually <dataset_path>/Corrections/offset.tif
-    dark_scan_path = os.path.join(dataset_path, 'Corrections/offset.tif')
-    # path to NSI file containing defective pixel information
-    defective_pixel_path = os.path.join(dataset_path, 'Corrections/defective_pixels.defect')
-    # ###################### End of parameters
-   
+    # Path to NSI scan directory.
+    _, dataset_dir = demo_utils.download_and_extract_tar(dataset_url, download_dir)
+    
+    # dataset_dir = "/depot/bouman/data/share_conebeam_data/new_MAR_phantom/vert_no_metal"
+  
     # #### recon parameters
     sharpness=0.0
     # ###################### End of parameters
@@ -66,10 +52,9 @@ if __name__ == "__main__":
           "\n** Load scan images, angles, geometry params, and defective pixel information **",
           "\n********************************************************************************")
     obj_scan, blank_scan, dark_scan, angles, geo_params_jax, defective_pixel_list = \
-            mbirjax.preprocess.NSI_load_scans_and_params(nsi_config_file_path, geom_report_path,
-                                                         obj_scan_path, blank_scan_path, dark_scan_path,
-                                                         defective_pixel_path,
-                                                         downsample_factor=downsample_factor)
+            mbirjax.preprocess.NSI_load_scans_and_params(dataset_dir,
+                                                         downsample_factor=downsample_factor, 
+                                                         subsample_view_factor=1)
     
 
     print("MBIRJAX geometry paramemters:")
