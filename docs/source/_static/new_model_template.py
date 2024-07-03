@@ -57,14 +57,19 @@ class TemplateModel(TomographyModel):
             ConeBeamModel with the specified parameters.
         """
         # Load the parameters and convert view-dependent parameters to use the geometry-specific keywords.
-        params = ParameterHandler.load_param_dict(filename, values_only=True)
-        view_params_array = params['view_params_array']
+        # TODO: Adjust these to match the signature of __init__
+        required_param_names = ['sinogram_shape', 'param1', 'param2']
+        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
 
         # TODO: Adjust these to match the signature of __init__
-        view_dependent_vec1 = view_params_array[:, 0]
-        view_dependent_vec2 = view_params_array[:, 1]
+        view_params_array = params['view_params_array']
+        required_params['view_dependent_vec1'] = view_params_array[:, 0]
+        required_params['view_dependent_vec2'] = view_params_array[:, 1]
         del params['view_params_array']
-        return cls(view_dependent_vec1=view_dependent_vec1, view_dependent_vec2=view_dependent_vec2, **params)
+
+        new_model = cls(**required_params)
+        new_model.set_params(**params)
+        return new_model
 
     def get_magnification(self):
         """

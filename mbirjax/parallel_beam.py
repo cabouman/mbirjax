@@ -61,11 +61,19 @@ class ParallelBeamModel(TomographyModel):
         Returns:
             ConeBeamModel with the specified parameters.
         """
-        # Load the parameters and convert to use the ParallelBeamModel keywords.
-        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        # Load the parameters and convert to use the ConeBeamModel keywords.
+        required_param_names = ['sinogram_shape']
+        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
+
+        # Collect the required parameters into a separate dictionary and remove them from the loaded dict.
         angles = params['view_params_array']
         del params['view_params_array']
-        return cls(angles=angles, **params)
+        required_params['angles'] = angles
+
+        # Get an instance with the required parameters, then set any optional parameters
+        new_model = cls(**required_params)
+        new_model.set_params(**params)
+        return new_model
 
     def get_magnification(self):
         """

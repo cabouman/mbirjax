@@ -3,6 +3,9 @@ import copy
 
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
+# Update to include new geometries that should be included in the tests suite
+_geometry_types_for_tests = ['parallel', 'cone']
+
 # The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
 _forward_model_defaults_dict = {

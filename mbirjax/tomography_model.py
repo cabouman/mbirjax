@@ -57,8 +57,7 @@ class TomographyModel(ParameterHandler):
             ConeBeamModel with the specified parameters.
         """
         # Load the parameters and convert to use the ConeBeamModel keywords.
-        params = ParameterHandler.load_param_dict(filename, values_only=True)
-        return cls(**params)
+        raise ValueError('from_file is not implemented for base TomographyModel')
 
     def to_file(self, filename):
         """

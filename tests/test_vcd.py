@@ -19,7 +19,7 @@ class TestProjectors(unittest.TestCase):
         """Set up before each test method."""
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
-        self.geometry_types = ['parallel', 'cone']
+        self.geometry_types = mbirjax._utils._geometry_types_for_tests
         parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
         cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
         self.all_tolerances = [parallel_tolerances, cone_tolerances]

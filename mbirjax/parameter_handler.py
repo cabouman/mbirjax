@@ -3,6 +3,7 @@ import numpy as np
 from ruamel.yaml import YAML
 import mbirjax._utils as utils
 import warnings
+import copy
 
 
 class ParameterHandler():
@@ -86,7 +87,12 @@ class ParameterHandler():
         Returns:
             Nothing but creates or overwrites the specified file.
         """
-        output_params = ParameterHandler.convert_arrays_to_strings(self.params.copy())
+        output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
+        # Convert any lists to tuples for consistency with load
+        keys = output_params.keys()
+        for key in keys:
+            if isinstance(output_params[key]['val'], list):
+                output_params[key]['val'] = tuple(output_params[key]['val'])
 
         # Determine file type
         if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
@@ -99,16 +105,18 @@ class ParameterHandler():
             raise ValueError('Filename must end in .yaml or .yml: ' + filename)
 
     @staticmethod
-    def load_param_dict(filename, values_only=True):
+    def load_param_dict(filename, required_param_names=None, values_only=True):
         """
         Load parameter dictionary from yaml file.
 
         Args:
             filename (str): Path to load to store the parameter dictionary.  Must end in .yml or .yaml
+            required_param_names (list of strings): List of parameter names that are required for a class.
             values_only (bool):  If True, then extract and return the values of each entry only.
 
         Returns:
-            dict: The dictionary of paramters.
+            required_params (dict): Dictionary of required parameter entries.
+            params (dict): Dictionary of all other parameters.
         """
         # Determine file type
         if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
@@ -118,25 +126,23 @@ class ParameterHandler():
                 params = yaml.load(file)
                 params = ParameterHandler.convert_strings_to_arrays(params)
 
-        keys = params.keys()
-        if 'recon_shape' in keys:
-            params['recon_shape']['val'] = tuple(params['recon_shape']['val'])
+        # Convert any lists to tuples for consistency with save
+        for key in params.keys():
+            if isinstance(params[key]['val'], list):
+                params[key]['val'] = tuple(params[key]['val'])
+
+        # Separate the required parameters into a new dict and delete those entries from the original
+        required_params = dict()
+        for name in required_param_names:
+            required_params[name] = params[name]
+            del params[name]
+
         if values_only:
-            for key in keys:
+            for key in required_params.keys():
+                required_params[key] = required_params[key]['val']
+            for key in params.keys():
                 params[key] = params[key]['val']
-        return params
-
-    def load_params(self, filename):
-        """
-        Load parameter dictionary from yaml file.
-        Args:
-            filename (str): Path to load to store the parameter dictionary.  Must end in .yml or .yaml
-
-        Returns:
-            Nothing, but the parameters are set from the file.
-        """
-        # Determine file type
-        self.params = ParameterHandler.load_param_dict(filename)
+        return required_params, params
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
