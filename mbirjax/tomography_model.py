@@ -902,12 +902,14 @@ def get_transpose(linear_map, input_shape):
     Returns:
         transpose: A function to evaluate the transpose of the given map.  The input to transpose
         must be a jax or ndarray with the same shape as the output of the original linear_map.
-        transpose(input) returns a 1 element tuple containing an array holding the result, so the final output
-        must be obtained using transpose(input)[0]
+        transpose(input) returns an array of shape input_shape.
     """
     # print('Defining transpose map')
     # t0 = time.time()
     input_info = types.SimpleNamespace(shape=input_shape, dtype=jnp.dtype(jnp.float32))
-    transpose = jax.linear_transpose(linear_map, input_info)
-    # print('Done: ' + str(time.time() - t0))
+    transpose_list = jax.linear_transpose(linear_map, input_info)
+
+    def transpose(input):
+        return transpose_list(input)[0]
+
     return transpose

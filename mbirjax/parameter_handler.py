@@ -227,14 +227,14 @@ class ParameterHandler():
             if parameter_names in param_dict.keys():
                 value = param_dict[parameter_names]['val']
             else:
-                raise NameError('"{}" not a recognized argument'.format(parameter_names))
+                raise NameError('"{}" is not a recognized argument'.format(parameter_names))
             return value
         values = []
         for name in parameter_names:
             if name in param_dict.keys():
                 values.append(param_dict[name]['val'])
             else:
-                raise NameError('"{}" not a recognized argument'.format(name))
+                raise NameError('"{}" is not a recognized argument'.format(name))
         return values
 
     def get_params(self, parameter_names):

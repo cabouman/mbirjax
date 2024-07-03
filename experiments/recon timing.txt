@@ -1,0 +1,550 @@
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 76.066 seconds
+CPU
+  bytes_in_use:        0.221GB
+  peak_bytes_in_use:   0.402GB
+  bytes_limit:        68.091GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 10.688 seconds
+CPU
+  bytes_in_use:        0.204GB
+  peak_bytes_in_use:   0.378GB
+  bytes_limit:        68.060GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 8.960 seconds
+CPU
+  bytes_in_use:        0.234GB
+  peak_bytes_in_use:   0.403GB
+  bytes_limit:        68.094GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.612 seconds
+CPU
+  bytes_in_use:        0.197GB
+  peak_bytes_in_use:   0.387GB
+  bytes_limit:        68.155GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (64, 128, 128)
+Recon shape = (128, 128, 128)
+Elapsed time for recon is 54.834 seconds
+CPU
+  bytes_in_use:        0.247GB
+  peak_bytes_in_use:   0.711GB
+  bytes_limit:        67.827GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (64, 128, 128)
+Recon shape = (128, 128, 128)
+Elapsed time for recon is 58.490 seconds
+CPU
+  bytes_in_use:        0.279GB
+  peak_bytes_in_use:   0.722GB
+  bytes_limit:        67.802GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 63.454 seconds
+CPU
+  bytes_in_use:        0.218GB
+  peak_bytes_in_use:   0.442GB
+  bytes_limit:        68.091GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.751 seconds
+CPU
+  bytes_in_use:        0.198GB
+  peak_bytes_in_use:   0.412GB
+  bytes_limit:        68.087GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.732 seconds
+CPU
+  bytes_in_use:        0.195GB
+  peak_bytes_in_use:   0.413GB
+  bytes_limit:        68.023GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.679 seconds
+CPU
+  bytes_in_use:        0.198GB
+  peak_bytes_in_use:   0.403GB
+  bytes_limit:        68.057GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 174.643 seconds
+CPU
+  bytes_in_use:        0.205GB
+  peak_bytes_in_use:   0.435GB
+  bytes_limit:        67.577GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.691 seconds
+CPU
+  bytes_in_use:        0.230GB
+  peak_bytes_in_use:   0.447GB
+  bytes_limit:        67.495GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.683 seconds
+CPU
+  bytes_in_use:        0.220GB
+  peak_bytes_in_use:   0.454GB
+  bytes_limit:        67.463GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.666 seconds
+CPU
+  bytes_in_use:        0.199GB
+  peak_bytes_in_use:   0.418GB
+  bytes_limit:        67.551GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.698 seconds
+CPU
+  bytes_in_use:        0.203GB
+  peak_bytes_in_use:   0.423GB
+  bytes_limit:        67.561GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.671 seconds
+CPU
+  bytes_in_use:        0.206GB
+  peak_bytes_in_use:   0.415GB
+  bytes_limit:        67.572GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.940 seconds
+CPU
+  bytes_in_use:        0.208GB
+  peak_bytes_in_use:   0.438GB
+  bytes_limit:        64.475GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.932 seconds
+CPU
+  bytes_in_use:        0.209GB
+  peak_bytes_in_use:   0.435GB
+  bytes_limit:        64.444GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.788 seconds
+CPU
+  bytes_in_use:        0.202GB
+  peak_bytes_in_use:   0.418GB
+  bytes_limit:        64.186GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.724 seconds
+CPU
+  bytes_in_use:        0.190GB
+  peak_bytes_in_use:   0.414GB
+  bytes_limit:        64.163GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.955 seconds
+CPU
+  bytes_in_use:        0.215GB
+  peak_bytes_in_use:   0.450GB
+  bytes_limit:        64.180GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 12.252 seconds
+CPU
+  bytes_in_use:        0.208GB
+  peak_bytes_in_use:   0.729GB
+  bytes_limit:        63.885GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 10.887 seconds
+CPU
+  bytes_in_use:        0.206GB
+  peak_bytes_in_use:   0.677GB
+  bytes_limit:        64.232GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 11.981 seconds
+CPU
+  bytes_in_use:        0.199GB
+  peak_bytes_in_use:   0.691GB
+  bytes_limit:        64.223GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.915 seconds
+CPU
+  bytes_in_use:        0.214GB
+  peak_bytes_in_use:   0.435GB
+  bytes_limit:        64.566GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.921 seconds
+CPU
+  bytes_in_use:        0.213GB
+  peak_bytes_in_use:   0.439GB
+  bytes_limit:        64.585GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.693 seconds
+CPU
+  bytes_in_use:        0.192GB
+  peak_bytes_in_use:   0.419GB
+  bytes_limit:        64.607GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.702 seconds
+CPU
+  bytes_in_use:        0.205GB
+  peak_bytes_in_use:   0.416GB
+  bytes_limit:        64.558GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 8.912 seconds
+CPU
+  bytes_in_use:        0.233GB
+  peak_bytes_in_use:   0.397GB
+  bytes_limit:        64.554GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.707 seconds
+CPU
+  bytes_in_use:        0.196GB
+  peak_bytes_in_use:   0.419GB
+  bytes_limit:        64.553GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (64, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 12.200 seconds
+CPU
+  bytes_in_use:        0.202GB
+  peak_bytes_in_use:   0.453GB
+  bytes_limit:        63.195GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.662 seconds
+CPU
+  bytes_in_use:        0.199GB
+  peak_bytes_in_use:   0.421GB
+  bytes_limit:        63.317GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.638 seconds
+CPU
+  bytes_in_use:        0.204GB
+  peak_bytes_in_use:   0.420GB
+  bytes_limit:        63.347GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (32, 32, 32)
+Elapsed time for recon is 3.068 seconds
+CPU
+  bytes_in_use:        0.177GB
+  peak_bytes_in_use:   0.334GB
+  bytes_limit:        63.394GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 20.528 seconds
+CPU
+  bytes_in_use:        0.233GB
+  peak_bytes_in_use:   0.594GB
+  bytes_limit:        63.271GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.686 seconds
+CPU
+  bytes_in_use:        0.208GB
+  peak_bytes_in_use:   0.440GB
+  bytes_limit:        63.335GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 20.353 seconds
+CPU
+  bytes_in_use:        0.239GB
+  peak_bytes_in_use:   0.597GB
+  bytes_limit:        63.201GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 20.460 seconds
+CPU
+  bytes_in_use:        0.240GB
+  peak_bytes_in_use:   0.574GB
+  bytes_limit:        63.243GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.681 seconds
+CPU
+  bytes_in_use:        0.198GB
+  peak_bytes_in_use:   0.403GB
+  bytes_limit:        63.316GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.702 seconds
+CPU
+  bytes_in_use:        0.230GB
+  peak_bytes_in_use:   0.534GB
+  bytes_limit:        62.959GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 20.603 seconds
+CPU
+  bytes_in_use:        0.270GB
+  peak_bytes_in_use:   0.677GB
+  bytes_limit:        62.951GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (64, 64, 64)
+Elapsed time for recon is 7.665 seconds
+CPU
+  bytes_in_use:        0.239GB
+  peak_bytes_in_use:   0.530GB
+  bytes_limit:        62.738GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 64, 64)
+Recon shape = (32, 64, 64)
+Elapsed time for recon is 5.773 seconds
+CPU
+  bytes_in_use:        0.234GB
+  peak_bytes_in_use:   0.460GB
+  bytes_limit:        62.628GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.593 seconds
+CPU
+  bytes_in_use:        0.216GB
+  peak_bytes_in_use:   0.479GB
+  bytes_limit:        60.698GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.526 seconds
+CPU
+  bytes_in_use:        0.215GB
+  peak_bytes_in_use:   0.481GB
+  bytes_limit:        60.598GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.511 seconds
+CPU
+  bytes_in_use:        0.208GB
+  peak_bytes_in_use:   0.490GB
+  bytes_limit:        60.755GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.645 seconds
+CPU
+  bytes_in_use:        0.228GB
+  peak_bytes_in_use:   0.509GB
+  bytes_limit:        60.726GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.564 seconds
+CPU
+  bytes_in_use:        0.242GB
+  peak_bytes_in_use:   0.489GB
+  bytes_limit:        60.726GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.575 seconds
+CPU
+  bytes_in_use:        0.249GB
+  peak_bytes_in_use:   0.488GB
+  bytes_limit:        60.647GB
+-------------------------
+
+-------------------------
+Current stats:
+Sinogram shape = (32, 32, 64)
+Recon shape = (64, 64, 32)
+Elapsed time for recon is 5.536 seconds
+CPU
+  bytes_in_use:        0.237GB
+  peak_bytes_in_use:   0.492GB
+  bytes_limit:        60.664GB
+-------------------------
