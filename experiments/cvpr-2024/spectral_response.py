@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
 import mbirjax.parallel_beam
-from scipy.sparse.linalg import svds, aslinearoperator, LinearOperator
+from scipy.sparse.linalg import svds, eigsh, aslinearoperator, LinearOperator
 import jax
 
 if __name__ == "__main__":
@@ -15,17 +15,13 @@ if __name__ == "__main__":
     with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
 
         # Initialize sinogram
-        num_views = 128
+        num_views = 32
         num_det_rows = 1
-        num_det_channels = 128
+        num_det_channels = 32
         start_angle = 0
         end_angle = jnp.pi
         sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
         angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
-
-        # Initialize a random key
-        seed_value = np.random.randint(1000000)
-        key = jax.random.PRNGKey(seed_value)
 
         # Set up parallel beam model
         parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
@@ -33,10 +29,11 @@ if __name__ == "__main__":
         # Generate phantom
         recon_shape = parallel_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mbirjax.gen_cube_phantom(recon_shape)
+        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range((num_det_channels,num_det_channels,num_det_channels))
+        phantom = phantom[:, :, num_det_channels // 2]
 
         # Generate indices of pixels
-        num_subsets = 1
+        num_subsets = 4
         full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)[0]
 
         # Generate sinogram data
@@ -51,76 +48,128 @@ if __name__ == "__main__":
         print('Sinogram shape: {}'.format(sinogram.shape))
 
         # Get the vector of indices
-        indices = jnp.arange(num_recon_rows * num_recon_cols)
+        all_indices = jnp.arange(num_recon_rows * num_recon_cols)
 
         sinogram = jnp.array(sinogram)
-        indices = jnp.array(indices)
+        all_indices = jnp.array(all_indices)
+
+        hess = parallel_model.compute_hessian_diagonal().flatten()
 
         # Run once to finish compiling
         print('Starting back projection')
-        bp = parallel_model.sparse_back_project(sinogram, indices)
+        bp = parallel_model.sparse_back_project(sinogram, all_indices)
         print('Recon shape: ({}, {}, {})'.format(num_recon_rows, num_recon_cols, num_recon_slices))
 
-        # ##########################
-        # Test the adjoint property
-        # Get a random 3D phantom to test the adjoint property
-        key, subkey = jax.random.split(key)
-        x = jax.random.uniform(subkey, shape=bp.shape)
-        key, subkey = jax.random.split(key)
-        y = jax.random.uniform(subkey, shape=sinogram.shape)
+        input_size = all_indices.size
+        input_shape = (all_indices.size, 1)
+        output_size = sinogram.size
+        output_shape = sinogram.shape
 
-        # Do a forward projection, then a backprojection
-        x = x.reshape((-1, num_recon_slices))[indices]
-        Ax = parallel_model.sparse_forward_project(x, indices)
-        Aty = parallel_model.sparse_back_project(y, indices)
-
-        # Calculate <Aty, x> and <y, Ax>
-        Aty_x = jnp.sum(Aty * x)
-        y_Ax = jnp.sum(y * Ax)
-
-        assert(np.allclose(Aty_x, y_Ax))
-        print("Adjoint property holds for random x, y <y, Ax> = <Aty, x>: {}".format(np.allclose(Aty_x, y_Ax)))
-
-        def Ax_flat(local_x):
-            local_x = np.reshape(local_x, x.shape)
-            ax_flat = parallel_model.sparse_forward_project(local_x, indices)
+        # Set up for svd
+        def Ax_full(local_x):
+            local_x = np.reshape(local_x, input_shape)
+            ax_flat = parallel_model.sparse_forward_project(local_x, all_indices)
             ax_flat = np.array(ax_flat.flatten())
             return ax_flat
 
-        assert(np.allclose(Ax.flatten(), Ax_flat(x.flatten())))
-        print('Ax_flat matches forward projection')
-
-        def Aty_flat(y):
-            local_y = np.reshape(y, Ax.shape)
-            aty_flat = parallel_model.sparse_back_project(local_y, indices)
+        def Aty_full(local_y):
+            local_y = np.reshape(local_y, output_shape)
+            aty_flat = parallel_model.sparse_back_project(local_y, all_indices)
             aty_flat = np.array(aty_flat.flatten())
             return aty_flat
 
-        assert(np.allclose(Aty.flatten(), Aty_flat(y.flatten())))
-        print('Aty_flat matches back projection')
+        def precond_AtAx(local_x):
+            atax = Aty_full(Ax_full(local_x))
+            precond_atax = atax / hess
+            return precond_atax
 
-        Ax_linear_operator = LinearOperator(matvec=Ax_flat, rmatvec=Aty_flat, shape=(Ax.size, x.size))
+        def precond_AtAx_T(local_x):
+            local_x = local_x / hess
+            atax = Aty_full(Ax_full(local_x))
+            return atax
 
-        Ax_lo = Ax_linear_operator(x.flatten())
-        Aty_lo = Ax_linear_operator.rmatvec(np.array(y).flatten())
+        AtAx_linear_operator = LinearOperator(matvec=precond_AtAx, rmatvec=precond_AtAx_T, shape=(input_size, input_size))
 
-        assert(np.allclose(Ax.flatten(), Ax_lo))
-        assert(np.allclose(Aty.flatten(), Aty_lo))
-        print('Linear operator matches known projectors')
-
-        num_sing_values = 15  # num_views * num_det_channels
-        sing_vects = True
-        if sing_vects:
-            u, s, vh = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
-            vh = vh.reshape(num_sing_values, num_det_channels, num_det_channels)
-            vh = vh[::-1, :, :]
-            mbirjax.slice_viewer(vh, slice_axis=0)
-            u = u.reshape((num_det_channels, num_det_channels, num_sing_values))
-            u = u[:, :, ::-1]
-            mbirjax.slice_viewer(u, slice_axis=2)
+        operator_shape = (sinogram.size, input_size)
+        num_sing_values = np.amin(operator_shape) - 20
+        eig_vects = True
+        print('Computing full AtAx / H eigen-decomposition')
+        if eig_vects:
+            u, s, vh = svds(AtAx_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
+            vh = vh[::-1, :]
+            u = u[:, ::-1]
+            # mbirjax.slice_viewer(vh.reshape(num_sing_values, num_det_channels, num_det_channels), slice_axis=0)
+            # mbirjax.slice_viewer(u.reshape((num_det_channels, num_det_channels, num_sing_values)), slice_axis=2)
         else:
-            s = svds(Ax_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=False,
-                     solver='propack')
-        plt.plot(np.sort(s)[::-1], '.')
+            s = svds(AtAx_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=False, solver='propack')
+
+        s = s[::-1]
+
+        # Get a mask
+        g = 1 / num_subsets
+        mask = np.array(np.random.rand(*phantom.shape) < g)
+        mask = mask.reshape((-1, 1))
+        mask_indices = np.where(mask)[0]
+        hess_m = hess[mask_indices]
+
+        # Define the masked operators for svd
+        def Ax_masked(local_x):
+            local_x = local_x.reshape((-1, 1))
+            ax_flat = parallel_model.sparse_forward_project(local_x, mask_indices)
+            ax_flat = np.array(ax_flat.flatten())
+            return ax_flat
+
+        def Aty_masked(local_y):
+            local_y = local_y.reshape(output_shape)
+            aty_flat = parallel_model.sparse_back_project(local_y, mask_indices)
+            aty_flat = np.array(aty_flat.flatten())
+            return aty_flat
+
+        def precond_AtAx_masked(local_x):
+            atax = Aty_masked(Ax_masked(local_x))
+            precond_atax = atax / hess_m
+            return precond_atax
+
+        def precond_AtAx_T_masked(local_x):
+            local_x = local_x / hess_m
+            atax = Aty_masked(Ax_masked(local_x))
+            return atax
+
+        # Get the svd for the masked operator
+        masked_operator_shape = (len(mask_indices), len(mask_indices))
+        Ax_masked_linear_operator = LinearOperator(matvec=precond_AtAx_masked, rmatvec=precond_AtAx_T_masked, shape=masked_operator_shape)
+
+        print('Computing masked AtA / H eigen-decomposition')
+        num_masked_sing_values = np.amin(masked_operator_shape) - 1
+        num_masked_sing_values = np.minimum(num_masked_sing_values, num_sing_values)
+        u_m, s_m, vh_m = svds(Ax_masked_linear_operator, k=num_masked_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
+        vh_m = vh_m[::-1, :]
+        u_m = u_m[:, ::-1]
+        s_m = s_m[::-1]
+
+        vm = np.zeros((vh_m.shape[0], np.prod(phantom.shape)))
+        vm[:, mask_indices] = vh_m
+        vm = vm.reshape((vm.shape[0],) + phantom.shape)
+        mbirjax.slice_viewer(vm, slice_axis=0, title='Eigenimages for masked A matrix, {} subsets'.format(num_subsets))
+
+        fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(10, 10))
+        plt.suptitle('recon_shape={}; masking with {} subsets'.format(recon_shape, num_subsets))
+
+        axs[0, 0].semilogy(s, '.')
+        axs[0, 0].set_title('Singular values of AtA / H')
+        axs[0, 1].semilogy(s_m, '.')
+        axs[0, 1].set_title('Singular values of masked AtA / H')
+        y_limits = list(axs[0, 0].get_ylim())
+        y_limits[0] = 1e-2
+        axs[0, 0].set_ylim(y_limits)
+        axs[0, 1].set_ylim(y_limits)
+
+        im0 = axs[1, 0].imshow(u @ (np.diag(s) @ vh))
+        fig.colorbar(im0, ax=axs[1, 0])
+        axs[1, 0].set_title('Full AtA / H')
+
+        im1 = axs[1, 1].imshow(u_m @ (np.diag(s_m) @ vh_m))
+        fig.colorbar(im1, ax=axs[1, 1])
+        axs[1, 1].set_title('Masked AtA / H')
         plt.show()
         a = 0
