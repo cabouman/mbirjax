@@ -51,6 +51,55 @@ def gen_set_of_pixel_partitions(recon_shape, granularity):
     return partitions
 
 
+def gen_pixel_partition_grid(recon_shape, num_subsets):
+
+    small_tile_side = np.ceil(np.sqrt(num_subsets)).astype(int)
+    num_subsets = small_tile_side ** 2
+    num_small_tiles = [np.ceil(recon_shape[k] / small_tile_side).astype(int) for k in [0, 1]]
+
+    single_subset_inds = np.random.permutation(num_subsets).reshape((small_tile_side, small_tile_side))
+    subset_inds = np.tile(single_subset_inds, num_small_tiles)
+    subset_inds = subset_inds[:recon_shape[0], :recon_shape[1]]
+
+    ror_mask = get_2d_ror_mask(recon_shape[:2])
+    subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a - at each location outside the mask, subset_ind at other points
+    subset_inds = subset_inds.flatten()
+    num_inds = len(np.where(subset_inds > -1)[0])
+
+    if num_subsets > num_inds:
+        # num_subsets = len(indices)
+        warning = '\nThe number of partition subsets is greater than the number of pixels in the region of '
+        warning += 'reconstruction.  \nReducing the number of subsets to equal the number of indices.'
+        warnings.warn(warning)
+        subset_inds = subset_inds[subset_inds > -1]
+        return jnp.array(subset_inds).reshape((-1, 1))
+
+    flat_inds = []
+    max_points = 0
+    min_points = subset_inds.size
+    nonempty_subsets = np.unique(subset_inds[subset_inds>=0])
+    for k in nonempty_subsets:
+        cur_inds = np.where(subset_inds == k)[0]
+        flat_inds.append(cur_inds)  # Get all the indices for each subset
+        max_points = max(max_points, cur_inds.size)
+        min_points = min(min_points, cur_inds.size)
+
+    extra_point_inds = np.random.randint(min_points, size=(max_points - min_points + 1,))
+    for k in range(len(nonempty_subsets)):
+        cur_inds = flat_inds[k]
+        num_extra_points = max_points - cur_inds.size
+        if num_extra_points > 0:
+            extra_subset_inds = (k + 1 + np.arange(num_extra_points, dtype=int)) % len(nonempty_subsets)
+            new_point_inds = [flat_inds[extra_subset_inds[j]][extra_point_inds[j]] for j in range(num_extra_points)]
+            flat_inds[k] = np.concatenate((cur_inds, new_point_inds))
+    flat_inds = np.array(flat_inds)
+
+    # Reorganize into subsets, then sort each subset
+    indices = jnp.array(flat_inds)
+
+    return jnp.array(indices)
+
+
 def gen_pixel_partition(recon_shape, num_subsets):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
@@ -94,7 +143,7 @@ def gen_pixel_partition(recon_shape, num_subsets):
 
     # Reorganize into subsets, then sort each subset
     indices = indices.reshape(num_subsets, indices.size // num_subsets)
-    indices = np.sort(indices, axis=1)
+    indices = jnp.sort(indices, axis=1)
 
     return jnp.array(indices)
 
