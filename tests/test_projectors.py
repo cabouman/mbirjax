@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -111,6 +112,8 @@ class TestProjectors(unittest.TestCase):
         # Load the model
         new_model = self.get_model(geometry_type)
         new_model = new_model.from_file(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
 
         # Compare parameters
         for key, entry in ct_model.params.items():
