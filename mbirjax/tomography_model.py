@@ -458,7 +458,7 @@ class TomographyModel(ParameterHandler):
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                             'regularization_params', 'nrms_recon_change']
+                             'regularization_params', 'nrms_recon_change', 'alpha_values']
         ReconParams = namedtuple('ReconParams', recon_param_names)
         partition_sequence = [int(val) for val in partition_sequence]
         fm_rmse = [float(val) for val in loss_vectors[0]]
@@ -467,8 +467,9 @@ class TomographyModel(ParameterHandler):
         else:
             prior_loss = [0]
         nrms_recon_change = [float(val) for val in loss_vectors[2]]
+        alpha_values = [float(val) for val in loss_vectors[3]]
         recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params._asdict(), nrms_recon_change]
+                              regularization_params._asdict(), nrms_recon_change, alpha_values]
         recon_params = ReconParams(*tuple(recon_param_values))
 
         return recon, recon_params
@@ -553,19 +554,21 @@ class TomographyModel(ParameterHandler):
         fm_rmse = np.zeros(num_iters)
         pm_loss = np.zeros(num_iters)
         nrms_update = np.zeros(num_iters)
+        alpha_values = np.zeros(num_iters)
         for i in range(num_iters):
             # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
             subset_indices = np.random.permutation(partition.shape[0])
 
             # Do an iteration
-            vcd_data = [error_sinogram, flat_recon, partition, nrms_update[i]]
-            error_sinogram, flat_recon, norm_square_update = vcd_partition_iterator(vcd_data, subset_indices)
+            vcd_data = [error_sinogram, flat_recon, partition, nrms_update[i], alpha_values[i]]
+            error_sinogram, flat_recon, norm_square_update, alpha = vcd_partition_iterator(vcd_data, subset_indices)
 
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
             nrms_update[i] = norm_square_update / jnp.sum(flat_recon * flat_recon)
             es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
+            alpha_values[i] = alpha
 
             if verbose >= 1:
                 iter_output = 'After iteration {}: Pct change={:.3f}, Forward loss={:.3f}'.format(i + first_iteration, 100*nrms_update[i], fm_rmse[i])
@@ -583,12 +586,12 @@ class TomographyModel(ParameterHandler):
                     iter_output += ', Prior loss={:.3f}, Weighted total loss={:.3f}'.format(pm_loss[i], total_loss)
 
                 print(iter_output)
-                print(f'Error sino RMSE={es_rmse:.3f}')
+                print(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.3f}')
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
 
-        return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update)
+        return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
 
     @staticmethod
     def create_vcd_partition_iterator(vcd_subset_iterator):
@@ -617,19 +620,21 @@ class TomographyModel(ParameterHandler):
                     * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                     * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
                     * Squared sum of changes to the recon during this iteration but before this subset.
+                    * alpha_sum (float): Sum of the alpha step sizes over previous subsets in this partition.
 
                 subset_indices (jax array): An array of indices into the partition - this gives the order in which the subsets are updated.
 
             Returns:
-                (error_sinogram, flat_recon, norm_square_update): The first two have the same shape as above, but
+                (error_sinogram, flat_recon, norm_square_update, alpha): The first two have the same shape as above, but
                 are updated to reduce overall loss function.  The norm_square_update includes the changes from this subset.
+                alpha is the relative step size in the gradient descent step, averaged over the subsets in the partition..
             """
 
             # Scan over the subsets of the partition, using the subset_indices to order them.
             sinogram_recon_partition, _ = jax.lax.scan(vcd_subset_iterator, sinogram_recon_partition, subset_indices)
 
-            error_sinogram, flat_recon, _, norm_square_update = sinogram_recon_partition
-            return error_sinogram, flat_recon, norm_square_update
+            error_sinogram, flat_recon, partition, norm_square_update, alpha_sum = sinogram_recon_partition
+            return error_sinogram, flat_recon, norm_square_update, alpha_sum / partition.shape[0]
 
         return jax.jit(vcd_partition_iterator)
 
@@ -682,7 +687,7 @@ class TomographyModel(ParameterHandler):
                 [error_sinogram, flat_recon, partition, norm_square_update]: The first two have the same shape as above, but
                 are updated to reduce overall loss function.  The norm_square_update includes the changes from this subset.
             """
-            error_sinogram, flat_recon, partition, norm_square_update = sinogram_recon_partition
+            error_sinogram, flat_recon, partition, norm_square_update, alpha_prev_sum = sinogram_recon_partition
             pixel_indices = partition[subset_index]
 
             def delta_recon_batch(index_batch):
@@ -776,7 +781,7 @@ class TomographyModel(ParameterHandler):
             error_sinogram = error_sinogram - alpha * delta_sinogram
             norm_square_update += jnp.sum(update * update)
 
-            return [error_sinogram, flat_recon, partition, norm_square_update], None
+            return [error_sinogram, flat_recon, partition, norm_square_update, alpha + alpha_prev_sum], None
 
         return jax.jit(vcd_subset_iterator)
 
