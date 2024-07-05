@@ -7,14 +7,14 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     """Given a set of object scans, blank scan, and dark scan, compute the sinogram data with the steps below:
 
         1. ``sino = -numpy.log((obj_scan-dark_scan) / (blank_scan-dark_scan))``.
-        2. Identify the invalid sinogram entries. The invalid sinogram entries are indentified as the union of defective pixel entries (speicified by ``defective_pixel_list``) and sinogram entries with values of inf or Nan.
+        2. Optionally correct the invalid sinogram entries with interpolation. The invalid sinogram entries are indentified as the union of defective pixel entries (speicified by ``defective_pixel_list``) and sinogram entries with values of inf or Nan.
 
     Args:
         obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
         blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
         dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
         defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-            If None, then the defective pixels will be identified as sino entries with inf or Nan values.
+            If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
         correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
     Returns:
         2-element tuple containing:
@@ -62,11 +62,11 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     defective_pixel_list = list(set().union(defective_pixel_list,nan_pixel_list,inf_pixel_list))
 
     if correct_defective_pixels:
-        print("Interpolate defective sinogram entries.")
+        print("Interpolate invalid sinogram entries.")
         sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
     else:
         if defective_pixel_list:
-            print("Defective sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.") 
+            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.") 
     return sino, defective_pixel_list
 
 def interpolate_defective_pixels(sino, defective_pixel_list):
