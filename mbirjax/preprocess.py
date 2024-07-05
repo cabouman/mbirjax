@@ -31,7 +31,7 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     
     #### compute the sinogram. 
     # suppress warnings in np.log(), since the defective sino entries will be corrected.
-    with warnings.filterwarnings('ignore'):
+    with np.errstate(divide='ignore', invalid='ignore'):
         sino = -np.log(obj_scan / blank_scan)
 
     # set the sino pixels corresponding to the provided defective list to 0.0
