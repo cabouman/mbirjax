@@ -3,7 +3,7 @@ import warnings
 import math
 import scipy
 
-def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixel_list=None):
+def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """Given a set of object scans, blank scan, and dark scan, compute the sinogram data with the steps below:
 
         1. ``sino = -numpy.log((obj_scan-dark_scan) / (blank_scan-dark_scan))``.
@@ -15,6 +15,7 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
         dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
         defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
             If None, then the defective pixels will be identified as sino entries with inf or Nan values.
+        correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
     Returns:
         2-element tuple containing:
         - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
@@ -29,13 +30,8 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     blank_scan = blank_scan - dark_scan
     
     #### compute the sinogram. 
-    # warning handler for sinogram calculation
-    def sino_warning_handler(type, flag):
-        print("mbirjax.preprocess.transmission_CT_compute_sino(): Invalid sinogram entries encountered. Please use mbirjax.preprocess.interpolate_defective_pixels() to correct the invalid entries.")
-    
-    np.seterrcall(sino_warning_handler) 
-    # If warning encountered during sinogram computation, then print out customized warning message defined in sino_warning_handler()
-    with np.errstate(invalid='call'):
+    # suppress warnings in np.log(), since the defective sino entries will be corrected.
+    with warnings.filterwarnings('ignore'):
         sino = -np.log(obj_scan / blank_scan)
 
     # set the sino pixels corresponding to the provided defective list to 0.0
@@ -65,6 +61,12 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     # defective_pixel_list = union{input_defective_pixel_list, nan_pixel_list, inf_pixel_list}
     defective_pixel_list = list(set().union(defective_pixel_list,nan_pixel_list,inf_pixel_list))
 
+    if correct_defective_pixels:
+        print("Interpolate defective sinogram entries.")
+        sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
+    else:
+        if defective_pixel_list:
+            print("Defective sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.") 
     return sino, defective_pixel_list
 
 def interpolate_defective_pixels(sino, defective_pixel_list):
