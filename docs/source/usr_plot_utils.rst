@@ -11,7 +11,6 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
    :alt: An animated image of the slice viewer.
 
 .. automodule:: mbirjax.plot_utils
-   :no-index:
    :members:
    :undoc-members:
    :show-inheritance:
