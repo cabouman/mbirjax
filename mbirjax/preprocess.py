@@ -4,10 +4,12 @@ import math
 import scipy
 
 def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
-    """Given a set of object scans, blank scan, and dark scan, compute the sinogram data with the steps below:
+    """
+    Compute sinogram from object, blank, and dark scans.
 
-        1. ``sino = -numpy.log((obj_scan-dark_scan) / (blank_scan-dark_scan))``.
-        2. Optionally correct the invalid sinogram entries with interpolation. The invalid sinogram entries are indentified as the union of defective pixel entries (speicified by ``defective_pixel_list``) and sinogram entries with values of inf or Nan.
+    This function computes sinogram by taking the negative log of the attenuation estimate.
+    It can also take in a list of defective pixels and correct those pixel values.
+    The invalid sinogram entries are the union of defective pixel entries and sinogram entries with values of inf or Nan.
 
     Args:
         obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
@@ -70,8 +72,9 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
     return sino, defective_pixel_list
 
 def interpolate_defective_pixels(sino, defective_pixel_list):
-    """ This function interpolates defective sinogram entries with the mean of neighboring pixels.
-     
+    """
+    Interpolates defective sinogram entries with the mean of neighboring pixels.
+        
     Args:
         sino (ndarray, float): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
@@ -116,7 +119,10 @@ def interpolate_defective_pixels(sino, defective_pixel_list):
     return sino, defective_pixel_list_new
 
 def correct_det_rotation(sino, weights=None, det_rotation=0.0):
-    """ Correct the sinogram data (and sinogram weights if provided) according to the rotation axis tilt.
+    """
+    Correct sinogram data and weights to account for detector rotation.
+
+    This function can be used to rotate sinogram views when the axis of rotation is not exactly aligned with the detector columns.
 
     Args:
         sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
@@ -136,10 +142,12 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
-def calc_background_offset(sino, option=0, edge_width=9):
-    """ Given a sinogram, automatically calculate the background offset based on the selected option. Available options are:
+def estimate_background_offset(sino, option=0, edge_width=9):
+    """
+    Estimate background offset of a sinogram from the edge pixels.
 
-        **Option 0**: Calculate the background offset using edge_width pixels along the upper, left, and right edges of a median sinogram view.
+    This function estimates the background offset when no object is present by computing a robust centroid estimate using `edge_width` pixels along the edge of the sinogram across views.
+    Typically, this estimate is subtracted from the sinogram so that air is reconstructed as approximately 0.
 
     Args:
         sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
