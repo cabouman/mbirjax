@@ -69,3 +69,18 @@ Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the fo
    usr_parallel_beam_model
    usr_cone_beam_model
    usr_plot_utils
+   usr_preprocess
+
+Preprocessing
+------------------
+
+Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
+
+.. autosummary::
+
+   mbirjax.preprocess.transmission_CT_compute_sino
+   mbirjax.preprocess.interpolate_defective_pixels
+   mbirjax.preprocess.correct_det_rotation
+   mbirjax.preprocess.calc_background_offset
+   mbirjax.preprocess_NSI.load_scans_and_params
+
