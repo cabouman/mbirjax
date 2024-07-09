@@ -3,7 +3,8 @@ import warnings
 import math
 import scipy
 
-def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
+
+def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
     Compute sinogram from object, blank, and dark scans.
 
@@ -18,6 +19,7 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
         defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
             If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
         correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
+
     Returns:
         2-element tuple containing:
         - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
@@ -48,7 +50,7 @@ def transmission_CT_compute_sino(obj_scan, blank_scan, dark_scan, defective_pixe
                 (v,r,c) = defective_pixel_idx
                 sino[v,r,c] = 0.0
             else:
-                raise Exception("transmission_CT_compute_sino: index information in defective_pixel_list cannot be parsed.")
+                raise Exception("compute_sino_transmission: index information in defective_pixel_list cannot be parsed.")
 
     # set NaN sino pixels to 0.0
     nan_pixel_list = list(map(tuple, np.argwhere(np.isnan(sino)) ))
@@ -312,3 +314,60 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
             i+=1
     return obj_scan, blank_scan, dark_scan, defective_pixel_list
 ######## END subroutines for image cropping and down-sampling
+
+
+######## subroutines for loading scan images
+def _read_scan_img(img_path):
+    """Reads a single scan image from an image path. This function is a subroutine to the function `_read_scan_dir`.
+
+    Args:
+        img_path (string): Path object or file object pointing to an image.
+            The image type must be compatible with `PIL.Image.open()`. See `https://pillow.readthedocs.io/en/stable/reference/Image.html` for more details.
+    Returns:
+        ndarray (float): 2D numpy array. A single scan image.
+    """
+
+    img = np.asarray(Image.open(img_path))
+
+    if np.issubdtype(img.dtype, np.integer):
+        # make float and normalize integer types
+        maxval = np.iinfo(img.dtype).max
+        img = img.astype(np.float32) / maxval
+
+    return img.astype(np.float32)
+
+
+def _read_scan_dir(scan_dir, view_ids=[]):
+    """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
+
+    Args:
+        scan_dir (string): Path to a ConeBeam Scan directory.
+            Example: "<absolute_path_to_dataset>/Radiographs"
+        view_ids (list[int]): List of view indices to specify which scans to read.
+    Returns:
+        ndarray (float): 3D numpy array, (num_views, num_det_rows, num_det_channels). A stack of scan images.
+    """
+
+    if view_ids == []:
+        warnings.warn("view_ids should not be empty.")
+
+    img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*')))
+    img_path_list = [img_path_list[idx] for idx in view_ids]
+    img_list = [_read_scan_img(img_path) for img_path in img_path_list]
+
+    # return shape = num_views x num_det_rows x num_det_channels
+    return np.stack(img_list, axis=0)
+######## END subroutines for loading scan images
+
+
+def unit_vector(v):
+    """ Normalize v. Returns v/||v|| """
+    return v / np.linalg.norm(v)
+
+
+def project_vector_to_vector(u1, u2):
+    """ Projects the vector u1 onto the vector u2. Returns the vector <u1|u2>.
+    """
+    u2 = unit_vector(u2)
+    u1_proj = np.dot(u1, u2)*u2
+    return u1_proj

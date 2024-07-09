@@ -44,7 +44,7 @@ Parameter Handling
 ------------------
 
 See the :ref:`Primary Parameters <ParametersDocs>` page for a description of the primary parameters.
-Parameter handling is inherited from :ref:`ParameterHandlerDevDocs`, with the following primary methods.
+Parameter handling uses the following primary methods.
 
 .. autosummary::
 
@@ -78,9 +78,9 @@ Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes 
 
 .. autosummary::
 
-   mbirjax.preprocess.transmission_CT_compute_sino
+   mbirjax.preprocess.compute_sino_transmission
    mbirjax.preprocess.interpolate_defective_pixels
    mbirjax.preprocess.correct_det_rotation
    mbirjax.preprocess.estimate_background_offset
-   mbirjax.preprocess_NSI.load_scans_and_params
+   mbirjax.preprocess.NSI.load_scans_and_params
 

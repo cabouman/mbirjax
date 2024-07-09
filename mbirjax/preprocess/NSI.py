@@ -7,11 +7,9 @@ import warnings
 import striprtf.striprtf as striprtf
 import mbirjax.preprocess as preprocess
 
-######## API functions for MBIRJAX users
-def load_scans_and_params(dataset_dir,
-                          downsample_factor=[1, 1], crop_region=[(0, 1), (0, 1)],
-                          view_id_start=0,
-                          view_id_end=None, subsample_view_factor=1):
+
+def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
+                          view_id_start=0, view_id_end=None, subsample_view_factor=1):
     """ Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI dataset directory.
 
     The scan images will be (optionally) cropped and downsampled.
@@ -324,49 +322,6 @@ def load_scans_and_params(dataset_dir,
     return obj_scan, blank_scan, dark_scan, angles, geo_params, defective_pixel_list
 
 
-######## subroutines for loading scan images
-def _read_scan_img(img_path):
-    """Reads a single scan image from an image path. This function is a subroutine to the function `_read_scan_dir`.
-
-    Args:
-        img_path (string): Path object or file object pointing to an image. 
-            The image type must be compatible with `PIL.Image.open()`. See `https://pillow.readthedocs.io/en/stable/reference/Image.html` for more details.
-    Returns:
-        ndarray (float): 2D numpy array. A single scan image.
-    """
-
-    img = np.asarray(Image.open(img_path))
-
-    if np.issubdtype(img.dtype, np.integer):
-        # make float and normalize integer types
-        maxval = np.iinfo(img.dtype).max
-        img = img.astype(np.float32) / maxval
-
-    return img.astype(np.float32)
-
-
-def _read_scan_dir(scan_dir, view_ids=[]):
-    """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
-
-    Args:
-        scan_dir (string): Path to a ConeBeam Scan directory. 
-            Example: "<absolute_path_to_dataset>/Radiographs"
-        view_ids (list[int]): List of view indices to specify which scans to read.
-    Returns:
-        ndarray (float): 3D numpy array, (num_views, num_det_rows, num_det_channels). A stack of scan images.
-    """
-
-    if view_ids == []:
-        warnings.warn("view_ids should not be empty.")
-
-    img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*')))
-    img_path_list = [img_path_list[idx] for idx in view_ids]
-    img_list = [_read_scan_img(img_path) for img_path in img_path_list]
-
-    # return shape = num_views x num_det_rows x num_det_channels
-    return np.stack(img_list, axis=0)
-######## END subroutines for loading scan images
-
 ######## subroutines for parsing NSI metadata
 def _parse_filenames_from_dataset_dir(dataset_dir):
     """ Given the path to an NSI dataset directory, automatically parse the paths to the following files and directories: 
@@ -514,16 +469,6 @@ def _read_str_from_config(filepath, tags_sections):
 ######## END subroutines for parsing NSI metadata
 
 ######## subroutines for NSI-MBIR parameter conversion
-def unit_vector(v):
-    """ Normalize v. Returns v/||v|| """
-    return v / np.linalg.norm(v)
-
-def project_vector_to_vector(u1, u2):
-    """ Projects the vector u1 onto the vector u2. Returns the vector <u1|u2>.
-    """
-    u2 = unit_vector(u2)
-    u1_proj = np.dot(u1, u2)*u2
-    return u1_proj
 
 def calc_det_rotation(r_a, r_n, r_h, r_v):
     """ Calculate the tilt angle between the rotation axis and the detector columns in unit of radians. User should call `preprocess.correct_det_rotation()` to rotate the sinogram images w.r.t. to the tilt angle.

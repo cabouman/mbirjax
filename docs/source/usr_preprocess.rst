@@ -10,7 +10,7 @@ General preprocess functions
 ----------------------------
 
 .. automodule:: mbirjax.preprocess
-   :members: transmission_CT_compute_sino, estimate_background_offset, interpolate_defective_pixels, correct_det_rotation
+   :members: compute_sino_transmission, estimate_background_offset, interpolate_defective_pixels, correct_det_rotation
    :undoc-members:
    :show-inheritance:
 
@@ -18,15 +18,15 @@ General preprocess functions
 
    .. autosummary::
 
-      transmission_CT_compute_sino
+      compute_sino_transmission
       estimate_background_offset
       interpolate_defective_pixels
       correct_det_rotation
 
-NorthStart Instrument (NSI) functions
--------------------------------------
+NorthStar Instrument (NSI) functions
+------------------------------------
 
-.. automodule:: mbirjax.preprocess_NSI
+.. automodule:: mbirjax.preprocess.NSI
    :members: load_scans_and_params
    :undoc-members:
    :show-inheritance:
