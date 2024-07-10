@@ -82,5 +82,6 @@ Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes 
    mbirjax.preprocess.interpolate_defective_pixels
    mbirjax.preprocess.correct_det_rotation
    mbirjax.preprocess.estimate_background_offset
+   mbirjax.preprocess.NSI.compute_sino_and_params
    mbirjax.preprocess.NSI.load_scans_and_params
 
