@@ -12,7 +12,6 @@ Constructor
 -----------
 
 .. autoclass:: mbirjax.ConeBeamModel
-   :no-index:
    :show-inheritance:
 
 Parent Class

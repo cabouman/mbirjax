@@ -33,7 +33,7 @@ Below are simple instructions on how to do your first reconstruction:
 
 - **Initialize a model:**
 
-  - Run ``model = mbirjax.parallel_beam.ParallelBeamModel(angles, sinogram.shape)`` to initialize a parallel beam model.
+  - Run ``model = mbirjax.parallel_beam.ParallelBeamModel(sinogram.shape, angles)`` to initialize a parallel beam model.
 
   You will then use the ``model`` object to perform the various reconstruction functions.
 
