@@ -15,7 +15,6 @@ def compute_sino_and_params(dataset_dir,
         
         1. Load the object, blank, and dark scans, as well as the geometry parameters from an NSI dataset directory.
         2. Compute sinogram from object, blank, and dark scans.
-            Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI dataset directory.
         3. Perform background offset correction to the sinogram from the edge pixels.
         4. Correct sinogram data to account for detector rotation.
 
