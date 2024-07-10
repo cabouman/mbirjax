@@ -11,19 +11,24 @@ pp = pprint.PrettyPrinter(indent=4)
 def compute_sino_and_params(dataset_dir, 
                             downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
                             subsample_view_factor=1):
-    """ Compute the sinogram data and geometry parameters from an NSI scan. This involves the following steps:
-        
-        1. Load the object, blank, and dark scans, as well as the geometry parameters from an NSI dataset directory.
-        2. Compute sinogram from object, blank, and dark scans.
-        3. Perform background offset correction to the sinogram from the edge pixels.
-        4. Correct sinogram data to account for detector rotation.
+    """
+    Compute the sinogram data and geometry parameters from an NSI scan.
 
-    A subset of the views may be selected based on user input. In that case, the object scan images and view angles corresponding to the subset of the views will be returned.
+    This function computes the sinogram and geometry parameters from an NSI scan directory containing scan data and parameters.
+    More specifically, the function performs the following operations in a single easy-to-use manner:
 
-    This function is specific to NSI datasets.
+    1. Loads the object, blank, and dark scans, as well as the geometry parameters from an NSI dataset directory.
 
-    Arguments specific to file paths:
-        - dataset_dir (string): Path to an NSI scan direcotry. The directory is assumed to have the following structure:
+    2. Computes the sinogram from object, blank, and dark scans.
+
+    3. Replaces defective pixels with interpolated values.
+
+    4. Performs background offset correction to the sinogram from the edge pixels.
+
+    5. Corrects sinogram data to account for detector rotation.
+
+    Args:
+        dataset_dir (string): Path to an NSI scan directory. The directory is assumed to have the following structure:
             
             - ``*.nsipro`` (NSI config file)
             - ``Geometry*.rtf`` (geometry report)
@@ -31,51 +36,33 @@ def compute_sino_and_params(dataset_dir,
             - ``**/gain0.tif`` (blank scan image)
             - ``**/offset.tif`` (dark scan image)
             - ``**/*.defect`` (defective pixel information)
-            
-            The paths to NSI scans and metadata files will be automatically parsed from `dataset_dir`. In case multiple files of the same category exists, the user will be prompted to select the desired one.
-    
-    Arguments specific to radiograph downsampling and cropping:
-        - downsample_factor ([int, int]): [Default=[1,1]] Down-sample factors along the detector rows and channels respectively. By default no downsampling will be performed.
 
-            In case where the scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`, and then downsampled.
+        downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
+            If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
 
-        - crop_region ([(float, float),(float, float)] or [float, float, float, float]): [Default=[(0, 1), (0, 1)]]. Two fractional points [(row0, row1), (col0, col1)] defining the bounding box that crops the scans, where 0<=row0<=row1<=1 and 0<=col0<=col1<=1. By default no cropping will be performed.
+        crop_region (((float, float),(float, float)), optional) - Values of ((row_start, row_end), (col_start, col_end)) define a bounding box that crops the scan.
+            The default of ((0, 1), (0, 1)) retains the entire scan.
 
-            row0 and row1 defines the cropping factors along the detector rows. col0 and col1 defines the cropping factors along the detector channels. ::
-
-            :       (0,0)--------------------------(0,1)
-            :         |  (row0,col0)---------------+     |
-            :         |     |                  |     |
-            :         |     | (Cropped Region) |     |
-            :         |     |                  |     |
-            :         |     +---------------(row1,col1)  |
-            :       (1,0)--------------------------(1,1)
-
-            For example, ``crop_region=[(0.25,0.75), (0,1)]`` will crop out the middle half of the scan image along the vertical direction.
-
-    Arguments specific to view subsampling:
-        - subsample_view_factor (int): [Default=1]: view subsample factor. By default no view subsampling will be performed.
-
-            For example, with ``subsample_view_factor=2``, every other view will be loaded.
+        subsample_view_factor (int, optional): View subsample factor. By default no view subsampling will be performed.
 
     Returns:
         3-element tuple containing:
 
-        - **sino** (*ndarray, double*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **angles** (*ndarray, double*): 1D view angles array in radians in the interval :math:`[0,2\pi)`.
-
-        - **geo_params**: MBIRJAX format geometric parameters containing the following entries:
+        sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        angles (jax array): 1D array of view angles array in radians.
+        geo_params: MBIRJAX format geometric parameters containing the following entries:
             
-            - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
-            - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
-            - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
-            - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
-            - delta_det_row (float): Detector row spacing in :math:`ALU`.
-            - delta_voxel (float): Spacing between voxels in ALU.
-            - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
-            - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
-            - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
-        - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+        - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
+        - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
+        - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
+        - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
+        - delta_det_row (float): Detector row spacing in :math:`ALU`.
+        - delta_voxel (float): Spacing between voxels in ALU.
+        - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
+        - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
+        - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+
+        defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
     
     print("\n\n########## Loading object, blank, dark scans, as well as geometry parameters from NSI dataset directory ...")
@@ -109,51 +96,32 @@ def compute_sino_and_params(dataset_dir,
 
 def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
                           view_id_start=0, view_id_end=None, subsample_view_factor=1):
-    """ Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI dataset directory.
+    """
+    Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI scan directory.
 
-    The scan images will be (optionally) cropped and downsampled.
+    This function loads the sinogram data and parameters from an NSI scan directory for users who would prefer to implement custom preprocessing of the data.
 
-    A subset of the views may be selected based on user input. In that case, the object scan images and view angles corresponding to the subset of the views will be returned.
+    Args:
+        dataset_dir (string): Path to an NSI scan directory. The directory is assumed to have the following structure:
 
-    This function is specific to NSI datasets.
-
-    Arguments specific to file paths:
-        - dataset_dir (string): Path to an NSI scan direcotry. The directory is assumed to have the following structure:
-            
             - ``*.nsipro`` (NSI config file)
             - ``Geometry*.rtf`` (geometry report)
             - ``Radiographs*/`` (directory containing all radiograph images)
             - ``**/gain0.tif`` (blank scan image)
             - ``**/offset.tif`` (dark scan image)
             - ``**/*.defect`` (defective pixel information)
-            
-            The paths to NSI scans and metadata files will be automatically parsed from `dataset_dir`. In case multiple files of the same category exists, the user will be prompted to select the desired one.
-    
-    Arguments specific to radiograph downsampling and cropping:
-        - downsample_factor ([int, int]): [Default=[1,1]] Down-sample factors along the detector rows and channels respectively. By default no downsampling will be performed.
 
-            In case where the scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`, and then downsampled.
+        downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
+            If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
 
-        - crop_region ([(float, float),(float, float)] or [float, float, float, float]): [Default=[(0, 1), (0, 1)]]. Two fractional points [(row0, row1), (col0, col1)] defining the bounding box that crops the scans, where 0<=row0<=row1<=1 and 0<=col0<=col1<=1. By default no cropping will be performed.
+        crop_region (((float, float),(float, float)), optional) - Values of ((row_start, row_end), (col_start, col_end)) define a bounding box that crops the scan.
+            The default of ((0, 1), (0, 1)) retains the entire scan.
 
-            row0 and row1 defines the cropping factors along the detector rows. col0 and col1 defines the cropping factors along the detector channels. ::
+        view_id_start (int, optional): view index corresponding to the first view.
 
-            :       (0,0)--------------------------(0,1)
-            :         |  (row0,col0)---------------+     |
-            :         |     |                  |     |
-            :         |     | (Cropped Region) |     |
-            :         |     |                  |     |
-            :         |     +---------------(row1,col1)  |
-            :       (1,0)--------------------------(1,1)
+        view_id_end (int, optional): view index corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
 
-            For example, ``crop_region=[(0.25,0.75), (0,1)]`` will crop out the middle half of the scan image along the vertical direction.
-
-    Arguments specific to view subsampling:
-        - view_id_start (int): [Default=0] view id corresponding to the first view.
-        - view_id_end (int): [Default=None] view id corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
-        - subsample_view_factor (int): [Default=1]: view subsample factor. By default no view subsampling will be performed.
-
-            For example, with ``subsample_view_factor=2``, every other view will be loaded.
+        subsample_view_factor (int, optional): view subsample factor.
 
     Returns:
         6-element tuple containing:
