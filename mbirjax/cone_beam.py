@@ -22,18 +22,19 @@ class ConeBeamModel(TomographyModel):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
-        angles (jnp.ndarray):
+        angles (ndarray or jax array):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        recon_slice_offset (float, optional, default=0): Vertical offset of the image in ALU.
-            If recon_slice_offset is positive, we reconstruct the region below iso.
-        det_rotation (float, optional, default=0):  Angle in radians between the projection of the object rotation axis
-            and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+
+    Note:
+        One additional parameter for ConeBeamModel that can be set using set_params() is
+
+        **recon_slice_offset** (float, default=0) -
+        Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
     """
 
-    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
-                 recon_slice_offset=0.0, det_rotation=0.0):
+    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
@@ -46,7 +47,7 @@ class ConeBeamModel(TomographyModel):
 
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         recon_slice_offset=recon_slice_offset, det_rotation=det_rotation)
+                         recon_slice_offset=0.0)
 
     @classmethod
     def from_file(cls, filename):

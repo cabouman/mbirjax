@@ -4,7 +4,22 @@
 Preprocess utilities
 ====================
 
-The ``preprocess`` module provides the basic preprocessing functionalities to compute and correct the sinogram data.
+The ``preprocess`` module provides scanner-specific preprocessing and more general preprocessing to compute and correct the sinogram data.
+
+NorthStar Instrument (NSI) functions
+------------------------------------
+
+.. automodule:: mbirjax.preprocess.NSI
+   :members: compute_sino_and_params, load_scans_and_params
+   :undoc-members:
+   :show-inheritance:
+
+   .. rubric:: **Functions:**
+
+   .. autosummary::
+
+      compute_sino_and_params
+      load_scans_and_params
 
 General preprocess functions
 ----------------------------
@@ -22,18 +37,3 @@ General preprocess functions
       estimate_background_offset
       interpolate_defective_pixels
       correct_det_rotation
-
-NorthStar Instrument (NSI) functions
-------------------------------------
-
-.. automodule:: mbirjax.preprocess.NSI
-   :members: compute_sino_and_params, load_scans_and_params
-   :undoc-members:
-   :show-inheritance:
-
-   .. rubric:: **Functions:**
-
-   .. autosummary::
-    
-      compute_sino_and_params
-      load_scans_and_params

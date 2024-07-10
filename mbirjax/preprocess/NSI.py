@@ -8,11 +8,12 @@ import glob
 import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
+
 def compute_sino_and_params(dataset_dir, 
                             downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
                             subsample_view_factor=1):
     """
-    Compute the sinogram data and geometry parameters from an NSI scan.
+    Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
     This function computes the sinogram and geometry parameters from an NSI scan directory containing scan data and parameters.
     More specifically, the function performs the following operations in a single easy-to-use manner:
@@ -46,44 +47,47 @@ def compute_sino_and_params(dataset_dir,
         subsample_view_factor (int, optional): View subsample factor. By default no view subsampling will be performed.
 
     Returns:
-        3-element tuple containing:
+        tuple: [sinogram, cone_beam_params, optional_params]
 
-        - sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
 
-        - angles (jax array): 1D array of view angles array in radians.
+            cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
 
-        - geo_params: MBIRJAX format geometric parameters containing the following entries:
-            
-            - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
-            - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
-            - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
-            - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
-            - delta_det_row (float): Detector row spacing in :math:`ALU`.
-            - delta_voxel (float): Spacing between voxels in ALU.
-            - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
-            - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
-            - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+            optional_params (dict): Additional ConeBeamModel parameters to be set using set_params().
 
-        - defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+    Example:
+        .. code-block:: python
+
+            # Get data and recon parameters
+            sino, cone_beam_params, optional_params = mbirjax.preprocess.NSI.compute_sino_and_params(dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
+
+            # Create the model and set the parameters
+            ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
+            ct_model.set_params(**optional_params)
+            ct_model.set_params(sharpness=sharpness, verbose=1)
+
+            # Compute sinogram weights and do the reconstruction
+            weights = ct_model.gen_weights(sino, weight_type='transmission_root')
+            recon, recon_params = ct_model.recon(sino, weights=weights)
+
     """
     
     print("\n\n########## Loading object, blank, dark scans, as well as geometry parameters from NSI dataset directory ...")
-    obj_scan, blank_scan, dark_scan, angles, geo_params, defective_pixel_list = \
+    obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list = \
             load_scans_and_params(dataset_dir,
                                   downsample_factor=downsample_factor, crop_region=crop_region,
                                   subsample_view_factor=subsample_view_factor)
 
-    print("MBIRJAX geometry paramemters:")
-    pp.pprint(geo_params)
+    print("MBIRJAX geometry parameters:")
+    pp.pprint(cone_beam_params)
+    pp.pprint(optional_params)
     print('obj_scan shape = ', obj_scan.shape)
     print('blank_scan shape = ', blank_scan.shape)
     print('dark_scan shape = ', dark_scan.shape)
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans ...")
     sino, defective_pixel_list = \
-            preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan,
-                                                 defective_pixel_list
-                                                )
+            preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan # delete scan images to save memory
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
@@ -92,9 +96,11 @@ def compute_sino_and_params(dataset_dir,
     sino = sino - background_offset    
     
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
-    sino = preprocess.correct_det_rotation(sino, det_rotation=geo_params["det_rotation"])
+    sino = preprocess.correct_det_rotation(sino, det_rotation=optional_params["det_rotation"])
+    del optional_params["det_rotation"]
 
-    return sino, angles, geo_params
+    return sino, cone_beam_params, optional_params
+
 
 def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
                           view_id_start=0, view_id_end=None, subsample_view_factor=1):
@@ -126,29 +132,19 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
         subsample_view_factor (int, optional): view subsample factor.
 
     Returns:
-        6-element tuple containing:
+        tuple: [obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list]
 
-        - obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
+            obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
 
-        - blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
+            blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
 
-        - dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
+            dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
 
-        - angles (jax array): 1D view angles array in radians.
+            cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
 
-        - geo_params: MBIRJAX format geometric parameters containing the following entries:
-            
-            - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
-            - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
-            - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
-            - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
-            - delta_det_row (float): Detector row spacing in :math:`ALU`.
-            - delta_voxel (float): Spacing between voxels in ALU.
-            - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
-            - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
-            - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+            optional_params (dict): Additional ConeBeamModel parameters to be set using set_params().
 
-        - defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+            defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
     ### automatically parse the paths to NSI metadata and scans from dataset_dir
     config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
@@ -378,18 +374,21 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     
     # Create a dictionary to store MBIR parameters 
     num_views = len(angles)
-    geo_params = dict()
-    geo_params["sinogram_shape"] = (num_views, num_det_rows, num_det_channels)
-    geo_params["source_detector_dist"] = source_detector_dist
-    geo_params["source_iso_dist"] = source_iso_dist
-    geo_params["delta_det_channel"] = delta_det_channel
-    geo_params["delta_det_row"] = delta_det_row
-    geo_params['delta_voxel'] = delta_det_channel * (source_iso_dist/source_detector_dist)
-    geo_params["det_channel_offset"] = det_channel_offset
-    geo_params["det_row_offset"] = det_row_offset
-    geo_params["det_rotation"] = det_rotation # tilt angle of rotation axis
+    cone_beam_params = dict()
+    cone_beam_params["sinogram_shape"] = (num_views, num_det_rows, num_det_channels)
+    cone_beam_params["angles"] = angles
+    cone_beam_params["source_detector_dist"] = source_detector_dist
+    cone_beam_params["source_iso_dist"] = source_iso_dist
 
-    return obj_scan, blank_scan, dark_scan, angles, geo_params, defective_pixel_list
+    optional_params = dict()
+    optional_params["delta_det_channel"] = delta_det_channel
+    optional_params["delta_det_row"] = delta_det_row
+    optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist/source_detector_dist)
+    optional_params["det_channel_offset"] = det_channel_offset
+    optional_params["det_row_offset"] = det_row_offset
+    optional_params["det_rotation"] = det_rotation # tilt angle of rotation axis
+
+    return obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list
 
 
 ######## subroutines for parsing NSI metadata
