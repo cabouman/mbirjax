@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.4.0"
+version = "0.4.1"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -26,7 +26,8 @@ dependencies = [
     "jax",
     "jaxlib",
     "ruamel.yaml",
-    "psutil"
+    "psutil",
+    "striprtf"
 ]
 
 [project.optional-dependencies]
