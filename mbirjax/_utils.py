@@ -3,6 +3,9 @@ import copy
 
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
+# Update to include new geometries that should be included in the tests suite
+_geometry_types_for_tests = ['parallel', 'cone']
+
 # The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
 _forward_model_defaults_dict = {
@@ -33,8 +36,8 @@ _reconstruction_defaults_dict = {
     'positivity_flag': {'val': False, 'recompile_flag': False},
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
-    'granularity': {'val': [1, 2, 64, 512, 2048], 'recompile_flag': False},
-    'partition_sequence': {'val': [0, 1, 2, 3, 3, 2, 2, 2, 3, 3, 3, 4, 3, 4, 4], 'recompile_flag': False},
+    'granularity': {'val': [1, 4, 64, 512, 2048], 'recompile_flag': False},
+    'partition_sequence': {'val': [0, 1, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4], 'recompile_flag': False},
     'verbose': {'val': 1, 'recompile_flag': False},
     'pixel_batch_size': {'val': 2048, 'recompile_flag': True},  # TODO: Determine batch sizes dynamically.
     'view_batch_size': {'val': 4, 'recompile_flag': True}

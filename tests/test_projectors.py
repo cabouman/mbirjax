@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -18,7 +19,7 @@ class TestProjectors(unittest.TestCase):
     def setUp(self):
         """Set up before each test method."""
         # Choose the geometry type
-        self.geometry_types = ['parallel', 'cone']
+        self.geometry_types = mbirjax._utils._geometry_types_for_tests
 
         # Set parameters
         self.num_views = 64
@@ -55,6 +56,9 @@ class TestProjectors(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'blur':
+            sigma = 2.0
+            ct_model = mbirjax.Blur(self.sinogram_shape, sigma)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -71,6 +75,69 @@ class TestProjectors(unittest.TestCase):
             with self.subTest(geometry_type=geometry_type):
                 print("Testing Hessian with", geometry_type)
                 self.verify_hessian(geometry_type)
+
+    def test_save_load(self):
+        for geometry_type in self.geometry_types:
+            with self.subTest(geometry_type=geometry_type):
+                print("Testing save/load with", geometry_type)
+                self.verify_save_load(geometry_type)
+
+    def verify_save_load(self, geometry_type):
+        """
+        Verify the adjoint property of the projectors:
+        Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
+        """
+        self.set_angles(geometry_type)
+        ct_model = self.get_model(geometry_type)
+
+        # Generate phantom
+        recon_shape = ct_model.get_params('recon_shape')
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
+
+        # Get the vector of indices
+        indices = jnp.arange(num_recon_rows * num_recon_cols)
+
+        # ##########################
+        # Do a forward and back projection from a single pixel
+        i, j = num_recon_rows // 4, num_recon_cols // 3
+        x = jnp.zeros(recon_shape)
+        x = x.at[i, j, :].set(1)
+        voxel_values = x.reshape((-1, num_recon_slices))[indices]
+
+        Ax = ct_model.sparse_forward_project(voxel_values, indices)
+        Aty = ct_model.sparse_back_project(Ax, indices)
+        Aty = ct_model.reshape_recon(Aty)
+
+        # Save the model
+        filename = 'saved_model_test.yaml'
+        ct_model.to_file(filename)
+
+        # Load the model
+        new_model = self.get_model(geometry_type)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            new_model = new_model.from_file(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
+
+        # Compare parameters
+        for key, entry in ct_model.params.items():
+            if isinstance(entry['val'], list):
+                entry['val'] = tuple(entry['val'])
+            loaded_entry = new_model.params[key]
+            if isinstance(entry['val'], type(jnp.zeros(1))):
+                assert(jnp.allclose(entry['val'], loaded_entry['val']))
+            else:
+                assert(entry == loaded_entry)
+
+        # Do a forward and back projection with loaded model
+        Ax_new = new_model.sparse_forward_project(voxel_values, indices)
+        Aty_new = new_model.sparse_back_project(Ax_new, indices)
+        Aty_new = new_model.reshape_recon(Aty_new)
+
+        # Compare to original
+        assert(np.allclose(Aty, Aty_new, atol=1e-4))
 
     def verify_adjoint(self, geometry_type):
         """

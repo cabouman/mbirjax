@@ -17,6 +17,7 @@ dependencies:
   - sphinx-copybutton
   - ruamel.yaml
   - psutil
+  - striprtf
   - pip
   - pip:
       - -e .

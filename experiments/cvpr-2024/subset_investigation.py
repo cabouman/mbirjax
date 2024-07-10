@@ -6,11 +6,11 @@ if __name__ == "__main__":
     """
     This is a script to develop subset selection for VCD.
     """
-    image_shape = (1024, 1024)
-    small_tile_side = 16
-    tile_type = 'repeat'  # 'repeat', 'permute', 'random', 'select'
+    image_shape = (128, 128)
+    small_tile_side = 10
+    tile_type = 'grid'  # 'repeat', 'permute', 'random', 'select', 'grid'
 
-    num_subsets = 1
+    num_subsets = 2
 
     ror_mask = mbirjax.get_2d_ror_mask(image_shape)
 
@@ -33,10 +33,10 @@ if __name__ == "__main__":
     num_tiles = [np.ceil(image_shape[k] / pattern.shape[k]).astype(int) for k in [0, 1]]
 
     single_subset_inds = np.floor(pattern / (2**16 / num_subsets)).astype(int)
-    full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
 
     if tile_type == 'repeat':
         # Repeat each bn subset to do the tiling
+        full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
         subset_inds = np.tile(single_subset_inds, num_tiles)
         subset_inds = subset_inds[:image_shape[0], :image_shape[1]]
         subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a 0 at each location outside the mask, subset_ind + 1 at other points
@@ -68,6 +68,7 @@ if __name__ == "__main__":
     elif tile_type == 'permute':
         # TODO:  work with indices rather than masks
         # Using a permutation of the bn subsets in each tile location
+        full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
         single_subsets = [(pattern >= bin_boundaries[j]) * (pattern < bin_boundaries[j + 1]) for j in range(num_subsets)]
         perms = [np.random.permutation(num_subsets) for j in np.arange(np.prod(num_tiles))]
         for k in range(num_subsets):
@@ -83,6 +84,7 @@ if __name__ == "__main__":
         # For each subset, select one element from each small tile.  Use a different permutation of the subsets
         # for each tile to determine which subset gets which element from each small tile.
         num_subsets = small_tile_side ** 2
+        full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
         num_small_tiles = [np.ceil(image_shape[k] / small_tile_side).astype(int) for k in [0, 1]]
         perms = [np.random.permutation(num_subsets) for j in np.arange(np.prod(num_small_tiles))]
         perms = np.array(perms).T
@@ -105,8 +107,35 @@ if __name__ == "__main__":
         full_mask = full_mask.reshape((num_subsets,) + image_shape)
         full_mask = full_mask * ror_mask.reshape((1,) + image_shape)
 
+    elif tile_type == 'grid':
+        # For each subset, select the same element from each small tile.
+        num_subsets = small_tile_side ** 2
+        full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
+        num_small_tiles = [np.ceil(image_shape[k] / small_tile_side).astype(int) for k in [0, 1]]
+        perms = [np.arange(num_subsets) for j in np.arange(np.prod(num_small_tiles))]
+        perms = np.array(perms).T
+        small_tile_corners = np.meshgrid(np.arange(num_small_tiles[0]), np.arange(num_small_tiles[1]))
+        small_tile_corners[0] *= small_tile_side
+        small_tile_corners[1] *= small_tile_side
+        tile_inds = np.unravel_index(perms, (small_tile_side, small_tile_side))
+        subset_inds = [small_tile_corners[j].reshape((1, -1)) + tile_inds[j] for j in [0, 1]]
+        good_inds = (subset_inds[0] < image_shape[0]) * (subset_inds[1] < image_shape[1])
+        flat_inds = []
+        for k in range(num_subsets):
+            flat_inds.append(
+                np.ravel_multi_index((subset_inds[0][k][good_inds[k]], subset_inds[1][k][good_inds[k]]),
+                                     image_shape))
+
+        full_mask = full_mask.reshape((num_subsets, np.prod(image_shape)))
+        for j in range(num_subsets):
+            full_mask[j][flat_inds[j]] = 1
+
+        full_mask = full_mask.reshape((num_subsets,) + image_shape)
+        full_mask = full_mask * ror_mask.reshape((1,) + image_shape)
+
     else:  # 'random'
         # Random sampling - THIS DOES NOT GIVE A PARTITION!
+        full_mask = np.zeros((num_subsets,) + image_shape, dtype=np.float32)
         for k in range(num_subsets):
             cur_mask = np.random.rand(*image_shape)
             full_mask[k] = cur_mask < 1 / num_subsets
@@ -114,8 +143,8 @@ if __name__ == "__main__":
 
     full_mask_fft = np.fft.fft2(full_mask)
     full_mask_fft = np.fft.fftshift(full_mask_fft, axes=(1, 2))
+    # mbirjax.slice_viewer(np.real(full_mask_fft), np.imag(full_mask_fft), slice_axis=0)
     full_mask_fft = 20 * np.log10(np.abs(full_mask_fft) + 1e-12)
-
     # print('Number of points = {}'.format(np.sum(subsets, axis=(1, 2))))
     mbirjax.slice_viewer(40 * full_mask, full_mask_fft, slice_axis=0, slice_label='Subset',
                          title='Subset mask and FFT in dB', vmin=0, vmax=60)

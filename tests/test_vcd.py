@@ -5,7 +5,7 @@ import mbirjax
 import unittest
 
 
-class TestProjectors(unittest.TestCase):
+class TestVCD(unittest.TestCase):
     """
     Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
     This means if x is an image, and y is a sinogram, then <y, Ax> = <Aty, x>.
@@ -19,10 +19,11 @@ class TestProjectors(unittest.TestCase):
         """Set up before each test method."""
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
-        self.geometry_types = ['parallel', 'cone']
+        self.geometry_types = mbirjax._utils._geometry_types_for_tests
         parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
         cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
-        self.all_tolerances = [parallel_tolerances, cone_tolerances]
+        blur_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
+        self.all_tolerances = [parallel_tolerances, cone_tolerances, blur_tolerances]
 
         # Set parameters
         self.num_views = 64
@@ -59,6 +60,11 @@ class TestProjectors(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'blur':
+            sigma = 0.5
+            sinogram_shape = (64, 64, 32)
+            ct_model = mbirjax.Blur(sinogram_shape, sigma)
+            ct_model.set_params(sharpness=-2)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 

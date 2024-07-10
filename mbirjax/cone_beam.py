@@ -22,18 +22,19 @@ class ConeBeamModel(TomographyModel):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
-        angles (jnp.ndarray):
+        angles (ndarray or jax array):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        recon_slice_offset (float, optional, default=0): Vertical offset of the image in ALU.
-            If recon_slice_offset is positive, we reconstruct the region below iso.
-        det_rotation (float, optional, default=0):  Angle in radians between the projection of the object rotation axis
-            and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+
+    Note:
+        One additional parameter for ConeBeamModel that can be set using set_params() is
+
+        **recon_slice_offset** (float, default=0) -
+        Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
     """
 
-    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist,
-                 recon_slice_offset=0.0, det_rotation=0.0):
+    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
@@ -46,7 +47,7 @@ class ConeBeamModel(TomographyModel):
 
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         recon_slice_offset=recon_slice_offset, det_rotation=det_rotation)
+                         recon_slice_offset=0.0)
 
     @classmethod
     def from_file(cls, filename):
@@ -60,10 +61,18 @@ class ConeBeamModel(TomographyModel):
             ConeBeamModel with the specified parameters.
         """
         # Load the parameters and convert to use the ConeBeamModel keywords.
-        params = ParameterHandler.load_param_dict(filename, values_only=True)
+        required_param_names = ['sinogram_shape', 'source_detector_dist', 'source_iso_dist']
+        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
+
+        # Collect the required parameters into a separate dictionary and remove them from the loaded dict.
         angles = params['view_params_array']
         del params['view_params_array']
-        return cls(angles=angles, **params)
+        required_params['angles'] = angles
+
+        # Get an instance with the required parameters, then set any optional parameters
+        new_model = cls(**required_params)
+        new_model.set_params(**params)
+        return new_model
 
     def get_magnification(self):
         """
@@ -109,7 +118,7 @@ class ConeBeamModel(TomographyModel):
         """
         # First get the parameters managed by ParameterHandler
         geometry_param_names = \
-            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset', 'det_rotation',
+            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
              'source_detector_dist', 'delta_voxel', 'recon_slice_offset']
         geometry_param_values = self.get_params(geometry_param_names)
 
@@ -495,7 +504,7 @@ class ConeBeamModel(TomographyModel):
         u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification)
         # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
         m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
-                                                 gp.det_row_offset, num_det_rows, num_det_channels, gp.det_rotation)
+                                                 gp.det_row_offset, num_det_rows, num_det_channels)
         m_p_center = jnp.round(m_p).astype(int)
 
         # Compute vertical cone angle of pixel
@@ -605,18 +614,15 @@ class ConeBeamModel(TomographyModel):
         return u, v, pixel_mag
 
     @staticmethod
-    @partial(jax.jit, static_argnames='det_rotation')
+    @jax.jit
     def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
-                          num_det_channels, det_rotation=0):
+                          num_det_channels):
         """
         Convert (u, v) detector coordinates to fractional indices (m, n) into the detector.
 
         Note:
             This version does not account for nonzero detector rotation.
         """
-        if det_rotation != 0:
-            raise ValueError('Nonzero det_rotation is not implemented.')
-
         # Account for small rotation of the detector
         # TODO:  In addition to including the rotation, we'd need to adjust the calculation of the channel as a
         #  function of slice.
