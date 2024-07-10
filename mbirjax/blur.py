@@ -99,8 +99,8 @@ class Blur(TomographyModel):
         all voxels with those indices across all the slices.
 
         Args:
-            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
-            indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            voxel_values (ndarray or jax array): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
+            indices (ndarray or jax array): Array of indices specifying which voxels to project.
             view_indices (ndarray or jax array, optional): Unused
 
         Returns:
@@ -134,10 +134,48 @@ class Blur(TomographyModel):
         sigma = self.get_params('sigma_psf')
         # TODO:  This assumes a symmetric kernel.  Should change to allow a more general kernel.
         if sigma > 0:
-            blurred_image = gaussian_filter(blurred_image, sigma, axes=(0, 1), coeff_power=coeff_power)
-        blurred_image = blurred_image.reshape((-1, blurred_image.shape[2]))
-        recon_at_indices = blurred_image[indices]
+            bp_image = gaussian_filter(blurred_image, sigma, axes=(0, 1), coeff_power=coeff_power)
+        else:
+            bp_image = blurred_image
+        bp_image = bp_image.reshape((-1, blurred_image.shape[2]))
+        recon_at_indices = bp_image[indices]
         return recon_at_indices
+
+    def sparse_back_vjp(self, blurred_image, indices, coeff_power=1, view_indices=()):
+        """
+        Back project the image to the voxels given by the indices by using autodifferentiation on sparse_forward.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.
+
+        Args:
+            blurred_image (jnp array): 3D jax array containing the image.
+            indices (jnp array): Array of indices specifying which voxels to back project.
+            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                Normally 1, but should be 2 for compute_hessian_diagonal.
+            view_indices (ndarray or jax array, optional): Unused
+
+        Returns:
+            A jax array of shape (len(indices), num_slices)
+        """
+        sigma = self.get_params('sigma_psf')
+        input_shape = blurred_image.shape
+        x = jnp.ones((len(indices), blurred_image.shape[2]))
+        # TODO:  Implement a direct Hessian diagonal.  The problem is how to differentiate efficiently on just one input and output at a time.
+        if coeff_power == 2:
+            return self.sparse_back(blurred_image, indices, coeff_power=2)
+
+        # Set up the forward model to be able to use vjp = vector Jacobian product = v^T A = (A^T v)^T
+        def local_forward(voxel_values):
+            return self.sparse_forward(voxel_values, indices)
+        if sigma > 0:
+            vjp_fun = jax.vjp(local_forward, x)[1]
+            bp_image = vjp_fun(blurred_image)[0]
+            if coeff_power == 2:
+                bp_image = bp_image.reshape(input_shape)
+                bp_image = vjp_fun(bp_image)[0]
+        else:
+            bp_image = blurred_image
+        return bp_image
 
     def hessian_diagonal(self, weights=None):
         """

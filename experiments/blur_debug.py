@@ -9,12 +9,42 @@ import mbirjax
 
 
 if __name__ == "__main__":
+
+    indices = np.arange(20)
+
+    def mosaic(x):
+        y = jnp.zeros(x.shape)
+        y = y.at[1::2].set(x[1::2])
+        return y
+
+
+    x = jax.device_put(np.r_[:10].astype(np.float32))
+    fx = mosaic(x)
+    trans_fun = jax.linear_transpose(mosaic, x)
+    b = trans_fun(fx)  # Raises exception:
+
+    def mosaic(x):
+        blurred_image_shape, sigma = ((128, 128, 10), 2.0)  # self.get_params(['sinogram_shape', 'sigma_psf'])
+        blurred_image = jnp.zeros(blurred_image_shape).reshape((-1, blurred_image_shape[2]))
+        blurred_image = blurred_image.at[indices].set(x)
+        blurred_image = blurred_image.reshape(blurred_image_shape)
+        return blurred_image
+
+    x = jnp.ones((len(indices), 10))
+    fx = mosaic(x)
+
+    vjp_fun = jax.vjp(mosaic, x)[1]
+    a = vjp_fun(fx)  # works fine!
+
+    # trans_fun = jax.linear_transpose(mosaic, x)
+    # b = trans_fun(fx)  # Raises exception:
+
     """
     This is a script to develop, debug, and tune the blur model
     """
     # Initialize the image
-    image_shape = (512, 500, 5)
-    sigma = 2.0
+    image_shape = (64, 64, 5)
+    sigma = 0.5
     sharpness = -2
     noise_std = 0.04
 
@@ -89,7 +119,6 @@ if __name__ == "__main__":
     view_index = 30
     y = y.at[view_index].set(Ax[view_index])
     index = jnp.ravel_multi_index((6, 6), (num_recon_rows, num_recon_cols))
-    a1 = blur_model.sparse_back_project(y, indices[0])
 
     slice_index = (num_recon_slices + 1) // 2
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
