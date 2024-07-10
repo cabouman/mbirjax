@@ -114,7 +114,10 @@ class TestProjectors(unittest.TestCase):
 
         # Load the model
         new_model = self.get_model(geometry_type)
-        new_model = new_model.from_file(filename)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            new_model = new_model.from_file(filename)
         if os.path.exists(filename):
             os.remove(filename)
 
