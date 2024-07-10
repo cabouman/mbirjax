@@ -27,12 +27,13 @@ NorthStar Instrument (NSI) functions
 ------------------------------------
 
 .. automodule:: mbirjax.preprocess.NSI
-   :members: load_scans_and_params
+   :members: compute_sino_and_params, load_scans_and_params
    :undoc-members:
    :show-inheritance:
 
    .. rubric:: **Functions:**
 
    .. autosummary::
-
+    
+      compute_sino_and_params
       load_scans_and_params
