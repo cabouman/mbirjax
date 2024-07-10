@@ -9,6 +9,8 @@ from mbirjax import TomographyModel, ParameterHandler
 class Blur(TomographyModel):
     """
     A class designed for handling forward and backward projections using a blur.
+    This class is used mainly for development and demo.  It shows how to use
+    jax.vjp to implement a back projector given a forward projector.
 
     This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
