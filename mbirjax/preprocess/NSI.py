@@ -48,21 +48,23 @@ def compute_sino_and_params(dataset_dir,
     Returns:
         3-element tuple containing:
 
-        sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        angles (jax array): 1D array of view angles array in radians.
-        geo_params: MBIRJAX format geometric parameters containing the following entries:
-            
-        - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
-        - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
-        - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
-        - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
-        - delta_det_row (float): Detector row spacing in :math:`ALU`.
-        - delta_voxel (float): Spacing between voxels in ALU.
-        - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
-        - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
-        - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+        - sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
 
-        defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+        - angles (jax array): 1D array of view angles array in radians.
+
+        - geo_params: MBIRJAX format geometric parameters containing the following entries:
+            
+            - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
+            - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
+            - source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of :math:`ALU`.
+            - delta_det_channel (float): Detector channel spacing in :math:`ALU`.
+            - delta_det_row (float): Detector row spacing in :math:`ALU`.
+            - delta_voxel (float): Spacing between voxels in ALU.
+            - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
+            - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
+            - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
+
+        - defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
     
     print("\n\n########## Loading object, blank, dark scans, as well as geometry parameters from NSI dataset directory ...")
@@ -126,15 +128,15 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     Returns:
         6-element tuple containing:
 
-        - **obj_scan** (*ndarray, float*): 3D object scan with shape (num_views, num_det_rows, num_det_channels)
+        - obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
 
-        - **blank_scan** (*ndarray, float*): 3D blank scan with shape (1, num_det_rows, num_det_channels)
+        - blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
 
-        - **dark_scan** (*ndarray, float*): 3D dark scan with shape (1, num_det_rows, num_det_channels)
+        - dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
 
-        - **angles** (*ndarray, double*): 1D view angles array in radians in the interval :math:`[0,2\pi)`.
+        - angles (jax array): 1D view angles array in radians.
 
-        - **geo_params**: MBIRJAX format geometric parameters containing the following entries:
+        - geo_params: MBIRJAX format geometric parameters containing the following entries:
             
             - sinogram_shape (tuple): Shape of the sinogram as a tuple in the form (views, rows, channels).
             - source_detector_dist (float): Distance between the X-ray source and the detector in units of :math:`ALU`.
@@ -145,7 +147,8 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
             - det_channel_offset (float): Distance = (detector iso channel) - (center of detector channels) in ALU.
             - det_row_offset (float): Distance = (detector iso row) - (center of detector rows) in ALU.
             - det_rotation: Angle in radians between the projection of the object rotation axis and the detector vertical axis, where positive describes a clockwise rotation of the detector as seen from the source.
-        - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+
+        - defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
     ### automatically parse the paths to NSI metadata and scans from dataset_dir
     config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
