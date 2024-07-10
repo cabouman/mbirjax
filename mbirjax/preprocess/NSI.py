@@ -1,11 +1,10 @@
 import os, sys
 import re
-import glob
 import numpy as np
-from PIL import Image
 import warnings
 import striprtf.striprtf as striprtf
 import mbirjax.preprocess as preprocess
+import glob
 
 
 def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
@@ -108,7 +107,7 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
                         ['normal', 'Result'],                           # unit vector in direction of source-detector line
                         ['horizontal', 'Result']                        # unit vector in direction of detector rows
                        ]
-    assert(os. path. isfile(config_file_path)), f'Error! NSI config file does not exist. Please check whether {config_file_path} is a valid file.'
+    assert(os.path.isfile(config_file_path)), f'Error! NSI config file does not exist. Please check whether {config_file_path} is a valid file.'
     NSI_params = _read_str_from_config(config_file_path, tag_section_list)
 
     # vector from origin to source
@@ -229,16 +228,16 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     num_det_channels = num_det_channels - (num_det_channels_shift0 + num_det_channels_shift1)
 
     ### read blank scans and dark scans
-    blank_scan = np.expand_dims(_read_scan_img(blank_scan_path), axis=0)
+    blank_scan = np.expand_dims(preprocess.read_scan_img(blank_scan_path), axis=0)
     if dark_scan_path is not None:
-        dark_scan = np.expand_dims(_read_scan_img(dark_scan_path), axis=0)
+        dark_scan = np.expand_dims(preprocess.read_scan_img(dark_scan_path), axis=0)
     else:
         dark_scan = np.zeros(blank_scan.shape)
 
     if view_id_end is None:
         view_id_end = num_acquired_scans
     view_ids = list(range(view_id_start, view_id_end, subsample_view_factor))
-    obj_scan = _read_scan_dir(obj_scan_dir, view_ids)
+    obj_scan = preprocess.read_scan_dir(obj_scan_dir, view_ids)
 
     ### Load defective pixel information
     if defective_pixel_path is not None:
@@ -482,7 +481,7 @@ def calc_det_rotation(r_a, r_n, r_h, r_v):
         float number specifying the angle between the rotation axis and the detector columns in units of radians.
     """
     # project the rotation axis onto the detector plane
-    r_a_p = unit_vector(r_a - project_vector_to_vector(r_a, r_n))
+    r_a_p = preprocess.unit_vector(r_a - preprocess.project_vector_to_vector(r_a, r_n))
     # calculate angle between the projected rotation axis and the horizontal detector vector
     det_rotation = -np.arctan(np.dot(r_a_p, r_h)/np.dot(r_a_p, r_v))
     return det_rotation
@@ -503,14 +502,14 @@ def calc_source_detector_params(r_a, r_n, r_h, r_s, r_r):
         - **magnification** (float): Magnification of the cone-beam geometry defined as
             (source to detector distance)/(source to center-of-rotation distance).
     """
-    r_n = unit_vector(r_n)      # make sure r_n is normalized
+    r_n = preprocess.unit_vector(r_n)      # make sure r_n is normalized
     r_v = np.cross(r_n, r_h)    # r_v = r_n x r_h
 
     #### vector pointing from source to center of rotation along the source-detector line.
-    r_s_r = project_vector_to_vector(-r_s, r_n) # project -r_s to r_n 
+    r_s_r = preprocess.project_vector_to_vector(-r_s, r_n) # project -r_s to r_n 
     
     #### vector pointing from source to detector along the source-detector line.
-    r_s_d = project_vector_to_vector(r_r-r_s, r_n)
+    r_s_d = preprocess.project_vector_to_vector(r_r-r_s, r_n)
     
     source_detector_dist = np.linalg.norm(r_s_d) # ||r_s_d||
     source_iso_dist = np.linalg.norm(r_s_r) # ||r_s_r||
@@ -536,8 +535,8 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
         - **det_channel_offset** (float): Distance from center of detector to the source-detector line along a row. 
         - **det_row_offset** (float): Distance from center of detector to the source-detector line along a column. 
     """
-    r_n = unit_vector(r_n) # make sure r_n is normalized
-    r_h = unit_vector(r_h) # make sure r_h is normalized
+    r_n = preprocess.unit_vector(r_n) # make sure r_n is normalized
+    r_h = preprocess.unit_vector(r_h) # make sure r_h is normalized
     r_v = np.cross(r_n, r_h) # r_v = r_n x r_h
     
     # vector pointing from center of detector to the first row and column of detector along detector columns.
@@ -547,13 +546,13 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
     # vector pointing from source to first row and column of detector.
     r_s_r = r_r - r_s 
     # vector pointing from source-detector line to center of detector. 
-    r_delta = r_s_r - project_vector_to_vector(r_s_r, r_n) - c_v - c_h
+    r_delta = r_s_r - preprocess.project_vector_to_vector(r_s_r, r_n) - c_v - c_h
     # detector row and channel offsets
     det_channel_offset = -np.dot(r_delta, r_h)
     det_row_offset = -np.dot(r_delta, r_v)
     # rotation offset
-    delta_source = r_s - project_vector_to_vector(r_s, r_n)
-    delta_rot = delta_source - project_vector_to_vector(delta_source, r_a)# rotation offset vector (perpendicular to rotation axis)
+    delta_source = r_s - preprocess.project_vector_to_vector(r_s, r_n)
+    delta_rot = delta_source - preprocess.project_vector_to_vector(delta_source, r_a)# rotation offset vector (perpendicular to rotation axis)
     rotation_offset = np.dot(delta_rot, np.cross(r_n, r_a))
     det_channel_offset += rotation_offset*magnification
     return det_channel_offset, det_row_offset
