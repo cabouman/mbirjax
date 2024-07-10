@@ -110,7 +110,7 @@ class ConeBeamModel(TomographyModel):
         """
         # First get the parameters managed by ParameterHandler
         geometry_param_names = \
-            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset', 'det_rotation',
+            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
              'source_detector_dist', 'delta_voxel', 'recon_slice_offset']
         geometry_param_values = self.get_params(geometry_param_names)
 
@@ -496,7 +496,7 @@ class ConeBeamModel(TomographyModel):
         u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification)
         # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
         m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
-                                                 gp.det_row_offset, num_det_rows, num_det_channels, gp.det_rotation)
+                                                 gp.det_row_offset, num_det_rows, num_det_channels)
         m_p_center = jnp.round(m_p).astype(int)
 
         # Compute vertical cone angle of pixel
@@ -606,18 +606,15 @@ class ConeBeamModel(TomographyModel):
         return u, v, pixel_mag
 
     @staticmethod
-    @partial(jax.jit, static_argnames='det_rotation')
+    @jax.jit
     def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
-                          num_det_channels, det_rotation=0):
+                          num_det_channels):
         """
         Convert (u, v) detector coordinates to fractional indices (m, n) into the detector.
 
         Note:
             This version does not account for nonzero detector rotation.
         """
-        if det_rotation != 0:
-            raise ValueError('Nonzero det_rotation is not implemented.')
-
         # Account for small rotation of the detector
         # TODO:  In addition to including the rotation, we'd need to adjust the calculation of the channel as a
         #  function of slice.
