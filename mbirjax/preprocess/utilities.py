@@ -2,7 +2,9 @@ import numpy as np
 import warnings
 import math
 import scipy
-
+from PIL import Image
+import glob
+import os
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
@@ -317,8 +319,8 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
 
 
 ######## subroutines for loading scan images
-def _read_scan_img(img_path):
-    """Reads a single scan image from an image path. This function is a subroutine to the function `_read_scan_dir`.
+def read_scan_img(img_path):
+    """Reads a single scan image from an image path. This function is a subroutine to the function `read_scan_dir`.
 
     Args:
         img_path (string): Path object or file object pointing to an image.
@@ -337,7 +339,7 @@ def _read_scan_img(img_path):
     return img.astype(np.float32)
 
 
-def _read_scan_dir(scan_dir, view_ids=[]):
+def read_scan_dir(scan_dir, view_ids=[]):
     """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
 
     Args:
@@ -353,7 +355,7 @@ def _read_scan_dir(scan_dir, view_ids=[]):
 
     img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*')))
     img_path_list = [img_path_list[idx] for idx in view_ids]
-    img_list = [_read_scan_img(img_path) for img_path in img_path_list]
+    img_list = [read_scan_img(img_path) for img_path in img_path_list]
 
     # return shape = num_views x num_det_rows x num_det_channels
     return np.stack(img_list, axis=0)
