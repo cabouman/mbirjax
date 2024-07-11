@@ -846,9 +846,9 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
             metal_threshold (float): [Default=2.0] Threshold value in units of :math:`ALU^{-1}` used to identify metal voxels. Any voxels in ``init_recon`` with an attenuation coefficient larger than ``metal_threshold`` will be identified as a metal voxel.
-            beta (float, optional): [Default=2.0] Scalar value in range :math:`>0`. `beta` normalizes all weights w.r.t. the sinogram intensity.
+            beta (float, optional): [Default=2.0] Scalar value in range :math:`>0`. ``beta`` normalizes all weights w.r.t. the sinogram intensity.
                 A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
-            gamma (float, optional): [Default=4.0] Scalar value in range :math:`>1`. `gamma` controls the weights specific to the distorted measurements
+            gamma (float, optional): [Default=4.0] Scalar value in range :math:`>1`. ``gamma`` controls the weights specific to the distorted measurements
                 A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
             init_recon (jax array, optional): Optional reconstruction to be used for identifying metal voxels.
         Returns:
