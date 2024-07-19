@@ -498,6 +498,7 @@ class TomographyModel(ParameterHandler):
         # Get required parameters
         num_iters = partition_sequence.size
         recon_shape = self.get_params('recon_shape')
+        num_recon_slices = recon_shape[2]
 
         if weights is None:
             weights = jnp.ones_like(sinogram)
@@ -528,10 +529,9 @@ class TomographyModel(ParameterHandler):
                 raise ValueError(error_message)
 
             # If used, make sure that prox_input has the correct a 3D shape and type
-            prox_input = jnp.array(prox_input.reshape(recon.shape))
+            prox_input = jnp.array(prox_input.reshape((-1, num_recon_slices)))
 
         # Initialize the diagonal of the hessian of the forward model
-        num_recon_slices = recon_shape[2]
         fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
 
         # Initialize the emtpy recon
