@@ -59,9 +59,9 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
-    prox_input = jnp.zeros_like(phantom)
+    prox_input = phantom  # jnp.zeros_like(phantom)
     time0 = time.time()
-    recon, recon_params = ct_model.prox_map(prox_input, sinogram, weights=weights, num_iterations=10, init_recon=None)
+    recon, recon_params = ct_model.prox_map(prox_input, sinogram, weights=weights, num_iterations=10, init_recon=prox_input)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
@@ -69,6 +69,6 @@ if __name__ == "__main__":
     # ##########################
 
     # Display results
-    mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)', vmin=-0.1, vmax=0.5)
+    mbirjax.slice_viewer(phantom-recon, title='Phantom (left) vs VCD Recon (right)', vmin=-0.1, vmax=0.5)
 
 
