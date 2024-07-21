@@ -43,7 +43,78 @@ class TomographyModel(ParameterHandler):
 
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
+
+        self.main_device, self.worker, self.pixels_per_batch, self.views_per_batch = None, None, None, None
+        self.set_devices_and_batch_sizes()
+        self.projector_functions = mbirjax.Projectors(self)
+
         self.create_projectors()
+
+    def set_devices_and_batch_sizes(self):
+
+        # Get the available cpu and gpu memory
+        try:
+            gpus = jax.devices('gpu')
+            gpu_memory_stats = gpus[0].memory_stats()
+            gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
+        except RuntimeError:
+            gpus = ()
+            gpu_memory = 0.0
+        cpus = jax.devices('cpu')
+        cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
+        cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
+
+        main_device = cpus[0]  # We could consider allowing a gpu to be the main device for small problems
+        if len(gpus) > 0:
+            worker = gpus[0]
+            worker_memory = gpu_memory
+        else:
+            worker = cpus[0]
+            worker_memory = cpu_memory
+
+        # Estimate the memory needed for this problem
+        zero = jnp.zeros(1)
+        bits_per_byte = 8
+        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte  # Parse float32 or float64 to get the number of bits
+
+        sinogram_shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
+        (num_views, num_det_rows, num_det_channels) = sinogram_shape
+        (num_recon_rows, num_recon_cols, num_slices) = recon_shape
+
+        mem_per_voxel_cylinder = mem_per_entry * num_slices
+        mem_per_view = mem_per_entry * num_det_rows * num_det_channels
+
+        # Time efficiency is generally better with more views, so start with small number of pixels, determine the
+        # max number of views, then determine the number of pixels possible with that number of views.
+        min_pixels_per_batch = 1000
+        num_pixel_copies_per_batch = 2.5  # This is an estimate based on conebeam
+        num_view_copies_per_batch = 1.5
+        min_voxel_memory = mem_per_entry * min_pixels_per_batch * num_slices * num_pixel_copies_per_batch
+        max_view_memory = worker_memory - min_voxel_memory
+        views_per_batch = int(max_view_memory / (mem_per_view * num_view_copies_per_batch))
+        views_per_batch = min(num_views, views_per_batch)
+        if views_per_batch < num_views:  # Do some load balancing across view batches
+            num_view_batches = num_views // views_per_batch
+            if num_views % views_per_batch != 0:
+                num_view_batches += 1
+            views_per_batch = int(jnp.ceil(num_views / num_view_batches))
+        voxel_memory = worker_memory - mem_per_view * views_per_batch * num_view_copies_per_batch
+        pixels_per_batch = int(voxel_memory / (mem_per_voxel_cylinder * num_pixel_copies_per_batch))
+        pixels_per_batch = 20000  # min(pixels_per_batch, num_recon_rows * num_recon_cols)
+
+        assert(mem_per_view * views_per_batch * num_view_copies_per_batch +
+               mem_per_voxel_cylinder * pixels_per_batch * num_pixel_copies_per_batch < worker_memory)
+
+        if self.get_params('verbose') > 0:
+            print('Using {} for main memory, {} as worker.'.format(main_device, worker))
+            print('Pixel batch size = {}'.format(pixels_per_batch))
+            print('View batch size = {}'.format(views_per_batch))
+
+        self.main_device = worker  # main_device
+        self.worker = worker
+        self.pixels_per_batch = pixels_per_batch
+        self.views_per_batch = views_per_batch
 
     @classmethod
     def from_file(cls, filename):
@@ -496,27 +567,37 @@ class TomographyModel(ParameterHandler):
             nrms_update is ||recon(i+1) - recon(i)||_2 / ||recon(i+1)||_2.
         """
         # Get required parameters
+        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
         num_iters = partition_sequence.size
         recon_shape = self.get_params('recon_shape')
+        num_recon_slices = recon_shape[2]
 
-        if weights is None:
-            weights = jnp.ones_like(sinogram)
+        with jax.default_device(self.main_device):
+            if weights is None:
+                weights = 1  # jnp.ones_like(sinogram)
+                constant_weights = True
+            else:
+                weights = jax.device_put(weights, self.main_device)
+                constant_weights = False
 
-        if init_recon is None:
-            # Initialize VCD recon, and error sinogram
-            recon = jnp.zeros(recon_shape)
-            error_sinogram = sinogram
-        else:
-            # Make sure that init_recon has the correct shape and type
-            if init_recon.shape != recon_shape:
-                error_message = "init_recon does not have the correct shape. \n"
-                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
-                                                                                              init_recon.shape)
-                raise ValueError(error_message)
+            if init_recon is None:
+                # Initialize VCD recon, and error sinogram
+                recon = jnp.zeros(recon_shape)
+                error_sinogram = sinogram
+            else:
+                # Make sure that init_recon has the correct shape and type
+                if init_recon.shape != recon_shape:
+                    error_message = "init_recon does not have the correct shape. \n"
+                    error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
+                                                                                                  init_recon.shape)
+                    raise ValueError(error_message)
 
-            # Initialize VCD recon, and error sinogram
-            recon = jnp.array(init_recon)
-            error_sinogram = sinogram - self.forward_project(recon)
+                # Initialize VCD recon, and error sinogram
+                recon = jnp.array(init_recon)
+                error_sinogram = sinogram - self.forward_project(recon)
+
+        recon = jax.device_put(recon, self.main_device)
+        error_sinogram = jax.device_put(error_sinogram, self.worker)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -527,12 +608,23 @@ class TomographyModel(ParameterHandler):
                                                                                               prox_input.shape)
                 raise ValueError(error_message)
 
-            # If used, make sure that prox_input has the correct a 3D shape and type
-            prox_input = jnp.array(prox_input.reshape(recon.shape))
+            with jax.default_device(self.main_device):
+                prox_input = jnp.array(prox_input.reshape((-1, num_recon_slices)))
+            prox_input = jax.device_put(prox_input, self.main_device)
 
         # Initialize the diagonal of the hessian of the forward model
         num_recon_slices = recon_shape[2]
+        if constant_weights:
+            weights = jnp.ones_like(sinogram)
+        weights = jax.device_put(weights, self.worker)
+        if verbose >= 1:
+            print('Computing Hessian diagonal')
         fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
+        if constant_weights:
+            weights = 1
+        else:
+            weights = jax.device_put(weights, self.main_device)
+        fm_hessian = jax.device_put(fm_hessian, self.main_device)
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))

@@ -15,9 +15,9 @@ if __name__ == "__main__":
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
-    num_views = 512
-    num_det_rows = 512
-    num_det_channels = 512
+    num_views = 256
+    num_det_rows = 256
+    num_det_channels = 256
     sharpness = 0.0
     
     # These can be adjusted to describe the geometry in the cone beam case.
