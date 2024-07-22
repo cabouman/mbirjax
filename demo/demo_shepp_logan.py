@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    ct_model.set_params(sharpness=sharpness, verbose=1)
+    ct_model.set_params(sharpness=sharpness)
 
     # Print out model parameters
     ct_model.print_params()
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=True)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
