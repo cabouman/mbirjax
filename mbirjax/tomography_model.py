@@ -642,9 +642,6 @@ class TomographyModel(ParameterHandler):
         flat_recon = jax.device_put(flat_recon, self.worker)
         # Create the finer grained recon update operators
         vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
-        vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
-
-        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
 
         if verbose >= 1:
             print('Starting VCD iterations')
@@ -660,15 +657,13 @@ class TomographyModel(ParameterHandler):
         for i in range(num_iters):
             # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
-            subset_indices = np.random.permutation(partition.shape[0])
 
             # Do an iteration
-            vcd_data = [error_sinogram, flat_recon, partition, nrms_update[i], alpha_values[i]]
-            error_sinogram, flat_recon, norm_square_update, alpha = vcd_partition_iterator(vcd_data, subset_indices)
+            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_iterator, flat_recon, error_sinogram, partition)
 
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
-            nrms_update[i] = norm_square_update / jnp.sum(flat_recon * flat_recon)
+            nrms_update[i] = norm_squared_update / jnp.sum(flat_recon * flat_recon)
             es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
             alpha_values[i] = alpha
 
@@ -696,51 +691,40 @@ class TomographyModel(ParameterHandler):
         return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
 
     @staticmethod
-    def create_vcd_partition_iterator(vcd_subset_iterator):
+    def vcd_partition_iterator(vcd_subset_iterator, flat_recon, error_sinogram, partition):
         """
-        Create a jit-compiled function to update all the pixels in the recon and error sinogram by applying
-        the supplied vcd_subset_iterator to each subset in a partition.
+        Calculate a full iteration of the VCD algorithm by scanning over the subsets of the partition.
+        Each iteration of the algorithm should return a better reconstructed recon.
+        The error_sinogram should always be:  error_sinogram = measured_sinogram - forward_proj(recon)
+        where measured_sinogram is the measured sinogram and recon is the current reconstruction.
 
         Args:
-            vcd_subset_iterator (callable):  The function returned by create_vcd_subset_iterator.
+            vcd_subset_iterator (callable): Function to iterate over each subset in the partition.
+            flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
 
         Returns:
-            (callable) vcd_partition_iterator(sinogram_recon_partition, subset_indices)
+            (flat_recon, error_sinogram, norm_squared_for_partition, alpha): The first two have the same shape as above, but
+            are updated to reduce overall loss function.
+            The norm_squared_for_partition includes the changes from all subsets of this partition.
+            alpha is the relative step size in the gradient descent step, averaged over the subsets
+            in the partition.
         """
 
-        def vcd_partition_iterator(sinogram_recon_partition, subset_indices):
-            """
-            Calculate a full iteration of the VCD algorithm by scanning over the subsets of the partition.
-            Each iteration of the algorithm should return a better reconstructed recon.
-            The error_sinogram should always be:  error_sinogram = measured_sinogram - forward_proj(recon)
-            where measured_sinogram is the measured sinogram and recon is the current reconstruction.
+        # Loop over the subsets of the partition, using random subset_indices to order them.
+        norm_squared_for_partition = 0
+        alpha_sum = 0
+        subset_indices = np.random.permutation(partition.shape[0])
+        for index in subset_indices:
+            subset = partition[index]
+            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_iterator(flat_recon, error_sinogram, subset)
+            norm_squared_for_partition += norm_squared_for_subset
+            alpha_sum += alpha_for_subset
 
-            Args:
-                sinogram_recon_partition (list or tuple): 4 element tuple containing
+        return flat_recon, error_sinogram, norm_squared_for_partition, alpha_sum / partition.shape[0]
 
-                    * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-                    * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-                    * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
-                    * Squared sum of changes to the recon during this iteration but before this subset.
-                    * alpha_sum (float): Sum of the alpha step sizes over previous subsets in this partition.
-
-                subset_indices (jax array): An array of indices into the partition - this gives the order in which the subsets are updated.
-
-            Returns:
-                (error_sinogram, flat_recon, norm_square_update, alpha): The first two have the same shape as above, but
-                are updated to reduce overall loss function.  The norm_square_update includes the changes from this subset.
-                alpha is the relative step size in the gradient descent step, averaged over the subsets in the partition..
-            """
-
-            # Scan over the subsets of the partition, using the subset_indices to order them.
-            sinogram_recon_partition, _ = jax.lax.scan(vcd_subset_iterator, sinogram_recon_partition, subset_indices)
-
-            error_sinogram, flat_recon, partition, norm_square_update, alpha_sum = sinogram_recon_partition
-            return error_sinogram, flat_recon, norm_square_update, alpha_sum / partition.shape[0]
-
-        return jax.jit(vcd_partition_iterator)
-
-    def create_vcd_subset_iterator(self, fm_hessian, weights=None, prox_input=None):
+    def create_vcd_subset_iterator(self, fm_hessian, weights, prox_input=None):
         """
         Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
 
@@ -766,7 +750,7 @@ class TomographyModel(ParameterHandler):
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
 
-        def vcd_subset_iterator(sinogram_recon_partition, subset_index):
+        def vcd_subset_iterator(flat_recon, error_sinogram, pixel_indices):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -776,26 +760,23 @@ class TomographyModel(ParameterHandler):
             where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
 
             Args:
-                sinogram_recon_partition (list or tuple): 4 element tuple containing
-
-                    * error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
-                    * flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-                    * partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
-                    * Squared sum of changes to the recon during this iteration but before this subset.
-
-                subset_index (int): integer index of the subset within the partition.
+                flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+                error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+                pixel_indices (jax array): 1D array of pixel indices.
 
             Returns:
-                [error_sinogram, flat_recon, partition, norm_square_update]: The first two have the same shape as above, but
-                are updated to reduce overall loss function.  The norm_square_update includes the changes from this subset.
+                flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset:
+                The first two have the same shape as above, but are updated to reduce the overall loss function.
+                norm_squared is for the change to the recon from this one subset.
+                alpha is the relative step size for this subset.
             """
-            error_sinogram, flat_recon, partition, norm_square_update, alpha_prev_sum = sinogram_recon_partition
-            pixel_indices = partition[subset_index]
+
+            weighted_error_sinogram = fm_constant * error_sinogram * weights
 
             def delta_recon_batch(index_batch):
                 # Compute the forward model gradient and hessian at each pixel in the index set.
                 # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-                forward_grad_batch = -fm_constant * sparse_back_project(error_sinogram * weights, index_batch)
+                forward_grad_batch = - sparse_back_project(weighted_error_sinogram, index_batch)
                 forward_hess_batch = fm_constant * fm_hessian[index_batch]
 
                 # Compute the prior model gradient and hessian (i.e., second derivative) terms
@@ -816,25 +797,45 @@ class TomographyModel(ParameterHandler):
                 prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
                 prior_grad_delta = prior_grad_delta.reshape((1, 1))
                 # Estimated upper bound for hessian
-                prior_over_relaxation_factor = 2
-                prior_hess_max_delta = ((1 / prior_over_relaxation_factor) *
+                prior_overrelaxation_factor = 2
+                prior_hess_max_delta = ((1 / prior_overrelaxation_factor) *
                                         jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2))
                 prior_hess_max_delta = prior_hess_max_delta.reshape((1, 1))
                 return delta_recon_at_indices_batch, prior_grad_delta, prior_hess_max_delta
 
             # Get the update direction
-            batch_update_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices,
-                                                                              pixel_batch_size)
-            delta_recon_at_indices = batch_update_at_indices[0]
+            # pixel_batch_size = 2000 # Debug only
+            # batch_update_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices,
+            #                                                                   pixel_batch_size)
+            # delta_recon_at_indices = batch_update_at_indices[0]
+            #
+            # # Then sum over the batched outputs to get delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            # prior_linear = jnp.sum(batch_update_at_indices[1])
+            # prior_quadratic_approx = jnp.sum(batch_update_at_indices[2])
 
-            # Then sum over the batched outputs to get delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            prior_linear = jnp.sum(batch_update_at_indices[1])
-            prior_quadratic_approx = jnp.sum(batch_update_at_indices[2])
+            num_input_points = len(pixel_indices)
+            num_remaining = num_input_points % pixel_batch_size
+
+            # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
+            initial_batch_size = pixel_batch_size if num_remaining == 0 else num_remaining
+            delta_batch, prior_linear, prior_quadratic_approx = delta_recon_batch(pixel_indices[:initial_batch_size])
+            delta_recon_at_indices = [delta_batch]  # [jax.device_put(delta_batch, self.main_device)]
+            # Finish the other batches
+            if num_remaining > 0:
+                pixel_indices_batched = pixel_indices[initial_batch_size:].reshape((-1, pixel_batch_size))
+                for batch in pixel_indices_batched:
+                    delta_batch, linear, quadratic = delta_recon_batch(batch)
+                    delta_recon_at_indices.append(delta_batch)  #jax.device_put(delta_batch, self.main_device))
+                    prior_linear += linear
+                    prior_quadratic_approx += quadratic
+            delta_recon_at_indices = jnp.concatenate(delta_recon_at_indices)
+            prior_linear = prior_linear[0, 0]
+            prior_quadratic_approx = prior_quadratic_approx[0, 0]
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
-            forward_linear = jnp.sum(fm_constant * error_sinogram * delta_sinogram * weights)
-            forward_quadratic = jnp.sum(fm_constant * delta_sinogram * delta_sinogram * weights)
+            forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
+            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
             # Compute optimal update step
             alpha_numerator = forward_linear - prior_linear
@@ -880,10 +881,12 @@ class TomographyModel(ParameterHandler):
             flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
 
             # Update sinogram and loss
-            error_sinogram = error_sinogram - alpha * delta_sinogram
-            norm_square_update += jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
+            delta_sinogram = alpha * delta_sinogram
+            error_sinogram = error_sinogram - delta_sinogram
+            norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
+            alpha_for_subset = alpha
 
-            return [error_sinogram, flat_recon, partition, norm_square_update, alpha + alpha_prev_sum], None
+            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset
 
         return jax.jit(vcd_subset_iterator)
 
