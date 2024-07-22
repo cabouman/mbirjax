@@ -865,12 +865,12 @@ class TomographyModel(ParameterHandler):
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             # Perform sparse updates at index locations
-            update = alpha * delta_recon_at_indices
-            flat_recon = flat_recon.at[pixel_indices].add(update)
+            delta_recon_at_indices = alpha * delta_recon_at_indices
+            flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
 
             # Update sinogram and loss
             error_sinogram = error_sinogram - alpha * delta_sinogram
-            norm_square_update += jnp.sum(update * update)
+            norm_square_update += jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
 
             return [error_sinogram, flat_recon, partition, norm_square_update, alpha + alpha_prev_sum], None
 
