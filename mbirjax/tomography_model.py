@@ -492,7 +492,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def recon(self, sinogram, weights=None, num_iterations=15, first_iteration=0, init_recon=None,
+    def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
               compute_prior_loss=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
