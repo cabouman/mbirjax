@@ -111,7 +111,7 @@ class TomographyModel(ParameterHandler):
             print('Pixel batch size = {}'.format(pixels_per_batch))
             print('View batch size = {}'.format(views_per_batch))
 
-        self.main_device = worker  # main_device
+        self.main_device = main_device
         self.worker = worker
         self.pixels_per_batch = pixels_per_batch
         self.views_per_batch = views_per_batch
@@ -628,7 +628,7 @@ class TomographyModel(ParameterHandler):
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
-
+        flat_recon = jax.device_put(flat_recon, self.worker)
         # Create the finer grained recon update operators
         vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
         vcd_partition_iterator = TomographyModel.create_vcd_partition_iterator(vcd_subset_iterator)
