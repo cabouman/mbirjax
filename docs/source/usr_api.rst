@@ -75,13 +75,21 @@ Preprocessing
 ------------------
 
 Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
+The following are functions specific to NSI scanners.
 
 .. autosummary::
 
-   mbirjax.preprocess.compute_sino_transmission
-   mbirjax.preprocess.interpolate_defective_pixels
-   mbirjax.preprocess.correct_det_rotation
-   mbirjax.preprocess.estimate_background_offset
-   mbirjax.preprocess.NSI.compute_sino_and_params
-   mbirjax.preprocess.NSI.load_scans_and_params
+   preprocess.NSI.compute_sino_and_params
+   preprocess.NSI.load_scans_and_params
+
+The remaining functions can be used for multiple types of scan data.
+
+.. autosummary::
+
+   preprocess.compute_sino_transmission
+   preprocess.interpolate_defective_pixels
+   preprocess.correct_det_rotation
+   preprocess.estimate_background_offset
+
+
 
