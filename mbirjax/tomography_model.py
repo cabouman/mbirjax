@@ -82,39 +82,50 @@ class TomographyModel(ParameterHandler):
         (num_views, num_det_rows, num_det_channels) = sinogram_shape
         (num_recon_rows, num_recon_cols, num_slices) = recon_shape
 
-        mem_per_voxel_cylinder = mem_per_entry * num_slices
-        mem_per_view = mem_per_entry * num_det_rows * num_det_channels
+        reps_per_vcd_recon = 8
+        required_memory = mem_per_entry * reps_per_vcd_recon * max(np.prod(sinogram_shape), np.prod(recon_shape))
+        if required_memory > worker_memory:
+            if worker != cpus[0]:
+                warnings.warn('Insufficient GPU memory for this problem.')
+                warnings.warn('Trying on CPU, but this may be slow.')
+                worker = cpus[0]
+                worker_memory = cpu_memory
+        if required_memory > worker_memory:
+            message = 'Problem is too large for available memory.'
+            message += '\nEstimated memory required = {:.3f}GB.  Available = {:.3f}GB.'.format(required_memory / 1024**3,
+                                                                                       worker_memory / 1024**3)
+            raise MemoryError(message)
 
-        # Time efficiency is generally better with more views, so start with small number of pixels, determine the
-        # max number of views, then determine the number of pixels possible with that number of views.
-        min_pixels_per_batch = 1000
-        num_pixel_copies_per_batch = 2.5  # This is an estimate based on conebeam
-        num_view_copies_per_batch = 1.5
-        min_voxel_memory = mem_per_entry * min_pixels_per_batch * num_slices * num_pixel_copies_per_batch
-        max_view_memory = worker_memory - min_voxel_memory
-        views_per_batch = int(max_view_memory / (mem_per_view * num_view_copies_per_batch))
-        views_per_batch = min(num_views, views_per_batch)
-        if views_per_batch < num_views:  # Do some load balancing across view batches
-            num_view_batches = num_views // views_per_batch
-            if num_views % views_per_batch != 0:
-                num_view_batches += 1
-            views_per_batch = int(jnp.ceil(num_views / num_view_batches))
-        voxel_memory = worker_memory - mem_per_view * views_per_batch * num_view_copies_per_batch
-        pixels_per_batch = int(voxel_memory / (mem_per_voxel_cylinder * num_pixel_copies_per_batch))
-        pixels_per_batch = 20000  # min(pixels_per_batch, num_recon_rows * num_recon_cols)
-
-        assert(mem_per_view * views_per_batch * num_view_copies_per_batch +
-               mem_per_voxel_cylinder * pixels_per_batch * num_pixel_copies_per_batch < worker_memory)
+        # The following is code to estimate batch size when batches can be sent one at a time to the GPU
+        # mem_per_voxel_cylinder = mem_per_entry * num_slices
+        # mem_per_view = mem_per_entry * num_det_rows * num_det_channels
+        #
+        # # Time efficiency is generally better with more views, so start with small number of pixels, determine the
+        # # max number of views, then determine the number of pixels possible with that number of views.
+        # min_pixels_per_batch = 1000
+        # num_pixel_copies_per_batch = 2.5  # This is an estimate based on conebeam
+        # num_view_copies_per_batch = 1.5
+        # min_voxel_memory = mem_per_entry * min_pixels_per_batch * num_slices * num_pixel_copies_per_batch
+        # max_view_memory = worker_memory - min_voxel_memory
+        # views_per_batch = int(max_view_memory / (mem_per_view * num_view_copies_per_batch))
+        # views_per_batch = min(num_views, views_per_batch, 128)
+        # if views_per_batch < num_views:  # Do some load balancing across view batches
+        #     num_view_batches = num_views // views_per_batch
+        #     if num_views % views_per_batch != 0:
+        #         num_view_batches += 1
+        #     views_per_batch = int(jnp.ceil(num_views / num_view_batches))
+        # voxel_memory = worker_memory - mem_per_view * views_per_batch * num_view_copies_per_batch
+        # pixels_per_batch = int(voxel_memory / (mem_per_voxel_cylinder * num_pixel_copies_per_batch))
+        # pixels_per_batch = min(pixels_per_batch, num_recon_rows * num_recon_cols, 2048)
+        #
+        # assert(mem_per_view * views_per_batch * num_view_copies_per_batch +
+        #        mem_per_voxel_cylinder * pixels_per_batch * num_pixel_copies_per_batch < worker_memory)
 
         if self.get_params('verbose') > 0:
             print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-            print('Pixel batch size = {}'.format(pixels_per_batch))
-            print('View batch size = {}'.format(views_per_batch))
 
         self.main_device = main_device
         self.worker = worker
-        self.pixels_per_batch = pixels_per_batch
-        self.views_per_batch = views_per_batch
 
     @classmethod
     def from_file(cls, filename):
@@ -662,7 +673,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = 'After iteration {}: Pct change={:.3f}, Forward loss={:.3f}'.format(i + first_iteration, 100*nrms_update[i], fm_rmse[i])
+                iter_output = 'After iteration {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, 100*nrms_update[i], fm_rmse[i])
                 if compute_prior_loss:
                     b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
                     b = tuple(b)
@@ -674,10 +685,10 @@ class TomographyModel(ParameterHandler):
                     # then scale by the average number of elements between the two.
                     total_loss = ((fm_rmse[i] * sinogram.size + pm_loss[i] * flat_recon.size) /
                                   (0.5 * (sinogram.size + flat_recon.size)))
-                    iter_output += ', Prior loss={:.3f}, Weighted total loss={:.3f}'.format(pm_loss[i], total_loss)
+                    iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
 
                 print(iter_output)
-                print(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.3f}')
+                print(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
