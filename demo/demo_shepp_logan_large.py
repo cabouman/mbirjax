@@ -3,7 +3,6 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax.plot_utils as pu
 import mbirjax.parallel_beam
 
 if __name__ == "__main__":
@@ -30,8 +29,8 @@ if __name__ == "__main__":
         detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
     else:
         detector_cone_angle = 0
-    start_angle = -(np.pi + detector_cone_angle) * (1/2)
-    end_angle = (np.pi + detector_cone_angle) * (1/2)
+    start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+    end_angle = (np.pi + detector_cone_angle) * (1 / 2)
 
     # Initialize sinogram
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
@@ -39,7 +38,8 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                         source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
         ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
     else:
@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
-    sinogram = jax.device_put(sinogram, jax.devices('cpu')[0])
+
     time0 = time.time()
     recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, num_iterations=10)
 
@@ -92,5 +92,4 @@ if __name__ == "__main__":
     print('95% of recon pixels are within {} of phantom'.format(pct_95))
 
     # Display results
-    # pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
-
+    # mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
