@@ -949,13 +949,13 @@ class TomographyModel(ParameterHandler):
         
             weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) )
         
-        ``delta(metal)`` will be computed with the following approaches:
+        ``delta(metal)`` is a binary mask indicating the distorted sino entries. It will be computed with the following approaches:
 
-            - If both ``init_recon`` and ``metal_threshold`` are provided, then ``delta(metal)`` will be computed by segmenting ``init_recon`` with ``metal_threshold``, and forward projecting the resulting segmentation mask to the sinogram domain.
-            - If ``init_recon`` is provided but ``metal_threshold=None``, then ``init_recon`` will be segmented with Otsu's method.
-            - If ``init_recon=None``, then ``delta(metal)`` will be computed by segmenting ``sinogram`` with Otsu's method. ``metal_threshold`` will be ignored in this case.
+            - If both ``init_recon`` and ``metal_threshold`` are provided, then ``init_recon`` will be segmented with ``metal_threshold``. ``delta(metal)`` is computed by forward projecting the resulting segmentation mask to the sinogram domain.
+            - If ``init_recon`` is provided but ``metal_threshold`` is ``None``, then ``init_recon`` will be automatically segmented with Otsu's method. ``delta(metal)`` is computed by forward projecting the resulting segmentation mask to the sinogram domain.
+            - If ``init_recon`` is ``None``, then ``delta(metal)`` will be computed by segmenting ``sinogram`` with Otsu's method. ``metal_threshold`` will be ignored in this case.
 
-        It is recommended to provide an ``init_recon`` to obtain the best metal artifact reduction result.
+        It is recommended to provide ``init_recon`` and ``metal_thresholds`` to obtain the best metal artifact reduction result.
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
