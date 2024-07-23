@@ -268,8 +268,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self.sparse_forward_project(voxel_values, indices, view_indices=view_indices).block_until_ready()
-        gc.collect()
+        sinogram = self.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
         return sinogram
 
     def sparse_back_project(self, sinogram, indices, view_indices=()):
@@ -287,8 +286,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon_at_indices = self.sparse_back_project(sinogram, indices, view_indices=view_indices).block_until_ready()
-        gc.collect()
+        recon_at_indices = self.sparse_back_project(sinogram, indices, view_indices=view_indices)
         return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None, view_indices=()):
@@ -303,8 +301,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights, view_indices=view_indices).block_until_ready()
-        gc.collect()
+        hessian = self.compute_hessian_diagonal(weights, view_indices=view_indices)
         return hessian
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
