@@ -18,7 +18,6 @@ dependencies:
   - ruamel.yaml
   - psutil
   - striprtf
-  - scikit-image
   - pip  # Add any additional packages here and in pyproject.toml
   - pip:
       - -e .
