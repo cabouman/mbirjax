@@ -862,9 +862,9 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
             # assuming three categories: metal, non_metal, and background.
-            [thresh_distorted] = multi_threshold_otsu(sinogram, classes=2)
-            print("Distorted sinogram threshold = ", thresh_distorted)
-            delta_metal = jnp.array(sinogram > thresh_distorted, dtype=jnp.dtype(jnp.float32))
+            [bk_thresh_sino, metal_thresh_sino] = multi_threshold_otsu(sinogram, classes=3)
+            print("Distorted sinogram threshold = ", metal_thresh_sino)
+            delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32))
         
         # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
         else:
