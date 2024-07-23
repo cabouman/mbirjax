@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import mbirjax
 from mbirjax import ParameterHandler
 from collections import namedtuple
-
+from mbirjax.preprocess.utilities import multi_threshold_otsu
 
 class TomographyModel(ParameterHandler):
     """
@@ -940,6 +940,65 @@ class TomographyModel(ParameterHandler):
 
         return recon, loss_vectors
 
+    def gen_weights_mar(self, sinogram, init_recon=None, metal_threshold=None, beta=2.0, gamma=3.0):
+        """
+        Generates the weights used for reducing metal artifacts in MBIR reconstruction.
+
+        This function computes sinogram weights that help to reduce metal artifacts.
+        More specifically, it computes weights with the form:
+        
+            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) )
+        
+        ``delta(metal)`` is a binary mask indicating the distorted sino entries. It will be computed with the following approaches:
+
+            - If both ``init_recon`` and ``metal_threshold`` are provided, then ``init_recon`` will be segmented with ``metal_threshold``. ``delta(metal)`` is computed by forward projecting the resulting segmentation mask to the sinogram domain.
+            - If ``init_recon`` is provided but ``metal_threshold`` is ``None``, then ``init_recon`` will be automatically segmented with Otsu's method. ``delta(metal)`` is computed by forward projecting the resulting segmentation mask to the sinogram domain.
+            - If ``init_recon`` is ``None``, then ``delta(metal)`` will be computed by segmenting ``sinogram`` with Otsu's method. ``metal_threshold`` will be ignored in this case.
+
+        It is recommended to provide ``init_recon`` and ``metal_thresholds`` to obtain the best metal artifact reduction result.
+
+        Args:
+            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            init_recon (jax array, optional): Optional reconstruction to be used for identifying metal voxels. 
+            metal_threshold (float, optional): Optional threshold value in units of :math:`ALU^{-1}` to identify metal voxels. Any voxels in ``init_recon`` with an attenuation coefficient larger than ``metal_threshold`` will be identified as a metal voxel. Ignored if ``init_recon=None``.
+            beta (float, optional): Scalar value in range :math:`>0`.
+                A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
+            gamma (float, optional): Scalar value in range :math:`>=0`.
+                A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
+
+        Returns:
+            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
+        """
+        # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method. 
+        if init_recon is None:
+            print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
+            # assuming three categories: metal, non_metal, and background.
+            [bk_thresh_sino, metal_thresh_sino] = multi_threshold_otsu(sinogram, classes=3)
+            print("Distorted sinogram threshold = ", metal_thresh_sino)
+            delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32))
+        
+        # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
+        else:
+            if metal_threshold is None:
+                print("Metal_threshold calculated with Otsu's method.")
+                # assuming three categories: metal, non_metal, and background.
+                [bk_threshold, metal_threshold] = multi_threshold_otsu(init_recon, classes=3)
+            
+            print("metal_threshold = ", metal_threshold)
+            ### Identify metal voxels
+            metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32)) 
+            ### Forward project metal mask to generate a sinogram mask
+            metal_mask_projected = self.forward_project(metal_mask)
+            
+            ### metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
+            delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32))
+
+        # weights for undistorted sino entries
+        weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
+
+        return weights 
+
+
     @staticmethod
     def gen_weights(sinogram, weight_type):
         """
@@ -971,6 +1030,7 @@ class TomographyModel(ParameterHandler):
             raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
 
         return weights
+
 
     def gen_modified_3d_sl_phantom(self):
         """
