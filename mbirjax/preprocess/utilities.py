@@ -375,8 +375,6 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 ######## Multi-threshold Otsu's method
-import numpy as np
-
 def multi_threshold_otsu(image, classes=2):
     """
     Segments an image into several different classes using Otsu's method.
@@ -396,19 +394,15 @@ def multi_threshold_otsu(image, classes=2):
     if classes < 2:
         raise ValueError("Number of classes must be at least 2")
     
-    # Normalize the image to the range [0, 1]
-    image_min = np.min(image)
-    image_max = np.max(image)
-    normalized_image = (image - image_min) / (image_max - image_min)
-    
-    # Compute the histogram of the normalized image
-    hist, bin_edges = np.histogram(normalized_image, bins=256, range=(0, 1))
+    # Compute the histogram of the image
+    hist, bin_edges = np.histogram(image, bins=256, range=(np.min(image), np.max(image)))
     
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
     
-    # Scale thresholds back to the original image range
-    scaled_thresholds = [image_min + t * (image_max - image_min) / 256 for t in thresholds]
+    # Convert histogram bin indices to original image values
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    scaled_thresholds = [bin_centers[t] for t in thresholds]
     
     return scaled_thresholds
 
