@@ -843,12 +843,20 @@ class TomographyModel(ParameterHandler):
 
         This function computes sinogram weights that help to reduce metal artifacts.
         More specifically, it computes weights with the form:
-
+        
             weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) )
+        
+        ``delta(metal)`` will be computed with the following approaches:
+
+            - If both ``init_recon`` and ``metal_threshold`` are provided, then ``delta(metal)`` will be computed by segmenting ``init_recon`` with ``metal_threshold``, and forward projecting the resulting segmentation mask to the sinogram domain.
+            - If ``init_recon`` is provided but ``metal_threshold=None``, then ``init_recon`` will be segmented with Otsu's method.
+            - If ``init_recon=None``, then ``delta(metal)`` will be computed by segmenting ``sinogram`` with Otsu's method. ``metal_threshold`` will be ignored in this case.
+
+        It is recommended to provide an ``init_recon`` to obtain the best metal artifact reduction result.
 
         Args:
             sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            init_recon (jax array, optional): Optional reconstruction to be used for identifying metal voxels. It is recommended to provide an ``init_recon`` to obtain the best metal artifact reduction result.
+            init_recon (jax array, optional): Optional reconstruction to be used for identifying metal voxels. 
             metal_threshold (float, optional): Optional threshold value in units of :math:`ALU^{-1}` to identify metal voxels. Any voxels in ``init_recon`` with an attenuation coefficient larger than ``metal_threshold`` will be identified as a metal voxel. Ignored if ``init_recon=None``.
             beta (float, optional): Scalar value in range :math:`>0`.
                 A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
@@ -856,7 +864,7 @@ class TomographyModel(ParameterHandler):
                 A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
 
         Returns:
-            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
         """
         # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method. 
         if init_recon is None:
