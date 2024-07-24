@@ -540,6 +540,7 @@ class TomographyModel(ParameterHandler):
         # Generate set of voxel partitions
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
         partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
+        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
@@ -595,8 +596,6 @@ class TomographyModel(ParameterHandler):
             To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
         """
         # Ensure that everything has the right shape and is on the main device
-        sinogram = jax.device_put(sinogram, self.main_device)
-        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
         if weights is None:
             weights = 1
             constant_weights = True
@@ -812,7 +811,7 @@ class TomographyModel(ParameterHandler):
 
             # Transfer to main
             weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.main_device)
-            forward_grad = jax.device_put(forward_grad, self.worker)
+            forward_grad = jax.device_put(forward_grad, self.main_device)
 
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[pixel_indices]
@@ -842,7 +841,7 @@ class TomographyModel(ParameterHandler):
 
             # Compute update direction in sinogram domain
             delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.worker)
-            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
+            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker)
             delta_sinogram = jax.device_put(delta_sinogram, self.main_device)
 
             forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
