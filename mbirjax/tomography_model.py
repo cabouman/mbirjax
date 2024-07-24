@@ -92,8 +92,9 @@ class TomographyModel(ParameterHandler):
                 worker_memory = cpu_memory
         if required_memory > worker_memory:
             message = 'Problem is too large for available memory.'
-            message += '\nEstimated memory required = {:.3f}GB.  Available = {:.3f}GB.'.format(required_memory / 1024**3,
-                                                                                       worker_memory / 1024**3)
+            message += '\nEstimated memory required = {:.3f}GB.  Available = {:.3f}GB.'.format(
+                required_memory / 1024 ** 3,
+                worker_memory / 1024 ** 3)
             raise MemoryError(message)
 
         # The following is code to estimate batch size when batches can be sent one at a time to the GPU
@@ -326,18 +327,29 @@ class TomographyModel(ParameterHandler):
         Automatically sets the regularization parameters (self.sigma_y, self.sigma_x, and self.sigma_prox) used in MBIR reconstruction based on the provided sinogram and optional weights.
 
         Args:
-            sinogram (jnp.array): 3D jax array containing the sinogram with shape (num_views, num_det_rows, num_det_channels).
-            weights (jnp.array, optional): 3D weights array with the same shape as the sinogram. Defaults to all 1s.
+            sinogram (ndarray): 3D jax array containing the sinogram with shape (num_views, num_det_rows, num_det_channels).
+            weights (ndarray, optional): 3D weights array with the same shape as the sinogram. Defaults to all 1s.
 
         Returns:
             namedtuple containing the parameters sigma_y, sigma_x, sigma_prox
 
-        The method adjusts the regularization parameters only if `auto_regularize_flag` is set to True within the model's parameters.
+        Notes:
+            The method adjusts the regularization parameters only if `auto_regularize_flag` is set to True within the model's parameters.
+            Also, the inputs may be jax arrays, but they are cast to numpy arrays before calculation to avoid
+            duplicating large sinograms on the GPU.
         """
         if self.get_params('auto_regularize_flag'):
-            self.auto_set_sigma_y(sinogram, weights)
-            self.auto_set_sigma_x(sinogram)
-            self.auto_set_sigma_prox(sinogram)
+            # Make sure sinogram and weights are on the cpu to avoid duplication of large sinos on the GPU.
+            sinogram = np.array(sinogram)
+            if weights is None:
+                weights = 1
+            # Compute indicator function for sinogram support
+            sino_indicator = self._get_sino_indicator(sinogram)
+            self.auto_set_sigma_y(sinogram, sino_indicator, weights)
+
+            recon_std = self._get_estimate_of_recon_std(sinogram, sino_indicator)
+            self.auto_set_sigma_x(recon_std)
+            self.auto_set_sigma_prox(recon_std)
 
         regularization_param_names = ['sigma_y', 'sigma_x', 'sigma_prox']
         RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
@@ -347,12 +359,13 @@ class TomographyModel(ParameterHandler):
 
         return regularization_params
 
-    def auto_set_sigma_y(self, sinogram, weights=None):
+    def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
         """
         Sets the value of the parameter sigma_y used for use in MBIR reconstruction.
 
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sinogram (jax array or ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (jax array or ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
         """
 
@@ -361,13 +374,8 @@ class TomographyModel(ParameterHandler):
         magnification = self.get_magnification()
         delta_voxel, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_channel'])
 
-        # Compute indicator function for sinogram support
-        sino_indicator = self._get_sino_indicator(sinogram)
-
         # Compute RMS value of sinogram excluding empty space
-        if weights is None:  # For this function, we don't need a full sinogram of 1s for default weights
-            weights = 1
-        signal_rms = float(jnp.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5)
+        signal_rms = float(np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5)
 
         # Convert snr to relative noise standard deviation
         rel_noise_std = 10 ** (-snr_db / 20)
@@ -381,32 +389,30 @@ class TomographyModel(ParameterHandler):
         sigma_y = np.float32(rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5))
         self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
 
-    def auto_set_sigma_x(self, sinogram):
+    def auto_set_sigma_x(self, recon_std):
         """
         Compute the automatic value of ``sigma_x`` for use in MBIR reconstruction with qGGMRF prior.
 
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            recon_std (float): Estimated standard deviation of the reconstruction from _get_estimate_of_recon_std.
         """
         # Get parameters
         sharpness = self.get_params('sharpness')
-        recon_std = self._get_estimate_of_recon_std(sinogram)
 
         # Compute sigma_x as a fraction of the typical recon value
         # 0.2 is an empirically determined constant
         sigma_x = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
 
-    def auto_set_sigma_prox(self, sinogram):
+    def auto_set_sigma_prox(self, recon_std):
         """
         Compute the automatic value of ``sigma_prox`` for use in MBIR reconstruction with proximal map prior.
 
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            recon_std (float): Estimated standard deviation of the reconstruction from _get_estimate_of_recon_std.
         """
         # Get parameters
         sharpness = self.get_params('sharpness')
-        recon_std = self._get_estimate_of_recon_std(sinogram)
 
         # Compute sigma_x as a fraction of the typical recon value
         # 0.2 is an empirically determined constant
@@ -425,8 +431,8 @@ class TomographyModel(ParameterHandler):
         using all voxels with those indices across all the slices.
 
         Args:
-            recon (jnp array): The 3D reconstruction array.
-            indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            recon (ndarray): The 3D reconstruction array.
+            indices (ndarray): Array of indices specifying which voxels to project.
 
         Returns:
             numpy.ndarray or jax.numpy.DeviceArray: Array of voxel values at the specified indices.
@@ -441,26 +447,27 @@ class TomographyModel(ParameterHandler):
     @staticmethod
     def _get_sino_indicator(sinogram):
         """
-        Compute a binary function that indicates the region of sinogram support.
+        Compute a binary mask that indicates the region of sinogram support.
 
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
 
         Returns:
-            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+            (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
         percent_noise_floor = 5.0
         # Form indicator by thresholding sinogram
-        indicator = jnp.int8(sinogram > (0.01 * percent_noise_floor) * jnp.mean(jnp.fabs(sinogram)))
+        indicator = np.int8(sinogram > (0.01 * percent_noise_floor) * np.mean(np.fabs(sinogram)))
         return indicator
 
-    def _get_estimate_of_recon_std(self, sinogram):
+    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
         """
         Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
         sigma_x in MBIR reconstruction.
 
         Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
         """
         # Get parameters
         delta_det_channel = self.get_params('delta_det_channel')
@@ -470,8 +477,7 @@ class TomographyModel(ParameterHandler):
         num_det_channels = sinogram.shape[-1]
 
         # Compute the typical magnitude of a sinogram value
-        sino_indicator = self._get_sino_indicator(sinogram)
-        typical_sinogram_value = jnp.average(jnp.abs(sinogram), weights=sino_indicator)
+        typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
 
         # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
         # Compute a typical projection path length based on the soft minimum of the recon width and height
@@ -482,7 +488,7 @@ class TomographyModel(ParameterHandler):
         typical_path_length_sino = num_det_channels * delta_det_channel / magnification
 
         # Compute a typical projection path as the minimum of the two estimates
-        typical_path_length = jnp.minimum(typical_path_length_space, typical_path_length_sino)
+        typical_path_length = np.minimum(typical_path_length_space, typical_path_length_sino)
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         recon_std = typical_sinogram_value / typical_path_length
@@ -512,6 +518,14 @@ class TomographyModel(ParameterHandler):
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
             recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
+        # Check that sinogram and weights are not taking up GPU space
+        if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.main_device:
+            raise ValueError(
+                'With limited GPU memory, sinogram should be either a numpy array or a jax array on the cpu.')
+        if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.main_device:
+            raise ValueError(
+                'With limited GPU memory, weights should be either a numpy array or a jax array on the cpu.')
+
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         if compute_prior_loss:
             msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
@@ -656,7 +670,10 @@ class TomographyModel(ParameterHandler):
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_iterator, flat_recon, error_sinogram, partition)
+            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_iterator,
+                                                                                                 flat_recon,
+                                                                                                 error_sinogram,
+                                                                                                 partition)
 
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
@@ -665,7 +682,9 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = 'After iteration {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, 100*nrms_update[i], fm_rmse[i])
+                iter_output = 'After iteration {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration,
+                                                                                                  100 * nrms_update[i],
+                                                                                                  fm_rmse[i])
                 if compute_prior_loss:
                     b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
                     b = tuple(b)
@@ -715,7 +734,9 @@ class TomographyModel(ParameterHandler):
         subset_indices = np.random.permutation(partition.shape[0])
         for index in subset_indices:
             subset = partition[index]
-            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_iterator(flat_recon, error_sinogram, subset)
+            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_iterator(flat_recon,
+                                                                                                        error_sinogram,
+                                                                                                        subset)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
 
@@ -742,7 +763,6 @@ class TomographyModel(ParameterHandler):
         b = tuple(b)
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
-        pixel_batch_size = self.get_params('pixel_batch_size')
         recon_shape = self.get_params('recon_shape')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
@@ -771,18 +791,22 @@ class TomographyModel(ParameterHandler):
             # Compute the forward model gradient and hessian at each pixel in the index set.
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             weighted_error_sinogram = fm_constant * error_sinogram * weights
+            # TODO: Move weighted_error_sinogram, pixel_indices to worker
             forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices)
-            forward_hess = fm_constant * fm_hessian[pixel_indices]
+            # TODO: Move weighted_error_sinogram, forward_grad to main
+            forward_hess = fm_constant * fm_hessian[pixel_indices]  # TODO: Use pixel_indices_main
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
             if prox_input is None:
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                 prior_grad, prior_hess = (
-                    mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params))
+                    mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                   qggmrf_params))  # TODO:  Use pixel_indices on main check that this is all on main
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = sigma_prox ** 2
-                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices,
+                                                              sigma_prox)  # TODO:  Use pixel_indices on main check that this is all on main
 
             # Compute update vector update direction in recon domain
             delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
@@ -793,10 +817,12 @@ class TomographyModel(ParameterHandler):
             # Estimated upper bound for hessian
             prior_overrelaxation_factor = 2
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
-                                    jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+                                      jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
+            # TODO: Move delta_recon_at_indices to worker
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
+            # TODO: Move delta_sinogram to main
             forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
@@ -834,12 +860,15 @@ class TomographyModel(ParameterHandler):
 
                 # Clip updates to ensure non-negativity
                 pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
+                # TODO: Move delta_recon_at_indices to main
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
+                # TODO: Move delta_recon_at_indices to worker
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             # Perform sparse updates at index locations
+            # TODO: Move delta_recon_at_indices to main
             delta_recon_at_indices = alpha * delta_recon_at_indices
             flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
 
