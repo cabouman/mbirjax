@@ -768,66 +768,32 @@ class TomographyModel(ParameterHandler):
                 alpha is the relative step size for this subset.
             """
 
+            # Compute the forward model gradient and hessian at each pixel in the index set.
+            # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             weighted_error_sinogram = fm_constant * error_sinogram * weights
+            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices)
+            forward_hess = fm_constant * fm_hessian[pixel_indices]
 
-            def delta_recon_batch(index_batch):
-                # Compute the forward model gradient and hessian at each pixel in the index set.
-                # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
-                forward_grad_batch = - sparse_back_project(weighted_error_sinogram, index_batch)
-                forward_hess_batch = fm_constant * fm_hessian[index_batch]
+            # Compute the prior model gradient and hessian (i.e., second derivative) terms
+            if prox_input is None:
+                # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+                prior_grad, prior_hess = (
+                    mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params))
+            else:
+                # Proximal map prior - compute the prior model gradient at each pixel in the index set.
+                prior_hess = sigma_prox ** 2
+                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
 
-                # Compute the prior model gradient and hessian (i.e., second derivative) terms
-                if prox_input is None:
-                    # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                    prior_grad_batch, prior_hess_batch = (
-                        mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, index_batch, qggmrf_params))
-                else:
-                    # Proximal map prior - compute the prior model gradient at each pixel in the index set.
-                    prior_hess_batch = sigma_prox ** 2
-                    prior_grad_batch = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, index_batch, sigma_prox)
+            # Compute update vector update direction in recon domain
+            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
 
-                # Compute update vector update direction in recon domain
-                delta_recon_at_indices_batch = - ((forward_grad_batch + prior_grad_batch) /
-                                                  (forward_hess_batch + prior_hess_batch))
+            # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
 
-                # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-                prior_grad_delta = jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
-                prior_grad_delta = prior_grad_delta.reshape((1, 1))
-                # Estimated upper bound for hessian
-                prior_overrelaxation_factor = 2
-                prior_hess_max_delta = ((1 / prior_overrelaxation_factor) *
-                                        jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2))
-                prior_hess_max_delta = prior_hess_max_delta.reshape((1, 1))
-                return delta_recon_at_indices_batch, prior_grad_delta, prior_hess_max_delta
-
-            # Get the update direction
-            # pixel_batch_size = 2000 # Debug only
-            # batch_update_at_indices = mbirjax.concatenate_function_in_batches(delta_recon_batch, pixel_indices,
-            #                                                                   pixel_batch_size)
-            # delta_recon_at_indices = batch_update_at_indices[0]
-            #
-            # # Then sum over the batched outputs to get delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            # prior_linear = jnp.sum(batch_update_at_indices[1])
-            # prior_quadratic_approx = jnp.sum(batch_update_at_indices[2])
-
-            num_input_points = len(pixel_indices)
-            num_remaining = num_input_points % pixel_batch_size
-
-            # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
-            initial_batch_size = pixel_batch_size if num_remaining == 0 else num_remaining
-            delta_batch, prior_linear, prior_quadratic_approx = delta_recon_batch(pixel_indices[:initial_batch_size])
-            delta_recon_at_indices = [delta_batch]  # [jax.device_put(delta_batch, self.main_device)]
-            # Finish the other batches
-            if num_remaining > 0:
-                pixel_indices_batched = pixel_indices[initial_batch_size:].reshape((-1, pixel_batch_size))
-                for batch in pixel_indices_batched:
-                    delta_batch, linear, quadratic = delta_recon_batch(batch)
-                    delta_recon_at_indices.append(delta_batch)  #jax.device_put(delta_batch, self.main_device))
-                    prior_linear += linear
-                    prior_quadratic_approx += quadratic
-            delta_recon_at_indices = jnp.concatenate(delta_recon_at_indices)
-            prior_linear = prior_linear[0, 0]
-            prior_quadratic_approx = prior_quadratic_approx[0, 0]
+            # Estimated upper bound for hessian
+            prior_overrelaxation_factor = 2
+            prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
+                                    jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
@@ -885,7 +851,7 @@ class TomographyModel(ParameterHandler):
 
             return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset
 
-        return jax.jit(vcd_subset_iterator)
+        return vcd_subset_iterator
 
     @staticmethod
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
