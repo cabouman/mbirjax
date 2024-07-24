@@ -64,11 +64,12 @@ class TomographyModel(ParameterHandler):
         cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
         cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
 
-        main_device = cpus[0]  # We could consider allowing a gpu to be the main device for small problems
         if len(gpus) > 0:
+            main_device = gpus[0]
             worker = gpus[0]
             worker_memory = gpu_memory
         else:
+            main_device = cpus[0]
             worker = cpus[0]
             worker_memory = cpu_memory
 
