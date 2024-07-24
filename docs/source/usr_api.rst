@@ -14,7 +14,7 @@ The first step is to create an instance with a specific geometry. This is done b
    mbirjax.ParallelBeamModel
    mbirjax.ConeBeamModel
 
-Projection and Reconstruction
+Reconstruction and Projection
 -----------------------------
 
 Each geometry class is derived from :ref:`TomographyModelDocs`, which includes a number of powerful methods listed below for manipulating sinograms and reconstructions.
@@ -27,6 +27,7 @@ Detailed documentation for each geometry class is provided in :ref:`ParallelBeam
    mbirjax.TomographyModel.forward_project
    mbirjax.TomographyModel.back_project
    mbirjax.TomographyModel.gen_weights
+   mbirjax.TomographyModel.gen_weights_mar
    mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
 Saving and Loading

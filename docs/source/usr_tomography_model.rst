@@ -14,8 +14,8 @@ Constructor
 .. autoclass:: mbirjax.TomographyModel
    :show-inheritance:
 
-Recon and Projection
---------------------
+Reconstruction and Projection
+-----------------------------
 
 .. automethod:: mbirjax.TomographyModel.recon
 
@@ -24,6 +24,11 @@ Recon and Projection
 .. automethod:: mbirjax.TomographyModel.forward_project
 
 .. automethod:: mbirjax.TomographyModel.back_project
+
+.. automethod:: mbirjax.TomographyModel.gen_weights
+
+.. automethod:: mbirjax.TomographyModel.gen_weights_mar
+
 
 Saving and Loading
 ------------------
@@ -44,10 +49,6 @@ Parameter Handling
 
 Data Generation
 ---------------
-
-.. automethod:: mbirjax.TomographyModel.gen_weights
-
-.. automethod:: mbirjax.TomographyModel.gen_weights_mar
 
 .. automethod:: mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
