@@ -525,6 +525,9 @@ class TomographyModel(ParameterHandler):
         if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.main_device:
             raise ValueError(
                 'With limited GPU memory, weights should be either a numpy array or a jax array on the cpu.')
+        if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
+            raise ValueError(
+                'With limited GPU memory, init_recon should be either a numpy array or a jax array on the cpu.')
 
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         if compute_prior_loss:
@@ -536,7 +539,7 @@ class TomographyModel(ParameterHandler):
 
         # Generate set of voxel partitions
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity)
+        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
@@ -587,39 +590,43 @@ class TomographyModel(ParameterHandler):
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             recon_stats = (fm_rmse, pm_rmse, nrms_update), where fm is forward model, pm is prior model, and
             nrms_update is ||recon(i+1) - recon(i)||_2 / ||recon(i+1)||_2.
+
+        Note:
+            To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
         """
-        # Get required parameters
-        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
-        num_iters = partition_sequence.size
+        # Ensure that everything has the right shape and is on the main device
+        sinogram = jax.device_put(sinogram, self.main_device)
+        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+        if weights is None:
+            weights = 1
+            constant_weights = True
+        else:
+            weights = jax.device_put(weights, self.main_device)
+            constant_weights = False
+
         recon_shape = self.get_params('recon_shape')
         num_recon_slices = recon_shape[2]
 
-        with jax.default_device(self.main_device):
-            if weights is None:
-                weights = 1  # jnp.ones_like(sinogram)
-                constant_weights = True
-            else:
-                weights = jax.device_put(weights, self.main_device)
-                constant_weights = False
-
-            if init_recon is None:
-                # Initialize VCD recon, and error sinogram
+        if init_recon is None:
+            # Initialize VCD recon, and error sinogram
+            with jax.default_device(self.main_device):
                 recon = jnp.zeros(recon_shape)
-                error_sinogram = sinogram
-            else:
-                # Make sure that init_recon has the correct shape and type
-                if init_recon.shape != recon_shape:
-                    error_message = "init_recon does not have the correct shape. \n"
-                    error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
-                                                                                                  init_recon.shape)
-                    raise ValueError(error_message)
+            error_sinogram = sinogram
+        else:
+            # Make sure that init_recon has the correct shape and type
+            if init_recon.shape != recon_shape:
+                error_message = "init_recon does not have the correct shape. \n"
+                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
+                                                                                              init_recon.shape)
+                raise ValueError(error_message)
 
-                # Initialize VCD recon, and error sinogram
-                recon = jnp.array(init_recon)
-                error_sinogram = sinogram - self.forward_project(recon)
+            # Initialize VCD recon and error sinogram using the init_reco
+            recon = jax.device_put(init_recon, self.worker)
+            error_sinogram = self.forward_project(recon)
+            error_sinogram = jax.device_put(error_sinogram, self.main_device)
+            error_sinogram = sinogram - error_sinogram
 
-        recon = jax.device_put(recon, self.main_device)
-        error_sinogram = jax.device_put(error_sinogram, self.worker)
+        recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -634,8 +641,10 @@ class TomographyModel(ParameterHandler):
                 prox_input = jnp.array(prox_input.reshape((-1, num_recon_slices)))
             prox_input = jax.device_put(prox_input, self.main_device)
 
+        # Get required parameters
+        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
+
         # Initialize the diagonal of the hessian of the forward model
-        num_recon_slices = recon_shape[2]
         if constant_weights:
             weights = jnp.ones_like(sinogram)
         weights = jax.device_put(weights, self.worker)
@@ -650,9 +659,10 @@ class TomographyModel(ParameterHandler):
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
-        flat_recon = jax.device_put(flat_recon, self.worker)
+        flat_recon = jax.device_put(flat_recon, self.main_device)
+
         # Create the finer grained recon update operators
-        vcd_subset_iterator = self.create_vcd_subset_iterator(fm_hessian, weights=weights, prox_input=prox_input)
+        vcd_subset_updater = self.create_vcd_subset_updater(fm_hessian, weights=weights, prox_input=prox_input)
 
         if verbose >= 1:
             print('Starting VCD iterations')
@@ -661,6 +671,7 @@ class TomographyModel(ParameterHandler):
                 print('--------')
 
         # Do the iterations
+        num_iters = partition_sequence.size
         fm_rmse = np.zeros(num_iters)
         pm_loss = np.zeros(num_iters)
         nrms_update = np.zeros(num_iters)
@@ -670,7 +681,7 @@ class TomographyModel(ParameterHandler):
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_iterator,
+            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_updater,
                                                                                                  flat_recon,
                                                                                                  error_sinogram,
                                                                                                  partition)
@@ -707,7 +718,7 @@ class TomographyModel(ParameterHandler):
         return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
 
     @staticmethod
-    def vcd_partition_iterator(vcd_subset_iterator, flat_recon, error_sinogram, partition):
+    def vcd_partition_iterator(vcd_subset_updater, flat_recon, error_sinogram, partition):
         """
         Calculate a full iteration of the VCD algorithm by scanning over the subsets of the partition.
         Each iteration of the algorithm should return a better reconstructed recon.
@@ -715,7 +726,7 @@ class TomographyModel(ParameterHandler):
         where measured_sinogram is the measured sinogram and recon is the current reconstruction.
 
         Args:
-            vcd_subset_iterator (callable): Function to iterate over each subset in the partition.
+            vcd_subset_updater (callable): Function to iterate over each subset in the partition.
             flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
@@ -734,7 +745,7 @@ class TomographyModel(ParameterHandler):
         subset_indices = np.random.permutation(partition.shape[0])
         for index in subset_indices:
             subset = partition[index]
-            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_iterator(flat_recon,
+            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_updater(flat_recon,
                                                                                                         error_sinogram,
                                                                                                         subset)
             norm_squared_for_partition += norm_squared_for_subset
@@ -742,7 +753,7 @@ class TomographyModel(ParameterHandler):
 
         return flat_recon, error_sinogram, norm_squared_for_partition, alpha_sum / partition.shape[0]
 
-    def create_vcd_subset_iterator(self, fm_hessian, weights, prox_input=None):
+    def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
         Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
 
@@ -752,7 +763,7 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
-            (callable) vcd_subset_iterator(error_sinogram, flat_recon, pixel_indices) that updates the recon.
+            (callable) vcd_subset_updater(error_sinogram, flat_recon, pixel_indices) that updates the recon.
         """
 
         positivity_flag = self.get_params('positivity_flag')
@@ -767,7 +778,7 @@ class TomographyModel(ParameterHandler):
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
 
-        def vcd_subset_iterator(flat_recon, error_sinogram, pixel_indices):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -791,22 +802,32 @@ class TomographyModel(ParameterHandler):
             # Compute the forward model gradient and hessian at each pixel in the index set.
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             weighted_error_sinogram = fm_constant * error_sinogram * weights
-            # TODO: Move weighted_error_sinogram, pixel_indices to worker
-            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices)
-            # TODO: Move weighted_error_sinogram, forward_grad to main
-            forward_hess = fm_constant * fm_hessian[pixel_indices]  # TODO: Use pixel_indices_main
+
+            # Transfer to worker
+            weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.worker)
+            pixel_indices_worker = jax.device_put(pixel_indices, self.worker)
+
+            # Back project to get the gradient
+            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices_worker)
+
+            # Transfer to main
+            weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.main_device)
+            forward_grad = jax.device_put(forward_grad, self.worker)
+
+            # Get the forward hessian for this subset
+            forward_hess = fm_constant * fm_hessian[pixel_indices]
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
             if prox_input is None:
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                prior_grad, prior_hess = (
-                    mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                   qggmrf_params))  # TODO:  Use pixel_indices on main check that this is all on main
+                with jax.default_device(self.main_device):
+                    prior_grad, prior_hess = (
+                        mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                       qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = sigma_prox ** 2
-                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices,
-                                                              sigma_prox)  # TODO:  Use pixel_indices on main check that this is all on main
+                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
 
             # Compute update vector update direction in recon domain
             delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
@@ -820,9 +841,10 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
-            # TODO: Move delta_recon_at_indices to worker
+            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.worker)
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
-            # TODO: Move delta_sinogram to main
+            delta_sinogram = jax.device_put(delta_sinogram, self.main_device)
+
             forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
@@ -860,15 +882,15 @@ class TomographyModel(ParameterHandler):
 
                 # Clip updates to ensure non-negativity
                 pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
-                # TODO: Move delta_recon_at_indices to main
+                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
-                # TODO: Move delta_recon_at_indices to worker
+                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.worker)
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             # Perform sparse updates at index locations
-            # TODO: Move delta_recon_at_indices to main
+            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
             flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
 
@@ -880,7 +902,7 @@ class TomographyModel(ParameterHandler):
 
             return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset
 
-        return vcd_subset_iterator
+        return vcd_subset_updater
 
     @staticmethod
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):

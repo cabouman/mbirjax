@@ -31,7 +31,7 @@ def get_2d_ror_mask(recon_shape):
     return mask
 
 
-def gen_set_of_pixel_partitions(recon_shape, granularity):
+def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None):
     """
     Generates a collection of voxel partitions for an array of specified partition sizes.
     This function creates a tuple of randomly generated 2D voxel partitions.
@@ -43,10 +43,10 @@ def gen_set_of_pixel_partitions(recon_shape, granularity):
     Returns:
         tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
     """
-    partitions = ()
+    partitions = []
     for num_subsets in granularity:
         partition = gen_pixel_partition(recon_shape, num_subsets)
-        partitions += (partition,)
+        partitions += [jax.device_put(partition, output_device),]
 
     return partitions
 

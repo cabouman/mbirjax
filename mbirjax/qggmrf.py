@@ -116,7 +116,7 @@ def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
     # Compute the differences delta[j] = voxel_cylinder[j+1] - voxel_cylinder[j], then add 0s at both ends to
     # represent reflected boundaries at 0 and the end.
     # Get v[0]-v[-1], v[1]-v[0], v[2]-v[1], ..., v[n]-v[n-1]  (where v[-1] = v[0], v[n]=v[n-1] in this case).
-    zero = jnp.zeros(1)
+    zero = 0 * voxel_cylinder[:1]  # Use this form rather than jnp.zeros(1) to work on the same device as voxel_cylinder
     delta = jnp.concatenate((zero, jnp.diff(voxel_cylinder), zero))
 
     # Compute the primary quantity used for the gradient and Hessian
@@ -180,7 +180,6 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
     xs0 = flat_recon_slice[pixel_indices]
 
     # Loop over the offsets and accumulate the gradients and Hessian diagonal entries.
-    loss = jnp.zeros(1)
     for offset, b_value in zip(offsets, b_values):
         offset_indices = jnp.ravel_multi_index([row_index + offset[0], col_index + offset[1]],
                                                dims=(num_rows, num_cols), mode='clip')
@@ -259,7 +258,7 @@ def compute_surrogate_and_grad(x, x_prime, qggmrf_params):
     # Normalize b to sum to 1, then get the per-axis b.
     b_per_axis = [(b[j] + b[j + 1]) / (2 * sum(b)) for j in [0, 2, 4]]
 
-    grad = jnp.zeros_like(x_prime)
+    grad = 0 * x_prime
     surrogate_value = 0
     # Get b_tilde at all the deltas
     for axis in [0, 1, 2]:
