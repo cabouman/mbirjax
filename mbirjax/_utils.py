@@ -40,7 +40,7 @@ _reconstruction_defaults_dict = {
     'partition_sequence': {'val': [0, 1, 2, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 1, 'recompile_flag': False},
     'pixel_batch_size': {'val': 2048, 'recompile_flag': True},  # TODO: Determine batch sizes dynamically.
-    'view_batch_size': {'val': 32, 'recompile_flag': True}
+    'view_batch_size': {'val': 8, 'recompile_flag': True}
 }
 
 # These headings should match the dictionaries

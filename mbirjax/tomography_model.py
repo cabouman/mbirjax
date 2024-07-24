@@ -82,7 +82,7 @@ class TomographyModel(ParameterHandler):
         (num_views, num_det_rows, num_det_channels) = sinogram_shape
         (num_recon_rows, num_recon_cols, num_slices) = recon_shape
 
-        reps_per_vcd_recon = 8
+        reps_per_vcd_recon = 6
         required_memory = mem_per_entry * reps_per_vcd_recon * max(np.prod(sinogram_shape), np.prod(recon_shape))
         if required_memory > worker_memory:
             if worker != cpus[0]:
