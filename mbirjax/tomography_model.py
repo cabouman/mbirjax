@@ -45,85 +45,99 @@ class TomographyModel(ParameterHandler):
         self.verify_valid_params()
 
         self.main_device, self.worker, self.pixels_per_batch, self.views_per_batch = None, None, None, None
-        self.set_devices_and_batch_sizes()
-        self.projector_functions = mbirjax.Projectors(self)
+        self.projector_functions = None
 
+        self.set_devices_and_batch_sizes()
         self.create_projectors()
 
     def set_devices_and_batch_sizes(self):
 
-        # Get the available cpu and gpu memory
+        # Get the cpu and any gpus
+        # If no gpu, then use the cpu and return
+        cpus = jax.devices('cpu')
+        gb = 1024 ** 3
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
             gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
+            gpu_memory /= gb
         except RuntimeError:
-            gpus = ()
-            gpu_memory = 0.0
-        cpus = jax.devices('cpu')
+            gpus = []
+            gpu_memory = 0
+
+        # Estimate the memory available and required for this problem
         cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
         cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
-
-        main_device = cpus[0]  # We could consider allowing a gpu to be the main device for small problems
-        if len(gpus) > 0:
-            worker = gpus[0]
-            worker_memory = gpu_memory
-        else:
-            worker = cpus[0]
-            worker_memory = cpu_memory
-
-        # Estimate the memory needed for this problem
-        zero = jnp.zeros(1)
-        bits_per_byte = 8
-        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte  # Parse float32 or float64 to get the number of bits
+        cpu_memory /= gb
 
         sinogram_shape = self.get_params('sinogram_shape')
         recon_shape = self.get_params('recon_shape')
-        (num_views, num_det_rows, num_det_channels) = sinogram_shape
-        (num_recon_rows, num_recon_cols, num_slices) = recon_shape
 
-        reps_per_vcd_recon = 6
-        required_memory = mem_per_entry * reps_per_vcd_recon * max(np.prod(sinogram_shape), np.prod(recon_shape))
-        if required_memory > worker_memory:
-            if worker != cpus[0]:
-                warnings.warn('Insufficient GPU memory for this problem.')
+        sino_reps_for_vcd = 6
+        recon_reps_for_vcd = 8
+        reps_for_vcd_update = 3
+
+        zero = jnp.zeros(1)
+        bits_per_byte = 8
+        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
+        memory_per_sinogram = mem_per_entry * np.prod(sinogram_shape)
+        memory_per_recon = mem_per_entry * np.prod(recon_shape)
+
+        total_memory_required = memory_per_sinogram * sino_reps_for_vcd + memory_per_recon * recon_reps_for_vcd
+        subset_update_memory_required = (memory_per_sinogram + memory_per_recon) * reps_for_vcd_update
+        if isinstance(self, mbirjax.ConeBeamModel):
+            reps_per_projection = 2  # This is determined empirically and should probably be determined by each subclass rather than set here.
+        elif isinstance(self, mbirjax.ParallelBeamModel):
+            reps_per_projection = 2
+        else:
+            raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
+
+        if gpu_memory > total_memory_required:
+            main_device = gpus[0]
+            worker = gpus[0]
+            gpu_memory_required = total_memory_required
+        elif gpu_memory > subset_update_memory_required:
+            main_device = cpus[0]
+            worker = gpus[0]
+            gpu_memory_required = subset_update_memory_required
+            warnings.warn('GPU memory smaller than full problem size. Using CPU for main memory, GPU for update steps '
+                          'only, which will increase recon time.')
+        elif cpu_memory > total_memory_required:
+            main_device = cpus[0]
+            worker = cpus[0]
+            gpu_memory_required = 0
+            if len(gpus) > 0:
+                warnings.warn('Insufficient GPU memory for this problem. Estimated required = {}GB.  '
+                              'Available = {}GB.'.format(subset_update_memory_required / gb, gpu_memory /gb))
                 warnings.warn('Trying on CPU, but this may be slow.')
-                worker = cpus[0]
-                worker_memory = cpu_memory
-        if required_memory > worker_memory:
+        else:
             message = 'Problem is too large for available memory.'
-            message += '\nEstimated memory required = {:.3f}GB.  Available = {:.3f}GB.'.format(
-                required_memory / 1024 ** 3,
-                worker_memory / 1024 ** 3)
+            message += '\nEstimated memory required = {:.3f}GB.  Available:  CPU = {:.3f}GB, GPU = {:.3f}GB.'.format(
+                total_memory_required, cpu_memory / gb, gpu_memory / gb)
             raise MemoryError(message)
 
-        # The following is code to estimate batch size when batches can be sent one at a time to the GPU
-        # mem_per_voxel_cylinder = mem_per_entry * num_slices
-        # mem_per_view = mem_per_entry * num_det_rows * num_det_channels
-        #
-        # # Time efficiency is generally better with more views, so start with small number of pixels, determine the
-        # # max number of views, then determine the number of pixels possible with that number of views.
-        # min_pixels_per_batch = 1000
-        # num_pixel_copies_per_batch = 2.5  # This is an estimate based on conebeam
-        # num_view_copies_per_batch = 1.5
-        # min_voxel_memory = mem_per_entry * min_pixels_per_batch * num_slices * num_pixel_copies_per_batch
-        # max_view_memory = worker_memory - min_voxel_memory
-        # views_per_batch = int(max_view_memory / (mem_per_view * num_view_copies_per_batch))
-        # views_per_batch = min(num_views, views_per_batch, 128)
-        # if views_per_batch < num_views:  # Do some load balancing across view batches
-        #     num_view_batches = num_views // views_per_batch
-        #     if num_views % views_per_batch != 0:
-        #         num_view_batches += 1
-        #     views_per_batch = int(jnp.ceil(num_views / num_view_batches))
-        # voxel_memory = worker_memory - mem_per_view * views_per_batch * num_view_copies_per_batch
-        # pixels_per_batch = int(voxel_memory / (mem_per_voxel_cylinder * num_pixel_copies_per_batch))
-        # pixels_per_batch = min(pixels_per_batch, num_recon_rows * num_recon_cols, 2048)
-        #
-        # assert(mem_per_view * views_per_batch * num_view_copies_per_batch +
-        #        mem_per_voxel_cylinder * pixels_per_batch * num_pixel_copies_per_batch < worker_memory)
+        # Set the default batch sizes, then adjust as needed and update memory requirements
+        self.views_per_batch = 256
+        self.pixels_per_batch = 2048
+        num_slices = max(sinogram_shape[1], recon_shape[2])
+        projection_memory_per_view = self.pixels_per_batch * reps_per_projection * num_slices * mem_per_entry
+        if gpu_memory_required > 0:
+            memory_excess = gpu_memory - gpu_memory_required
+        else:
+            memory_excess = cpu_memory - total_memory_required
+        views_per_batch = memory_excess // projection_memory_per_view
+        self.views_per_batch = int(np.clip(views_per_batch, 2, self.views_per_batch))
+        memory_per_projection = self.views_per_batch * projection_memory_per_view
+        subset_update_memory_required += memory_per_projection
+        total_memory_required += memory_per_projection
 
-        if self.get_params('verbose') > 0:
-            print('Using {} for main memory, {} as worker.'.format(main_device, worker))
+        if gpu_memory > 0:
+            print('Available GPU memory = {:.3f}GB.'.format(gpu_memory))
+        print('Estimated memory required = {:.3f}GB full, {:.3f}GB update'.format(total_memory_required,
+                                                                                  subset_update_memory_required))
+
+        print('Using {} for main memory, {} as worker.'.format(main_device, worker))
+        print('views_per_batch = {}; pixels_per_batch = {}'.format(self.views_per_batch, self.pixels_per_batch))
 
         self.main_device = main_device
         self.worker = worker
@@ -163,10 +177,10 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but creates jit-compiled functions.
         """
-        projector_functions = mbirjax.Projectors(self)
-        self.sparse_forward_project = projector_functions.sparse_forward_project
-        self.sparse_back_project = projector_functions.sparse_back_project
-        self.compute_hessian_diagonal = projector_functions.compute_hessian_diagonal
+        self.projector_functions = mbirjax.Projectors(self)
+        self.sparse_forward_project = self.projector_functions.sparse_forward_project
+        self.sparse_back_project = self.projector_functions.sparse_back_project
+        self.compute_hessian_diagonal = self.projector_functions.compute_hessian_diagonal
 
     @staticmethod
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
@@ -320,6 +334,7 @@ class TomographyModel(ParameterHandler):
         """
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
+            self.set_devices_and_batch_sizes()
             self.create_projectors()
 
     def auto_set_regularization_params(self, sinogram, weights=None):
@@ -745,8 +760,8 @@ class TomographyModel(ParameterHandler):
         for index in subset_indices:
             subset = partition[index]
             flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_updater(flat_recon,
-                                                                                                        error_sinogram,
-                                                                                                        subset)
+                                                                                                       error_sinogram,
+                                                                                                       subset)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
 
