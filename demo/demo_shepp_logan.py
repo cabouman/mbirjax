@@ -3,7 +3,6 @@ import time
 import pprint
 import jax
 import jax.numpy as jnp
-import mbirjax.plot_utils as pu
 import mbirjax.parallel_beam
 
 if __name__ == "__main__":
@@ -54,7 +53,7 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # View sinogram
-    pu.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
@@ -91,5 +90,5 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
     # Display results
-    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 

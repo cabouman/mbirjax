@@ -971,6 +971,34 @@ class TomographyModel(ParameterHandler):
 
         return recon, loss_vectors
 
+    def gen_weights_mar(self, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
+        """
+        Generates the weights used for reducing metal artifacts in MBIR reconstruction.
+
+        This function computes sinogram weights that help to reduce metal artifacts.
+        More specifically, it computes weights with the form:
+
+            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) )
+
+        delta(metal) denotes a binary mask indicating the sino entries that contain projections of metal.
+        Providing ``init_recon`` yields better metal artifact reduction.
+        If not provided, the metal segmentation is generated directly from the sinogram.
+
+        Args:
+            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            init_recon (jax array, optional): An initial reconstruction used to identify metal voxels. If not provided, Otsu's method is used to directly segment sinogram into metal regions.
+            metal_threshold (float, optional): Values in ``init_recon`` above ``metal_threshold`` are classified as metal. If not provided, Otsu's method is used to segment ``init_recon``.
+            beta (float, optional): Scalar value in range :math:`>0`.
+                A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
+            gamma (float, optional): Scalar value in range :math:`>=0`.
+                A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
+
+        Returns:
+            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
+        """
+        return mbirjax.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
+                                       beta=beta, gamma=gamma)
+
     @staticmethod
     def gen_weights(sinogram, weight_type):
         """
@@ -1023,6 +1051,22 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
         return recon.reshape(recon_shape)
+
+    def scale_recon_shape(self, row_scale=1.0, col_scale=1.0, slice_scale=1.0):
+        """
+        Scale the recon shape by the given factors.  This can be used before starting a reconstruction to improve the
+        reconstruction when part of the object projects outside the detector.
+
+        Args:
+            row_scale (float): Scale for the recon rows.
+            col_scale (float): Scale for the recon columns.
+            slice_scale (float): Scale for the recon slices.
+        """
+        num_rows, num_cols, num_slices = self.get_params('recon_shape')
+        num_rows = int(num_rows * row_scale)
+        num_cols = int(num_cols * col_scale)
+        num_slices = int(num_slices * slice_scale)
+        self.set_params(recon_shape=(num_rows, num_cols, num_slices))
 
 
 def get_transpose(linear_map, input_shape):

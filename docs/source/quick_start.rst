@@ -8,9 +8,9 @@ Demos
 
 The best way to start is to:
 
-- **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <installation_label>`.  We recommend installing in a conda environment or pip virtual environment.
+- **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <InstallationDocs>`.  We recommend installing in a conda environment or pip virtual environment.
 
-- **Run Demo** using the Python program ``demo_parbeam_shepp_logan.py`` or one of the other demos in `[mbirjax/demo] <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
+- **Run Demo** using the Python program ``demo_shepp_logan.py`` or one of the other demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
 You can then modify the Python script to suit your needs.
 

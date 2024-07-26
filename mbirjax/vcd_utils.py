@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
 import warnings
+from mbirjax.preprocess.utilities import multi_threshold_otsu
 
 
 def get_2d_ror_mask(recon_shape):
@@ -176,7 +177,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
     subset_inds = subset_inds.flatten()
     num_valid_inds = np.sum(subset_inds >= 0)
     if num_subsets > num_valid_inds:
-        return gen_pixel_partition_uniform(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets)
 
     flat_inds = []
     max_points = 0
@@ -188,7 +189,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
         min_points = min(min_points, cur_inds.size)
 
     if min_points == 0:
-        return gen_pixel_partition_uniform(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets)
 
     extra_point_inds = np.random.randint(low=0, high=min_points, size=(max_points - min_points + 1,))
 
@@ -429,3 +430,38 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.605, 0, 0.023, 0.023, 0.02, angle=0, intensity=0.1)
 
     return phantom
+
+
+def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
+    """
+    Implementation of TomographyModel.gen_weights_mar
+    """
+    # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method.
+    if init_recon is None:
+        print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
+        # assuming three categories: metal, non_metal, and background.
+        [bk_thresh_sino, metal_thresh_sino] = multi_threshold_otsu(sinogram, classes=3)
+        print("Distorted sinogram threshold = ", metal_thresh_sino)
+        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32))
+
+    # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
+    else:
+        if metal_threshold is None:
+            print("Metal_threshold calculated with Otsu's method.")
+            # assuming three categories: metal, non_metal, and background.
+            [bk_threshold, metal_threshold] = multi_threshold_otsu(init_recon, classes=3)
+
+        print("metal_threshold = ", metal_threshold)
+        # Identify metal voxels
+        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32))
+        # Forward project metal mask to generate a sinogram mask
+        metal_mask_projected = ct_model.forward_project(metal_mask)
+
+        # metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
+        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32))
+
+    # weights for undistorted sino entries
+    weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
+
+    return weights
+
