@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import pprint
+import jax
 import jax.numpy as jnp
 import mbirjax.plot_utils as pu
 import mbirjax.parallel_beam
@@ -67,12 +68,12 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
+    sinogram = np.array(sinogram)
     time0 = time.time()
     recon, recon_params = ct_model.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
-    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
 
     # Print out parameters used in recon
@@ -85,6 +86,9 @@ if __name__ == "__main__":
     print('NRMSE between recon and phantom = {}'.format(nrmse))
     print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
     print('95% of recon pixels are within {} of phantom'.format(pct_95))
+
+    mbirjax.get_memory_stats()
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
     # Display results
     pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
