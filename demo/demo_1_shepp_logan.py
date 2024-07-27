@@ -49,7 +49,7 @@ if __name__ == "__main__":
     # ################
     # Data generation: Here we create a phantom and then project it to create a sinogram.
 
-    # In a real application, you would just load your sinogram as a numpy array, use numpy.transpose so that it
+    # In a real application, you would just load your sinogram as a numpy array and use numpy.transpose so that it
     # has axes in the order (views, rows, channels).  Assuming the rotation axis is vertical, then increasing the row
     # index nominally moves down the rotation axis and increasing the channel index moves to the right as seen from
     # the source.
@@ -87,6 +87,7 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
+    print('Starting recon')
     time0 = time.time()
     recon, recon_params = ct_model.recon(sinogram, weights=weights)
 
