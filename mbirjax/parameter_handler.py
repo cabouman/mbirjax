@@ -20,11 +20,14 @@ class ParameterHandler():
         verbose = self.get_params('verbose')
         print("----")
         for key, entry in self.params.items():
-            if verbose < 2 and key == 'view_params_array':
+            if verbose < 3 and key == 'view_params_array':
                 continue
             param_val = entry.get('val')
-            recompile_flag = entry.get('recompile_flag')
-            print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
+            if verbose < 3:
+                print("{} = {}".format(key, param_val))
+            else:
+                recompile_flag = entry.get('recompile_flag')
+                print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
 
     @staticmethod
