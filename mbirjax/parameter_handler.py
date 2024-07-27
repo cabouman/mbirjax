@@ -193,8 +193,8 @@ class ParameterHandler():
 
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
-            self.set_params(auto_regularize_flag=False)
             if not no_warning:
+                self.set_params(auto_regularize_flag=False)
                 warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_prox. '
                               'This is an advanced feature that will disable auto-regularization.')
 
