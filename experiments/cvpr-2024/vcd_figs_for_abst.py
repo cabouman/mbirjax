@@ -4,7 +4,6 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
 import mbirjax.parallel_beam
-import mbirjax.plot_utils as pu
 
 
 def display_slices_for_abstract( recon1, recon2, recon3, labels) :
@@ -109,11 +108,11 @@ if __name__ == "__main__":
     fm_losses = [fm_rmse_gd, fm_rmse_vcd, fm_rmse_cd]
     prior_losses = [prior_loss_gd, prior_loss_vcd, prior_loss_cd]
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    pu.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
+    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
     partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
-    pu.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
+    mbirjax.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
