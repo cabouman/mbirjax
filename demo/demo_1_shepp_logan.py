@@ -70,12 +70,12 @@ if __name__ == "__main__":
     sinogram = np.array(sinogram)
 
     # View sinogram
-    mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
+    mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
 
-    # ###############
-    # Reconstruction: Here we use mbirjax to reconstruct the given sinogram.
+    # Initialize the model for reconstruction.
 
-    # Generate weights array - for an initial reconstruction, use weights = None, then modify as needed.
+    # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
     # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
@@ -95,7 +95,7 @@ if __name__ == "__main__":
     elapsed = time.time() - time0
     # ##########################
 
-    # Print out parameters used in recon
+    # Print parameters used in recon
     pprint.pprint(recon_params._asdict(), compact=True)
 
     max_diff = np.amax(np.abs(phantom - recon))
@@ -110,5 +110,6 @@ if __name__ == "__main__":
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
     # Display results
-    mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
+    mbirjax.slice_viewer(phantom, recon, title=title)
 
