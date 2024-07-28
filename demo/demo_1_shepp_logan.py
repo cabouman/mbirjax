@@ -11,6 +11,9 @@ if __name__ == "__main__":
     projecting it to create a sinogram, and then using Model-Based, Multi-Granular Vectorized Coordinate Descent
     to do a reconstruction.  
     """
+
+    print('\nStarting a basic reconstruction with synthetic data.\n')
+
     # Choose the geometry type
     geometry_type = 'cone'  # 'cone' or 'parallel'
 

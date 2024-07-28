@@ -21,7 +21,8 @@ if __name__ == "__main__":
     For simplicity, we show this only for parallel beam, but the same steps apply for cone beam.  
     """
 
-    print('Starting a recon in which only pixels near the center of rotation are estimated.\n')
+    print('\nStarting a recon in which only pixels near the center of rotation are estimated.\n')
+
     num_views = 400
     num_det_rows = 20
     num_det_channels = 400

@@ -13,6 +13,8 @@ if __name__ == "__main__":
     See demo_1_shepp_logan.py to describe the basic steps of synthetic sinogram generation and reconstruction.
     """
 
+    print('\nStarting a recon in which some pixels project outside the detector.\n')
+
     num_views = 120
     num_det_rows = 80
     num_det_channels = 100
