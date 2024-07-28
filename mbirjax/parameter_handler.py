@@ -169,7 +169,7 @@ class ParameterHandler():
 
             if key in self.params.keys():
                 recompile_flag = self.params[key]['recompile_flag']
-            elif not no_warning:
+            elif not no_warning:  # Check if this is a valid parameter.  This is disabled for initialization.
                 error_message = '{} is not a recognized parameter'.format(key)
                 error_message += '\nValid parameters are: \n'
                 for valid_key in self.params.keys():

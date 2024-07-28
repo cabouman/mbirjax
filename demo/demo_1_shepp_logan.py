@@ -15,7 +15,7 @@ if __name__ == "__main__":
     print('\nStarting a basic reconstruction with synthetic data.\n')
 
     # Choose the geometry type
-    geometry_type = 'cone'  # 'cone' or 'parallel'
+    geometry_type = 'parallel'  # 'cone' or 'parallel'
 
     print('Using {} geometry.'.format(geometry_type))
 
@@ -57,42 +57,48 @@ if __name__ == "__main__":
     # index nominally moves down the rotation axis and increasing the channel index moves to the right as seen from
     # the source.
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
-    sinogram = ct_model.forward_project(phantom)
+    sinogram = ct_model_for_generation.forward_project(phantom)
     sinogram = np.array(sinogram)
 
     # View sinogram
     title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
     mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
 
+    # ####################
     # Initialize the model for reconstruction.
-
+    if geometry_type == 'cone':
+        ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    else:
+        ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
-    # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    ct_model.set_params(sharpness=sharpness)
+    ct_model_for_recon.set_params(sharpness=sharpness)
 
     # Print out model parameters
-    ct_model.print_params()
+    ct_model_for_recon.print_params()
+
 
     # ##########################
     # Perform VCD reconstruction
     print('Starting recon')
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights)
+    recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
