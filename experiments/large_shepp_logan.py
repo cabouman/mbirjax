@@ -1,9 +1,13 @@
+import jax
 import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax.plot_utils as pu
-import mbirjax.parallel_beam
+import mbirjax
+import os
+
+# Set the GPU memory fraction for JAX
+# os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.03'
 
 if __name__ == "__main__":
     """
@@ -15,9 +19,9 @@ if __name__ == "__main__":
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
-    num_views = 64
-    num_det_rows = 40
-    num_det_channels = 128
+    num_views = 512
+    num_det_rows = 512
+    num_det_channels = 512
     sharpness = 0.0
     
     # These can be adjusted to describe the geometry in the cone beam case.
@@ -29,8 +33,8 @@ if __name__ == "__main__":
         detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
     else:
         detector_cone_angle = 0
-    start_angle = -(np.pi + detector_cone_angle) * (1/2)
-    end_angle = (np.pi + detector_cone_angle) * (1/2)
+    start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+    end_angle = (np.pi + detector_cone_angle) * (1 / 2)
 
     # Initialize sinogram
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
@@ -38,7 +42,8 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                         source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
         ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
     else:
@@ -51,34 +56,39 @@ if __name__ == "__main__":
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model.forward_project(phantom)
-
+    phantom = jax.device_put(phantom, jax.devices('cpu')[0])
     # View sinogram
-    pu.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
     # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    ct_model.set_params(sharpness=sharpness)
+    ct_model.set_params(sharpness=sharpness, verbose=2)
 
     # Print out model parameters
     ct_model.print_params()
 
     # ##########################
     # Perform VCD reconstruction
+
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights)
+    sinogram = np.array(sinogram)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, num_iterations=10)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
+    mbirjax.get_memory_stats()
 
     # Print out parameters used in recon
-    pprint.pprint(recon_params._asdict())
-
-    max_diff = np.amax(np.abs(phantom - recon))
+    # pprint.pprint(recon_params._asdict())
+    #
+    phantom = np.array(phantom)
+    recon = np.array(recon)
+    max_diff = np.amax(np.abs(recon - phantom))
     print('Geometry = {}'.format(geometry_type))
     nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
     pct_95 = np.percentile(np.abs(recon - phantom), 95)
@@ -87,5 +97,4 @@ if __name__ == "__main__":
     print('95% of recon pixels are within {} of phantom'.format(pct_95))
 
     # Display results
-    pu.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
-
+    # mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')

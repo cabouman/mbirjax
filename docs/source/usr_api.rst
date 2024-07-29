@@ -2,7 +2,8 @@
 User API
 ========
 
-MBIRJAX is designed to give reconstructions using just a few lines of code.
+Most functions can be accessed by importing mbirjax and creating a model or through mbirjax directly.  Most
+commonly used functions are described below.  See :ref:`ExamplesFAQs` for examples.
 
 Geometry Models
 ---------------
@@ -14,7 +15,7 @@ The first step is to create an instance with a specific geometry. This is done b
    mbirjax.ParallelBeamModel
    mbirjax.ConeBeamModel
 
-Projection and Reconstruction
+Reconstruction and Projection
 -----------------------------
 
 Each geometry class is derived from :ref:`TomographyModelDocs`, which includes a number of powerful methods listed below for manipulating sinograms and reconstructions.
@@ -23,10 +24,12 @@ Detailed documentation for each geometry class is provided in :ref:`ParallelBeam
 .. autosummary::
 
    mbirjax.TomographyModel.recon
+   mbirjax.TomographyModel.scale_recon_shape
    mbirjax.TomographyModel.prox_map
    mbirjax.TomographyModel.forward_project
    mbirjax.TomographyModel.back_project
    mbirjax.TomographyModel.gen_weights
+   mbirjax.TomographyModel.gen_weights_mar
    mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
 Saving and Loading
@@ -75,12 +78,13 @@ Preprocessing
 ------------------
 
 Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
-The following are functions specific to NSI scanners.
+The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
+`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo.
 
 .. autosummary::
 
-   preprocess.NSI.compute_sino_and_params
-   preprocess.NSI.load_scans_and_params
+   preprocess.nsi.compute_sino_and_params
+   preprocess.nsi.load_scans_and_params
 
 The remaining functions can be used for multiple types of scan data.
 

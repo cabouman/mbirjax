@@ -5,6 +5,8 @@ import scipy
 from PIL import Image
 import glob
 import os
+import h5py
+
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
@@ -75,6 +77,7 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_l
             print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.") 
     return sino, defective_pixel_list
 
+
 def interpolate_defective_pixels(sino, defective_pixel_list):
     """
     Interpolates defective sinogram entries with the mean of neighboring pixels.
@@ -122,6 +125,7 @@ def interpolate_defective_pixels(sino, defective_pixel_list):
                 defective_pixel_list_new.append((v,r,c)) 
     return sino, defective_pixel_list_new
 
+
 def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     """
     Correct sinogram data and weights to account for detector rotation.
@@ -145,6 +149,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.") 
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
+
 
 def estimate_background_offset(sino, option=0, edge_width=9):
     """
@@ -192,7 +197,8 @@ def estimate_background_offset(sino, option=0, edge_width=9):
     offset = np.median([median_top, median_left, median_right])
     return offset
 
-######## subroutines for image cropping and down-sampling
+
+# ####### subroutines for image cropping and down-sampling
 def downsample_scans(obj_scan, blank_scan, dark_scan,
                      downsample_factor,
                      defective_pixel_list=None):
@@ -315,10 +321,10 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
         else:
             i+=1
     return obj_scan, blank_scan, dark_scan, defective_pixel_list
-######## END subroutines for image cropping and down-sampling
+# ####### END subroutines for image cropping and down-sampling
 
 
-######## subroutines for loading scan images
+# ####### subroutines for loading scan images
 def read_scan_img(img_path):
     """Reads a single scan image from an image path. This function is a subroutine to the function `read_scan_dir`.
 
@@ -359,7 +365,7 @@ def read_scan_dir(scan_dir, view_ids=[]):
 
     # return shape = num_views x num_det_rows x num_det_channels
     return np.stack(img_list, axis=0)
-######## END subroutines for loading scan images
+# ####### END subroutines for loading scan images
 
 
 def unit_vector(v):
@@ -373,3 +379,193 @@ def project_vector_to_vector(u1, u2):
     u2 = unit_vector(u2)
     u1_proj = np.dot(u1, u2)*u2
     return u1_proj
+
+
+# ####### Multi-threshold Otsu's method
+def multi_threshold_otsu(image, classes=2):
+    """
+    Segments an image into several different classes using Otsu's method.
+
+    Parameters
+    ----------
+    image : ndarray
+        Input image in ndarray of float type.
+    classes : int, optional
+        Number of classes to threshold (i.e., number of resulting regions). Default is 2.
+
+    Returns
+    -------
+    list
+        List of threshold values that divide the image into the specified number of classes.
+    """
+    if classes < 2:
+        raise ValueError("Number of classes must be at least 2")
+
+    # Compute the histogram of the image
+    hist, bin_edges = np.histogram(image, bins=256, range=(np.min(image), np.max(image)))
+
+    # Find the optimal thresholds using a recursive approach
+    thresholds = _recursive_otsu(hist, classes - 1)
+
+    # Convert histogram bin indices to original image values
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    scaled_thresholds = [bin_centers[t] for t in thresholds]
+
+    return scaled_thresholds
+
+
+def _recursive_otsu(hist, num_thresholds):
+    """
+    Recursively applies Otsu's method to find the best thresholds for multiple classes.
+
+    Parameters
+    ----------
+    hist : ndarray
+        Histogram of the image.
+    num_thresholds : int
+        Number of thresholds to find.
+
+    Returns
+    -------
+    list
+        List of thresholds that divide the histogram into the specified number of classes.
+    """
+    # Base case: no thresholds needed
+    if num_thresholds == 0:
+        return []
+
+    # Base case: single threshold needed
+    if num_thresholds == 1:
+        return [_binary_threshold_otsu(hist)]
+
+    best_thresholds = []
+    best_variance = float('inf')
+
+    # Iterate through possible thresholds
+    for t in range(1, len(hist) - 1):
+        # Split histogram at the threshold
+        left_hist = hist[:t]
+        right_hist = hist[t:]
+
+        # Recursively find thresholds for left and right segments
+        left_thresholds = _recursive_otsu(left_hist, num_thresholds // 2)
+        right_thresholds = _recursive_otsu(right_hist, num_thresholds - len(left_thresholds) - 1)
+
+        # Combine thresholds
+        thresholds = left_thresholds + [t] + [x + t for x in right_thresholds]
+
+        # Compute the total within-class variance
+        total_variance = _compute_within_class_variance(hist, thresholds)
+
+        # Update the best thresholds if the current variance is lower
+        if total_variance < best_variance:
+            best_variance = total_variance
+            best_thresholds = thresholds
+
+    return best_thresholds
+
+
+def _binary_threshold_otsu(hist):
+    """
+    Finds the best threshold for binary segmentation using Otsu's method.
+
+    Parameters
+    ----------
+    hist : ndarray
+        Histogram of the image.
+
+    Returns
+    -------
+    int
+        Best threshold for binary segmentation.
+    """
+    total = np.sum(hist)
+    current_max, threshold = 0, 0
+    sum_total, sum_foreground, weight_foreground, weight_background = 0, 0, 0, 0
+
+    # Compute the sum of pixel values
+    for i in range(len(hist)):
+        sum_total += i * hist[i]
+
+    # Iterate through possible thresholds
+    for i in range(len(hist)):
+        weight_foreground += hist[i]
+        if weight_foreground == 0:
+            continue
+        weight_background = total - weight_foreground
+        if weight_background == 0:
+            break
+
+        sum_foreground += i * hist[i]
+        mean_foreground = sum_foreground / weight_foreground
+        mean_background = (sum_total - sum_foreground) / weight_background
+
+        # Compute between-class variance
+        between_class_variance = weight_foreground * weight_background * (mean_foreground - mean_background) ** 2
+        if between_class_variance > current_max:
+            current_max = between_class_variance
+            threshold = i
+
+    return threshold
+
+
+def _compute_within_class_variance(hist, thresholds):
+    """
+    Computes the total within-class variance given a set of thresholds.
+
+    Parameters
+    ----------
+    hist : ndarray
+        Histogram of the image.
+    thresholds : list
+        List of thresholds that divide the histogram into multiple classes.
+
+    Returns
+    -------
+    float
+        Total within-class variance.
+    """
+    total_variance = 0
+    thresholds = [0] + thresholds + [len(hist)]
+
+    # Iterate through each segment defined by the thresholds
+    for i in range(len(thresholds) - 1):
+        class_hist = hist[thresholds[i]:thresholds[i+1]]
+        class_prob = np.sum(class_hist)
+        if class_prob == 0:
+            continue
+        class_mean = np.sum(class_hist * np.arange(thresholds[i], thresholds[i+1])) / class_prob
+        class_variance = np.sum(((np.arange(thresholds[i], thresholds[i+1]) - class_mean) ** 2) * class_hist) / class_prob
+        total_variance += class_variance * class_prob
+
+    return total_variance
+# ####### END Multi-threshold Otsu's method
+
+
+def export_recon_to_hdf5(recon, filename, recon_description="", delta_pixel_image=1.0, alu_description =""):
+    """
+    This function writes a reconstructed image to an HDF5 file.
+
+    Optimal parameters can be used to store a description of the reconstruction and the pixels spacing.
+
+    Args:
+        recon (float, ndarray): 3D reconstructed reconstruction to be saved.
+        filename (string): Fully specified path to save the HDF5 file.
+        recon_description (string, optional) [Default=""]: Description of CT reconstruction.
+        delta_pixel_image (float, optional) [Default=1.0]:  Image pixel spacing in arbitrary length units.
+        alu_description (string, optional) [Default=""]: Description of the arbitrary length units for pixel spacing. Example: "1 ALU = 5 mm".
+    """
+    f = h5py.File(filename, "w")
+    # voxel values
+    f.create_dataset("recon", data=recon)
+    # recon shape
+    f.attrs["recon_description"] = recon_description
+    f.attrs["alu_description"] = alu_description
+    f.attrs["delta_pixel_image"] = delta_pixel_image
+
+    print("Attributes of HDF5 file: ")
+    for k in f.attrs.keys():
+        print(f"{k}: ", f.attrs[k])
+
+    return
+

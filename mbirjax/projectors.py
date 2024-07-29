@@ -1,6 +1,7 @@
 from collections import namedtuple
 import jax
 import jax.numpy as jnp
+import mbirjax
 
 
 class Projectors:
@@ -53,7 +54,8 @@ class Projectors:
         projector_params = ProjectorParams(*tuple(projector_param_values))
 
         view_params_array = self.tomography_model.get_params('view_params_array')
-        pixel_batch_size, view_batch_size = self.tomography_model.get_params(['pixel_batch_size', 'view_batch_size'])
+        pixel_batch_size = self.tomography_model.pixels_per_batch
+        view_batch_size = self.tomography_model.views_per_batch
 
         def sparse_forward_project_fcn(voxel_values, pixel_indices, view_indices=()):
             """
@@ -74,11 +76,9 @@ class Projectors:
                 3D array of shape (num_views, num_det_rows, num_det_cols), where num_views is len(view_indices) if view_indices is not None
             """
 
-            batch_size = pixel_batch_size
-            function_to_sum = sparse_forward_project_pixel_batch
-            data_to_batch = (voxel_values, pixel_indices)  # Apply ensure_tuple
-            extra_args = (view_indices, )
-            summed_output = sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_args)
+            voxel_and_indices = (voxel_values, pixel_indices)  # Apply ensure_tuple
+            summed_output = sum_function_in_batches(sparse_forward_project_pixel_batch, voxel_and_indices,
+                                                    pixel_batch_size, view_indices)
             return summed_output
 
         def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=()):

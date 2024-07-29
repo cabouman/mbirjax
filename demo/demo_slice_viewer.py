@@ -1,6 +1,5 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax.plot_utils as pu
 import mbirjax.parallel_beam
 
 if __name__ == "__main__":
@@ -31,11 +30,11 @@ if __name__ == "__main__":
     phantom = cone_model.gen_modified_3d_sl_phantom()
 
     # View the phantom
-    pu.slice_viewer(phantom, phantom.transpose((1, 2, 0)), title='Phantom axial and coronal', slice_label='View')
+    mbirjax.slice_viewer(phantom, phantom.transpose((1, 2, 0)), title='Phantom axial and coronal', slice_label='View')
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
 
     # View sinogram
-    pu.slice_viewer(sinogram, title='Sinogram', slice_axis=0)
+    mbirjax.slice_viewer(sinogram, title='Sinogram', slice_axis=0)

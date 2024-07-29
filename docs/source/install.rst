@@ -1,9 +1,10 @@
+.. _InstallationDocs:
+
 ============
 Installation 
 ============
-.. _installation_label:
 
-The ``MBIRJAX`` package currently is available either from PyPI or you can download and install the source from GitHub.
+The ``MBIRJAX`` package is available through PyPI or from source on GitHub.
 
 **Install from PyPI**
 

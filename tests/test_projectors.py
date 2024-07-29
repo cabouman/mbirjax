@@ -56,9 +56,6 @@ class TestProjectors(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
-        elif geometry_type == 'blur':
-            sigma = 2.0
-            ct_model = mbirjax.Blur(self.sinogram_shape, sigma)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 

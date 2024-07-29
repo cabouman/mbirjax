@@ -315,7 +315,6 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     else:
         defective_pixel_list = None
 
-
     ### flip the scans according to flipH and flipV information from nsipro file
     if flipV:
         print("Flip scans vertically!")
@@ -438,7 +437,8 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     defective_pixel_path = _prompt_user_choice("defective pixel files", defective_pixel_path_list) 
 
     return config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path
-  
+
+
 def _prompt_user_choice(file_description, file_path_list):
     """ Given a list of candidate files, prompt the user to select the desired one.
         If only one candidate exists, the function will return the name of that file without any user prompts.
@@ -470,6 +470,7 @@ def _prompt_user_choice(file_description, file_path_list):
             sys.stdout.write(f"Please respond with a number between {choice_min} and {choice_max}.\n")
     return
 
+
 def _read_detector_location_from_geom_report(geom_report_path):
     """ Give the path to "Geometry Report.rtf", returns the X and Y coordinates of the first row and first column of the detector.
         It is observed that the coordinates given in "Geometry Report.rtf" is more accurate than the coordinates given in the <reference> field in nsipro file.
@@ -497,6 +498,7 @@ def _read_detector_location_from_geom_report(geom_report_path):
     x_r = float(data[0])
     y_r = float(data[1])
     return x_r, y_r
+
 
 def _read_str_from_config(filepath, tags_sections):
     """Returns strings about dataset information read from NSI configuration file.
@@ -537,8 +539,8 @@ def _read_str_from_config(filepath, tags_sections):
     return NSI_params
 ######## END subroutines for parsing NSI metadata
 
-######## subroutines for NSI-MBIR parameter conversion
 
+######## subroutines for NSI-MBIR parameter conversion
 def calc_det_rotation(r_a, r_n, r_h, r_v):
     """ Calculate the tilt angle between the rotation axis and the detector columns in unit of radians. User should call `preprocess.correct_det_rotation()` to rotate the sinogram images w.r.t. to the tilt angle.
     
@@ -555,6 +557,7 @@ def calc_det_rotation(r_a, r_n, r_h, r_v):
     # calculate angle between the projected rotation axis and the horizontal detector vector
     det_rotation = -np.arctan(np.dot(r_a_p, r_h)/np.dot(r_a_p, r_v))
     return det_rotation
+
 
 def calc_source_detector_params(r_a, r_n, r_h, r_s, r_r):
     """ Calculate the MBIRJAX geometry parameters: source_detector_dist, magnification, and rotation axis tilt angle. 
@@ -586,6 +589,7 @@ def calc_source_detector_params(r_a, r_n, r_h, r_s, r_r):
     magnification = source_detector_dist/source_iso_dist 
     det_rotation = calc_det_rotation(r_a, r_n, r_h, r_v) # rotation axis tilt angle
     return source_detector_dist, source_iso_dist, magnification, det_rotation
+
 
 def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification):
     """ Calculate the MBIRJAX geometry parameters: det_channel_offset, det_row_offset. 

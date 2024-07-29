@@ -4,23 +4,28 @@ import jax.numpy as jnp
 import jax
 import time
 import matplotlib.pyplot as plt
-import gc
-import warnings
 import mbirjax
 
+# import os
+# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".03"
+
 if __name__ == "__main__":
+
+    main_device = jax.devices('cpu')[0]
+    worker = jax.devices('gpu')[0]
+
     """
     This is a script to develop, debug, and tune the cone beam beam projector
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 4  # Reduce this for large detector row/channel count, increase for smaller
-    pixel_batch_size = 2048
+    view_batch_size = 16  # Reduce this for large detector row/channel count, increase for smaller
+    pixel_batch_size = 4096
 
     # Initialize sinogram parameters
-    num_views = 128
-    num_det_rows = 128
-    num_det_channels = 128
+    num_views = 750
+    num_det_rows = 1500
+    num_det_channels = 500
     view_step_size = None  # Set to a small, positive integer to subsample the views
 
     view_indices = np.arange(start=0, stop=num_views, step=view_step_size)
@@ -36,32 +41,35 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
-    seed_value = 0  #np.random.randint(1000000)
+    seed_value = 0  # np.random.randint(1000000)
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # conebeam_model = mbirjax.ConeBeamModel.from_file('params_conebeam.yaml')
     conebeam_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_distance, source_iso_distance)
-    # conebeam_model.to_file('params_conebeam.yaml')
-
-    # conebeam_model.set_params(delta_voxel=delta_voxel)
+    conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mbirjax.gen_cube_phantom(recon_shape)
+    with jax.default_device(main_device):
+        phantom = mbirjax.gen_cube_phantom(recon_shape)
 
-    # Generate indices of pixels
-    num_subsets = 1
-    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
-    num_subsets = 5
-    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+        # Generate indices of pixels and sinogram
+        full_indices = mbirjax.gen_full_indices(recon_shape)
+        # full_indices = full_indices[::2]
+        voxel_values = conebeam_model.get_voxels_at_indices(phantom, full_indices)
 
-    # Generate sinogram data
-    # mbirjax.slice_viewer(phantom)
-    voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
+    # New version
+    print('Starting first projection')
+    mbirjax.get_memory_stats()
+    time0 = time.time()
+    sinogram0 = conebeam_model.sparse_forward_project(voxel_values, full_indices)
+    elapsed = time.time() - time0
+    print('Pre-compile forward project time = {:.5f} sec'.format(elapsed))
+    mbirjax.get_memory_stats()
 
-    conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
+    # mbirjax.slice_viewer(sinogram0, slice_axis=0)
+    exit(0)
 
     num_projected_views = len(view_indices) if len(view_indices) != 0 else num_views
     print('Starting forward projection with {} views out of {} total'.format(num_projected_views, num_views))
