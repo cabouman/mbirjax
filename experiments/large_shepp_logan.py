@@ -3,7 +3,7 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax.parallel_beam
+import mbirjax
 import os
 
 # Set the GPU memory fraction for JAX
