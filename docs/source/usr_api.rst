@@ -2,7 +2,8 @@
 User API
 ========
 
-MBIRJAX is designed to give reconstructions using just a few lines of code.
+Most functions can be accessed by importing mbirjax and creating a model or through mbirjax directly.  Most
+commonly used functions are described below.  See :ref:`ExamplesFAQs` for examples.
 
 Geometry Models
 ---------------
@@ -77,12 +78,13 @@ Preprocessing
 ------------------
 
 Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
-The following are functions specific to NSI scanners.
+The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
+`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo.
 
 .. autosummary::
 
-   preprocess.NSI.compute_sino_and_params
-   preprocess.NSI.load_scans_and_params
+   preprocess.nsi.compute_sino_and_params
+   preprocess.nsi.load_scans_and_params
 
 The remaining functions can be used for multiple types of scan data.
 

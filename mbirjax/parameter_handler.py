@@ -20,11 +20,14 @@ class ParameterHandler():
         verbose = self.get_params('verbose')
         print("----")
         for key, entry in self.params.items():
-            if verbose < 2 and key == 'view_params_array':
+            if verbose < 3 and key == 'view_params_array':
                 continue
             param_val = entry.get('val')
-            recompile_flag = entry.get('recompile_flag')
-            print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
+            if verbose < 3:
+                print("{} = {}".format(key, param_val))
+            else:
+                recompile_flag = entry.get('recompile_flag')
+                print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
 
     @staticmethod
@@ -166,7 +169,7 @@ class ParameterHandler():
 
             if key in self.params.keys():
                 recompile_flag = self.params[key]['recompile_flag']
-            elif not no_warning:
+            elif not no_warning:  # Check if this is a valid parameter.  This is disabled for initialization.
                 error_message = '{} is not a recognized parameter'.format(key)
                 error_message += '\nValid parameters are: \n'
                 for valid_key in self.params.keys():
@@ -190,8 +193,8 @@ class ParameterHandler():
 
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
-            self.set_params(auto_regularize_flag=False)
             if not no_warning:
+                self.set_params(auto_regularize_flag=False)
                 warnings.warn('You are directly setting regularization parameters, sigma_x, sigma_y or sigma_prox. '
                               'This is an advanced feature that will disable auto-regularization.')
 

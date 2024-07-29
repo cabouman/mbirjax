@@ -2,6 +2,7 @@ from functools import partial
 
 import jax
 from jax import numpy as jnp
+import numpy as np
 
 
 @partial(jax.jit, static_argnames=['sigma_prox'])
@@ -332,3 +333,13 @@ def compute_qggmrf_grad_and_hessian(full_recon, qggmrf_params):
         grad += 2 * b_per_axis[axis] * (- b_tilde_plus * cur_delta_plus + b_tilde_minus * cur_delta_minus)
 
     return grad, hess
+
+
+def get_b_from_nbr_wts(qggmrf_nbr_wts):
+
+    # Convert the 3-element list of neighbor weights to a 6-element array of weights in each direction
+    b = np.array([qggmrf_nbr_wts, qggmrf_nbr_wts])
+    b = b.T.flatten()
+    b = b / np.sum(b)
+    b = tuple(b)
+    return b

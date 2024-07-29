@@ -711,8 +711,8 @@ class TomographyModel(ParameterHandler):
                                                                                                   100 * nrms_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
-                    b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
-                    b = tuple(b)
+                    qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+                    b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
                     qggmrf_params = (b, sigma_x, p, q, T)
                     pm_loss[i] = mbirjax.qggmrf_loss(flat_recon.reshape(recon.shape), qggmrf_params)
                     pm_loss[i] /= flat_recon.size
@@ -782,10 +782,8 @@ class TomographyModel(ParameterHandler):
 
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
-        b, sigma_x, p, q, T = self.get_params(['b', 'sigma_x', 'p', 'q', 'T'])
-        b = np.array(b)
-        b = b / np.sum(b)
-        b = tuple(b)
+        qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+        b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')

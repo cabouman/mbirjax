@@ -2,7 +2,7 @@ import numpy as np
 import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax.plot_utils as pu
+import mbirjax
 import mbirjax.parallel_beam
 
 if __name__ == "__main__":
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     recon_3d = parallel_model.reshape_recon(recon)
 
     # Display results
-    pu.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+    mbirjax.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
 
     # You can also display individual slides with the sinogram
-    #pu.display_slices(phantom, sinogram, recon_3d)
+    #mbirjax.display_slices(phantom, sinogram, recon_3d)
