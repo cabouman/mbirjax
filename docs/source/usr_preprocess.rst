@@ -9,7 +9,7 @@ The ``preprocess`` module provides scanner-specific preprocessing and more gener
 NorthStar Instrument (NSI) functions
 ------------------------------------
 
-.. automodule:: mbirjax.preprocess.NSI
+.. automodule:: mbirjax.preprocess.nsi
    :members: compute_sino_and_params, load_scans_and_params
    :undoc-members:
    :show-inheritance:

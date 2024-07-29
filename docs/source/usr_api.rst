@@ -82,8 +82,8 @@ The following are functions specific to NSI scanners.
 
 .. autosummary::
 
-   preprocess.NSI.compute_sino_and_params
-   preprocess.NSI.load_scans_and_params
+   preprocess.nsi.compute_sino_and_params
+   preprocess.nsi.load_scans_and_params
 
 The remaining functions can be used for multiple types of scan data.
 
