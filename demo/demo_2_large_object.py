@@ -91,10 +91,14 @@ ct_model_for_recon.print_params()
 
 # Default VCD reconstruction
 print('Starting default recon - will have significant artifacts because of the missing projections.\n')
+time0 = time.time()
 recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
+recon.block_until_ready()
+elapsed = time.time() - time0
 
 # Print out parameters used in recon
 pprint.pprint(recon_params._asdict(), compact=True)
+print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 """**Display the default reconstruction.**"""
 
@@ -138,7 +142,12 @@ room for those partial projections to be absorbed into partial projected pixels,
 # approximate the phantom shape.  Note that it doesn't have to be an exact match.
 recon_row_scale = 1.0
 recon_col_scale = 1.5
-ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
+# Version 0.4.X:
+(num_rows, num_cols, num_slices) = ct_model_for_recon.get_params('recon_shape')
+new_shape = (int(num_rows * recon_row_scale), int(num_cols * recon_col_scale), num_slices)
+ct_model_for_recon.set_params(recon_shape=new_shape)
+# Version 0.5.0:
+# ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
 
 # Reset the default sharpness
 sharpness = 0
