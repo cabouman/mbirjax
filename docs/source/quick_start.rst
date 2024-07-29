@@ -2,9 +2,19 @@
 Quick Start
 ===========
 
+MBIRJAX is designed to give reconstructions using just a few lines of code.  Most functions can be accessed
+by importing mbirjax and creating a model or through mbirjax directly.  Assuming your sinogram is a numpy array
+in the shape (views, rows, channels) from a parallel beam projection, you can create and visualize a reconstruction using:
+
+.. code-block::
+
+    import mbirjax
+    ct_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    recon, recon_params = ct_model.recon(sinogram)
+    mbirjax.slice_viewer(recon, title='MBIRJAX Recon')
+
 Demos
 ~~~~~
-
 
 The best way to start is to:
 
@@ -14,7 +24,7 @@ The best way to start is to:
 You can then adapt these demos to suit your needs.
 
 
-Quick Start
+Application
 ~~~~~~~~~~~
 
 Below are simple instructions on how to do your first reconstruction:
