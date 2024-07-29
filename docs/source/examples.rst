@@ -102,3 +102,9 @@ A: Some detectors have significant variation in per-pixel sensitivity.  These di
 measured energy in adjacent detectors that should have essentially the same measured energy.  When these differences
 are incorporated into a reconstruction, they lead to concentric rings.  We are working on preprocessing utilities for
 reducing ring artifacts.
+
+Q: How can I shift a cone-beam recon up or down relative to the detector?
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+A: You can shift the region of reconstruction up or down using ``ct_model.set_params(recon_slice_offset=offset)``
+before calling recon.
