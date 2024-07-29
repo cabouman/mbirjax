@@ -118,4 +118,4 @@ end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]
 cropped_phantom = phantom[start_inds[0]:end_inds[0], start_inds[1]:end_inds[1]]
 mbirjax.slice_viewer(cropped_phantom, recon, title=title, vmin=0.0, vmax=2.0)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """

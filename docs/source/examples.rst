@@ -1,3 +1,5 @@
+.. _ExamplesFAQs:
+
 =================
 Examples and FAQs
 =================
@@ -28,7 +30,7 @@ Q: Why is there a bright ring around my reconstruction?
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 A: If the object does not project completely inside the detector, then MBIR will produce a bright ring
-around the edge of the reconstruction to account for the object that projects to the detector in only some views.
+around the edge of the reconstruction to account for the portion of the object that projects to the detector in only some views.
 See Demo 2: Large Object for an example of this.
 You can improve the reconstruction by increasing recon_shape:
 
@@ -38,6 +40,16 @@ You can improve the reconstruction by increasing recon_shape:
 
 Note that the scale factor need only be large enough to give some padding around the region of valid projection --
 it does not need to match the size of the true object.  Larger scale factors will lead to increased time and memory.
+
+Q: Why is my reconstruction blurry?
++++++++++++++++++++++++++++++++++++
+
+A:  If your reconstruction is blurry, the first thing to try is to increase the sharpness parameter.  Values of
+``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness. If the
+reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
+Typical problems include an incorrect center of rotation (change ``det_channel_offset``), incorrect rotation direction
+(reverse the angles using ``angles[::-1]``), or an incorrect ``source_detector_dist`` or  ``source_iso_dist`` for
+cone beam reconstructions.
 
 Q: How can I do larger reconstructions?
 +++++++++++++++++++++++++++++++++++++++
@@ -54,10 +66,11 @@ introduce an intensity shift and other artifacts.
 
 We continue to improve the time and memory efficiency of MBIRJAX and will investigate multi-GPU/multi-CPU solutions
 
-Q: Why is my reconstruction splotchy?
-+++++++++++++++++++++++++++++++++++++
+Q: Why is my reconstruction noisy?
+++++++++++++++++++++++++++++++++++
 
-A: Decreasing sharpness to -0.5 or -1.0 will reduce high-frequency artifacts but also lead to some blurring of edges:
+A:  This could be due to noise in the data or to incomplete convergence. Decreasing sharpness to -0.5 or -1.0 will
+reduce high-frequency artifacts but also lead to some blurring of edges:
 
 .. code-block::
 
@@ -71,11 +84,13 @@ you might also try increasing the number of iterations:
 
     ct_model.recon(sinogram, num_iterations=20)
 
+If the percent change is less than about 0.01, then extra iterations will not improve image quality but will take
+extra time.  The default number of iterations is typically sufficient for very good image quality.
 
 Q: Why does my reconstruction look distorted?
 +++++++++++++++++++++++++++++++++++++++++++++
 
-A: Make sure that the type of reconstruction matches your data and that the geometry parameters all match.  If you
+A: Make sure that the type of reconstruction (parallel or cone) matches your data and that the geometry parameters all match.  If you
 are using a cone beam system, make sure the source to detector and source to iso distances are correct, and make
 sure the rotation direction is correct.  See Demo 3: Wrong Rotation Direction for an example of what can happen if
 the rotation direction is incorrect.
@@ -83,13 +98,7 @@ the rotation direction is incorrect.
 Q: Why are there rings in my reconstruction?
 ++++++++++++++++++++++++++++++++++++++++++++
 
-A: Some detectors have significant variation in the per-pixel sensitivity.  These differences can lead to different
+A: Some detectors have significant variation in per-pixel sensitivity.  These differences can lead to different
 measured energy in adjacent detectors that should have essentially the same measured energy.  When these differences
-are incorporated into a reconstruction, they lead to concentric rings.  We are working on preprocessing methods that
-could be used to reduce these effects.
-
-Q: Why is my reconstruction blurry?
-+++++++++++++++++++++++++++++++++++
-
-A:  Blurry reconstruction could arise from the data or from the reconstruction algorithm.  Some possible causes
-include a large source spot size, an incorrect center of rotation, or setting sharpness to be small.
+are incorporated into a reconstruction, they lead to concentric rings.  We are working on preprocessing utilities for
+reducing ring artifacts.

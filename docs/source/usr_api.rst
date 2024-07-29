@@ -3,8 +3,7 @@ User API
 ========
 
 Most functions can be accessed by importing mbirjax and creating a model or through mbirjax directly.  Most
-commonly used functions are described below.  See the `Jupyter notebooks <https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing>`__
-for examples.
+commonly used functions are described below.  See :ref:`ExamplesFAQs` for examples.
 
 Geometry Models
 ---------------

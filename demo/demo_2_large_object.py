@@ -166,4 +166,4 @@ title += '\nPadding the recon reduces the internal artifacts even with default s
 title += '\nEdges are sharp, outer ring is mostly gone, and the partially projected pixels are partially recovered.'
 mbirjax.slice_viewer(phantom, recon_enlarged, title=title, vmin=0.0, vmax=2.0)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """

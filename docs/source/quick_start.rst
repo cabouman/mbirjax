@@ -19,7 +19,7 @@ Demos
 The best way to start is to:
 
 - **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <InstallationDocs>`.  We recommend installing in a conda environment or pip virtual environment.
-- **View and run demos** either as `Jupyter notebooks <https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing>`__ or `python scripts <https://github.com/cabouman/mbirjax/tree/main/demo>`__
+- **View and run demos** in :ref:`ExamplesFAQs`
 
 You can then adapt these demos to suit your needs.
 

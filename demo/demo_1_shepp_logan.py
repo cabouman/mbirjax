@@ -135,4 +135,4 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
 mbirjax.slice_viewer(phantom, recon, title=title)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """

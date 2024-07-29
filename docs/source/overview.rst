@@ -30,11 +30,8 @@ Here are the reasons to use MBIRJAX:
     Supports proximal map interfaces, so it can be used with PnP deep neural net priors.
 
 
-We provide several demos as
-`Jupyter notebooks <https://drive.google.com/drive/folders/1wVEsYtneTI83ZB8q-Ag4qk2gPxi_UfKA?usp=sharing>`__ or
-`python scripts <https://github.com/cabouman/mbirjax/tree/main/demo>`__ that make it easy to get started.
-You can use pip install to install mbirjax or install from source using the install script at
-`mbirjax/dev_scripts <https://github.com/cabouman/mbirjax/tree/main/dev_scripts>`__.
+In :ref:`ExamplesFAQs`, we provide several demos as Jupyter notebooks and python scripts that make it easy to get started.
+You can use pip install to install mbirjax or install from source as described in :ref:`InstallationDocs`.
 
 **Geometries**
 
