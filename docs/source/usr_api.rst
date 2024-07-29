@@ -78,7 +78,8 @@ Preprocessing
 ------------------
 
 Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
-The following are functions specific to NSI scanners.
+The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
+`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo.
 
 .. autosummary::
 

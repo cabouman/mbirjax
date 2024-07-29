@@ -5,6 +5,8 @@ Preprocess utilities
 ====================
 
 The ``preprocess`` module provides scanner-specific preprocessing and more general preprocessing to compute and correct the sinogram data.
+See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
+`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo for example uses.
 
 NorthStar Instrument (NSI) functions
 ------------------------------------
