@@ -29,8 +29,6 @@ class TomographyModel(ParameterHandler):
     def __init__(self, sinogram_shape, **kwargs):
 
         super().__init__()
-        self.sparse_forward_project, self.sparse_back_project = None, None  # These are callable functions compiled in set_params
-        self.compute_hessian_diagonal = None
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
         delta_voxel = self.get_params('delta_voxel')
         if delta_voxel is None:
@@ -178,9 +176,6 @@ class TomographyModel(ParameterHandler):
             Nothing, but creates jit-compiled functions.
         """
         self.projector_functions = mbirjax.Projectors(self)
-        self.sparse_forward_project = self.projector_functions.sparse_forward_project
-        self.sparse_back_project = self.projector_functions.sparse_back_project
-        self.compute_hessian_diagonal = self.projector_functions.compute_hessian_diagonal
 
     @staticmethod
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
@@ -283,7 +278,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        sinogram = self.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
+        sinogram = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
         return sinogram
 
     def sparse_back_project(self, sinogram, indices, view_indices=()):
@@ -301,7 +296,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon_at_indices = self.sparse_back_project(sinogram, indices, view_indices=view_indices)
+        recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices)
         return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None, view_indices=()):
@@ -316,7 +311,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.compute_hessian_diagonal(weights, view_indices=view_indices)
+        hessian = self.projector_functions.compute_hessian_diagonal(weights, view_indices=view_indices)
         return hessian
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
