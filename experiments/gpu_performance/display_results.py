@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import sys
 
+
 def display_results(filename):
 
     # Load the existing data
@@ -10,7 +11,6 @@ def display_results(filename):
     mem_values = data['mem_values']
     time_values = data['time_values']
     eval_type_index = data['eval_type_index']
-    pixel_batch_size = data['pixel_batch_size']
     max_percent_used_gb = data['max_percent_used_gb']
     max_avail_gb = data['max_avail_gb']
     num_views = data['num_views']
@@ -19,25 +19,31 @@ def display_results(filename):
     num_indices = data['num_indices']
 
     # Set up the info for plotting
-    outer_labels = ['# views', '# det channels']
-    outer_values = [num_views, num_channels]
-    inner_labels = ['# det rows', '# indices']
-    inner_values = [num_det_rows, num_indices]
+    outer_labels = ['# det rows', '# det channels']
+    outer_values = [num_det_rows, num_channels]
+    inner_labels = ['# views', '# indices']
+    inner_values = [num_views, num_indices]
 
     vmin_mem = -2
     vmax_mem = 6
     vmin_time = -12
     vmax_time = 5
 
+    mem0 = mem_values.flatten()[0]
+    time0 = time_values.flatten()[0]
+    mem_values /= mem0
+    time_values /= time0
+
     plt.ion()
 
     eval_types = ['Forward_projection', 'Backward_projection']
-    super_title_mem = 'Peak log2(GB) as a function of #views, #channels, #rows, and #indices'
-    super_title_mem += ', pixel_batch_size={}\n'.format(pixel_batch_size)
-    super_title_mem += eval_types[eval_type_index]
-    super_title_mem += ':  Avail GB = {:.1f}, Max percent mem used = {:.2f}'.format(max_avail_gb, max_percent_used_gb)
-    super_title_time = 'log2(seconds elapsed) as a function of #views, #channels, #rows, and #indices\n'
-    super_title_time += eval_types[eval_type_index]
+    super_title_mem = eval_types[eval_type_index]
+    super_title_mem += '\nlog2(GB / GB_baseline) as a function of #views, #channels, #rows, and #indices'
+    super_title_mem += '\nGB_baseline = {:.2f}GB'.format(mem0)
+    # super_title_mem += ':  Avail GB = {:.1f}, Max percent mem used = {:.2f}'.format(max_avail_gb, max_percent_used_gb)
+    super_title_time = eval_types[eval_type_index]
+    super_title_time += '\nlog2(seconds elapsed / secs_baseline) as a function of #views, #channels, #rows, and #indices'
+    super_title_time += '\nsecs_baseline elapsed = {:.3g} secs'.format(time0)
 
     create_tiled_heatmap(np.log2(mem_values), outer_labels, outer_values, inner_labels, inner_values,
                          super_title=super_title_mem, vmin=vmin_mem, vmax=vmax_mem)
