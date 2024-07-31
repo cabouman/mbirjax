@@ -45,8 +45,10 @@ Q: Why is my reconstruction blurry?
 +++++++++++++++++++++++++++++++++++
 
 A:  If your reconstruction is blurry, the first thing to try is to increase the sharpness parameter.  Values of
-``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness. If the
-reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
+``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness.
+You can also increase the assumed SNR by setting the parameter ``snr_db=35`` or ``snr_db=40``. This is similar to increasing sharpness but will also create higher contrast edges in the image.
+
+If the reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
 Typical problems include an incorrect center of rotation (change ``det_channel_offset``), incorrect rotation direction
 (reverse the angles using ``angles[::-1]``), or an incorrect ``source_detector_dist`` or  ``source_iso_dist`` for
 cone beam reconstructions.
@@ -54,9 +56,14 @@ cone beam reconstructions.
 Q: How can I do larger reconstructions?
 +++++++++++++++++++++++++++++++++++++++
 
-A: Note that a 2K x 2K x 2K reconstruction occupies 32GB of memory, not counting the sinogram or memory needed for processing.
+A: MBIRJAX runs on both CPU and GPU computers, but we strongly recommend the use of GPUs for large reconstructions since they are much faster.
+On a GPU, the size of the reconstruction is typically limited by the amount of GPU memory.
+So you should find a fast GPU with the largest possible memory. These days that is typically 40GB to 80GB of GPU memory.
+The GPU will be hosted on a CPU, and it is best if that CPU also has even a larger amount of memory, ideally greater than 200GB.
+
+Note that a 2K x 2K x 2K reconstruction occupies 32GB of memory, not counting the sinogram or memory needed for processing.
 If your reconstruction is too large for your GPU memory, MBIRJAX will use CPU memory for some processing and then transfer
-to GPU as needed; this reduces memory use but increases reconstruction time.  If you have no GPU or your GPU memory is small relative
+to the GPU as needed; this reduces memory use but increases reconstruction time.  If you have no GPU or your GPU memory is small relative
 to the problem size, then all processing is done on the CPU.
 
 If you have a parallel beam system, you can select a subset of rows of your sinogram, reconstruct them separately, and then
@@ -64,47 +71,54 @@ concatenate them at the end.  If you have a cone beam system, you can reconstruc
 case, you can do a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can
 introduce an intensity shift and other artifacts.
 
-We continue to improve the time and memory efficiency of MBIRJAX and will investigate multi-GPU/multi-CPU solutions
+We continue to improve the time and memory efficiency of MBIRJAX and will investigate multi-GPU/multi-CPU solutions.
+So stay tuned for further improvements.
 
-Q: Why is my reconstruction noisy?
-++++++++++++++++++++++++++++++++++
 
-A:  This could be due to noise in the data or to incomplete convergence. Decreasing sharpness to -0.5 or -1.0 will
-reduce high-frequency artifacts but also lead to some blurring of edges:
+Q: Why does my reconstruction have artifacts?
++++++++++++++++++++++++++++++++++++++++++++
 
-.. code-block::
+There are many reasons that a reconstruction may have artifacts including noise, blurring, streaks, cupping, etc.
 
-    sharpness=-1.0
-    ct_model.set_params(sharpness=sharpness)
+First, make sure you are using the geometry (parallel or cone) that matches your data.
+Parallel beam geometry is faster, but it may not be accurate is the source is too close to the object.
 
-If the percent change indicated at the end of your reconstruction (using verbose=1) is more than about 0.1, then
-you might also try increasing the number of iterations:
+For transmission tomography, it is critically important to preprocess the raw photon measurements by normalizing by an air-scan and taking the negative log of the ratio.
+We provide simple preprocessing utilities in ``mbirjax.preprocess`` for doing this, and we plan to provide more utilities for specific instruments in the future.
 
-.. code-block::
+In conebeam scans, it is sometimes the case that the rotation direction is reversed.
+This can cause the reconstruction to look blurry or distorted.
+You can correct this by simply taking the negative of your view angles.
+See Demo 3: Wrong Rotation Direction for an example of what can happen if the rotation direction is incorrect.
 
-    ct_model.recon(sinogram, num_iterations=20)
+A common artifact is rings that are generated when the center-of-rotation is off in the views.
+This can be corrected by setting the parameter ``det_channel_offset`` to account for a center-of-rotation that is offset from the center of the view.
 
-If the percent change is less than about 0.01, then extra iterations will not improve image quality but will take
-extra time.  The default number of iterations is typically sufficient for very good image quality.
+If the image is too noisy, you might try reducing the value of the ``sharpness`` or ``snr_db``` parameters.
+You can also improve image quality by using the ``weights`` array that can be generated using the ``gen_weights()`` method.
+The weights provide information on the reliability of the sinogram values, with larger weights indicating higher reliability.
 
-Q: Why does my reconstruction look distorted?
-+++++++++++++++++++++++++++++++++++++++++++++
+Streaks are often caused by metal in the object being scanned.
+One advantage of MBIR is that it generally has fewer metal artifacts, but some artifacts typically remain.
+Using weights will reduce metal artifacts, and the function ``gen_weights_mar()`` can be used to generate weights that further reduce metal artifacts.
 
-A: Make sure that the type of reconstruction (parallel or cone) matches your data and that the geometry parameters all match.  If you
-are using a cone beam system, make sure the source to detector and source to iso distances are correct, and make
-sure the rotation direction is correct.  See Demo 3: Wrong Rotation Direction for an example of what can happen if
-the rotation direction is incorrect.
+Cupping is typically caused by beam hardening with polychromatic X-ray sources.
+This can be partially corrected with a low order polynomial correction.
+We are working on utilities to do beam hardening correction in the future.
 
-Q: Why are there rings in my reconstruction?
-++++++++++++++++++++++++++++++++++++++++++++
+Ring artifacts are typically caused either by an incorrect center of rotation or detector nonuniformity.
+Detector nonuniformity results from the variation in detector sensitivity from pixel to pixel.
+This variation is taken out to some degree by air scan normalization, but some variation may remain.
+These variations will lead to concentric rings in the reconstruction.
+We are working on preprocessing utilities for reducing these ring artifacts.
 
-A: Some detectors have significant variation in per-pixel sensitivity.  These differences can lead to different
-measured energy in adjacent detectors that should have essentially the same measured energy.  When these differences
-are incorporated into a reconstruction, they lead to concentric rings.  We are working on preprocessing utilities for
-reducing ring artifacts.
 
-Q: How can I shift a cone-beam recon up or down relative to the detector?
-+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Q: How can I shift region-of-reconstruction up or down for a conebeam reconstruction?
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 A: You can shift the region of reconstruction up or down using ``ct_model.set_params(recon_slice_offset=offset)``
 before calling recon.
+Positive values of ``offset`` will shift the region down relative to the detector.
+This is useful if you would like to reconstruct the top or bottom half of a conebeam reconstruction in order to save memory.
+
+
