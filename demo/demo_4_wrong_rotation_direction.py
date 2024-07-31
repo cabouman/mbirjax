@@ -107,4 +107,4 @@ title = 'Correct rotation recon (left) vs incorrect rotation recon (right)'
 title += '\nThe incorrect angle specification leads to shape distortion and top/bottom reflection.'
 mbirjax.slice_viewer(recon_correct, recon_incorrect, title=title, vmin=0.0, vmax=1.0)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

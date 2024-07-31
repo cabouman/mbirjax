@@ -19,7 +19,7 @@ Demos
 The best way to start is to:
 
 - **Install MBIRJAX** using the instructions provided on the :ref:`Installation Page <InstallationDocs>`.  We recommend installing in a conda environment or pip virtual environment.
-- **View and run demos** in :ref:`ExamplesFAQs`
+- **View and run demos** in :ref:`DemosFAQs`
 
 You can then adapt these demos to suit your needs.
 
@@ -36,6 +36,8 @@ Below are simple instructions on how to do your first reconstruction:
 
   Note that each row of sinogram data is assumed to be perpendicular to the rotation axis and each view is assumed to be in conventional raster order (i.e., left-to-right, top-to-bottom) looking through the object from the source to the detector.
 
+
+  For transmission tomography, it is critically important to preprocess the raw photon measurements by normalizing by an air-scan and taking the negative log of the ratio.  We provide simple preprocessing utilities in ``mbirjax.preprocess`` for doing this, and we plan to provide more utilities for specific instruments in the future.
 
 - **Initialize a model:**
 

@@ -3,7 +3,7 @@ User API
 ========
 
 Most functions can be accessed by importing mbirjax and creating a model or through mbirjax directly.  Most
-commonly used functions are described below.  See :ref:`ExamplesFAQs` for examples.
+commonly used functions are described below.  See :ref:`DemosFAQs` for examples.
 
 Geometry Models
 ---------------

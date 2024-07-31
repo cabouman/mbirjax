@@ -16,6 +16,9 @@ Reconstruction Parameters
 sharpness : float
     Specifies the sharpness of the reconstruction. Defaults to 0.0. Larger values produce sharper images. Smaller values produce softer images.
 
+snr_db : float
+    Specifies the assumed signal-to-noise ratio in dB of the sinogram data. Defaults to 30.0. Larger values produce sharper and more edgy images. Smaller values produce softer and less edgy images.
+
 verbose : int
     Larger values produce more status information. Defaults to 0 for silent operation.
 

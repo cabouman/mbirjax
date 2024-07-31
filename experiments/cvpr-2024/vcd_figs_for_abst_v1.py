@@ -81,12 +81,12 @@ if __name__ == "__main__":
     # Perform GD reconstruction
     partition_sequence = [0, ]
     parallel_model.set_params(partition_sequence=partition_sequence)
-    recon_gd, recon_params_gd = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    recon_prev_default, recon_params_prev_default = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
-    fm_rmse_gd = recon_params_gd.fm_rmse
-    prior_loss_gd = recon_params_gd.prior_loss
+    fm_rmse_prev_default = recon_params_prev_default.fm_rmse
+    prior_loss_prev_default = recon_params_prev_default.prior_loss
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, num_iterations=num_iterations)
-    granularity_sequence_gd = granularity[partition_sequence]
+    granularity_sequence_prev_default = granularity[partition_sequence]
 
     # Perform CD reconstruction
     partition_sequence = [3, ]
@@ -101,12 +101,12 @@ if __name__ == "__main__":
 
     # Display reconstructions
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    display_slices_for_abstract(recon_gd, recon_vcd, recon_cd, labels)
+    display_slices_for_abstract(recon_prev_default, recon_vcd, recon_cd, labels)
 
     # Display granularity plots:
-    granularity_sequences = [granularity_sequence_gd, granularity_sequence_vcd, granularity_sequence_cd]
-    fm_losses = [fm_rmse_gd, fm_rmse_vcd, fm_rmse_cd]
-    prior_losses = [prior_loss_gd, prior_loss_vcd, prior_loss_cd]
+    granularity_sequences = [granularity_sequence_prev_default, granularity_sequence_vcd, granularity_sequence_cd]
+    fm_losses = [fm_rmse_prev_default, fm_rmse_vcd, fm_rmse_cd]
+    prior_losses = [prior_loss_prev_default, prior_loss_vcd, prior_loss_cd]
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
     mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 

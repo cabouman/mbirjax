@@ -20,8 +20,8 @@ if __name__ == "__main__":
 
     # Set parameters
     num_views = 512
-    num_det_rows = 512
-    num_det_channels = 512
+    num_det_rows = 1000
+    num_det_channels = 2000
     sharpness = 0.0
     
     # These can be adjusted to describe the geometry in the cone beam case.
