@@ -142,12 +142,7 @@ room for those partial projections to be absorbed into partial projected pixels,
 # approximate the phantom shape.  Note that it doesn't have to be an exact match.
 recon_row_scale = 1.0
 recon_col_scale = 1.5
-# Version 0.4.X:
-(num_rows, num_cols, num_slices) = ct_model_for_recon.get_params('recon_shape')
-new_shape = (int(num_rows * recon_row_scale), int(num_cols * recon_col_scale), num_slices)
-ct_model_for_recon.set_params(recon_shape=new_shape)
-# Version 0.5.0:
-# ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
+ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
 
 # Reset the default sharpness
 sharpness = 0
@@ -166,4 +161,4 @@ title += '\nPadding the recon reduces the internal artifacts even with default s
 title += '\nEdges are sharp, outer ring is mostly gone, and the partially projected pixels are partially recovered.'
 mbirjax.slice_viewer(phantom, recon_enlarged, title=title, vmin=0.0, vmax=2.0)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

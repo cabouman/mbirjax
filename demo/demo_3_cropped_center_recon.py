@@ -87,12 +87,7 @@ ct_model_for_recon.print_params()
 sharpness = -0.5
 recon_row_scale = 0.5
 recon_col_scale = 0.5
-
-# Version 0.4.X:
-recon_shape = (phantom.shape[0] // 2, phantom.shape[1] // 2, phantom.shape[2])
-ct_model_for_recon.set_params(recon_shape=recon_shape)
-# Version 0.5.0:
-# ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
+ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
 
 ct_model_for_recon.set_params(sharpness=sharpness)
 
@@ -118,4 +113,4 @@ end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]
 cropped_phantom = phantom[start_inds[0]:end_inds[0], start_inds[1]:end_inds[1]]
 mbirjax.slice_viewer(cropped_phantom, recon, title=title, vmin=0.0, vmax=2.0)
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/examples.html).  """
+"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

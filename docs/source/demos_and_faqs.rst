@@ -1,8 +1,8 @@
-.. _ExamplesFAQs:
+.. _DemosFAQs:
 
-=================
-Examples and FAQs
-=================
+==============
+Demos and FAQs
+==============
 
 Demos
 -----
@@ -46,7 +46,7 @@ Q: Why is my reconstruction blurry?
 
 A:  If your reconstruction is blurry, the first thing to try is to increase the sharpness parameter.  Values of
 ``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness.
-You can also increase the assumed SNR by setting the parameter ``snr_db=35`` or ``snr_db=40``. This is similar to increasing sharpness but will also create higher contrast edges in the image.
+You can also increase the assumed SNR by setting the parameter ``snr_db=35`` or ``snr_db=40``. This is similar to increasing sharpness but will also create higher contrast edges in the reconstruction.
 
 If the reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
 Typical problems include an incorrect center of rotation (change ``det_channel_offset``), incorrect rotation direction
@@ -76,12 +76,13 @@ So stay tuned for further improvements.
 
 
 Q: Why does my reconstruction have artifacts?
-+++++++++++++++++++++++++++++++++++++++++++
++++++++++++++++++++++++++++++++++++++++++++++
 
 There are many reasons that a reconstruction may have artifacts including noise, blurring, streaks, cupping, etc.
 
 First, make sure you are using the geometry (parallel or cone) that matches your data.
-Parallel beam geometry is faster, but it may not be accurate is the source is too close to the object.
+Parallel beam geometry is faster and could be used for cone beam data, but it may not be accurate if the source is too
+close to the object.
 
 For transmission tomography, it is critically important to preprocess the raw photon measurements by normalizing by an air-scan and taking the negative log of the ratio.
 We provide simple preprocessing utilities in ``mbirjax.preprocess`` for doing this, and we plan to provide more utilities for specific instruments in the future.
@@ -89,13 +90,17 @@ We provide simple preprocessing utilities in ``mbirjax.preprocess`` for doing th
 In conebeam scans, it is sometimes the case that the rotation direction is reversed.
 This can cause the reconstruction to look blurry or distorted.
 You can correct this by simply taking the negative of your view angles.
-See Demo 3: Wrong Rotation Direction for an example of what can happen if the rotation direction is incorrect.
+See Demo 3: Wrong Rotation Direction above for an example of what can happen if the rotation direction is incorrect.
 
-A common artifact is rings that are generated when the center-of-rotation is off in the views.
-This can be corrected by setting the parameter ``det_channel_offset`` to account for a center-of-rotation that is offset from the center of the view.
+A common artifact is rings near the center of the reconstruction that are generated when the center-of-rotation is
+not in the center of the detector.  This can be corrected by setting the parameter ``det_channel_offset`` to reposition
+the center-of-rotation.
 
-If the image is too noisy, you might try reducing the value of the ``sharpness`` or ``snr_db``` parameters.
-You can also improve image quality by using the ``weights`` array that can be generated using the ``gen_weights()`` method.
+If your reconstruction is blurry, see the FAQ above.
+
+If the reconstruction is too noisy, you might try reducing the value of the ``sharpness`` or ``snr_db`` parameters (discussed
+more in the FAQ above on blurry reconstructions).
+You can also improve reconstruction quality by using the ``weights`` array that can be generated using the ``gen_weights()`` method.
 The weights provide information on the reliability of the sinogram values, with larger weights indicating higher reliability.
 
 Streaks are often caused by metal in the object being scanned.
@@ -106,7 +111,7 @@ Cupping is typically caused by beam hardening with polychromatic X-ray sources.
 This can be partially corrected with a low order polynomial correction.
 We are working on utilities to do beam hardening correction in the future.
 
-Ring artifacts are typically caused either by an incorrect center of rotation or detector nonuniformity.
+Ring artifacts away from the center of reconstruction are typically caused by detector nonuniformity.
 Detector nonuniformity results from the variation in detector sensitivity from pixel to pixel.
 This variation is taken out to some degree by air scan normalization, but some variation may remain.
 These variations will lead to concentric rings in the reconstruction.
