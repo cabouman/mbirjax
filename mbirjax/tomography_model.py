@@ -274,21 +274,20 @@ class TomographyModel(ParameterHandler):
             indices (jax array): Array of indices specifying which voxels to project.
             view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                 If None, then all views are used.
+            output_device (jax device): Device on which to put the output
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         # Get the current devices and move the data to the worker
         cur_devices = [list(voxel_values.devices())[0], list(indices.devices())[0]]
-        jax.device_put(voxel_values, self.worker)
-        jax.device_put(indices, self.worker)
+        voxel_values = jax.device_put(voxel_values, self.worker)
+        indices = jax.device_put(indices, self.worker)
 
         sinogram = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
 
         # Put the data on the appropriate device
-        jax.device_put(sinogram, output_device)
-        jax.device_put(voxel_values, cur_devices[0])
-        jax.device_put(indices, cur_devices[1])
+        sinogram = jax.device_put(sinogram, output_device)
         return sinogram
 
     def sparse_back_project(self, sinogram, indices, view_indices=(), coeff_power=1, output_device=None):
@@ -302,21 +301,20 @@ class TomographyModel(ParameterHandler):
             indices (jnp array): Array of indices specifying which voxels to back project.
             view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                 If None, then all views are used.
+            output_device (jax device): Device on which to put the output
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
         # Get the current devices and move the data to the worker
         cur_devices = [list(sinogram.devices())[0], list(indices.devices())[0]]
-        jax.device_put(sinogram, self.worker)
-        jax.device_put(indices, self.worker)
+        sinogram = jax.device_put(sinogram, self.worker)
+        indices = jax.device_put(indices, self.worker)
 
         recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices, coeff_power=coeff_power)
 
         # Put the data on the appropriate device
-        jax.device_put(recon_at_indices, output_device)
-        jax.device_put(sinogram, cur_devices[0])
-        jax.device_put(indices, cur_devices[1])
+        recon_at_indices = jax.device_put(recon_at_indices, output_device)
 
         return recon_at_indices
 
@@ -328,6 +326,7 @@ class TomographyModel(ParameterHandler):
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                 If None, then all views are used.
+            output_device (jax device): Device on which to put the output
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
@@ -691,6 +690,7 @@ class TomographyModel(ParameterHandler):
             error_sinogram = sinogram - error_sinogram
 
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
+        error_sinogram = jax.device_put(error_sinogram, self.main_device)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -711,15 +711,15 @@ class TomographyModel(ParameterHandler):
         # Initialize the diagonal of the hessian of the forward model
         if constant_weights:
             weights = jnp.ones_like(sinogram)
-        weights = jax.device_put(weights, self.worker)
+
         if verbose >= 1:
             print('Computing Hessian diagonal')
-        fm_hessian = self.compute_hessian_diagonal(weights=weights).reshape((-1, num_recon_slices))
+        fm_hessian = self.compute_hessian_diagonal(weights=weights, output_device=self.main_device)
+        fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
         if constant_weights:
             weights = 1
         else:
             weights = jax.device_put(weights, self.main_device)
-        fm_hessian = jax.device_put(fm_hessian, self.main_device)
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
@@ -865,16 +865,15 @@ class TomographyModel(ParameterHandler):
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             weighted_error_sinogram = fm_constant * error_sinogram * weights
 
-            # Transfer to worker
-            weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.worker)
+            # Transfer to worker for later use
             pixel_indices_worker = jax.device_put(pixel_indices, self.worker)
 
             # Back project to get the gradient
-            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices_worker)
+            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
+                                                 output_device=self.main_device)
 
             # Transfer to main
             weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.main_device)
-            forward_grad = jax.device_put(forward_grad, self.main_device)
 
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[pixel_indices]
@@ -903,9 +902,8 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
-            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.worker)
-            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker)
-            delta_sinogram = jax.device_put(delta_sinogram, self.main_device)
+            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
+                                                    output_device=self.main_device)
 
             forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
@@ -948,7 +946,6 @@ class TomographyModel(ParameterHandler):
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
-                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.worker)
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             # Perform sparse updates at index locations
