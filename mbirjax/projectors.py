@@ -9,7 +9,7 @@ class Projectors:
     def __init__(self, tomography_model):
 
         self.tomography_model = tomography_model
-        self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = None, None, None
+        self.sparse_forward_project, self.sparse_back_project = None, None
         self.create_projectors(tomography_model)
 
     def create_projectors(self, tomography_model):
@@ -23,13 +23,11 @@ class Projectors:
                 * back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
 
         Returns:
-            Nothing, but the class variables `sparse_forward_project`, `sparse_back_project`, and
-            `compute_hessian_diagonal` are set to callable functions.  These are used to implement the following
-            methods:
+            Nothing, but the class variables `sparse_forward_project` and `sparse_back_project` are set to callable
+            functions.  These are used to implement the following methods:
 
             * `sparse_forward_project`: :meth:`TomographyModel.sparse_forward_project`
             * `sparse_back_project`: :meth:`TomographyModel.sparse_back_project`
-            * `compute_hessian_diagonal`: :meth:`TomographyModel.compute_hessian_diagonal`
 
         Note:
             The returned functions will be jit compiled each time they are called with a new shape of input.  If
@@ -194,46 +192,10 @@ class Projectors:
             new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixel_batch_size)
             return new_voxel_values
 
-        def compute_hessian_diagonal(weights=None, view_indices=()):
-            """
-            Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
-            matrix except using the square of the coefficients in the backprojection to a given voxel.
-            One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-            shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
-            array of ones of size sinogram_shape.
-
-            Args:
-               weights (ndarray or jax array or None, optional): 3D array of shape
-                    (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
-                    if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
-                    match those indicated by view_indices.  Defaults to all 1s.
-               view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                    If None, then all views are used.
-
-            Returns:
-                An array that is the same size as the reconstruction.
-            """
-            num_views = len(view_indices) if len(view_indices) != 0 else sinogram_shape[0]
-            if weights is None:
-                weights = jnp.ones((num_views,) + sinogram_shape[1:])
-            elif weights.shape != (num_views,) + sinogram_shape[1:]:
-                error_message = 'Weights must be constant or an array compatible with sinogram'
-                error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
-                raise ValueError(error_message)
-
-            num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-            max_index = num_recon_rows * num_recon_cols
-            indices = jnp.arange(max_index)
-
-            hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, view_indices=view_indices)
-
-            return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
-
-        # Set the compiled projectors and Hessian function
+        # Set the compiled projectors
         projector_functions = (jax.jit(sparse_forward_project_fcn),
-                               jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'),
-                               compute_hessian_diagonal)
-        self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = projector_functions
+                               jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'))
+        self.sparse_forward_project, self.sparse_back_project = projector_functions
 
 
 def concatenate_function_in_batches(function, data_to_batch, batch_size):

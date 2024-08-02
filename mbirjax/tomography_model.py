@@ -263,7 +263,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, view_indices=()):
+    def sparse_forward_project(self, voxel_values, indices, view_indices=(), output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -271,17 +271,27 @@ class TomographyModel(ParameterHandler):
 
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
-            indices (numpy.ndarray): Array of indices specifying which voxels to project.
+            indices (jax array): Array of indices specifying which voxels to project.
             view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                 If None, then all views are used.
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
+        # Get the current devices and move the data to the worker
+        cur_devices = [list(voxel_values.devices())[0], list(indices.devices())[0]]
+        jax.device_put(voxel_values, self.worker)
+        jax.device_put(indices, self.worker)
+
         sinogram = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
+
+        # Put the data on the appropriate device
+        jax.device_put(sinogram, output_device)
+        jax.device_put(voxel_values, cur_devices[0])
+        jax.device_put(indices, cur_devices[1])
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, view_indices=()):
+    def sparse_back_project(self, sinogram, indices, view_indices=(), coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -296,10 +306,21 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices)
+        # Get the current devices and move the data to the worker
+        cur_devices = [list(sinogram.devices())[0], list(indices.devices())[0]]
+        jax.device_put(sinogram, self.worker)
+        jax.device_put(indices, self.worker)
+
+        recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices, coeff_power=coeff_power)
+
+        # Put the data on the appropriate device
+        jax.device_put(recon_at_indices, output_device)
+        jax.device_put(sinogram, cur_devices[0])
+        jax.device_put(indices, cur_devices[1])
+
         return recon_at_indices
 
-    def compute_hessian_diagonal(self, weights=None, view_indices=()):
+    def compute_hessian_diagonal(self, weights=None, view_indices=(), output_device=None):
         """
         Computes the diagonal elements of the Hessian matrix for given weights.
 
@@ -311,8 +332,42 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
         """
-        hessian = self.projector_functions.compute_hessian_diagonal(weights, view_indices=view_indices)
-        return hessian
+        """
+        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
+        matrix except using the square of the coefficients in the backprojection to a given voxel.
+        One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
+        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
+        array of ones of size sinogram_shape.
+
+        Args:
+           weights (ndarray or jax array or None, optional): 3D array of shape
+                (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
+                if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
+                match those indicated by view_indices.  Defaults to all 1s.
+           view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+                If None, then all views are used.
+
+        Returns:
+            An array that is the same size as the reconstruction.
+        """
+        sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
+        num_views = len(view_indices) if len(view_indices) != 0 else sinogram_shape[0]
+        if weights is None:
+            with jax.default_device(self.main_device):
+                weights = jnp.ones((num_views,) + sinogram_shape[1:])
+        elif weights.shape != (num_views,) + sinogram_shape[1:]:
+            error_message = 'Weights must be constant or an array compatible with sinogram'
+            error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
+            raise ValueError(error_message)
+
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
+        max_index = num_recon_rows * num_recon_cols
+        indices = jnp.arange(max_index)
+
+        hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, view_indices=view_indices,
+                                                    output_device=output_device)
+
+        return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
