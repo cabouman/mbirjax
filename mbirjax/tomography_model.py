@@ -1,7 +1,7 @@
 import types
 import numpy as np
 import warnings
-import gc
+import time
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -91,7 +91,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
         if gpu_memory > total_memory_required:
-            main_device = gpus[0]
+            main_device = cpus[0]
             worker = gpus[0]
             gpu_memory_required = total_memory_required
         elif gpu_memory > subset_update_memory_required:
@@ -807,13 +807,21 @@ class TomographyModel(ParameterHandler):
         norm_squared_for_partition = 0
         alpha_sum = 0
         subset_indices = np.random.permutation(partition.shape[0])
+
+        times = np.zeros(13)
+        np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
+
         for index in subset_indices:
             subset = partition[index]
-            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset = vcd_subset_updater(flat_recon,
+            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times = vcd_subset_updater(flat_recon,
                                                                                                        error_sinogram,
-                                                                                                       subset)
+                                                                                                       subset, times)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
+        # print('Times = ')
+        # print(times)
+        print('Pct time = ')
+        print(100 * times / np.sum(times))
 
         return flat_recon, error_sinogram, norm_squared_for_partition, alpha_sum / partition.shape[0]
 
@@ -840,7 +848,7 @@ class TomographyModel(ParameterHandler):
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, times):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -863,9 +871,14 @@ class TomographyModel(ParameterHandler):
 
             # Compute the forward model gradient and hessian at each pixel in the index set.
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
+            time_index = 0
+            time_start = time.time()
             weighted_error_sinogram = fm_constant * error_sinogram * weights
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Transfer to worker for later use
+            time_start = time.time()
             pixel_indices_worker = jax.device_put(pixel_indices, self.worker)
 
             # Back project to get the gradient
@@ -874,11 +887,17 @@ class TomographyModel(ParameterHandler):
 
             # Transfer to main
             weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.main_device)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Get the forward hessian for this subset
+            time_start = time.time()
             forward_hess = fm_constant * fm_hessian[pixel_indices]
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
+            time_start = time.time()
             if prox_input is None:
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                 with jax.default_device(self.main_device):
@@ -889,24 +908,43 @@ class TomographyModel(ParameterHandler):
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = sigma_prox ** 2
                 prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Compute update vector update direction in recon domain
+            time_start = time.time()
             delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            time_start = time.time()
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Estimated upper bound for hessian
+            time_start = time.time()
             prior_overrelaxation_factor = 2
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Compute update direction in sinogram domain
+            time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
                                                     output_device=self.main_device)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
-            forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
-            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+            time_start = time.time()
+            forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
+                                                                          weights, fm_constant)
+            # forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
+            # forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Compute optimal update step
             alpha_numerator = forward_linear - prior_linear
@@ -948,20 +986,115 @@ class TomographyModel(ParameterHandler):
                 # Recompute sinogram projection
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
+            time_start = time.time()
             # Perform sparse updates at index locations
             delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
+            times[time_index] += time.time() - time_start
+            time_index += 1
+
+            time_start = time.time()
             flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # Update sinogram and loss
+            time_start = time.time()
             delta_sinogram = alpha * delta_sinogram
             error_sinogram = error_sinogram - delta_sinogram
+            times[time_index] += time.time() - time_start
+            time_index += 1
+
+            time_start = time.time()
             norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
             alpha_for_subset = alpha
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
-            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset
+            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times
 
         return vcd_subset_updater
+
+    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant):
+        """
+        Compute
+            forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
+            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+        with batching to the worker if needed.
+
+        Args:
+            weighted_error_sinogram (jax array):
+            delta_sinogram (jax array):
+            weights (jax array or constant):
+            fm_constant (constant):
+
+        Returns:
+            tuple:
+            forward_linear, forward_quadratic
+        """
+        num_views = weighted_error_sinogram.shape[0]
+        views_per_batch = self.views_per_batch
+
+        # If this can be done without data transfer, then do it.
+        # if self.worker == self.main_device:
+        #     forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
+        #     forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+        #     return forward_linear, forward_quadratic
+
+        # Otherwise batch the sinogram by view, send to the worker and calculate linear and quadratic terms
+        # First apply the batch projector directly to an initial batch to get the initial output
+        views_per_batch = num_views if views_per_batch is None else views_per_batch
+        num_remaining = num_views % views_per_batch
+
+        # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
+        initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
+        # Make the weights into a 1D vector along views if it's a constant
+        try:
+            const_weights = False
+            if weights.shape != weighted_error_sinogram.shape:
+                raise ValueError('weights must be a constant or have the same shape as sinogram.')
+        except AttributeError:
+            const_weights = True
+
+        def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
+            """
+            Send a batch to the worker and compute forward linear and quadratic for that batch.
+            """
+            worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
+            worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
+            if not const_weights:
+                worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
+            else:
+                worker_wts = weights
+
+            # previous_linear += jnp.sum(worker_wes * worker_ds)
+            # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
+
+            previous_linear += sum_product(worker_wes, worker_ds)
+            worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
+            if not const_weights:
+                quadratic_entries = sum_product(worker_ds, worker_wts)
+            else:
+                quadratic_entries = worker_wts * jnp.sum(worker_ds)
+            previous_quadratic += fm_constant * quadratic_entries
+
+            del worker_wes, worker_ds, worker_wts
+            return previous_linear, previous_quadratic
+
+        forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
+
+        # Then deal with the batches if there are any
+        if views_per_batch < num_views:
+            num_batches = (num_views - initial_batch_size) // views_per_batch
+            for j in num_batches:
+                start_ind_j = initial_batch_size + j * views_per_batch
+                stop_ind_j = start_ind_j + views_per_batch
+                forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
+                                                                     forward_linear, forward_quadratic)
+
+        forward_linear = jax.device_put(forward_linear, self.main_device)
+        forward_quadratic = jax.device_put(forward_quadratic, self.main_device)
+        return forward_linear, forward_quadratic
 
     @staticmethod
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
@@ -1112,6 +1245,14 @@ class TomographyModel(ParameterHandler):
         num_cols = int(num_cols * col_scale)
         num_slices = int(num_slices * slice_scale)
         self.set_params(recon_shape=(num_rows, num_cols, num_slices))
+
+
+@jax.jit
+def sum_product(array0, array1):
+    prod = jax.vmap(jnp.multiply)(array0, array1)
+    sum_of_prod = jax.vmap(jnp.sum)(prod)
+    sum_of_prod = jnp.sum(sum_of_prod)
+    return sum_of_prod
 
 
 def get_transpose(linear_map, input_shape):
