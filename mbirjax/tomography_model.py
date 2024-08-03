@@ -91,7 +91,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
         if gpu_memory > total_memory_required:
-            main_device = cpus[0]
+            main_device = gpus[0]
             worker = gpus[0]
             gpu_memory_required = total_memory_required
         elif gpu_memory > subset_update_memory_required:
@@ -873,7 +873,7 @@ class TomographyModel(ParameterHandler):
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             time_index = 0
             time_start = time.time()
-            weighted_error_sinogram = fm_constant * error_sinogram * weights
+            weighted_error_sinogram = (fm_constant * weights) * error_sinogram
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -884,9 +884,6 @@ class TomographyModel(ParameterHandler):
             # Back project to get the gradient
             forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
                                                  output_device=self.main_device)
-
-            # Transfer to main
-            weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.main_device)
             times[time_index] += time.time() - time_start
             time_index += 1
 
