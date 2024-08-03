@@ -36,7 +36,7 @@ _reconstruction_defaults_dict = {
     'positivity_flag': {'val': False, 'recompile_flag': False},
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
-    'granularity': {'val': [1, 4, 64, 128], 'recompile_flag': False},
+    'granularity': {'val': [1, 4, 64, 96], 'recompile_flag': False},
     'partition_sequence': {'val': [0, 1, 2, 3], 'recompile_flag': False},
     'verbose': {'val': 1, 'recompile_flag': False}
 }
