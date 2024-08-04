@@ -280,9 +280,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         # Get the current devices and move the data to the worker
-        cur_devices = [list(voxel_values.devices())[0], list(indices.devices())[0]]
-        voxel_values = jax.device_put(voxel_values, self.worker)
-        indices = jax.device_put(indices, self.worker)
+        voxel_values, indices = jax.device_put([voxel_values, indices], self.worker)
 
         sinogram = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
 
@@ -307,9 +305,7 @@ class TomographyModel(ParameterHandler):
             A jax array of shape (len(indices), num_slices)
         """
         # Get the current devices and move the data to the worker
-        cur_devices = [list(sinogram.devices())[0], list(indices.devices())[0]]
-        sinogram = jax.device_put(sinogram, self.worker)
-        indices = jax.device_put(indices, self.worker)
+        sinogram, indices = jax.device_put([sinogram, indices], self.worker)
 
         recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices, coeff_power=coeff_power)
 
@@ -818,8 +814,8 @@ class TomographyModel(ParameterHandler):
                                                                                                        subset, times)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
-        # print('Times = ')
-        # print(times)
+        print('Times = ')
+        print(times)
         print('Pct time = ')
         print(100 * times / np.sum(times))
 
@@ -896,7 +892,7 @@ class TomographyModel(ParameterHandler):
 
             # Back project to get the gradient
             forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
-                                                 output_device=self.main_device)
+                                                               output_device=self.main_device)
             times[time_index] += time.time() - time_start
             time_index += 1
 
