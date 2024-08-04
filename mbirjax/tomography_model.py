@@ -847,6 +847,16 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
+        try:
+            const_weights = False
+            sinogram_shape = self.get_params('sinogram_shape')
+            if weights.shape != sinogram_shape:
+                raise ValueError('weights must be a constant or have the same shape as sinogram.')
+        except AttributeError:
+            eps = 1e-5
+            if np.abs(weights - 1) > eps:
+                raise ValueError('Constant weights must have value 1.')
+            const_weights = True
 
         def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, times):
             """
@@ -873,7 +883,10 @@ class TomographyModel(ParameterHandler):
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             time_index = 0
             time_start = time.time()
-            weighted_error_sinogram = (fm_constant * weights) * error_sinogram
+            if not const_weights:
+                weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+            else:
+                weighted_error_sinogram = error_sinogram
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -882,7 +895,7 @@ class TomographyModel(ParameterHandler):
             pixel_indices_worker = jax.device_put(pixel_indices, self.worker)
 
             # Back project to get the gradient
-            forward_grad = - sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
+            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
                                                  output_device=self.main_device)
             times[time_index] += time.time() - time_start
             time_index += 1
@@ -937,7 +950,7 @@ class TomographyModel(ParameterHandler):
 
             time_start = time.time()
             forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
-                                                                          weights, fm_constant)
+                                                                          weights, fm_constant, const_weights)
             # forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
             # forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
             times[time_index] += time.time() - time_start
@@ -991,7 +1004,7 @@ class TomographyModel(ParameterHandler):
             time_index += 1
 
             time_start = time.time()
-            flat_recon = flat_recon.at[pixel_indices].add(delta_recon_at_indices)
+            flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -1012,7 +1025,7 @@ class TomographyModel(ParameterHandler):
 
         return vcd_subset_updater
 
-    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant):
+    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights):
         """
         Compute
             forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
@@ -1024,6 +1037,7 @@ class TomographyModel(ParameterHandler):
             delta_sinogram (jax array):
             weights (jax array or constant):
             fm_constant (constant):
+            const_weights (bool): True if the weights are constant 1
 
         Returns:
             tuple:
@@ -1033,10 +1047,10 @@ class TomographyModel(ParameterHandler):
         views_per_batch = self.views_per_batch
 
         # If this can be done without data transfer, then do it.
-        # if self.worker == self.main_device:
-        #     forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
-        #     forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-        #     return forward_linear, forward_quadratic
+        if self.worker == self.main_device:
+            forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
+            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+            return forward_linear, forward_quadratic
 
         # Otherwise batch the sinogram by view, send to the worker and calculate linear and quadratic terms
         # First apply the batch projector directly to an initial batch to get the initial output
@@ -1046,12 +1060,6 @@ class TomographyModel(ParameterHandler):
         # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
         initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
         # Make the weights into a 1D vector along views if it's a constant
-        try:
-            const_weights = False
-            if weights.shape != weighted_error_sinogram.shape:
-                raise ValueError('weights must be a constant or have the same shape as sinogram.')
-        except AttributeError:
-            const_weights = True
 
         def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
             """
@@ -1064,7 +1072,7 @@ class TomographyModel(ParameterHandler):
             else:
                 worker_wts = weights
 
-            # previous_linear += jnp.sum(worker_wes * worker_ds)
+            # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
             # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
 
             previous_linear += sum_product(worker_wes, worker_ds)
@@ -1072,8 +1080,8 @@ class TomographyModel(ParameterHandler):
             if not const_weights:
                 quadratic_entries = sum_product(worker_ds, worker_wts)
             else:
-                quadratic_entries = worker_wts * jnp.sum(worker_ds)
-            previous_quadratic += fm_constant * quadratic_entries
+                quadratic_entries = jnp.sum(worker_ds)
+            previous_quadratic += quadratic_entries
 
             del worker_wes, worker_ds, worker_wts
             return previous_linear, previous_quadratic
@@ -1091,7 +1099,7 @@ class TomographyModel(ParameterHandler):
 
         forward_linear = jax.device_put(forward_linear, self.main_device)
         forward_quadratic = jax.device_put(forward_quadratic, self.main_device)
-        return forward_linear, forward_quadratic
+        return fm_constant * forward_linear, fm_constant * forward_quadratic
 
     @staticmethod
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
@@ -1242,6 +1250,15 @@ class TomographyModel(ParameterHandler):
         num_cols = int(num_cols * col_scale)
         num_slices = int(num_slices * slice_scale)
         self.set_params(recon_shape=(num_rows, num_cols, num_slices))
+
+
+from functools import partial
+
+
+@partial(jax.jit, donate_argnames='cur_flat_recon')
+def update_recon(cur_flat_recon, cur_indices, cur_delta):
+    cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
+    return cur_flat_recon
 
 
 @jax.jit
