@@ -14,14 +14,14 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the parallel beam mbirjax code.
     """
     # Choose the geometry type
-    geometry_type = 'cone'  # 'cone' or 'parallel'
+    geometry_type = 'parallel'  # 'cone' or 'parallel'
 
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
     num_views = 512
-    num_det_rows = 1000
-    num_det_channels = 2000
+    num_det_rows = 100
+    num_det_channels = 200
     sharpness = 0.0
     
     # These can be adjusted to describe the geometry in the cone beam case.
@@ -53,9 +53,55 @@ if __name__ == "__main__":
     print('Creating phantom')
     phantom = ct_model.gen_modified_3d_sl_phantom()
 
+    ct_model.pixels_per_batch = 200000
+    ct_model.views_per_batch = 3000
+    ct_model.create_projectors()
+
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model.forward_project(phantom)
+    #
+    # full_indices = mbirjax.gen_full_indices(phantom.shape)
+    # voxel_values = ct_model.get_voxels_at_indices(phantom, full_indices)
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    #
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    #
+    # time0 = time.time()
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # elapsed = time.time() - time0
+    # print('Per backward = {:.6f}'.format(elapsed / 3))
+    #
+    # time0 = time.time()
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # elapsed = time.time() - time0
+    # print('Per forward = {:.6f}'.format(elapsed / 3))
+    #
+    # time0 = time.time()
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # elapsed = time.time() - time0
+    # print('Per backward = {:.6f}'.format(elapsed / 3))
+    #
+    # time0 = time.time()
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
+    # elapsed = time.time() - time0
+    # print('Per forward = {:.6f}'.format(elapsed / 3))
+    #
+    # time0 = time.time()
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # _ = ct_model.sparse_back_project(sinogram, full_indices)
+    # elapsed = time.time() - time0
+    # print('Per backward = {:.6f}'.format(elapsed / 3))
+
     phantom = jax.device_put(phantom, jax.devices('cpu')[0])
     # View sinogram
     # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
@@ -65,7 +111,7 @@ if __name__ == "__main__":
     # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    ct_model.set_params(sharpness=sharpness, verbose=2)
+    ct_model.set_params(sharpness=sharpness, verbose=1)
 
     # Print out model parameters
     ct_model.print_params()
@@ -81,7 +127,7 @@ if __name__ == "__main__":
     elapsed = time.time() - time0
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
-    mbirjax.get_memory_stats()
+    # mbirjax.get_memory_stats()
 
     # Print out parameters used in recon
     # pprint.pprint(recon_params._asdict())
