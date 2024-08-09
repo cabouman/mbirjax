@@ -106,12 +106,12 @@ class TomographyModel(ParameterHandler):
             gpu_memory_required = 0
             if len(gpus) > 0:
                 warnings.warn('Insufficient GPU memory for this problem. Estimated required = {}GB.  '
-                              'Available = {}GB.'.format(subset_update_memory_required / gb, gpu_memory /gb))
+                              'Available = {}GB.'.format(subset_update_memory_required, gpu_memory))
                 warnings.warn('Trying on CPU, but this may be slow.')
         else:
             message = 'Problem is too large for available memory.'
             message += '\nEstimated memory required = {:.3f}GB.  Available:  CPU = {:.3f}GB, GPU = {:.3f}GB.'.format(
-                total_memory_required, cpu_memory / gb, gpu_memory / gb)
+                total_memory_required, cpu_memory, gpu_memory)
             raise MemoryError(message)
 
         # Set the default batch sizes, then adjust as needed and update memory requirements
