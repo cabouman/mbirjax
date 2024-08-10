@@ -91,7 +91,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
         if gpu_memory > total_memory_required:
-            main_device = gpus[0]
+            main_device = cpus[0]
             worker = gpus[0]
             gpu_memory_required = total_memory_required
         elif gpu_memory > subset_update_memory_required:
@@ -940,7 +940,7 @@ class TomographyModel(ParameterHandler):
             # Compute update direction in sinogram domain
             time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
-                                                    output_device=self.main_device)
+                                                    output_device=self.worker)
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -990,7 +990,7 @@ class TomographyModel(ParameterHandler):
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
-                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
+                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.worker)
 
             time_start = time.time()
             # Perform sparse updates at index locations
@@ -1006,8 +1006,10 @@ class TomographyModel(ParameterHandler):
 
             # Update sinogram and loss
             time_start = time.time()
-            delta_sinogram = alpha * delta_sinogram
+            delta_sinogram = float(alpha) * delta_sinogram
+            error_sinogram = jax.device_put(error_sinogram, self.worker)
             error_sinogram = error_sinogram - delta_sinogram
+            error_sinogram = jax.device_put(error_sinogram, self.main_device)
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -1087,7 +1089,7 @@ class TomographyModel(ParameterHandler):
         # Then deal with the batches if there are any
         if views_per_batch < num_views:
             num_batches = (num_views - initial_batch_size) // views_per_batch
-            for j in num_batches:
+            for j in jnp.arange(num_batches):
                 start_ind_j = initial_batch_size + j * views_per_batch
                 stop_ind_j = start_ind_j + views_per_batch
                 forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
