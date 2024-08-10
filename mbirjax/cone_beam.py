@@ -382,15 +382,15 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
             new_cylinder = new_cylinder[:num_det_rows]
             return new_cylinder
-        a = []
-        for ind in det_row_indices:
-            new_component = create_det_column(ind)
-            a.append(new_component)
-        output = jnp.concatenate(a)
-        # new_det_column = jax.lax.map(create_det_column, det_row_indices)
-        # new_det_column = new_det_column.flatten()
+        # a = []
+        # for ind in det_row_indices:
+        #     new_component = create_det_column(ind)
+        #     a.append(new_component)
+        # output = jnp.concatenate(a)
+        new_det_column = jax.lax.map(create_det_column, det_row_indices)
+        new_det_column = new_det_column.flatten()
 
-        return output[:num_det_rows]
+        return new_det_column[:num_det_rows]
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
