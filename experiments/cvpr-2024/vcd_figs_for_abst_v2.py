@@ -68,56 +68,59 @@ if __name__ == "__main__":
     # 'granularity': {'val': [1, 4, 64, 128], 'recompile_flag': False},
     # 'partition_sequence': {'val': [0, 1, 2, 2, 2], 'recompile_flag': False},
 
-    granularity_previous = [1, 8, 64, 256]
-    partition_sequence_previous = [0, 1, 2, 3, 1, 2, 3, 2, 3, 3, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3]
+    granularity_alt_1 = [1, 8, 64, 128]
+    partition_sequence_alt_1 = [0, 1, 2, 3]
 
-    granularity_proposed = [4, 4, 64, 128]
-    partition_sequence_proposed = [0, 1, 2, 3]
+    granularity_alt_2 = [4, 64, 128]
+    partition_sequence_alt_2 = [0, 1, 2]
 
     # ##########################
     # Perform default VCD reconstruction
+    print('Starting default sequence')
     num_iterations = 8
-    recon_new_default, recon_params_new_default = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    recon_default, recon_params_default = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
-    fm_rmse_new_default = recon_params_new_default.fm_rmse
-    prior_loss_new_default = recon_params_new_default.prior_loss
-    partition_sequence = recon_params_new_default.partition_sequence
-    granularity = np.array(recon_params_new_default.granularity)
-    granularity_sequence_new_default = granularity[partition_sequence]
+    fm_rmse_default = recon_params_default.fm_rmse
+    prior_loss_default = recon_params_default.prior_loss
+    partition_sequence = recon_params_default.partition_sequence
+    granularity = np.array(recon_params_default.granularity)
+    granularity_sequence_default = granularity[partition_sequence]
 
-    # Perform previous default reconstruction    #
-    parallel_model.set_params(partition_sequence=partition_sequence_previous)
-    granularity = np.array(granularity_previous)
+    # Perform alt_1 default reconstruction
+    print('Starting alt_1 sequence')
+    parallel_model.set_params(partition_sequence=partition_sequence_alt_1)
+    granularity = np.array(granularity_alt_1)
     parallel_model.set_params(granularity=granularity)
-    recon_prev_default, recon_params_prev_default = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    recon_alt_1, recon_params_alt_1 = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
-    fm_rmse_prev_default = recon_params_prev_default.fm_rmse
-    prior_loss_prev_default = recon_params_prev_default.prior_loss
-    partition_sequence = recon_params_prev_default.partition_sequence
-    granularity = np.array(recon_params_prev_default.granularity)
-    granularity_sequence_prev_default = granularity[partition_sequence]
+    fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
+    prior_loss_alt_1 = recon_params_alt_1.prior_loss
+    partition_sequence = recon_params_alt_1.partition_sequence
+    granularity = np.array(recon_params_alt_1.granularity)
+    granularity_sequence_alt_1 = granularity[partition_sequence]
 
-    # Perform proposed reconstruction
-    parallel_model.set_params(partition_sequence=partition_sequence_proposed)
-    granularity = np.array(granularity_proposed)
+    # Perform alt_2 reconstruction
+    print('Starting alt_2 sequence')
+    parallel_model.set_params(partition_sequence=partition_sequence_alt_2)
+    granularity = np.array(granularity_alt_2)
     parallel_model.set_params(granularity=granularity)
-    recon_proposed, recon_params_proposed = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    recon_alt_2, recon_params_alt_2 = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
-    fm_rmse_proposed = recon_params_proposed.fm_rmse
-    prior_loss_proposed = recon_params_proposed.prior_loss
-    partition_sequence = recon_params_proposed.partition_sequence
-    granularity = np.array(recon_params_proposed.granularity)
-    granularity_sequence_proposed = granularity[partition_sequence]
+    fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
+    prior_loss_alt_2 = recon_params_alt_2.prior_loss
+    partition_sequence = recon_params_alt_2.partition_sequence
+    granularity = np.array(recon_params_alt_2.granularity)
+    granularity_sequence_alt_2 = granularity[partition_sequence]
     # ##########################
 
     # Display reconstructions
-    labels = ['Previous default', 'New default', 'Extra granularity']
-    # display_slices_for_abstract(recon_prev_default, recon_new_default, recon_proposed, labels)
+    labels = ['alt_1', 'Default', 'alt_2']
+    # display_slices_for_abstract(recon_alt_1, recon_default, recon_alt_2, labels)
 
     # Display granularity plots:
-    granularity_sequences = [granularity_sequence_prev_default, granularity_sequence_new_default, granularity_sequence_proposed]
-    fm_losses = [fm_rmse_prev_default, fm_rmse_new_default, fm_rmse_proposed]
-    prior_losses = [prior_loss_prev_default, prior_loss_new_default, prior_loss_proposed]
+    granularity_sequences = [granularity_sequence_alt_1, granularity_sequence_default, granularity_sequence_alt_2]
+    fm_losses = [fm_rmse_alt_1, fm_rmse_default, fm_rmse_alt_2]
+    prior_losses = [prior_loss_alt_1, prior_loss_default, prior_loss_alt_2]
     # labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
     mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 

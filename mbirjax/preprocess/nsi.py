@@ -367,9 +367,9 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     source_detector_dist /= delta_det_channel # mm to ALU
     source_iso_dist /= delta_det_channel # mm to ALU 
     det_channel_offset /= delta_det_channel # mm to ALU
-    det_row_offset /= delta_det_row # mm to ALU
+    det_row_offset /= delta_det_channel # mm to ALU
+    delta_det_row /= delta_det_channel
     delta_det_channel = 1.0
-    delta_det_row = 1.0
     
     # Create a dictionary to store MBIR parameters 
     num_views = len(angles)

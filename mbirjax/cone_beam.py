@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
+import warnings
 import mbirjax
 
 
@@ -39,6 +40,9 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
         view_dependent_vecs = [vec.flatten() for vec in [angles]]
+        self.bp_psf_radius = 1
+        self.entries_per_cylinder_batch = 50
+        self.slice_range_length = 0
         try:
             view_params_array = jnp.stack(view_dependent_vecs, axis=1)
         except ValueError as e:
@@ -104,6 +108,13 @@ class ConeBeamModel(mbirjax.TomographyModel):
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
+        # Check for cone angle > 45 degrees
+        source_detector_dist, delta_det_row, det_row_offset = \
+            self.get_params(['source_detector_dist', 'delta_det_row', 'det_row_offset'])
+        half_detector_height = delta_det_row * sinogram_shape[1] / 2 + jnp.abs(det_row_offset)
+        if half_detector_height > source_detector_dist:
+            warnings.warn('Cone angle is more than 45 degrees.  This will likely produce recon artifacts.')
+
         # TODO:  Check for recon volume extending into the source
         # # Check for a potential division by zero or very small denominator
         # if (source_to_iso_dist - y) < 1e-3>:
@@ -123,9 +134,13 @@ class ConeBeamModel(mbirjax.TomographyModel):
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
-        geometry_param_names += ['magnification', 'psf_radius']
+        geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
+                                 'entries_per_cylinder_batch', 'slice_range_length']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
+        geometry_param_values.append(self.bp_psf_radius)
+        geometry_param_values.append(self.entries_per_cylinder_batch)
+        geometry_param_values.append(self.slice_range_length)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
@@ -134,7 +149,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return geometry_params
 
     def get_psf_radius(self):
-        """Computes the integer radius of the PSF kernel for cone beam projection.
+        """
+        Compute the integer radius of the PSF kernel for cone beam projection.
         """
         delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
@@ -146,13 +162,25 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Compute maximum magnification
         if jnp.isinf(source_detector_dist):
             max_magnification = 1
+            min_magnification = 1
         else:
-            source_to_iso_dist = source_detector_dist/magnification
+            source_to_iso_dist = source_detector_dist / magnification
+            # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
             source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
-            max_magnification = source_detector_dist/source_to_closest_pixel
+            max_magnification = source_detector_dist / source_to_closest_pixel
+            source_to_farthest_pixel = source_to_iso_dist + jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            min_magnification = source_detector_dist / source_to_farthest_pixel
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel*max_magnification/delta_det))/2))
+        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
+        # Then repeat for the back projection from detector elements to voxels.
+        # The voxels closest to the detector will be covered the most by a given detector element.
+        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
+        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
+        self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
+
+        self.slice_range_length = int(1 + 2 * self.bp_psf_radius + \
+                                  jnp.ceil(self.entries_per_cylinder_batch * max_voxels_per_detector))
 
         return psf_radius
 
@@ -294,43 +322,75 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+        num_slices = voxel_cylinder.shape[0]
 
         # Set up slice indices array (0, 10, 20, ..., 10*num_slice_batches)
-        num_slices = voxel_cylinder.shape[0]
-        slices_per_batch = 50  # This should match the value in back project vertical, although only for efficiency.
-        slices_per_batch = min(slices_per_batch, num_slices)
-        num_slice_batches = (num_slices + slices_per_batch - 1) // slices_per_batch
-        slice_indices = slices_per_batch * jnp.arange(num_slice_batches)
+        det_rows_per_batch = gp.entries_per_cylinder_batch
+        det_rows_per_batch = min(det_rows_per_batch, num_det_rows)
+        num_det_row_batches = (num_det_rows + det_rows_per_batch - 1) // det_rows_per_batch
+        det_row_indices = det_rows_per_batch * jnp.arange(num_det_row_batches)
 
-        # Allocate the output cylinder
-        new_voxel_cylinder = jnp.zeros(num_det_rows)
+        # Get the detector rows from the first 2 slices to determine the map m_p = a * slice_index + b
+        # or slice_index = (m_p - b) / a
+        cur_slice_indices = jnp.arange(2)
+        m_p_01, _, _, _ = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, angle,
+                                                                        projector_params)
+        m_slope = m_p_01[1] - m_p_01[0]
+        m_intercept = m_p_01[0]
 
-        # Set up a function to scan over the slices of the cylinder
-        # Note that here we use a scan over the full detector column because the projection of a single voxel
-        # will fall on multiple detectors.  Since we're indexing by slice, if we did a map over subsections of the
-        # detector column, we'd have to pad each subsection and then add the overlaps.  Alternatively, we could
-        # index by detector row, then determine the slices from these rows, then use a map approach as in
+        # Set up a function to scan over the rows of the detector.
+        # Here we index by detector row, then determine the slices from these rows, then use a map approach as in
         # back project vertical.
-        def update_voxel_cylinder(new_cylinder, start_index):
+        det_row_range = jnp.arange(det_rows_per_batch)  # The range for rows in the 0 batch - this will be offset for each batch
+
+        # Get the corresponding range of voxel indices, without offset, but with padding on each side for the bp_psf_radius
+        slice_range = jnp.arange(gp.slice_range_length)
+
+        def create_det_column(det_start_index):
             # Get the data needed for vertical projection
-            cur_slice_indices = start_index + jnp.arange(slices_per_batch)
-            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, angle,
+            cur_row_indices = det_start_index + det_row_range
+            slice_indices_by_row = jnp.round((cur_row_indices - m_intercept) / m_slope).astype(int)
+
+            # Get the slice range padded by the bp_psf_radius
+            slice_range_start = slice_indices_by_row[0] - gp.bp_psf_radius
+            cur_slice_range = slice_range_start + slice_range
+
+            # Get the data for these slices
+            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_range, angle,
                                                                                                      projector_params)
             L_max = jnp.minimum(1, W_p_r)
+            # For a given detector row index, m, we can access the data for a voxel associated with m by
+            # m -> data_index[m] = slice_indices_by_row[m] - cur_slice_range[0]
+            # Then all the associated voxels are given by data_index[m] + slice_offset
+
+            # Allocate space
+            new_cylinder = jnp.zeros(det_rows_per_batch)
 
             # Do the vertical projection
-            for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
-                m = m_p_center + m_offset
-                abs_delta_p_r_m = jnp.abs(m_p - m)
-                L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-                A_row_m = L_p_r_m / cos_alpha_p_z
-                A_row_m *= (m >= 0) * (m < num_det_rows)
-                new_cylinder = new_cylinder.at[m].add(A_row_m * voxel_cylinder.at[cur_slice_indices].get(mode='fill', fill_value=0))
+            for slice_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
+                cur_slice_indices = slice_indices_by_row + slice_offset
+                data_indices = cur_slice_indices - cur_slice_range[0]
 
-            return new_cylinder, None
+                m = cur_row_indices
+                cur_m_p = m_p[data_indices]
+                abs_delta_p_r_m = jnp.abs(cur_m_p - m)
+                cur_W_p_r = W_p_r[data_indices]
+                L_p_r_m = jnp.clip((cur_W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max[data_indices])
+                A_row_m = L_p_r_m / cos_alpha_p_z[data_indices]
+                A_row_m *= (cur_slice_indices >= 0) * (cur_slice_indices < num_slices)
+                new_cylinder = jnp.add(new_cylinder, A_row_m * voxel_cylinder[cur_slice_indices])
 
-        new_voxel_cylinder, _ = jax.lax.scan(update_voxel_cylinder, new_voxel_cylinder, slice_indices)
-        return new_voxel_cylinder
+            new_cylinder = new_cylinder[:num_det_rows]
+            return new_cylinder
+        a = []
+        for ind in det_row_indices:
+            new_component = create_det_column(ind)
+            a.append(new_component)
+        output = jnp.concatenate(a)
+        # new_det_column = jax.lax.map(create_det_column, det_row_indices)
+        # new_det_column = new_det_column.flatten()
+
+        return output[:num_det_rows]
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -462,7 +522,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Set up slice indices array (0, slices_per_batch, 2*slices_per_batch, ..., num_slice_batches*slices_per_batch)
         num_slices = detector_column_values.shape[0]
-        slices_per_batch = 50  # This should match the value in forward project vertical, although only for efficiency.
+        slices_per_batch = gp.entries_per_cylinder_batch
         slices_per_batch = min(slices_per_batch, num_slices)
         num_slice_batches = (num_slices + slices_per_batch - 1) // slices_per_batch
         slice_indices = slices_per_batch * jnp.arange(num_slice_batches)
@@ -535,13 +595,13 @@ class ConeBeamModel(mbirjax.TomographyModel):
         phi_p = jnp.arctan2(v_p, gp.source_detector_dist)
 
         # Compute cos alpha for row and columns
-        cos_phi_p = jnp.cos(phi_p)
-        cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
+        cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
+        # cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
 
         # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_p_r = pixel_mag * (gp.delta_voxel / gp.delta_det_row) * cos_alpha_p_z / cos_phi_p
+        W_p_r = pixel_mag * (gp.delta_voxel / gp.delta_det_row)   # * cos_alpha_p_z / cos_phi_p
 
-        vertical_data = (m_p, m_p_center, W_p_r, cos_alpha_p_z)
+        vertical_data = (m_p, m_p_center, W_p_r, cos_phi_p)  # cos_alpha_p_z)
 
         return vertical_data
 
@@ -581,7 +641,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
-        n_p = (u_p / gp.delta_det_channel) + det_center_channel + gp.det_channel_offset
+        n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
         n_p_center = jnp.round(n_p).astype(int)
 
         # Compute horizontal and vertical cone angle of pixel
@@ -659,6 +719,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Calculate indices on the detector grid
         m = (v_tilde + det_row_offset) / delta_det_row + det_center_row
-        n = (u_tilde + det_channel_offset) / delta_det_channel + det_center_channel
+        n = (u_tilde + det_channel_offset) / delta_det_channel + det_center_channel  # Sync with compute_horizontal_data
 
         return m, n
