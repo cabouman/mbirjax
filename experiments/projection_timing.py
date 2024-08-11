@@ -19,15 +19,11 @@ if __name__ == "__main__":
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
-    num_views = 1024
-    num_det_rows = 1024
-    num_det_channels = 1024
+    num_views = 256
+    num_det_rows = 2000
+    num_det_channels = 400
     sharpness = 0.0
-
-    print('\tnum_views = {}'.format(num_views))
-    print('\tnum_det_rows = {}'.format(num_det_rows))
-    print('\tnum_det_channels = {}'.format(num_det_channels))
-
+    
     # These can be adjusted to describe the geometry in the cone beam case.
     # np.Inf is an allowable value, in which case this is essentially parallel beam
     source_detector_dist = 4 * num_det_channels
@@ -57,6 +53,22 @@ if __name__ == "__main__":
     print('Creating phantom')
     phantom = ct_model.gen_modified_3d_sl_phantom()
 
+    gpu = jax.devices('gpu')[0]
+    cpu = jax.devices('cpu')[0]
+
+    p = jax.device_put(phantom, gpu)
+
+    time0 = time.time()
+    p = jax.device_put(p, cpu).block_until_ready()
+    elapsed = time.time() - time0
+    print('gpu->cpu = {}'.format(elapsed))
+
+    time0 = time.time()
+    p = jax.device_put(p, gpu).block_until_ready()
+    elapsed = time.time() - time0
+    print('cpu->gpu = {}'.format(elapsed))
+
+    exit(0)
     # ct_model.pixels_per_batch = 2000
     # ct_model.views_per_batch = 3000
     # ct_model.create_projectors()
@@ -64,49 +76,51 @@ if __name__ == "__main__":
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model.forward_project(phantom)
-    #
-    # full_indices = mbirjax.gen_full_indices(phantom.shape)
-    # voxel_values = ct_model.get_voxels_at_indices(phantom, full_indices)
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    #
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    #
-    # time0 = time.time()
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # elapsed = time.time() - time0
-    # print('Per backward = {:.6f}'.format(elapsed / 3))
-    #
-    # time0 = time.time()
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # elapsed = time.time() - time0
-    # print('Per forward = {:.6f}'.format(elapsed / 3))
-    #
-    # time0 = time.time()
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # elapsed = time.time() - time0
-    # print('Per backward = {:.6f}'.format(elapsed / 3))
-    #
-    # time0 = time.time()
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # _ = ct_model.sparse_forward_project(voxel_values, full_indices)
-    # elapsed = time.time() - time0
-    # print('Per forward = {:.6f}'.format(elapsed / 3))
-    #
-    # time0 = time.time()
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # _ = ct_model.sparse_back_project(sinogram, full_indices)
-    # elapsed = time.time() - time0
-    # print('Per backward = {:.6f}'.format(elapsed / 3))
-
     phantom = jax.device_put(phantom, jax.devices('cpu')[0])
+
+    full_indices = mbirjax.gen_full_indices(phantom.shape)
+    voxel_values = ct_model.get_voxels_at_indices(phantom, full_indices)
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+
+    time0 = time.time()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    elapsed = time.time() - time0
+    print('Per backward = {:.6f}'.format(elapsed / 3))
+
+    time0 = time.time()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    elapsed = time.time() - time0
+    print('Per forward = {:.6f}'.format(elapsed / 3))
+
+    time0 = time.time()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    elapsed = time.time() - time0
+    print('Per backward = {:.6f}'.format(elapsed / 3))
+
+    time0 = time.time()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
+    elapsed = time.time() - time0
+    print('Per forward = {:.6f}'.format(elapsed / 3))
+
+    time0 = time.time()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    _ = ct_model.sparse_back_project(sinogram, full_indices).block_until_ready()
+    elapsed = time.time() - time0
+    print('Per backward = {:.6f}'.format(elapsed / 3))
+
+    mbirjax.get_memory_stats()
+    exit(0)
     # View sinogram
     # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 

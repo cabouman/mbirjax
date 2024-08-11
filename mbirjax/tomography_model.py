@@ -91,7 +91,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
         if gpu_memory > total_memory_required:
-            main_device = cpus[0]
+            main_device = gpus[0]
             worker = gpus[0]
             gpu_memory_required = total_memory_required
         elif gpu_memory > subset_update_memory_required:
