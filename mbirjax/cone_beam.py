@@ -296,6 +296,80 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         return sinogram_view
 
+
+    @staticmethod
+    def forward_vertical_fan_one_pixel_to_one_view_new(voxel_cylinder, pixel_index, angle, projector_params):
+        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        gp = projector_params.geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+        recon_shape = projector_params.recon_shape
+        num_slices = voxel_cylinder.shape[0]
+        row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
+
+        # Compute the un-rotated coordinates relative to iso
+        # Note the change in order from (i, j) to (y, x)!!
+        y_tilde = gp.delta_voxel * (row_index - (recon_shape[0] - 1) / 2.0)
+        x_tilde = gp.delta_voxel * (col_index - (recon_shape[1] - 1) / 2.0)
+
+        # Precompute cosine and sine of view angle, then do the rotation
+        cosine = jnp.cos(angle)  # length = num_views
+        sine = jnp.sin(angle)  # length = num_views
+
+        x = cosine * x_tilde - sine * y_tilde
+        y = sine * x_tilde + cosine * y_tilde
+
+        # Convert from xyz to coordinates on detector
+        pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
+
+        # Compute the physical position that this voxel projects onto the detector
+        u = pixel_mag * x
+
+        # The code above depends only on the pixel - a single point.  z is a potentially large vector
+        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + gp.recon_slice_offset  # K = slice indices
+        v = pixel_mag * z
+        # Compute vertical cone angle of voxels
+        phi_p = jnp.arctan2(v, gp.source_detector_dist)
+        cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
+        scaled_voxel_values = voxel_cylinder / cos_phi_p
+
+        # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
+        W_p_r_inv = gp.delta_det_row / (pixel_mag * gp.delta_voxel)
+
+        # Set up slice indices array (0, slices_per_batch, 2*slices_per_batch, ..., num_slice_batches*slices_per_batch)
+        slices_per_batch = gp.entries_per_cylinder_batch
+        slices_per_batch = min(slices_per_batch, num_slices)
+        num_slice_batches = (num_slices + slices_per_batch - 1) // slices_per_batch
+        slice_indices = slices_per_batch * jnp.arange(num_slice_batches)
+
+        # Set up a function to map over subsets of detector rows
+        def create_det_column_rows(start_index):
+            # Allocate space
+            new_cylinder = jnp.zeros(slices_per_batch)
+            # Get the data needed for vertical projection
+            cur_slice_indices = start_index + jnp.arange(slices_per_batch)
+            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, angle,
+                                                                                                     projector_params)
+            L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
+
+            # Do the vertical projection
+            for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
+                m = m_p_center + m_offset
+                abs_delta_p_r_m = jnp.abs(m_p - m)  # Distance from projection of center of voxel to center of detector
+                L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+                A_row_m = L_p_r_m / cos_alpha_p_z
+                A_row_m *= (m >= 0) * (m < num_det_rows)
+                A_row_m = A_row_m ** coeff_power
+                new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
+
+            return new_cylinder, None
+
+        recon_voxel_cylinder, _ = jax.lax.map(create_voxel_cylinder_slices, slice_indices)
+        recon_voxel_cylinder = recon_voxel_cylinder.flatten()
+        recon_voxel_cylinder = jax.lax.slice_in_dim(recon_voxel_cylinder, 0, num_recon_slices)
+        return det_column
+
+
     @staticmethod
     def forward_vertical_fan_one_pixel_to_one_view(voxel_cylinder, pixel_index, angle, projector_params):
         """
@@ -537,12 +611,12 @@ class ConeBeamModel(mbirjax.TomographyModel):
             cur_slice_indices = start_index + jnp.arange(slices_per_batch)
             m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, angle,
                                                                                                      projector_params)
-            L_max = jnp.minimum(1, W_p_r)
+            L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
             # Do the vertical projection
             for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
                 m = m_p_center + m_offset
-                abs_delta_p_r_m = jnp.abs(m_p - m)
+                abs_delta_p_r_m = jnp.abs(m_p - m)  # Distance from projection of center of voxel to center of detector
                 L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
                 A_row_m = L_p_r_m / cos_alpha_p_z
                 A_row_m *= (m >= 0) * (m < num_det_rows)
@@ -557,12 +631,13 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return recon_voxel_cylinder
 
     @staticmethod
-    def compute_vertical_data_single_pixel(pixel_index, slice_index, angle, projector_params):
+    def compute_vertical_data_single_pixel(pixel_index, slice_indices, angle, projector_params):
         """
         Compute the quantities m_p, m_p_center, W_p_r, cos_alpha_p_z needed for vertical projection.
 
         Args:
             pixel_index (int):  Index into flattened array of size num_rows x num_cols.
+            slice_indices (array of int): Indices into the recon slices.
             angle (float): The projection angle in radians for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
@@ -579,9 +654,9 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
-        # slice_index = jnp.arange(num_recon_slices)
+        # slice_indices = jnp.arange(num_recon_slices)
 
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
+        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel,
                                                        recon_shape, gp.recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
@@ -631,7 +706,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         slice_index = jnp.arange(num_recon_slices)
 
         x_p, y_p, _ = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
-                                                       recon_shape, gp.recon_slice_offset, angle)
+                                                     recon_shape, gp.recon_slice_offset, angle)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
@@ -659,12 +734,10 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return horizontal_data
 
     @staticmethod
-    def recon_ijk_to_xyz(i, j, k, delta_voxel, recon_shape,
-                         recon_slice_offset, angle):
+    def recon_ijk_to_xyz(i, j, k, delta_voxel, recon_shape, recon_slice_offset, angle):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
-
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
         # Compute the un-rotated coordinates relative to iso
