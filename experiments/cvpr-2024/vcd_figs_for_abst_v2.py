@@ -91,11 +91,11 @@ if __name__ == "__main__":
     # 'granularity': {'val': [1, 4, 64, 128], 'recompile_flag': False},
     # 'partition_sequence': {'val': [0, 1, 2, 2, 2], 'recompile_flag': False},
 
-    granularity_alt_1 = [1, 4, 64, 128]
-    partition_sequence_alt_1 = [0, 1, 2, 3]
+    granularity_alt_1 = [4, 48, 96, 128]
+    partition_sequence_alt_1 = [0, 1, 2, 2, 2, 2, 3]
 
-    granularity_alt_2 = [4, 64, 128]
-    partition_sequence_alt_2 = [0, 1, 2]
+    granularity_alt_2 = [2, 48, 96, 128]
+    partition_sequence_alt_2 = [0, 1, 2, 2, 2, 2, 3]
 
     # ##########################
     # Perform default VCD reconstruction
