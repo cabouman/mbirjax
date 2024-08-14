@@ -35,6 +35,11 @@ if __name__ == "__main__":
     """
     This is a script to develop, debug, and tune the vcd reconstruction with a parallel beam projector
     """
+    # Choose the geometry type
+    geometry_type = 'cone'  # 'cone' or 'parallel'
+
+    print('Using {} geometry.'.format(geometry_type))
+
     # Set parameters
     num_views = 256
     num_det_rows = 10
@@ -43,32 +48,50 @@ if __name__ == "__main__":
     end_angle = np.pi
     sharpness = 0.0
 
+    # These can be adjusted to describe the geometry in the cone beam case.
+    # np.Inf is an allowable value, in which case this is essentially parallel beam
+    source_detector_dist = 4 * num_det_channels
+    source_iso_dist = source_detector_dist
+
+    if geometry_type == 'cone':
+        detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
+    else:
+        detector_cone_angle = 0
+    start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+    end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+
     # Initialize sinogram
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
-    angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-    # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    # Set up the model
+    if geometry_type == 'cone':
+        ct_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist,
+                                         source_iso_dist=source_iso_dist)
+    elif geometry_type == 'parallel':
+        ct_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    else:
+        raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_modified_3d_sl_phantom()
+    phantom = ct_model.gen_modified_3d_sl_phantom()
 
     # Generate synthetic sinogram data
-    sinogram = parallel_model.forward_project(phantom)
+    sinogram = ct_model.forward_project(phantom)
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
-    parallel_model.set_params(sharpness=sharpness, verbose=1)
+    ct_model.set_params(sharpness=sharpness, verbose=1)
 
     # Print out model parameters
-    parallel_model.print_params()
+    ct_model.print_params()
 
     # 'granularity': {'val': [1, 4, 64, 128], 'recompile_flag': False},
     # 'partition_sequence': {'val': [0, 1, 2, 2, 2], 'recompile_flag': False},
 
-    granularity_alt_1 = [1, 8, 64, 128]
+    granularity_alt_1 = [1, 4, 64, 128]
     partition_sequence_alt_1 = [0, 1, 2, 3]
 
     granularity_alt_2 = [4, 64, 128]
@@ -78,43 +101,46 @@ if __name__ == "__main__":
     # Perform default VCD reconstruction
     print('Starting default sequence')
     num_iterations = 8
-    recon_default, recon_params_default = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
     fm_rmse_default = recon_params_default.fm_rmse
     prior_loss_default = recon_params_default.prior_loss
     partition_sequence = recon_params_default.partition_sequence
     granularity = np.array(recon_params_default.granularity)
     granularity_sequence_default = granularity[partition_sequence]
+    label_default = 'Default: ' + str(granularity_sequence_default)
 
     # Perform alt_1 default reconstruction
     print('Starting alt_1 sequence')
-    parallel_model.set_params(partition_sequence=partition_sequence_alt_1)
+    ct_model.set_params(partition_sequence=partition_sequence_alt_1)
     granularity = np.array(granularity_alt_1)
-    parallel_model.set_params(granularity=granularity)
-    recon_alt_1, recon_params_alt_1 = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    ct_model.set_params(granularity=granularity)
+    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
     fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
     prior_loss_alt_1 = recon_params_alt_1.prior_loss
     partition_sequence = recon_params_alt_1.partition_sequence
     granularity = np.array(recon_params_alt_1.granularity)
     granularity_sequence_alt_1 = granularity[partition_sequence]
+    label_alt_1 = 'alt_1: ' + str(granularity_sequence_alt_1)
 
     # Perform alt_2 reconstruction
     print('Starting alt_2 sequence')
-    parallel_model.set_params(partition_sequence=partition_sequence_alt_2)
+    ct_model.set_params(partition_sequence=partition_sequence_alt_2)
     granularity = np.array(granularity_alt_2)
-    parallel_model.set_params(granularity=granularity)
-    recon_alt_2, recon_params_alt_2 = parallel_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    ct_model.set_params(granularity=granularity)
+    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                        compute_prior_loss=True)
     fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
     prior_loss_alt_2 = recon_params_alt_2.prior_loss
     partition_sequence = recon_params_alt_2.partition_sequence
     granularity = np.array(recon_params_alt_2.granularity)
     granularity_sequence_alt_2 = granularity[partition_sequence]
+    label_alt_2 = 'alt_2: ' + str(granularity_sequence_alt_2)
     # ##########################
 
     # Display reconstructions
-    labels = ['alt_1', 'Default', 'alt_2']
+    labels = [label_alt_1, label_default, label_alt_2]
     # display_slices_for_abstract(recon_alt_1, recon_default, recon_alt_2, labels)
 
     # Display granularity plots:
