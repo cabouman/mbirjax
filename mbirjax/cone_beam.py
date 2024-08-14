@@ -298,84 +298,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
     @staticmethod
     def forward_vertical_fan_one_pixel_to_one_view(voxel_cylinder, pixel_index, angle, projector_params):
-        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
-        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
-        gp = projector_params.geometry_params
-        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
-        recon_shape = projector_params.recon_shape
-        num_slices = voxel_cylinder.shape[0]
-        row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
-
-        # Compute the un-rotated coordinates relative to iso
-        # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = gp.delta_voxel * (row_index - (recon_shape[0] - 1) / 2.0)
-        x_tilde = gp.delta_voxel * (col_index - (recon_shape[1] - 1) / 2.0)
-
-        # Precompute cosine and sine of view angle, then do the rotation
-        cosine = jnp.cos(angle)  # length = num_views
-        sine = jnp.sin(angle)  # length = num_views
-
-        y = sine * x_tilde + cosine * y_tilde
-
-        # Convert from xyz to coordinates on detector
-        pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
-
-        # The code above depends only on the pixel - a single point.  z is a potentially large vector
-        # TODO:  convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
-        k = jnp.arange(len(voxel_cylinder))
-        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + gp.recon_slice_offset  # K = slice indices
-        v = pixel_mag * z
-        # Compute vertical cone angle of voxels
-        phi_p = jnp.arctan2(v, gp.source_detector_dist)
-        cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
-        scaled_voxel_values = voxel_cylinder / cos_phi_p
-        # End TODO
-
-        # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
-        W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
-        L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
-
-        # Set up detector row indices array (0, 10, 20, ..., 10*num_slice_batches)
-        det_rows_per_batch = gp.entries_per_cylinder_batch
-        det_rows_per_batch = min(det_rows_per_batch, num_det_rows)
-        num_det_row_batches = (num_det_rows + det_rows_per_batch - 1) // det_rows_per_batch
-        det_row_indices = det_rows_per_batch * jnp.arange(num_det_row_batches)
-
-        det_center_row = (num_det_rows - 1) / 2.0
-        row_batch = jnp.arange(det_rows_per_batch)
-
-        # Set up a function to map over subsets of detector rows
-        def create_det_column_rows(start_index):
-            # Allocate space
-            new_column_batch = jnp.zeros(det_rows_per_batch)
-            # Get the data needed for vertical projection to the detector
-            m_center = start_index + row_batch
-            v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset
-            z_m = v_m / pixel_mag  # This is the z coordinate of the projection of the center of the first detector element in this batch
-            # Convert to voxel fractional index and find the center
-            k_m = (z_m - gp.recon_slice_offset) / gp.delta_voxel + (num_slices - 1) / 2.0
-            k_m_center = jnp.round(k_m).astype(int)
-            slope = (m_center[1] - m_center[0]) / (k_m[1] - k_m[0])
-            m_p = slope * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of k_m_center
-
-            # Do the vertical projection
-            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
-                k_ind = k_m_center + k_offset
-                abs_delta_p_r_m = jnp.abs(m_p + slope * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
-                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-                A_row_k *= (k_ind >= 0) * (k_ind < num_slices)
-                new_column_batch = jnp.add(new_column_batch, A_row_k * scaled_voxel_values[k_ind])
-
-            return new_column_batch, None
-
-        det_column, _ = jax.lax.map(create_det_column_rows, det_row_indices)
-        det_column = det_column.flatten()
-        det_column = jax.lax.slice_in_dim(det_column, 0, num_det_rows)
-        return det_column
-
-
-    @staticmethod
-    def forward_vertical_fan_one_pixel_to_one_view_old(voxel_cylinder, pixel_index, angle, projector_params):
         """
         Apply a fan beam forward projection in the vertical direction to the pixel determined by indices
         into the flattened array of size num_rows x num_cols.  This returns a vector obtained from the projection of
@@ -400,75 +322,71 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+        recon_shape = projector_params.recon_shape
         num_slices = voxel_cylinder.shape[0]
 
-        # Set up slice indices array (0, 10, 20, ..., 10*num_slice_batches)
+        # From pixel index, compute y and pixel_mag
+        y, pixel_mag = ConeBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
+
+        # The code above depends only on the pixel - a single point.  z is a potentially large vector
+        # Here we compute cos_phi_p:  1 / cos_phi_p determines the projection length through a voxel
+        # For computational efficiencty, we use that to scale the voxel_cylinder values.
+        # TODO:  possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
+        k = jnp.arange(len(voxel_cylinder))
+        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + gp.recon_slice_offset  # K = slice indices
+        v = pixel_mag * z
+        # Compute vertical cone angle of voxels
+        phi_p = jnp.arctan2(v, gp.source_detector_dist)
+        cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
+        scaled_voxel_values = voxel_cylinder / cos_phi_p
+        # End TODO
+
+        # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
+        W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
+        L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
+
+        # Set up detector row indices array (0, 10, 20, ..., 10*num_slice_batches)
         det_rows_per_batch = gp.entries_per_cylinder_batch
         det_rows_per_batch = min(det_rows_per_batch, num_det_rows)
         num_det_row_batches = (num_det_rows + det_rows_per_batch - 1) // det_rows_per_batch
         det_row_indices = det_rows_per_batch * jnp.arange(num_det_row_batches)
 
-        # Get the detector rows from the first 2 slices to determine the map m_p = a * slice_index + b
-        # or slice_index = (m_p - b) / a
-        cur_slice_indices = jnp.arange(2)
-        m_p_01, _, _, _ = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, angle,
-                                                                        projector_params)
-        m_slope = m_p_01[1] - m_p_01[0]
-        m_intercept = m_p_01[0]
+        det_center_row = (num_det_rows - 1) / 2.0
+        row_batch = jnp.arange(det_rows_per_batch)
 
-        # Set up a function to scan over the rows of the detector.
-        # Here we index by detector row, then determine the slices from these rows, then use a map approach as in
-        # back project vertical.
-        det_row_range = jnp.arange(det_rows_per_batch)  # The range for rows in the 0 batch - this will be offset for each batch
-
-        # Get the corresponding range of voxel indices, without offset, but with padding on each side for the bp_psf_radius
-        slice_range = jnp.arange(gp.slice_range_length)
-
-        def create_det_column(det_start_index):
-            # Get the data needed for vertical projection
-            cur_row_indices = det_start_index + det_row_range
-            slice_indices_by_row = jnp.round((cur_row_indices - m_intercept) / m_slope).astype(int)
-
-            # Get the slice range padded by the bp_psf_radius
-            slice_range_start = slice_indices_by_row[0] - gp.bp_psf_radius
-            cur_slice_range = slice_range_start + slice_range
-
-            # Get the data for these slices
-            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_range, angle,
-                                                                                                     projector_params)
-            L_max = jnp.minimum(1, W_p_r)
-            # For a given detector row index, m, we can access the data for a voxel associated with m by
-            # m -> data_index[m] = slice_indices_by_row[m] - cur_slice_range[0]
-            # Then all the associated voxels are given by data_index[m] + slice_offset
+        # Set up a function to map over subsets of detector rows
+        def create_det_column_rows(start_index):
+            # We need to match the back projector, so we have to determine the fraction of each voxel that projects
+            # to each detector.
+            # First project the detector centers to the voxel cylinder
+            m_center = start_index + row_batch  # Center of detector elements
+            v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
+            z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
+            # Convert to voxel fractional index and find the center of each voxel
+            k_m = (z_m - gp.recon_slice_offset) / gp.delta_voxel + (num_slices - 1) / 2.0
+            k_m_center = jnp.round(k_m).astype(int)  # Center of the voxel hit by the center of the detector
+            # THen map the center of the voxels back to the detector
+            slope = (m_center[1] - m_center[0]) / (k_m[1] - k_m[0])  # Slope of map from voxel index to detector index
+            m_p = slope * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
 
             # Allocate space
-            new_cylinder = jnp.zeros(det_rows_per_batch)
-
+            new_column_batch = jnp.zeros(det_rows_per_batch)
             # Do the vertical projection
-            for slice_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
-                cur_slice_indices = slice_indices_by_row + slice_offset
-                data_indices = cur_slice_indices - cur_slice_range[0]
+            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
+                k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
+                # The projection of these centers is the projection of k_m_center (which is m_p) plus
+                # the offset times the slope of the map from voxel index to detector index
+                abs_delta_p_r_m = jnp.abs(m_p + slope * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
+                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)  # Fraction of the detector hit by this voxel
+                A_row_k *= (k_ind >= 0) * (k_ind < num_slices)
+                new_column_batch = jnp.add(new_column_batch, A_row_k * scaled_voxel_values[k_ind])
 
-                m = cur_row_indices
-                cur_m_p = m_p[data_indices]
-                abs_delta_p_r_m = jnp.abs(cur_m_p - m)
-                cur_W_p_r = W_p_r
-                L_p_r_m = jnp.clip((cur_W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-                A_row_m = L_p_r_m / cos_alpha_p_z[data_indices]
-                A_row_m *= (cur_slice_indices >= 0) * (cur_slice_indices < num_slices)
-                new_cylinder = jnp.add(new_cylinder, A_row_m * voxel_cylinder[cur_slice_indices])
+            return new_column_batch, None
 
-            new_cylinder = new_cylinder[:num_det_rows]
-            return new_cylinder
-        # a = []
-        # for ind in det_row_indices:
-        #     new_component = create_det_column(ind)
-        #     a.append(new_component)
-        # output = jnp.concatenate(a)
-        new_det_column = jax.lax.map(create_det_column, det_row_indices)
-        new_det_column = new_det_column.flatten()
-
-        return new_det_column[:num_det_rows]
+        det_column, _ = jax.lax.map(create_det_column_rows, det_row_indices)
+        det_column = det_column.flatten()
+        det_column = jax.lax.slice_in_dim(det_column, 0, num_det_rows)
+        return det_column
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -799,3 +717,25 @@ class ConeBeamModel(mbirjax.TomographyModel):
         n = (u_tilde + det_channel_offset) / delta_det_channel + det_center_channel  # Sync with compute_horizontal_data
 
         return m, n
+
+    @staticmethod
+    @jax.jit
+    def compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params):
+
+        gp = projector_params.geometry_params
+        row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
+
+        # Compute the un-rotated coordinates relative to iso
+        # Note the change in order from (i, j) to (y, x)!!
+        y_tilde = gp.delta_voxel * (row_index - (recon_shape[0] - 1) / 2.0)
+        x_tilde = gp.delta_voxel * (col_index - (recon_shape[1] - 1) / 2.0)
+
+        # Precompute cosine and sine of view angle, then do the rotation
+        cosine = jnp.cos(angle)  # length = num_views
+        sine = jnp.sin(angle)  # length = num_views
+
+        y = sine * x_tilde + cosine * y_tilde
+
+        # Convert from xyz to coordinates on detector
+        pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
+        return y, pixel_mag
