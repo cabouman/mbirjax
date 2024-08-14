@@ -330,19 +330,21 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # The code above depends only on the pixel - a single point.  z is a potentially large vector
         # Here we compute cos_phi_p:  1 / cos_phi_p determines the projection length through a voxel
-        # For computational efficiencty, we use that to scale the voxel_cylinder values.
+        # For computational efficiency, we use that to scale the voxel_cylinder values.
         # TODO:  possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
         k = jnp.arange(len(voxel_cylinder))
-        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + gp.recon_slice_offset  # K = slice indices
-        v = pixel_mag * z
+        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + gp.recon_slice_offset  # recon_ijk_to_xyz
+        v = pixel_mag * z  # geometry_xyz_to_uv_mag
         # Compute vertical cone angle of voxels
-        phi_p = jnp.arctan2(v, gp.source_detector_dist)
+        phi_p = jnp.arctan2(v, gp.source_detector_dist)  # compute_vertical_data_single_pixel
         cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
         scaled_voxel_values = voxel_cylinder / cos_phi_p
         # End TODO
 
         # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
+        # This is also the slope of the map from voxel index to detector index
         W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
+        slope_k_to_m = W_p_r
         L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
         # Set up detector row indices array (0, 10, 20, ..., 10*num_slice_batches)
@@ -365,9 +367,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
             # Convert to voxel fractional index and find the center of each voxel
             k_m = (z_m - gp.recon_slice_offset) / gp.delta_voxel + (num_slices - 1) / 2.0
             k_m_center = jnp.round(k_m).astype(int)  # Center of the voxel hit by the center of the detector
-            # THen map the center of the voxels back to the detector
-            slope = (m_center[1] - m_center[0]) / (k_m[1] - k_m[0])  # Slope of map from voxel index to detector index
-            m_p = slope * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
+            # Then map the center of the voxels back to the detector.
+            m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
 
             # Allocate space
             new_column_batch = jnp.zeros(det_rows_per_batch)
@@ -376,7 +377,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
                 k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
                 # The projection of these centers is the projection of k_m_center (which is m_p) plus
                 # the offset times the slope of the map from voxel index to detector index
-                abs_delta_p_r_m = jnp.abs(m_p + slope * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
+                abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
                 A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)  # Fraction of the detector hit by this voxel
                 A_row_k *= (k_ind >= 0) * (k_ind < num_slices)
                 new_column_batch = jnp.add(new_column_batch, A_row_k * scaled_voxel_values[k_ind])
