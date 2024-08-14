@@ -41,7 +41,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # illustrate the process as shown in TemplateModel
         view_dependent_vecs = [vec.flatten() for vec in [angles]]
         self.bp_psf_radius = 1
-        self.entries_per_cylinder_batch = 50
+        self.entries_per_cylinder_batch = 128
         self.slice_range_length = 0
         try:
             view_params_array = jnp.stack(view_dependent_vecs, axis=1)
