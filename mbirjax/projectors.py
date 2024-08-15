@@ -83,7 +83,7 @@ class Projectors:
                                                           view_batch_size)
 
             summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
-                                                    pixel_batch_size, view_indices)
+                                                    pixel_batch_size)
             return summed_output
 
         @partial(jax.jit, static_argnames='views_per_batch')
