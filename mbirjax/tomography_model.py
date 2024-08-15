@@ -2,6 +2,9 @@ import types
 import numpy as np
 import warnings
 import time
+import os
+num_cpus = 3 * os.cpu_count() // 4
+os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -43,6 +46,7 @@ class TomographyModel(ParameterHandler):
         self.verify_valid_params()
 
         self.main_device, self.worker, self.pixels_per_batch, self.views_per_batch = None, None, None, None
+        self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
         self.set_devices_and_batch_sizes()
@@ -54,12 +58,15 @@ class TomographyModel(ParameterHandler):
         # If no gpu, then use the cpu and return
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
+        use_gpu = self.get_params('use_gpu')
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
             gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
             gpu_memory /= gb
         except RuntimeError:
+            if use_gpu not in ['automatic', 'none']:
+                raise RuntimeError("'use_gpu' is set to {} but no gpu is available.  Reset to 'automatic' or 'none'.".format(use_gpu))
             gpus = []
             gpu_memory = 0
 
@@ -90,44 +97,49 @@ class TomographyModel(ParameterHandler):
         else:
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
-        if gpu_memory > total_memory_required:
-            main_device = gpus[0]
-            worker = gpus[0]
-            gpu_memory_required = total_memory_required
-        elif gpu_memory > subset_update_memory_required:
-            main_device = cpus[0]
-            worker = gpus[0]
-            gpu_memory_required = subset_update_memory_required
-            warnings.warn('GPU memory smaller than full problem size. Using CPU for main memory, GPU for update steps '
-                          'only, which will increase recon time.')
-        elif cpu_memory > total_memory_required:
-            main_device = cpus[0]
-            worker = cpus[0]
-            gpu_memory_required = 0
-            if len(gpus) > 0:
-                warnings.warn('Insufficient GPU memory for this problem. Estimated required = {}GB.  '
-                              'Available = {}GB.'.format(subset_update_memory_required, gpu_memory))
-                warnings.warn('Trying on CPU, but this may be slow.')
-        else:
-            message = 'Problem is too large for available memory.'
-            message += '\nEstimated memory required = {:.3f}GB.  Available:  CPU = {:.3f}GB, GPU = {:.3f}GB.'.format(
-                total_memory_required, cpu_memory, gpu_memory)
-            raise MemoryError(message)
-
         # Set the default batch sizes, then adjust as needed and update memory requirements
         self.views_per_batch = 256
         self.pixels_per_batch = 2048
         num_slices = max(sinogram_shape[1], recon_shape[2])
         projection_memory_per_view = self.pixels_per_batch * reps_per_projection * num_slices * mem_per_entry
-        if gpu_memory_required > 0:
-            memory_excess = gpu_memory - gpu_memory_required
+
+        subset_memory_excess = gpu_memory - subset_update_memory_required
+        subset_views_per_batch = subset_memory_excess // projection_memory_per_view
+        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.views_per_batch))
+
+        total_memory_excess = cpu_memory - total_memory_required
+        total_views_per_batch = total_memory_excess // projection_memory_per_view
+        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.views_per_batch))
+
+        subset_update_memory_required += subset_views_per_batch * projection_memory_per_view
+        total_memory_required += total_views_per_batch * projection_memory_per_view
+
+        if (gpu_memory > total_memory_required and use_gpu == 'automatic') or use_gpu == 'full':
+            main_device = gpus[0]
+            worker = gpus[0]
+        elif (gpu_memory > subset_update_memory_required and use_gpu == 'automatic') or use_gpu == 'worker':
+            main_device = cpus[0]
+            worker = gpus[0]
+            if use_gpu != 'worker':
+                warnings.warn("GPU memory likely smaller than full problem size. Estimated required = {}GB.  "
+                              "Available = {}GB.".format(subset_update_memory_required, gpu_memory))
+                warnings.warn("Using CPU for main memory and  "
+                              "GPU for update steps only, which will increase recon time.")
+                warnings.warn("  Use set_params(use_gpu='full') to try the full problem on GPU.")
+        elif cpu_memory > total_memory_required:
+            main_device = cpus[0]
+            worker = cpus[0]
+            gpu_memory_required = 0
+            if len(gpus) > 0 and use_gpu != 'none':
+                warnings.warn('Insufficient GPU memory for this problem. Estimated required = {}GB.  '
+                              'Available = {}GB.'.format(subset_update_memory_required, gpu_memory))
+                warnings.warn('Trying on CPU, but this may be slow.')
+                warnings.warn("  Use set_params(use_gpu='worker') to try projections on the GPU.")
         else:
-            memory_excess = cpu_memory - total_memory_required
-        views_per_batch = memory_excess // projection_memory_per_view
-        self.views_per_batch = int(np.clip(views_per_batch, 2, self.views_per_batch))
-        memory_per_projection = self.views_per_batch * projection_memory_per_view
-        subset_update_memory_required += memory_per_projection
-        total_memory_required += memory_per_projection
+            message = 'Problem is likely too large for available memory.'
+            message += '\nEstimated memory required = {:.3f}GB.  Available:  CPU = {:.3f}GB, GPU = {:.3f}GB.'.format(
+                total_memory_required, cpu_memory, gpu_memory)
+            warnings.warn(message)
 
         if gpu_memory > 0:
             print('Available GPU memory = {:.3f}GB.'.format(gpu_memory))
@@ -381,6 +393,24 @@ class TomographyModel(ParameterHandler):
         if recompile_flag:
             self.set_devices_and_batch_sizes()
             self.create_projectors()
+
+    def verify_valid_params(self):
+        """
+        Check that all parameters are compatible for a reconstruction.
+
+        Note:
+            Raises ValueError for invalid parameters.
+        """
+        super().verify_valid_params()
+        use_gpu = self.get_params('use_gpu')
+
+        if use_gpu not in ['automatic', 'full', 'worker', 'none']:
+            error_message = "use_gpu must be one of \n"
+            error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
+            error_message += " 'full' (use gpu for all calculations),\n"
+            error_message += " 'worker' (use gpu for projections only),\n"
+            error_message += " 'none' (do not use gpu at all)."
+            raise ValueError(error_message)
 
     def auto_set_regularization_params(self, sinogram, weights=None):
         """
@@ -892,7 +922,7 @@ class TomographyModel(ParameterHandler):
 
             # Back project to get the gradient
             forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
-                                                               output_device=self.main_device)
+                                                               output_device=self.main_device).block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -940,7 +970,7 @@ class TomographyModel(ParameterHandler):
             # Compute update direction in sinogram domain
             time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
-                                                    output_device=self.worker)
+                                                    output_device=self.worker).block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -949,8 +979,6 @@ class TomographyModel(ParameterHandler):
                                                                           weights, fm_constant, const_weights)
             # forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
             # forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-            times[time_index] += time.time() - time_start
-            time_index += 1
 
             # Compute optimal update step
             alpha_numerator = forward_linear - prior_linear
@@ -958,6 +986,8 @@ class TomographyModel(ParameterHandler):
             alpha = alpha_numerator / alpha_denominator
             max_alpha = 1.5
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)  # a_max=alpha_clip_value
+            times[time_index] += time.time() - time_start
+            time_index += 1
 
             # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
             # x_prime = flat_recon.reshape(recon_shape)
@@ -1000,16 +1030,14 @@ class TomographyModel(ParameterHandler):
             time_index += 1
 
             time_start = time.time()
-            flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
+            flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices).block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Update sinogram and loss
             time_start = time.time()
-            delta_sinogram = float(alpha) * delta_sinogram
-            error_sinogram = jax.device_put(error_sinogram, self.worker)
+            delta_sinogram = float(alpha) * jax.device_put(delta_sinogram, self.main_device)
             error_sinogram = error_sinogram - delta_sinogram
-            error_sinogram = jax.device_put(error_sinogram, self.main_device)
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -1026,9 +1054,10 @@ class TomographyModel(ParameterHandler):
     def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights):
         """
         Compute
-            forward_linear = jnp.sum(weighted_error_sinogram * delta_sinogram)
+            forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-        with batching to the worker if needed.
+        with batching to the worker if needed, which is feasible since the data transfer is mostly from
+        the main deice to the worker, with only 2 floats sent back with each batch.
 
         Args:
             weighted_error_sinogram (jax array):

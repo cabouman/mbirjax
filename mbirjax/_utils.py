@@ -38,7 +38,8 @@ _reconstruction_defaults_dict = {
     'sharpness': {'val': 0.0, 'recompile_flag': False},
     'granularity': {'val': [2, 48, 96, 128], 'recompile_flag': False},
     'partition_sequence': {'val': [0, 1, 2, 2, 2, 2, 3], 'recompile_flag': False},
-    'verbose': {'val': 1, 'recompile_flag': False}
+    'verbose': {'val': 1, 'recompile_flag': False},
+    'use_gpu': {'val': 'automatic', 'recompile_flag': True}  # Possible values are 'automatic', 'full', 'worker', 'none'
 }
 
 # These headings should match the dictionaries
