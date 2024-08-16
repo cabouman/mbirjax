@@ -626,7 +626,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
-        slice_index = jnp.arange(num_recon_slices)
+        slice_index = jnp.arange(1)
 
         x_p, y_p, _ = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
                                                      recon_shape, gp.recon_slice_offset, angle)

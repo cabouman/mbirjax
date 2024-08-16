@@ -239,7 +239,6 @@ class ParallelBeamModel(TomographyModel):
         return det_voxel_cylinder
 
     @staticmethod
-    @partial(jax.jit, static_argnames='projector_params')
     def compute_proj_data(pixel_indices, angle, projector_params):
         """
         Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
@@ -282,7 +281,6 @@ class ParallelBeamModel(TomographyModel):
         return proj_data
 
     @staticmethod
-    @jax.jit
     def recon_ij_to_x(i, j, delta_voxel, recon_shape, angle):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
