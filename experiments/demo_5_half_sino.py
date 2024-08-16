@@ -32,7 +32,7 @@ import mbirjax
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-geometry_type = 'cone'  # 'cone' or 'parallel'
+geometry_type = 'cone'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
@@ -46,10 +46,7 @@ source_detector_dist = 4 * num_det_channels
 source_iso_dist = source_detector_dist
 
 # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-if geometry_type == 'cone':
-    detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-else:
-    detector_cone_angle = 0
+detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
 start_angle = -(np.pi + detector_cone_angle) * (1/2)
 end_angle = (np.pi + detector_cone_angle) * (1/2)
 
@@ -63,12 +60,7 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-if geometry_type == 'cone':
-    ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-elif geometry_type == 'parallel':
-    ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
-else:
-    raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
+ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
 # Generate 3D Shepp Logan phantom
 print('Creating phantom')
@@ -79,48 +71,63 @@ print('Creating sinogram')
 sinogram = ct_model_for_generation.forward_project(phantom)
 sinogram = np.array(sinogram)
 
-sinogram = sinogram[:, 0:num_det_rows // 2]
+# Get a model for this sinogram
+ct_model_for_full_recon = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
-# View sinogram
-title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
-mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
+# Take roughly the half of the sinogram and specify roughly half of the volume
+full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
+num_recon_slices = full_recon_shape[2]
+half_recons = []
+num_extra_rows = 4
+num_det_rows_half = num_det_rows // 2 + num_extra_rows
 
-"""**Initialize for the reconstruction**"""
-
-# ####################
 # Initialize the model for reconstruction.
-if geometry_type == 'cone':
-    ct_model_for_recon = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-else:
-    ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+sinogram_half_shape = (sinogram_shape[0], num_det_rows_half, sinogram_shape[2])
+ct_model_for_half_recon = mbirjax.ConeBeamModel(sinogram_half_shape, angles, source_detector_dist=source_detector_dist,
+                                                source_iso_dist=source_iso_dist)
+recon_shape_half = ct_model_for_half_recon.get_params('recon_shape')
+num_recon_slices_half = recon_shape_half[2]
 
-# Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
-weights = None
-# weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -num_det_rows_half:]], [1, -1]):
 
-# Set reconstruction parameter values
-# Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
-# Decrease by 1 or 2 to get softer edges and smoother interiors.
-sharpness = 0.0
-ct_model_for_recon.set_params(sharpness=sharpness)
-ct_model_for_recon.set_params(recon_slice_offset=-num_det_rows // 4, det_row_offset=num_det_rows // 4)
+    # View sinogram
+    title = 'Half of sinogram \nUse the sliders to change the view or adjust the intensity range.'
+    mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
 
-# Print out model parameters
-ct_model_for_recon.print_params()
+    delta_voxel, delta_det_row = ct_model_for_generation.get_params(['delta_voxel', 'delta_det_row'])
+    recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
+    det_row_offset = sign * delta_det_row * ((num_det_rows-1)/2 - (num_det_rows_half-1)/2)
 
-"""**Do the reconstruction and display the results.**"""
+    ct_model_for_half_recon.set_params(recon_slice_offset=recon_slice_offset, det_row_offset=det_row_offset)
 
-# ##########################
-# Perform VCD reconstruction
-print('Starting recon')
-time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
+    # Print out model parameters
+    ct_model_for_half_recon.print_params()
 
-recon.block_until_ready()
-elapsed = time.time() - time0
-# ##########################
-mbirjax.slice_viewer(recon)
-recon = np.concatenate([recon[:, :, :num_det_rows // 2], jnp.zeros(recon.shape[:2] + (num_det_rows // 2, ))], axis=2)
+    """**Do the reconstruction and display the results.**"""
+
+    # ##########################
+    # Perform VCD reconstruction
+    print('Starting recon')
+    time0 = time.time()
+    recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+
+    recon.block_until_ready()
+    elapsed = time.time() - time0
+    half_recons.append(recon)
+    # ##########################
+    mbirjax.slice_viewer(recon)
+
+num_overlap_slices = 2 * num_recon_slices_half - num_recon_slices
+num_non_overlap_slices = num_recon_slices - num_recon_slices_half
+recon = np.zeros(full_recon_shape)
+recon_top, recon_bottom = half_recons
+recon[:, :, :num_non_overlap_slices] = recon_top[:, :, :num_non_overlap_slices]
+recon[:, :, -num_non_overlap_slices:] = recon_bottom[:, :, -num_non_overlap_slices:]
+overlap_weights = (np.arange(num_overlap_slices) + 1.0) / (num_overlap_slices + 1.0)
+overlap_weights = overlap_weights.reshape((1, 1, -1))
+recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weights) * recon_top[:, :, -num_overlap_slices:]
+recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
+
 # Print parameters used in recon
 pprint.pprint(recon_params._asdict(), compact=True)
 
@@ -135,8 +142,11 @@ print('95% of recon pixels are within {} of phantom'.format(pct_95))
 mbirjax.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
+print('Computing full recon for comparison')
+full_recon, full_params = ct_model_for_generation.recon(sinogram)
+
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
-mbirjax.slice_viewer(phantom, recon, title=title)
+mbirjax.slice_viewer(full_recon, recon-full_recon, title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
