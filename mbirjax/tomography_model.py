@@ -275,7 +275,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, view_indices=(), output_device=None):
+    def sparse_forward_project(self, voxel_values, indices, output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -284,23 +284,29 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                If None, then all views are used.
             output_device (jax device): Device on which to put the output
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         # Get the current devices and move the data to the worker
+        max_views = 256
+        sinogram_shape = self.get_params('sinogram_shape')
+        view_indices = jnp.arange(sinogram_shape[0])
+        num_batches = jnp.ceil(sinogram_shape[0] / max_views).astype(int)
+        view_indices_batched = jnp.array_split(view_indices, num_batches)
         voxel_values, indices = jax.device_put([voxel_values, indices], self.worker)
 
-        sinogram = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices)
+        sinogram = []
+        for view_indices_batch in view_indices_batched:
+            sinogram_views = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices_batch)
+            # Put the data on the appropriate device
+            sinogram.append(jax.device_put(sinogram_views, output_device))
 
-        # Put the data on the appropriate device
-        sinogram = jax.device_put(sinogram, output_device)
+        sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, view_indices=(), coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, indices, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -309,31 +315,43 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                If None, then all views are used.
             output_device (jax device): Device on which to put the output
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        # Get the current devices and move the data to the worker
-        sinogram, indices = jax.device_put([sinogram, indices], self.worker)
+        max_views = 256
+        num_views = sinogram.shape[0]
+        view_indices = jnp.arange(num_views)
+        num_batches = jnp.ceil(sinogram.shape[0] / max_views).astype(int)
+        view_indices_batched = jnp.array_split(view_indices, num_batches)
+        recon_shape = self.get_params('recon_shape')
+        with jax.default_device(output_device):
+            recon_at_indices = jnp.zeros((len(indices), recon_shape[2]))
+            recon_at_indices = jax.device_put(recon_at_indices, output_device)
+        pixel_indices = jax.device_put(indices, self.worker)
 
-        recon_at_indices = self.projector_functions.sparse_back_project(sinogram, indices, view_indices=view_indices, coeff_power=coeff_power)
+        view_batch_inds = [index_set[0] for index_set in view_indices_batched] + [num_views]
+        for j in range(len(view_batch_inds) - 1):
+            cur_views = sinogram[view_batch_inds[j]:view_batch_inds[j + 1]]
+            # Get the current devices and move the data to the worker
+            cur_views = jax.device_put(cur_views, self.worker)
 
-        # Put the data on the appropriate device
-        recon_at_indices = jax.device_put(recon_at_indices, output_device)
+            cur_recon_at_indices = self.projector_functions.sparse_back_project(cur_views, pixel_indices,
+                                                                                view_indices=view_indices_batched[j],
+                                                                                coeff_power=coeff_power)
+
+            # Put the data on the appropriate device
+            recon_at_indices += jax.device_put(cur_recon_at_indices, output_device)
 
         return recon_at_indices
 
-    def compute_hessian_diagonal(self, weights=None, view_indices=(), output_device=None):
+    def compute_hessian_diagonal(self, weights=None, output_device=None):
         """
         Computes the diagonal elements of the Hessian matrix for given weights.
 
         Args:
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
-            view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                If None, then all views are used.
             output_device (jax device): Device on which to put the output
 
         Returns:
@@ -358,7 +376,7 @@ class TomographyModel(ParameterHandler):
             An array that is the same size as the reconstruction.
         """
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
-        num_views = len(view_indices) if len(view_indices) != 0 else sinogram_shape[0]
+        num_views = sinogram_shape[0]
         if weights is None:
             with jax.default_device(self.main_device):
                 weights = jnp.ones((num_views,) + sinogram_shape[1:])
@@ -371,8 +389,7 @@ class TomographyModel(ParameterHandler):
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
 
-        hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, view_indices=view_indices,
-                                                    output_device=output_device)
+        hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, output_device=output_device)
 
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
 
