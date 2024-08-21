@@ -78,7 +78,7 @@ ct_model_for_full_recon = mbirjax.ConeBeamModel(sinogram.shape, angles, source_d
 full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
 num_recon_slices = full_recon_shape[2]
 half_recons = []
-num_extra_rows = 4
+num_extra_rows = 2
 num_det_rows_half = num_det_rows // 2 + num_extra_rows
 
 # Initialize the model for reconstruction.
@@ -146,7 +146,7 @@ print('Computing full recon for comparison')
 full_recon, full_params = ct_model_for_generation.recon(sinogram)
 
 # Display results
-title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
+title = 'Standard VCD recon (left) and residual with 2 halves stitched VCD Recon (right) \nThe residual is (stitched recon) - (standard recon).'
 mbirjax.slice_viewer(full_recon, recon-full_recon, title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
