@@ -1,0 +1,6 @@
+Refactor sparse forward and back projectors in TomographyModel to send only one batch at a time to the GPU
+and collect the results to create a full projection.
+
+Then change evaluate_over_indices to project the full sinogram or phantom and use that for timing and memory.
+Also include a third option:  'Forward', 'Backward', 'Both' where Both includes forward and back projections in the
+same run.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.5.1"
+version = "0.5.2"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -32,6 +32,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# "pip install mbirjax[cuda12]"
+cuda12 = ["jax[cuda12]"]
 test = ["pytest"]
 docs = [
      "sphinx",

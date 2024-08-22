@@ -2,6 +2,7 @@ from collections import namedtuple
 import jax
 import jax.numpy as jnp
 import mbirjax
+from functools import partial
 
 
 class Projectors:
@@ -9,7 +10,8 @@ class Projectors:
     def __init__(self, tomography_model):
 
         self.tomography_model = tomography_model
-        self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = None, None, None
+        self.sparse_forward_project, self.sparse_back_project = None, None
+        self.forward_project_pixel_batch, self.back_project_view_batch = None, None
         self.create_projectors(tomography_model)
 
     def create_projectors(self, tomography_model):
@@ -23,13 +25,11 @@ class Projectors:
                 * back_project_one_view_to_pixel_batch (callable): jit-compilable function implementing :meth:`TomographyModel.back_project_one_view_to_pixel_batch`
 
         Returns:
-            Nothing, but the class variables `sparse_forward_project`, `sparse_back_project`, and
-            `compute_hessian_diagonal` are set to callable functions.  These are used to implement the following
-            methods:
+            Nothing, but the class variables `sparse_forward_project` and `sparse_back_project` are set to callable
+            functions.  These are used to implement the following methods:
 
             * `sparse_forward_project`: :meth:`TomographyModel.sparse_forward_project`
             * `sparse_back_project`: :meth:`TomographyModel.sparse_back_project`
-            * `compute_hessian_diagonal`: :meth:`TomographyModel.compute_hessian_diagonal`
 
         Note:
             The returned functions will be jit compiled each time they are called with a new shape of input.  If
@@ -77,11 +77,17 @@ class Projectors:
             """
 
             voxel_and_indices = (voxel_values, pixel_indices)  # Apply ensure_tuple
-            summed_output = sum_function_in_batches(sparse_forward_project_pixel_batch, voxel_and_indices,
-                                                    pixel_batch_size, view_indices)
+
+            def forward_project_pixel_batch_wrapper(local_values, local_pix_indices):
+                return sparse_forward_project_pixel_batch(local_values, local_pix_indices, view_indices,
+                                                          view_batch_size)
+
+            summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
+                                                    pixel_batch_size)
             return summed_output
 
-        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=()):
+        @partial(jax.jit, static_argnames='views_per_batch')
+        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=(), views_per_batch=None):
             """
             Compute the sinogram obtained by forward projecting the specified batch of voxels. The voxels
             are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
@@ -94,6 +100,7 @@ class Projectors:
                 pixel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
                 view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                     If None, then all views are used.
+                views_per_batch (int or None, optional): Maximum number of views to project per batch.
 
             Returns:
                 3D array of shape (num_views, num_det_rows, num_det_cols)
@@ -116,7 +123,7 @@ class Projectors:
 
                 return sino_view_batch
 
-            sinogram = concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array, view_batch_size)
+            sinogram = concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array, views_per_batch)
 
             return sinogram
 
@@ -149,13 +156,19 @@ class Projectors:
                 cur_view_params_array = view_params_array[view_indices]
 
             batch_size = view_batch_size
-            function_to_sum = sparse_back_project_view_batch
+
+            def back_project_view_batch_helper(local_view_batch, local_view_params_batch, local_pixel_indices):
+                return sparse_back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices,
+                                                      coeff_power, pixels_per_batch=pixel_batch_size)
+
             data_to_batch = (sinogram, cur_view_params_array)  # Apply ensure_tuple
-            extra_args = (pixel_indices, coeff_power, )
-            summed_output = sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_args)
+            summed_output = sum_function_in_batches(back_project_view_batch_helper, data_to_batch, batch_size,
+                                                    pixel_indices)
             return summed_output
 
-        def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power):
+        @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
+        def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power=1,
+                                           pixels_per_batch=None):
             """
             This function creates batches of pixels and collects the results to form the full sinogram.
             Also, since the geometry-specific projectors map between a batch of voxel cylinders and a single view,
@@ -191,49 +204,15 @@ class Projectors:
                 voxel_values_batch = jnp.sum(per_view_voxel_values_batch, axis=0)
                 return voxel_values_batch
 
-            new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixel_batch_size)
+            new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixels_per_batch)
             return new_voxel_values
 
-        def compute_hessian_diagonal(weights=None, view_indices=()):
-            """
-            Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
-            matrix except using the square of the coefficients in the backprojection to a given voxel.
-            One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-            shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
-            array of ones of size sinogram_shape.
-
-            Args:
-               weights (ndarray or jax array or None, optional): 3D array of shape
-                    (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
-                    if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
-                    match those indicated by view_indices.  Defaults to all 1s.
-               view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                    If None, then all views are used.
-
-            Returns:
-                An array that is the same size as the reconstruction.
-            """
-            num_views = len(view_indices) if len(view_indices) != 0 else sinogram_shape[0]
-            if weights is None:
-                weights = jnp.ones((num_views,) + sinogram_shape[1:])
-            elif weights.shape != (num_views,) + sinogram_shape[1:]:
-                error_message = 'Weights must be constant or an array compatible with sinogram'
-                error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
-                raise ValueError(error_message)
-
-            num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-            max_index = num_recon_rows * num_recon_cols
-            indices = jnp.arange(max_index)
-
-            hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, view_indices=view_indices)
-
-            return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
-
-        # Set the compiled projectors and Hessian function
+        # Set the compiled projectors
         projector_functions = (jax.jit(sparse_forward_project_fcn),
-                               jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'),
-                               compute_hessian_diagonal)
-        self.sparse_forward_project, self.sparse_back_project, self.compute_hessian_diagonal = projector_functions
+                               jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'))
+        self.sparse_forward_project, self.sparse_back_project = projector_functions
+        self.forward_project_pixel_batch = sparse_forward_project_pixel_batch
+        self.back_project_view_batch = sparse_back_project_view_batch
 
 
 def concatenate_function_in_batches(function, data_to_batch, batch_size):

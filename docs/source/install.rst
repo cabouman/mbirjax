@@ -8,9 +8,15 @@ The ``MBIRJAX`` package is available through PyPI or from source on GitHub.
 
 **Install from PyPI**
 
-In order to install from PyPI, simply use the following command::
+In order to install from PyPI, use one of the following commands.
 
-    pip install mbirjax
+For CPU only::
+
+    pip install --upgrade mbirjax
+
+For CPU with a CUDA12-enabled GPU::
+
+    pip install --upgrade mbirjax[cuda12]
 
 
 **Installing from source**

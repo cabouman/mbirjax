@@ -90,6 +90,7 @@ class TestVCD(unittest.TestCase):
 
         # ##########################
         # Perform VCD reconstruction
+        sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
         recon, recon_params = ct_model.recon(sinogram)
         recon.block_until_ready()

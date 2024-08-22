@@ -3,19 +3,20 @@ import numpy as np
 import jax.numpy as jnp
 import time
 import sys
+import jax
 
 
 def evaluate_over_indices(filename, nv, nc, nr):
 
-    if mbirjax.get_memory_stats() is None:
+    if mbirjax.get_memory_stats(print_results=False) is None:
         raise EnvironmentError('This script is for gpu only.')
 
+    print('Loading {}'.format(filename))
     # Load the existing data
     data = np.load(filename, allow_pickle=True)
     mem_values = data['mem_values']
     time_values = data['time_values']
     eval_type_index = data['eval_type_index']
-    pixel_batch_size = data['pixel_batch_size']
     max_percent_used_gb = data['max_percent_used_gb']
     max_avail_gb = data['max_avail_gb']
     num_views = data['num_views']
@@ -26,32 +27,33 @@ def evaluate_over_indices(filename, nv, nc, nr):
     # Set up for projections
     start_angle = 0.0
     end_angle = jnp.pi
-    sinogram = None
-    bp = None
-    parallel_model = None
 
-    i = np.where(num_views == nv)
+    i = np.where(num_det_rows == nr)
     j = np.where(num_channels == nc)
-    k = np.where(num_det_rows == nr)
+    k = np.where(num_views == nv)
+
     for l, ni in enumerate(num_indices):
         angles = jnp.linspace(start_angle, end_angle, nv, endpoint=False)
 
         # Set up parallel beam
         sinogram_shape = (nv, nr, nc)
         parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
-        parallel_model.set_params(pixel_batch_size=pixel_batch_size)
+
+        parallel_model.pixels_per_batch = ni
+        parallel_model.views_per_batch = nv
+        parallel_model.main_device = jax.devices('cpu')[0]
+        parallel_model.worker = jax.devices('gpu')[0]
 
         # Generate phantom for forward projection
         recon_shape = parallel_model.get_params('recon_shape')
-        phantom = mbirjax.gen_cube_phantom(recon_shape)
 
         # Get a subset of the given size
         indices = np.arange(ni, dtype=int)
-        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[indices]
+        voxel_values = np.ones((ni, recon_shape[2]))
 
         if eval_type_index == 0:
             print(
-                'Initial forward projection for memory: nv={}, nc={}, nr={}, ni={}'.format(nv, nc, nr, ni))
+                'Initial forward projection for memory: nr={}, nc={}, nv={}, ni={}'.format(nr, nc, nv, ni))
             try:
                 sinogram = parallel_model.sparse_forward_project(voxel_values, indices)
                 m1 = mbirjax.get_memory_stats()
@@ -65,11 +67,13 @@ def evaluate_over_indices(filename, nv, nc, nr):
             print('Forward projection for speed')
             t0 = time.time()
             try:
-                sinogram = parallel_model.sparse_forward_project(voxel_values, indices)
+                sinogram = parallel_model.sparse_forward_project(voxel_values, indices).block_until_ready()
+                sinogram = parallel_model.sparse_forward_project(voxel_values, indices).block_until_ready()
+                sinogram = parallel_model.sparse_forward_project(voxel_values, indices).block_until_ready()
             except MemoryError as e:
                 print('Out of memory on pass 2')
             t1 = time.time()
-            time_diff_secs = t1 - t0
+            time_diff_secs = (t1 - t0) / 3
             time_values[i, j, k, l] = time_diff_secs
             print('Elapsed time = {}'.format(time_diff_secs))
 
@@ -90,9 +94,11 @@ def evaluate_over_indices(filename, nv, nc, nr):
             print('Back projection for speed')
             t0 = time.time()
             try:
-                bp = parallel_model.sparse_back_project(sinogram, indices)
+                bp = parallel_model.sparse_back_project(sinogram, indices).block_until_ready()
+                bp = parallel_model.sparse_back_project(sinogram, indices).block_until_ready()
+                bp = parallel_model.sparse_back_project(sinogram, indices).block_until_ready()
                 t1 = time.time()
-                time_diff_secs = t1 - t0
+                time_diff_secs = (t1 - t0) / 3
             except:
                 print('Out of memory on pass 2')
                 t1 = time.time()
@@ -104,7 +110,6 @@ def evaluate_over_indices(filename, nv, nc, nr):
     print('Max percentage GB used = {}%'.format(max_percent_used_gb))
 
     np.savez(filename, mem_values=mem_values, time_values=time_values, eval_type_index=np.array(eval_type_index),
-             pixel_batch_size=np.array(pixel_batch_size),
              max_percent_used_gb=np.array(max_percent_used_gb), max_avail_gb=np.array(max_avail_gb),
              num_views=np.array(num_views), num_channels=np.array(num_channels),
              num_det_rows=np.array(num_det_rows), num_indices=np.array(num_indices))

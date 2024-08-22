@@ -19,13 +19,14 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 16  # Reduce this for large detector row/channel count, increase for smaller
-    pixel_batch_size = 4096
+    # view_batch_size = 16  # Reduce this for large detector row/channel count, increase for smaller
+    # pixel_batch_size = 4096
 
     # Initialize sinogram parameters
-    num_views = 750
-    num_det_rows = 1500
-    num_det_channels = 500
+    num_views = 2
+    num_det_rows = 2048
+    num_det_channels = 2048
+    num_indices = 1000
     view_step_size = None  # Set to a small, positive integer to subsample the views
 
     view_indices = np.arange(start=0, stop=num_views, step=view_step_size)
@@ -46,7 +47,7 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     conebeam_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_distance, source_iso_distance)
-    conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
+    # conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
@@ -56,14 +57,17 @@ if __name__ == "__main__":
 
         # Generate indices of pixels and sinogram
         full_indices = mbirjax.gen_full_indices(recon_shape)
-        # full_indices = full_indices[::2]
-        voxel_values = conebeam_model.get_voxels_at_indices(phantom, full_indices)
+        full_indices = np.array(full_indices[:num_indices])
+        voxel_values = np.array(conebeam_model.get_voxels_at_indices(phantom, full_indices))
+
+    conebeam_model.pixels_per_batch = num_indices
+    conebeam_model.views_per_batch = num_views
 
     # New version
     print('Starting first projection')
     mbirjax.get_memory_stats()
     time0 = time.time()
-    sinogram0 = conebeam_model.sparse_forward_project(voxel_values, full_indices)
+    sinogram0 = conebeam_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
     elapsed = time.time() - time0
     print('Pre-compile forward project time = {:.5f} sec'.format(elapsed))
     mbirjax.get_memory_stats()

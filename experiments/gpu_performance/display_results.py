@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import sys
 
+
 def display_results(filename):
 
     # Load the existing data
@@ -10,7 +11,6 @@ def display_results(filename):
     mem_values = data['mem_values']
     time_values = data['time_values']
     eval_type_index = data['eval_type_index']
-    pixel_batch_size = data['pixel_batch_size']
     max_percent_used_gb = data['max_percent_used_gb']
     max_avail_gb = data['max_avail_gb']
     num_views = data['num_views']
@@ -19,30 +19,70 @@ def display_results(filename):
     num_indices = data['num_indices']
 
     # Set up the info for plotting
-    outer_labels = ['# views', '# det channels']
-    outer_values = [num_views, num_channels]
-    inner_labels = ['# det rows', '# indices']
-    inner_values = [num_det_rows, num_indices]
+    outer_labels = ['# det rows', '# det channels']
+    outer_values = [num_det_rows, num_channels]
+    inner_labels = ['# views', '# indices']
+    inner_values = [num_views, num_indices]
 
     vmin_mem = -2
     vmax_mem = 6
     vmin_time = -12
     vmax_time = 5
 
+    mem0 = mem_values.flatten()[0]
+    mem_values /= mem0
+
+    time_values = normalize_time_values(time_values, outer_labels, outer_values, inner_labels, inner_values)
+    time0 = time_values.flatten()[0]
+    time_values /= time0
+
     plt.ion()
 
     eval_types = ['Forward_projection', 'Backward_projection']
-    super_title_mem = 'Peak log2(GB) as a function of #views, #channels, #rows, and #indices'
-    super_title_mem += ', pixel_batch_size={}\n'.format(pixel_batch_size)
-    super_title_mem += eval_types[eval_type_index]
-    super_title_mem += ':  Avail GB = {:.1f}, Max percent mem used = {:.2f}'.format(max_avail_gb, max_percent_used_gb)
-    super_title_time = 'log2(seconds elapsed) as a function of #views, #channels, #rows, and #indices\n'
-    super_title_time += eval_types[eval_type_index]
+    super_title_mem = eval_types[eval_type_index]
+    super_title_mem += '\nlog2(GB / GB_baseline) for one batch as a function of #rows, #channels, #views, and #indices'
+    super_title_mem += '\nGB_baseline = {:.2f}GB'.format(mem0)
+    # super_title_mem += ':  Avail GB = {:.1f}, Max percent mem used = {:.2f}'.format(max_avail_gb, max_percent_used_gb)
+    super_title_time = eval_types[eval_type_index]
+    super_title_time += '\nlog2(seconds elapsed / secs_baseline) for full set of batches as a function of #rows, #channels, #views, and #indices'
+    super_title_time += '\nsecs_baseline elapsed = {:.3g} secs'.format(time0)
 
     create_tiled_heatmap(np.log2(mem_values), outer_labels, outer_values, inner_labels, inner_values,
                          super_title=super_title_mem, vmin=vmin_mem, vmax=vmax_mem)
     create_tiled_heatmap(np.log2(time_values), outer_labels, outer_values, inner_labels, inner_values,
                          super_title=super_title_time, vmin=vmin_time, vmax=vmax_time)
+
+
+def normalize_time_values(time_values, outer_labels, outer_values, inner_labels, inner_values):
+    """
+    Each entry in time_values gives the time needed for a batch of views and indices for a given umber of detector rows
+    and channels.  Assuming a recon size of num_channels**2 * num_rows and a sinogram with num_channels views, this
+    function multiplies each entry by the number of reps needed to project the full recon and sino.
+    Args:
+        time_values:
+        outer_labels:
+        outer_values:
+        inner_labels:
+        inner_values:
+
+    Returns:
+
+    """
+    row_index = 0
+    channel_index = 1
+    assert(outer_labels[row_index] == '# det rows' and outer_labels[channel_index] == '# det channels')
+    view_index = 0
+    indices_index = 1
+    assert(inner_labels[view_index] == '# views' and inner_labels[indices_index] == '# indices')
+    for i, num_row in enumerate(outer_values[row_index]):
+        for j, num_channels in enumerate(outer_values[channel_index]):
+            total_indices = num_channels * num_channels * 0.8  # Approx # pixels in the region of reconstruction
+            total_views = num_channels
+            for k, num_views in enumerate(inner_values[view_index]):
+                for n, num_indices in enumerate(inner_values[indices_index]):
+                    num_reps = (total_views / num_views) * (total_indices / num_indices)
+                    time_values[i, j, k, n] *= num_reps
+    return time_values
 
 
 def create_tiled_heatmap(plot_values, outer_labels, outer_values, inner_labels, inner_values,
@@ -60,10 +100,10 @@ def create_tiled_heatmap(plot_values, outer_labels, outer_values, inner_labels, 
 
     Args:
         plot_values (4D numpy array):  Values to display
-        outer_labels (length 2 string): The labels describing axes 0 and 1 of plot_values (e.g., #views, #channels)
-        outer_values (length 2 list):  outer_values[0] (or [1]) contains the values of the independent variable for axis 0 (or 1)
-        inner_labels (length 2 string): The labels describing axes 2 and 3 of plot_values (e.g., #slices, #indices)
-        inner_values (length 2 list): inner_values[0] (or [1]) contains the values of the independent variable for axis 2 (or 3)
+        outer_labels (length 2 list of strings): The labels describing axes 0 and 1 of plot_values (e.g., #views, #channels)
+        outer_values (length 2 list of lists of int):  outer_values[0] (or [1]) contains the values of the independent variable for axis 0 (or 1)
+        inner_labels (length 2 list of strings): The labels describing axes 2 and 3 of plot_values (e.g., #slices, #indices)
+        inner_values (length 2 list of lists int): inner_values[0] (or [1]) contains the values of the independent variable for axis 2 (or 3)
         sup_title (string, optional): Overall title for the display
         vmin (float, optional): lower clipping value for colorbar display
         vmax (float, optional): upper clipping value for colorbar display
