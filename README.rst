@@ -9,9 +9,17 @@ Full documentation is available at https://mbirjax.readthedocs.io .
 Installing from PyPI
 --------------------
 
+For CPU only:
+
     .. code-block::
 
         pip install mbirjax
+
+For CPU with a CUDA12-enabled GPU:
+
+    .. code-block::
+
+        pip install --upgrade mbirjax[cuda12]
 
 Installing from Source
 ----------------------
