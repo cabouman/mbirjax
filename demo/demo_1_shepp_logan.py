@@ -36,9 +36,9 @@ geometry_type = 'parallel'  # 'cone' or 'parallel'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 64
-num_det_rows = 40
-num_det_channels = 128
+num_views = 32
+num_det_rows = 60
+num_det_channels = 256
 
 # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
 # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -99,8 +99,8 @@ weights = None
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
 # Decrease by 1 or 2 to get softer edges and smoother interiors.
-sharpness = 0.0
-ct_model_for_recon.set_params(sharpness=sharpness)
+sharpness = 2.0
+ct_model_for_recon.set_params(sharpness=sharpness, snr_db=35)
 
 # Print out model parameters
 ct_model_for_recon.print_params()
