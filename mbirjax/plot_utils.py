@@ -266,7 +266,7 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
         loss_ylim (tuple, optional): Limits for the loss axis (y-limits), applied to all plots.
     """
     num_plots = len(granularity_sequences)
-    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(5 * num_plots, 4), sharey='row')
+    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(6 * num_plots, 5), sharey='row')
     fig.suptitle(fig_title)
 
     if num_plots == 1:
@@ -304,3 +304,5 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
 
     plt.tight_layout()
     plt.show()
+
+    fig.savefig('../figs/' + fig_title + '_plots.png')
