@@ -101,15 +101,8 @@ weights = None
 # Decrease by 1 or 2 to get softer edges and smoother interiors.
 sharpness = 2.0
 
-# Parameter settings 
-granularity = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
-partition_sequence = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-
 # Set parameters
 ct_model_for_recon.set_params(sharpness=sharpness, snr_db=35)
-ct_model_for_recon.set_params(granularity=granularity)
-ct_model_for_recon.set_params(partition_sequence=partition_sequence)
-
 
 # Print out model parameters
 ct_model_for_recon.print_params()
