@@ -818,6 +818,7 @@ class TomographyModel(ParameterHandler):
 
                 print(iter_output)
                 print(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
+                print('Number subsets = {}'.format(partition.shape[0]))
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
