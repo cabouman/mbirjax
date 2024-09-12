@@ -36,8 +36,8 @@ _reconstruction_defaults_dict = {
     'positivity_flag': {'val': False, 'recompile_flag': False},
     'snr_db': {'val': 30.0, 'recompile_flag': False},
     'sharpness': {'val': 0.0, 'recompile_flag': False},
-    'granularity': {'val': [1, 3, 9, 27, 81, 243], 'recompile_flag': False},
-    'partition_sequence': {'val': [0, 1, 2, 3, 4, 5], 'recompile_flag': False},
+    'granularity': {'val': [1, 2, 4, 8, 16, 32, 64, 128], 'recompile_flag': False},
+    'partition_sequence': {'val': [0, 1, 2, 3, 4, 5, 6, 7], 'recompile_flag': False},
     'verbose': {'val': 1, 'recompile_flag': False},
     'use_gpu': {'val': 'automatic', 'recompile_flag': True}  # Possible values are 'automatic', 'full', 'worker', 'none'
 }
