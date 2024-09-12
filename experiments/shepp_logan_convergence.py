@@ -39,6 +39,8 @@ geometry_type = 'parallel'  # 'cone' or 'parallel'
 num_views = 32
 num_det_rows = 60
 num_det_channels = 256
+sharpness = 2.0
+snr_db = 40
 
 # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
 # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -99,10 +101,10 @@ weights = None
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
 # Decrease by 1 or 2 to get softer edges and smoother interiors.
-sharpness = 2.0
+
 
 # Set parameters
-ct_model_for_recon.set_params(sharpness=sharpness, snr_db=35)
+ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db)
 
 # Print out model parameters
 ct_model_for_recon.print_params()
@@ -121,6 +123,11 @@ for iteration in range(0, num_iterations, iterations_per_step):
                                                        first_iteration=iteration, init_recon=recon,
                                                        compute_prior_loss=True)
     mbirjax.slice_viewer(recon)
+    mbirjax.slice_viewer(recon, slice_axis=1)
+    # if iteration > 8:
+    #     sharpness = 2.0
+    #     snr_db = 40
+    #     ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db)
 
 recon.block_until_ready()
 elapsed = time.time() - time0
