@@ -6,9 +6,15 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
 
+# Global variables to keep track of the circle, drawing state, and text box
+circle, circle2 = None, None
+is_drawing = False
+text_box, text_box2 = None, None
+cur_slice, cur_slice2 = None, None
+
 
 def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None,
-                 slice_axis=2, slice_axis2=None, cmap='gray'):
+                 slice_axis=2, slice_axis2=None, cmap='gray', show_instructions=True):
     """
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices and intensity window. If two images are provided,
@@ -24,8 +30,9 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         slice_label (str, optional): Text label to be used for a given slice.  Defaults to 'Slice'
         slice_label2 (str, optional): Text label to be used for a given slice for data2.  Defaults to slice_label.
         slice_axis (int, optional): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
-            displayed images will be data[:, slice_index, :]
+            displayed images will be data[:, cur_slice, :]
         slice_axis2 (int, optional): The dimension of data to use for the slice index for data2.
+        show_instructions (bool, optional): If True, then display basic instructions on the plot.
 
     Example:
         .. code-block:: python
@@ -85,13 +92,13 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         ax_data2 = fig.add_subplot(gs[0, 1], sharex=share_axis, sharey=share_axis)
 
     # Show the initial slice
-    slice_index = data.shape[2] // 2
-    im = ax_data.imshow(data[:, :, slice_index], cmap=cmap, vmin=vmin, vmax=vmax)
+    cur_slice = data.shape[2] // 2
+    im = ax_data.imshow(data[:, :, cur_slice], cmap=cmap, vmin=vmin, vmax=vmax)
     im2 = None
     if data2 is not None:
-        slice_index2 = data2.shape[2] // 2
-        im2 = ax_data2.imshow(data2[:, :, slice_index2], cmap=cmap, vmin=vmin, vmax=vmax)
-        ax_data2.set_title(f'{slice_label2} {slice_index2}')
+        cur_slice2 = data2.shape[2] // 2
+        im2 = ax_data2.imshow(data2[:, :, cur_slice2], cmap=cmap, vmin=vmin, vmax=vmax)
+        ax_data2.set_title(f'{slice_label2} {cur_slice2}')
 
     # Set up a colorbar next to the rightmost image, but add extra space to both to make them the same size.
     divider = make_axes_locatable(ax_data)
@@ -107,7 +114,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     ax_slice_slider = fig.add_subplot(gs[1, :])
     warnings.filterwarnings('ignore', category=UserWarning)
     slice_slider = Slider(ax=ax_slice_slider, label=slice_label, valmin=0, valmax=data.shape[2] - 1,
-                          valinit=slice_index, valfmt='%0.0f')
+                          valinit=cur_slice, valfmt='%0.0f')
     warnings.filterwarnings('default', category=UserWarning)
 
     # Then the intensity slider
@@ -119,9 +126,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     intensity_slider = RangeSlider(ax_intensity_slider, "Intensity\nrange", vmin, vmax,
                                    valinit=valinit, valfmt=valfmt)
 
-    ax_data.set_title(f'{slice_label} {slice_index}')
+    ax_data.set_title(f'{slice_label} {cur_slice}')
 
-    fig.text(0.01, 0.95, 'Close plot \nto continue')
+    if show_instructions:
+        fig.text(0.01, 0.92, 'Close plot to continue\nClick and drag to select a region\nPress esc to deselect.')
 
     # Set up the callback functions for the sliders
     def update_intensity(val):
@@ -141,6 +149,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     def update_slice(val):
         # The val passed to a callback by the Slider is a single float.  We cast it to an int to index the slice.
+        global cur_slice, cur_slice2
         cur_slice = int(np.round(val))
         im.set_data(data[:, :, cur_slice])
         ax_data.set_title(f'{slice_label} {cur_slice}')
@@ -151,7 +160,136 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             ax_data2.set_title(f'{slice_label2} {cur_slice2}')
 
         # Redraw the figure to ensure it updates
+        display_mean()
         fig.canvas.draw_idle()
+
+    def on_button_press(event):
+        global circle, circle2, is_drawing, text_box, text_box2
+        if event.inaxes != ax_data and event.inaxes != ax_data2:
+            return
+        # Check if zoom or pan tool is active
+        if event.canvas.toolbar.mode != '':
+            return
+        is_drawing = True
+        # Remove existing circle and text box if any
+        if circle is not None:
+            circle.remove()
+            circle = None
+        if circle2 is not None:
+            circle2.remove()
+            circle2 = None
+        if text_box is not None:
+            text_box.remove()
+            text_box = None
+        if text_box2 is not None:
+            text_box2.remove()
+            text_box2 = None
+        fig.canvas.draw_idle()
+        # Create a new circle at the click position with radius 0
+        circle = plt.Circle((event.xdata, event.ydata), 0, color='red', linewidth=2, fill=False, alpha=1.0)
+        ax_data.add_patch(circle)
+        if data2 is not None:
+            circle2 = plt.Circle((event.xdata, event.ydata), 0, color='red', linewidth=2, fill=False, alpha=1.0)
+            ax_data2.add_patch(circle2)
+        fig.canvas.draw_idle()
+
+    def on_motion_notify(event):
+        global circle, circle2, is_drawing
+        if not is_drawing:
+            return
+        if (event.inaxes != ax_data and event.inaxes != ax_data2) or circle is None:
+            return
+        # Check if zoom or pan tool is active
+        if event.canvas.toolbar.mode != '':
+            return
+        # Update the radius of the circle based on mouse position
+        dx = event.xdata - circle.center[0]
+        dy = event.ydata - circle.center[1]
+        radius = np.sqrt(dx ** 2 + dy ** 2)
+        circle.set_radius(radius)
+        if circle2 is not None:
+            circle2.set_radius(radius)
+        fig.canvas.draw_idle()
+
+    def on_button_release(event):
+        global circle, is_drawing
+        if event.inaxes != ax_data and event.inaxes != ax_data2:
+            return
+        # Check if zoom or pan tool is active
+        if event.canvas.toolbar.mode != '':
+            return
+        is_drawing = False
+        if circle is None:
+            return
+        display_mean()
+
+    def display_mean():
+        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2
+        # Compute mean and standard deviation of pixels inside the circle
+        center_x, center_y = circle.center
+        radius = circle.get_radius()
+
+        # Get the image data dimensions
+        ny, nx = data.shape[:2]
+        x = np.arange(nx)
+        y = np.arange(ny)
+        xv, yv = np.meshgrid(x, y)
+
+        # Calculate the distance from the circle center to each pixel
+        distances = np.sqrt((xv - center_x) ** 2 + (yv - center_y) ** 2)
+
+        # Create a mask for pixels inside the circle
+        mask = distances <= radius
+
+        # Extract pixel values inside the circle
+        pixel_values = data[mask, cur_slice]
+
+        # Calculate mean and standard deviation
+        mean_val = np.mean(pixel_values)
+        std_val = np.std(pixel_values)
+
+        # Display the text box with the results
+        text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
+        if text_box is not None:
+            text_box.remove()
+        text_box = ax_data.text(0.05, 0.95, text_str, transform=ax_data.transAxes, fontsize=12,
+                                verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
+
+        if data2 is not None:
+            pixel_values2 = data2[mask, cur_slice]
+            mean_val2 = np.mean(pixel_values2)
+            std_val2 = np.std(pixel_values2)
+            text_str2 = f"Mean: {mean_val2:.3g}\nStd Dev: {std_val2:.3g}"
+            if text_box2 is not None:
+                text_box2.remove()
+            text_box2 = ax_data2.text(0.05, 0.95, text_str2, transform=ax_data2.transAxes, fontsize=12,
+                                      verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
+
+        fig.canvas.draw_idle()
+
+    def on_key_press(event):
+        global circle, circle2, text_box, text_box2
+        if event.key == 'escape':
+            # Remove the circle and text box if they exist
+            if circle is not None:
+                circle.remove()
+                circle = None
+            if circle2 is not None:
+                circle2.remove()
+                circle2 = None
+            if text_box is not None:
+                text_box.remove()
+                text_box = None
+            if text_box2 is not None:
+                text_box2.remove()
+                text_box2 = None
+            fig.canvas.draw_idle()
+
+    # Connect the event handlers to the figure
+    fig.canvas.mpl_connect('button_press_event', on_button_press)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion_notify)
+    fig.canvas.mpl_connect('button_release_event', on_button_release)
+    fig.canvas.mpl_connect('key_press_event', on_key_press)
 
     # Connect the sliders to the callback functions
     intensity_slider.on_changed(update_intensity)
