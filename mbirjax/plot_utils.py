@@ -19,7 +19,9 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     Display slices of one or two 3D image volumes with a consistent grayscale across slices.
     Allows interactive selection of slices and intensity window. If two images are provided,
     they are displayed side by side for comparative purposes.  If the two images have the same shape, then zoom
-    and pan will be applied to each image simultaneously.  If not pan and zoom are applied to one image at a time.
+    and pan will be applied to each image simultaneously.  If not, pan and zoom are applied to one image at a time.
+    Also allows the user to click and drag to select a circle to compute the mean and standard deviation of the
+    values of the pixels whose centers lie inside the circle.
 
     Args:
         data (ndarray or jax array): 3D image volume with shape (height, width, depth) or 2D (height, width).
@@ -41,6 +43,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
             slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
+    global cur_slice, cur_slice2
     if data.ndim < 2 or data.ndim > 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
         error_msg = 'The input data must be a 2D or 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
         # error_msg += 'must equal data2.shape[slice_axis])'
@@ -128,8 +131,9 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     ax_data.set_title(f'{slice_label} {cur_slice}')
 
+    fig.text(0.01, 0.95, 'Close plot\nto continue')
     if show_instructions:
-        fig.text(0.01, 0.92, 'Close plot to continue\nClick and drag to select a region\nPress esc to deselect.')
+        fig.text(0.01, 0.4, 'Click and drag to select a region.\nPress esc to deselect.', rotation='vertical')
 
     # Set up the callback functions for the sliders
     def update_intensity(val):
@@ -245,11 +249,14 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         pixel_values = data[mask, cur_slice]
 
         # Calculate mean and standard deviation
-        mean_val = np.mean(pixel_values)
-        std_val = np.std(pixel_values)
+        if pixel_values.size == 0:
+            text_str = f"Mean: Nan\nStd Dev: Nan"
+        else:
+            mean_val = np.mean(pixel_values)
+            std_val = np.std(pixel_values)
+            text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
 
         # Display the text box with the results
-        text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
         if text_box is not None:
             text_box.remove()
         text_box = ax_data.text(0.05, 0.95, text_str, transform=ax_data.transAxes, fontsize=12,
@@ -404,7 +411,7 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
         loss_ylim (tuple, optional): Limits for the loss axis (y-limits), applied to all plots.
     """
     num_plots = len(granularity_sequences)
-    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(5 * num_plots, 4), sharey='row')
+    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(6 * num_plots, 5), sharey='row')
     fig.suptitle(fig_title)
 
     if num_plots == 1:
@@ -442,3 +449,5 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
 
     plt.tight_layout()
     plt.show()
+
+    fig.savefig('../figs/' + fig_title + '_plots.png')
