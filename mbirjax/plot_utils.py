@@ -244,6 +244,8 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
     def display_mean():
         global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2
         # Compute mean and standard deviation of pixels inside the circle
+        if circle is None:
+            return
         center_x, center_y = circle.center
         radius = circle.get_radius()
         mask = get_mask(data, center_x, center_y, radius)
