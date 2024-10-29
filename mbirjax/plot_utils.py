@@ -11,6 +11,7 @@ circle, circle2 = None, None
 is_drawing = False
 text_box, text_box2 = None, None
 cur_slice, cur_slice2 = None, None
+ax_data, ax_data2 = None, None
 
 
 def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None,
@@ -43,7 +44,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
             slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
     """
-    global cur_slice, cur_slice2
+    global cur_slice, cur_slice2, ax_data, ax_data2
     if data.ndim < 2 or data.ndim > 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
         error_msg = 'The input data must be a 2D or 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
         # error_msg += 'must equal data2.shape[slice_axis])'
@@ -86,7 +87,6 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     # Set up the subplots. One or two images in the first row along with colorbars.
     gs = gridspec.GridSpec(nrows=3, ncols=2, height_ratios=[10, 1, 1])
-    ax_data, ax_data2 = None, None
     if data2 is None:
         ax_data = fig.add_subplot(gs[0, :])
     else:
@@ -131,9 +131,8 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     ax_data.set_title(f'{slice_label} {cur_slice}')
 
-    fig.text(0.01, 0.95, 'Close plot\nto continue')
     if show_instructions:
-        fig.text(0.01, 0.92, 'Close plot\nto continue')
+        fig.text(0.01, 0.85, 'Close plot\nto continue', rotation='vertical')
         fig.text(0.01, 0.3, 'Click and drag to select; esc to deselect.', rotation='vertical')
 
     # Set up the callback functions for the sliders
@@ -154,7 +153,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     def update_slice(val):
         # The val passed to a callback by the Slider is a single float.  We cast it to an int to index the slice.
-        global cur_slice, cur_slice2
+        global cur_slice, cur_slice2, ax_data, ax_data2
         cur_slice = int(np.round(val))
         im.set_data(data[:, :, cur_slice])
         ax_data.set_title(f'{slice_label} {cur_slice}')
@@ -169,9 +168,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         fig.canvas.draw_idle()
 
     def on_button_press(event):
-        global circle, circle2, is_drawing, text_box, text_box2
-        if event.inaxes != ax_data and event.inaxes != ax_data2:
-            return
+        global circle, circle2, is_drawing, text_box, text_box2, ax_data, ax_data2
+        if event.inaxes != ax_data:
+            if data2 is None or event.inaxes != ax_data2:
+                return
         # Check if zoom or pan tool is active
         if event.canvas.toolbar.mode != '':
             return
@@ -199,7 +199,7 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         fig.canvas.draw_idle()
 
     def on_motion_notify(event):
-        global circle, circle2, is_drawing
+        global circle, circle2, is_drawing, ax_data, ax_data2
         if not is_drawing:
             return
         if (event.inaxes != ax_data and event.inaxes != ax_data2) or circle is None:
@@ -218,15 +218,15 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         fig.canvas.draw_idle()
 
     def on_button_release(event):
-        global circle, is_drawing
+        global circle, is_drawing, ax_data, ax_data2
         if event.inaxes != ax_data and event.inaxes != ax_data2:
             return
         # Check if zoom or pan tool is active
         if event.canvas.toolbar.mode != '':
             return
         is_drawing = False
-        if circle is None:
-            return
+        # if circle is None:
+        #     return
         display_mean()
 
     def get_mask(cur_data, center_x, center_y, radius):
@@ -245,11 +245,13 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         return mask
 
     def display_mean():
-        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2
+        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2, ax_data, ax_data2
         # Compute mean and standard deviation of pixels inside the circle
         if circle is None:
             return
         center_x, center_y = circle.center
+        # if center_x is None or center_y is None:
+        #     return
         radius = circle.get_radius()
         mask = get_mask(data, center_x, center_y, radius)
 
