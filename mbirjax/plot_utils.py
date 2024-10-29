@@ -133,7 +133,8 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
     fig.text(0.01, 0.95, 'Close plot\nto continue')
     if show_instructions:
-        fig.text(0.01, 0.4, 'Click and drag to select a region.\nPress esc to deselect.', rotation='vertical')
+        fig.text(0.01, 0.92, 'Close plot\nto continue')
+        fig.text(0.01, 0.3, 'Click and drag to select; esc to deselect.', rotation='vertical')
 
     # Set up the callback functions for the sliders
     def update_intensity(val):
@@ -207,12 +208,13 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
         if event.canvas.toolbar.mode != '':
             return
         # Update the radius of the circle based on mouse position
-        dx = event.xdata - circle.center[0]
-        dy = event.ydata - circle.center[1]
-        radius = np.sqrt(dx ** 2 + dy ** 2)
-        circle.set_radius(radius)
-        if circle2 is not None:
-            circle2.set_radius(radius)
+        if event.xdata is not None and event.ydata is not None:
+            dx = event.xdata - circle.center[0]
+            dy = event.ydata - circle.center[1]
+            radius = np.sqrt(dx ** 2 + dy ** 2)
+            circle.set_radius(radius)
+            if circle2 is not None:
+                circle2.set_radius(radius)
         fig.canvas.draw_idle()
 
     def on_button_release(event):
@@ -227,14 +229,10 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             return
         display_mean()
 
-    def display_mean():
-        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2
-        # Compute mean and standard deviation of pixels inside the circle
-        center_x, center_y = circle.center
-        radius = circle.get_radius()
+    def get_mask(cur_data, center_x, center_y, radius):
 
         # Get the image data dimensions
-        ny, nx = data.shape[:2]
+        ny, nx = cur_data.shape[:2]
         x = np.arange(nx)
         y = np.arange(ny)
         xv, yv = np.meshgrid(x, y)
@@ -244,33 +242,44 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
 
         # Create a mask for pixels inside the circle
         mask = distances <= radius
+        return mask
+
+    def display_mean():
+        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2
+        # Compute mean and standard deviation of pixels inside the circle
+        if circle is None:
+            return
+        center_x, center_y = circle.center
+        radius = circle.get_radius()
+        mask = get_mask(data, center_x, center_y, radius)
 
         # Extract pixel values inside the circle
         pixel_values = data[mask, cur_slice]
 
-        # Calculate mean and standard deviation
-        if pixel_values.size == 0:
-            text_str = f"Mean: Nan\nStd Dev: Nan"
-        else:
-            mean_val = np.mean(pixel_values)
-            std_val = np.std(pixel_values)
-            text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
-
-        # Display the text box with the results
         if text_box is not None:
             text_box.remove()
-        text_box = ax_data.text(0.05, 0.95, text_str, transform=ax_data.transAxes, fontsize=12,
-                                verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
+        if len(pixel_values) > 0:
+            # Calculate mean and standard deviation
+            mean_val = np.mean(pixel_values)
+            std_val = np.std(pixel_values)
+            # Display the text box with the results
+            text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
+            text_box = ax_data.text(0.05, 0.95, text_str, transform=ax_data.transAxes, fontsize=12,
+                                    verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
 
         if data2 is not None:
-            pixel_values2 = data2[mask, cur_slice]
-            mean_val2 = np.mean(pixel_values2)
-            std_val2 = np.std(pixel_values2)
-            text_str2 = f"Mean: {mean_val2:.3g}\nStd Dev: {std_val2:.3g}"
+            if data2.shape != data.shape:
+                mask = get_mask(data2, center_x, center_y, radius)
+            pixel_values2 = data2[mask, cur_slice2]
+
             if text_box2 is not None:
                 text_box2.remove()
-            text_box2 = ax_data2.text(0.05, 0.95, text_str2, transform=ax_data2.transAxes, fontsize=12,
-                                      verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
+            if len(pixel_values2) > 0:
+                mean_val2 = np.mean(pixel_values2)
+                std_val2 = np.std(pixel_values2)
+                text_str2 = f"Mean: {mean_val2:.3g}\nStd Dev: {std_val2:.3g}"
+                text_box2 = ax_data2.text(0.05, 0.95, text_str2, transform=ax_data2.transAxes, fontsize=12,
+                                          verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
 
         fig.canvas.draw_idle()
 
