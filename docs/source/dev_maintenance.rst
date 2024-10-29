@@ -17,26 +17,28 @@ Uploading to Test PyPI
 
 This is only available for registered maintainers.  Typically, you would perform these steps on the prerelease branch before the final commit to main.
 
-0. Install the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
+0. Update the version number in prerelease and accept the PR to main.
+
+1. Install the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
 
     pip install setuptools build wheel twine
     rm -r dist
     python -m build
 
 
-1. Upload to Test PyPI. You will need to get an API token from TestPyPI. You will be prompted for this token from the command line. NOTE: You cannot upload the same version more than once::
+2. Upload to Test PyPI. You will need to get an API token from TestPyPI. You will be prompted for this token from the command line. NOTE: You cannot upload the same version more than once::
 
     python -m twine upload --repository testpypi dist/*
 
    View the package upload here:
    `https://test.pypi.org/project/mbirjax <https://test.pypi.org/project/mbirjax>`__
 
-2. Test the uploaded package::
+3. Test the uploaded package::
 
     pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
     python -c "import mbirjax"     # spin the wheel
 
-3. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
+4. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
    NOTE: If the install fails and you need to re-test, *temporarily* set
    the version number in `pyproject.toml` from X.X.X to X.X.X.1 (then 2, 3, etc.),
@@ -44,36 +46,38 @@ This is only available for registered maintainers.  Typically, you would perform
    `pyproject.toml`, then merge any required changes into the master branch,
    then delete and re-create the git tag, and proceed to PyPI upload.
 
-4. Verify that the `corresponding build <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
+5. Verify that the `corresponding build <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
 
 Uploading to PyPI
 -----------------
 
 This is only available for registered maintainers.
 
-0. First, make sure you have installed the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
+0. Update the version number in prerelease and accept the PR to main.
+
+1. First, make sure you have installed the newest versions of `setuptools`, `wheel`, `build`, and `twine`. Then from the main mbirjax directory, delete any previous build and then build the project::
 
     pip install setuptools build wheel twine
     rm -r dist
     python -m build
 
 
-1. Upload to PyPI.  As above, you will need an API token, this time from PyPI.  NOTE: You cannot upload the same version more than once::
+2. Upload to PyPI.  As above, you will need an API token, this time from PyPI.  NOTE: You cannot upload the same version more than once::
 
     python -m twine upload dist/*
 
    View the package upload here:
    `https://pypi.org/project/mbirjax <https://pypi.org/project/mbirjax>`__
 
-2. Test the uploaded package::
+3. Test the uploaded package::
 
     pip install mbirjax    # OR, "mbirjax==0.1.1" e.g. for a specific version number
     python -c "import mbirjax"     # spin the wheel
 
-3. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
+4. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
 
-4. Verify that the `corresponding build <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
+5. Verify that the `corresponding build <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
 
 Reference
 ---------
