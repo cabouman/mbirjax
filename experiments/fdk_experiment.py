@@ -11,7 +11,7 @@ import mbirjax
 
 
 # Set geometry parameters
-num_views = 64
+num_views = 128
 num_det_rows = 128
 num_det_channels = 128
 source_detector_dist = 4 * num_det_channels
