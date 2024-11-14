@@ -15,7 +15,7 @@ num_views = 128
 num_det_rows = 128
 num_det_channels = 128
 source_detector_dist = 4 * num_det_channels
-source_iso_dist = source_detector_dist / 2
+source_iso_dist = source_detector_dist
 
 detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
 start_angle = -(jnp.pi + detector_cone_angle) * (1/2)
