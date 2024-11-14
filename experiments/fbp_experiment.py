@@ -11,7 +11,7 @@ import mbirjax
 
 
 # Set geometry parameters
-num_views = 64
+num_views = 128
 num_det_rows = 128
 num_det_channels = 128
 start_angle = -(jnp.pi) * (1/2)
@@ -21,6 +21,7 @@ angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 # Initialize sinogram
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+parallel_model.set_params(delta_voxel=1.2, delta_det_channel=1.5)
 
 # Generate 3D Shepp Logan phantom
 print("Creating phantom", end="\n\n")

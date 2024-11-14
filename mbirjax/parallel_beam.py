@@ -328,6 +328,10 @@ class ParallelBeamModel(TomographyModel):
         # Apply convolution across the channels of the sinogram per each fixed view & row
         filtered_sinogram = jax.vmap(apply_convolution_to_view)(sinogram)
 
+        # Scale the filtered sinogram by the square of the voxel pitch to account for the total detected for each voxel.
+        delta_voxel_sq = self.get_params('delta_voxel') ** 2
+        filtered_sinogram /= delta_voxel_sq
+
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term
 
