@@ -9,7 +9,7 @@ import textwrap
 
 
 # **Set experiment voxel model**
-experiment_input_image = '3D_sl'
+experiment_input_image = 'impulse'
 # select from "impulse" or "3D_sl" for Shepp Logan phantom
 
 # **Set Geometry Parameters**
@@ -21,15 +21,15 @@ num_det_channels = 63
 
 if geometry_type == 'cone':
     source_detector_dist = 4 * num_det_channels
-    source_iso_dist = source_detector_dist * 0.8
+    source_iso_dist = source_detector_dist * 1
     detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
 
 elif geometry_type == 'parallel':
     detector_cone_angle = 0
 
 
-start_angle = -(jnp.pi + detector_cone_angle) * (1 / 2)
-end_angle = (jnp.pi + detector_cone_angle) * (1 / 2)
+start_angle = -(jnp.pi + detector_cone_angle) * (1 / 2) * 2
+end_angle = (jnp.pi + detector_cone_angle) * (1 / 2) * 2
 print('start and end angles:')
 print(start_angle)
 print(end_angle)
@@ -61,6 +61,7 @@ else:
 #voxel_grid_shape = (64, 128, 40)
 
 voxel_grid_shape = (63, 63, 63)
+#voxel_grid_shape = (128, 128, 128)
 
 
 # Create the impulse image
@@ -209,7 +210,26 @@ print(f"Elapsed time for recon is {elapsed} seconds", end="\n\n")
 
 # Display results
 title = f"Phantom (left) vs filtered back projection ({recon_algo}, right). Filter used: {filter_name}. \nUse the sliders to change the slice or adjust the intensity range."
-mbirjax.slice_viewer(phantom, recon, title=title)
+mbirjax.slice_viewer(phantom, recon, slice_axis=0, title=title, slice_label="View")
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot original slice
+im0 = axes[0].imshow(epsilon_i[z, :, :], cmap='gray')
+axes[0].set_title(f'Phantom slice along z-axis (view) at z={z}')
+axes[0].axis('off')  # Turn off axis labels
+fig.colorbar(im0, ax=axes[0], orientation='vertical')
+
+# Plot next slice for comparison
+im1 = axes[1].imshow(recon[z, :, :], cmap='gray')
+axes[1].set_title(f'FDK slice z-axis (view) at z={z}')
+axes[1].axis('off')  # Turn off axis labels
+fig.colorbar(im1, ax=axes[1], orientation='vertical')
+
+# Adjust layout and display
+# plt.tight_layout()
+plt.savefig('slice_comparison.png', dpi=600)
+plt.show()
 
 
 # Compute descriptive statistics about recon result
