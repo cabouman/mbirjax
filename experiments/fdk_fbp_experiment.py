@@ -13,7 +13,7 @@ experiment_input_image = 'impulse'
 # select from "impulse" or "3D_sl" for Shepp Logan phantom
 
 # **Set Geometry Parameters**
-geometry_type = 'cone'  # Choose 'parallel' or 'cone'
+geometry_type = 'parallel'  # Choose 'parallel' or 'cone'
 
 num_views = 63 #64
 num_det_rows = 63 #40
@@ -26,6 +26,8 @@ if geometry_type == 'cone':
 
 elif geometry_type == 'parallel':
     detector_cone_angle = 0
+    delta_voxel = 4.0
+    delta_det_channel = 1.0
 
 
 start_angle = -(jnp.pi + detector_cone_angle) * (1 / 2) * 2
@@ -49,13 +51,13 @@ elif geometry_type == 'parallel':
     ct_model = mbirjax.ParallelBeamModel(
        (num_views, num_det_rows, num_det_channels),
        angles)
-    ct_model.set_params(delta_voxel=1.2, delta_det_channel=1.5)
+    ct_model.set_params(delta_voxel=delta_voxel, delta_det_channel=delta_det_channel)
 
 else:
    raise ValueError('Invalid geometry type.')
 
 
-
+#ct_model.set_params(delta_voxel=1.0, delta_det_channel=1.0)
 
 
 #voxel_grid_shape = (64, 128, 40)
@@ -148,14 +150,22 @@ for v, angle in enumerate(angles):
 # **Plot Sum of Sinogram Entries vs View Angle**
 
 # Prepare title with text wrapping
-title_text = f"Sum of Sinogram Entries vs View Angle ({geometry_type.capitalize()} Beam), " \
-             f"source_detector_dist: {source_detector_dist:.2f}, " \
-             f"source_iso_dist: {source_iso_dist:.2f}"
+
+if(geometry_type=='cone'):
+    title_text = f"Sum of Sinogram Entries vs View Angle ({geometry_type.capitalize()} Beam), " \
+                 f"source_detector_dist: {source_detector_dist:.2f}, " \
+                 f"source_iso_dist: {source_iso_dist:.2f}"
+elif(geometry_type=='parallel'):
+    recon_algo = 'FBP'
+    title_text = f"Sum of Sinogram Entries vs View Angle ({geometry_type.capitalize()} Beam), " \
+                 f"delta_voxel: {delta_voxel:.2f}, " \
+                 f"delta_det_channel: {delta_det_channel:.2f}"
+
 wrapped_title = "\n".join(textwrap.wrap(title_text, width=60))
 
 # Sanitize title_text for filename
 import re
-filename = re.sub(r'[^\w\-_\. ]', '_', title_text).replace(' ', '_') + ".png"
+filename = re.sub(r'[^\w\-_\. ]', '_', title_text).replace(' ', '_') + "_data.npz"
 
 # Create the plot
 plt.figure(figsize=(12, 6))  # Wider figure for longer title
@@ -165,9 +175,12 @@ plt.xlabel('View Angle (radians)', fontsize=14)
 plt.ylabel('Sum of Sinogram Entries', fontsize=14)
 plt.grid()
 
-# Save the plot
-plt.savefig(filename, format='png')  # Save plot as a PNG file with high resolution
-plt.show()
+## Save the plot
+#plt.savefig(filename, format='png')  # Save plot as a PNG file with high resolution
+#plt.show()
+
+# Save data to a .npz file
+np.savez(filename, angles=angles, sinogram_sums=sinogram_sums)
 
 
 if (experiment_input_image == "impulse"):
