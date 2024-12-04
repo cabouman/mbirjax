@@ -722,6 +722,37 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
     @staticmethod
     @jax.jit
+    def detector_nm_to_uv(n, m, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
+                          num_det_channels):
+        """
+        Convert fractional detector grid indices (n, m) into detector coordinates (u, v).
+
+        Parameters:
+            n: Fractional channel index on the detector grid (horizontal direction).
+            m: Fractional row index on the detector grid (vertical direction).
+            delta_det_channel: Spacing (pitch) of the detector channels (horizontal direction).
+            delta_det_row: Spacing (pitch) of the detector rows (vertical direction).
+            det_channel_offset: Offset in the detector channel (horizontal) direction.
+            det_row_offset: Offset in the detector row (vertical) direction.
+            num_det_rows: Total number of rows in the detector.
+            num_det_channels: Total number of channels in the detector.
+
+        Returns:
+            u: Physical detector coordinate in the horizontal direction.
+            v: Physical detector coordinate in the vertical direction.
+        """
+        # Calculate the center of the detector grid
+        det_center_channel = num_det_channels / 2.0  # Center channel index
+        det_center_row = num_det_rows / 2.0  # Center row index
+
+        # Compute detector coordinates (u, v)
+        u = (n - det_center_channel) * delta_det_channel - det_channel_offset
+        v = (m - det_center_row) * delta_det_row - det_row_offset
+
+        return u, v
+
+    @staticmethod
+    @jax.jit
     def compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params):
 
         gp = projector_params.geometry_params
@@ -741,7 +772,66 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Convert from xyz to coordinates on detector
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
-    
+
+
+    def fdk_recon_physical(self, sinogram, filter_name="ramp"):
+
+        num_views, num_rows, num_channels = sinogram.shape
+        filter = generate_filter(num_channels, filter_name=filter_name)
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+
+        # Define the s and v coordinates (in pixel units)
+        s = (jnp.arange(num_channels) - (num_channels // 2))
+        v = (jnp.arange(num_rows - 1, -1, -1) - (num_rows // 2))  # Reversed to start from the top
+
+        # Create the meshgrid
+        v_grid, s_grid = jnp.meshgrid(v, s, indexing='ij')
+
+        # Combine the s and v grids into a single matrix of coordinate pairs
+        coordinates = jnp.stack((s_grid, v_grid), axis=-1)
+
+        pre_weight = source_iso_dist / jnp.sqrt(source_iso_dist ** 2 + jnp.sum(coordinates ** 2, axis=-1))
+
+        # Apply the pre-weighting factor to the sinogram
+        weighted_sinogram = sinogram * pre_weight
+
+        # Define convolution for a single row (across its channels)
+        def convolve_row(row):
+            return jnp.convolve(row, filter, mode="valid")
+
+        # Apply above convolve func across each row of a view
+        def apply_convolution_to_view(view):
+            return jax.vmap(convolve_row)(view)
+
+        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
+        filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
+        # Scale the filtered sinogram by the square of the voxel pitch to account for the total detected for each voxel.
+        #delta_voxel_sq = self.get_params('delta_voxel') ** 2
+        #filtered_sinogram /= delta_voxel_sq
+
+        #recon = self.back_project(filtered_sinogram)
+        #recon *= (jnp.pi / num_views) * (source_detector_dist / source_iso_dist)
+        # recon *= (1 / (2 * num_views * source_iso_dist ** 2))
+        #recon *= 2 * jnp.pi / num_views
+
+
+        delta_voxel = self.get_params('delta_voxel')
+        delta_det_row = self.get_params('delta_det_row')
+        delta_det_channel = self.get_params('delta_det_channel')
+        M_0 = source_detector_dist / source_iso_dist
+
+        print(delta_voxel, delta_det_row, delta_det_channel, M_0)
+        alpha = delta_det_row * delta_det_channel / delta_voxel**3 / M_0**1
+
+        recon = self.back_project(filtered_sinogram)
+        recon *= alpha
+        recon *= 2 * jnp.pi / 100
+
+        #recon *= 2 * jnp.pi / num_views
+
+        return recon
+
     def fdk_recon(self, sinogram, filter_name="ramp"):
         # TODO write docstring, mention this only coveres planar detector in doc string.
 
@@ -774,6 +864,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
         filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
+        print(self.get_params('delta_voxel'))
 
         # Scale the filtered sinogram by the square of the voxel pitch to account for the total detected for each voxel.
         delta_voxel_sq = self.get_params('delta_voxel') ** 2
