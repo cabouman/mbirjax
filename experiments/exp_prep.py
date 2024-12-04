@@ -52,3 +52,40 @@ def create_impulse_cube(shape, position, cube_size=3):
    image[z_start:z_end, y_start:y_end, x_start:x_end] = 1
 
    return image
+
+
+def create_impulse_disk(shape, position, radius=5, thickness=1):
+   """
+   Creates a 3D impulse image with a cylindrical disk of specified radius and thickness set to 1, and the rest set to 0.
+
+   Parameters:
+   - shape (tuple of int): Shape of the 3D image (depth, height, width).
+   - position (tuple of int): Center position of the impulse disk (z, y, x).
+   - radius (int): Radius of the disk (in the y-x plane). Default is 5.
+   - thickness (int): Thickness of the disk (in the z direction). Default is 1.
+
+   Returns:
+   - numpy.ndarray: 3D array with an impulse disk at the specified position.
+   """
+   # Initialize a 3D array with zeros
+   image = np.zeros(shape, dtype=np.float32)
+
+   # Calculate the ranges for the disk in the z direction
+   z_start = max(0, position[0] - thickness // 2)
+   z_end = min(shape[0], position[0] + thickness // 2 + 1)
+
+   # Create a grid for the y-x plane
+   y, x = np.ogrid[:shape[1], :shape[2]]
+   center_y, center_x = position[1], position[2]
+
+   # Compute the squared distance from the center
+   distance_squared = (y - center_y) ** 2 + (x - center_x) ** 2
+
+   # Create a circular mask in the y-x plane
+   mask = distance_squared <= radius ** 2
+
+   # Apply the mask to the z range to create the disk
+   for z in range(z_start, z_end):
+      image[z][mask] = 1
+
+   return image
