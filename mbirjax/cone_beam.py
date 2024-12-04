@@ -774,7 +774,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return y, pixel_mag
 
 
-    def fdk_recon_physical(self, sinogram, filter_name="ramp"):
+    def fdk_recon_scaled(self, sinogram, filter_name="ramp"):
 
         num_views, num_rows, num_channels = sinogram.shape
         filter = generate_filter(num_channels, filter_name=filter_name)
