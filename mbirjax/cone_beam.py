@@ -806,29 +806,23 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
         filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
 
-        # Scale the filtered sinogram by the square of the voxel pitch to account for the total detected for each voxel.
-        #delta_voxel_sq = self.get_params('delta_voxel') ** 2
-        #filtered_sinogram /= delta_voxel_sq
+        recon = self.back_project(filtered_sinogram)
 
-        #recon = self.back_project(filtered_sinogram)
-        #recon *= (jnp.pi / num_views) * (source_detector_dist / source_iso_dist)
-        # recon *= (1 / (2 * num_views * source_iso_dist ** 2))
-        #recon *= 2 * jnp.pi / num_views
-
-
+        # Scale
         delta_voxel = self.get_params('delta_voxel')
         delta_det_row = self.get_params('delta_det_row')
         delta_det_channel = self.get_params('delta_det_channel')
         M_0 = source_detector_dist / source_iso_dist
 
-        print(delta_voxel, delta_det_row, delta_det_channel, M_0)
-        alpha = delta_det_row * delta_det_channel / delta_voxel**3 / M_0**1
+        print(delta_voxel, delta_det_row, delta_det_channel, M_0, num_views)
+        #alpha = delta_det_row * delta_det_channel / delta_voxel**4 / M_0**2
+        alpha = delta_det_row / delta_det_channel / delta_voxel**3 / M_0**2
 
-        recon = self.back_project(filtered_sinogram)
-        recon *= alpha
-        recon *= 2 * jnp.pi / 100
+        recon *= jnp.pi / num_views * alpha
 
-        #recon *= 2 * jnp.pi / num_views
+        # since delta_voxel changed according to M_0, the pixel size of the object not changed,
+        # so the true size of the object changed to delta_voxel times
+        recon /= delta_voxel
 
         return recon
 
