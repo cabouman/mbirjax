@@ -806,6 +806,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
         filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
 
+        # Reconstruction
         recon = self.back_project(filtered_sinogram)
 
         # Scale
@@ -814,10 +815,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
         delta_det_channel = self.get_params('delta_det_channel')
         M_0 = source_detector_dist / source_iso_dist
 
-        print(delta_voxel, delta_det_row, delta_det_channel, M_0, num_views)
-        #alpha = delta_det_row * delta_det_channel / delta_voxel**4 / M_0**2
+        #print(delta_voxel, delta_det_row, delta_det_channel, M_0, num_views)
         alpha = delta_det_row / delta_det_channel / delta_voxel**3 / M_0**2
-
         recon *= jnp.pi / num_views * alpha
 
         # since delta_voxel changed according to M_0, the pixel size of the object not changed,
