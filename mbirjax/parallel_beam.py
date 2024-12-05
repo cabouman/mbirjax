@@ -87,7 +87,7 @@ class ParallelBeamModel(TomographyModel):
         """
         magnification = 1.0
         return magnification
-    
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
@@ -301,7 +301,7 @@ class ParallelBeamModel(TomographyModel):
         y = sine * x_tilde + cosine * y_tilde
 
         return x
-   
+
     def fbp_recon(self, sinogram, filter_name="ramp"):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
@@ -312,10 +312,15 @@ class ParallelBeamModel(TomographyModel):
 
         Returns:
             recon (jax array): The reconstructed volume after back-projection.
-        """      
+        """
         # Generate the filter
         num_views, _, num_channels = sinogram.shape
-        filter = generate_filter(num_channels, filter_name=filter_name) 
+
+        det_channel_pitch, det_row_pitch, voxel_pitch = self.get_params(['delta_det_channel','delta_det_row','delta_voxel'])
+        # alpha = det_channel_pitch/voxel_pitch**2
+        # filter = 1/(det_channel_pitch*voxel_pitch**2)*generate_filter(num_channels, filter_name=filter_name)
+        filter = 1/(voxel_pitch**2)*generate_filter(num_channels, filter_name=filter_name)
+        # filter = generate_filter(num_channels, filter_name=filter_name)
 
         # Define convolution for a single row (across its channels)
         def convolve_row(row):
@@ -323,18 +328,14 @@ class ParallelBeamModel(TomographyModel):
 
         # Apply above convolve func across each row of a view
         def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view) 
+            return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the sinogram per each fixed view & row
         filtered_sinogram = jax.vmap(apply_convolution_to_view)(sinogram)
-
-        # Scale the filtered sinogram by the square of the voxel pitch to account for the total detected for each voxel.
-        delta_voxel_sq = self.get_params('delta_voxel') ** 2
-        filtered_sinogram /= delta_voxel_sq
 
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term
 
         return recon
-    
-    
+
+
