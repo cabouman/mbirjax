@@ -9,25 +9,29 @@ import textwrap
 
 
 # **Set experiment voxel model**
-experiment_input_image = 'impulse'
+experiment_input_image = '3D_sl'
 # select from "impulse" or "3D_sl" for Shepp Logan phantom
 
 # **Set Geometry Parameters**
-geometry_type = 'parallel'  # Choose 'parallel' or 'cone'
+geometry_type = 'cone'  # Choose 'parallel' or 'cone'
 
 num_views = 63 #64
 num_det_rows = 63 #40
 num_det_channels = 63
 
+
 if geometry_type == 'cone':
+    M_0_inv = 1
     source_detector_dist = 4 * num_det_channels
-    source_iso_dist = source_detector_dist * 1
+    source_iso_dist = source_detector_dist * M_0_inv
     detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
+    delta_voxel = 1
+    delta_det_channel = 0.2
 
 elif geometry_type == 'parallel':
     detector_cone_angle = 0
-    delta_voxel = 4.0
-    delta_det_channel = 1.0
+    delta_voxel = 1
+    delta_det_channel = 1
 
 
 start_angle = -(jnp.pi + detector_cone_angle) * (1 / 2) * 2
@@ -46,6 +50,7 @@ if geometry_type == 'cone':
        source_detector_dist=source_detector_dist,
        source_iso_dist=source_iso_dist,
     )
+    ct_model.set_params(delta_voxel=delta_voxel, delta_det_channel=delta_det_channel)
 
 elif geometry_type == 'parallel':
     ct_model = mbirjax.ParallelBeamModel(
@@ -72,7 +77,10 @@ impulse_position = tuple(dim // 2 for dim in voxel_grid_shape)  # Center of the 
 
 print('impulse_position', impulse_position)
 epsilon_i = exp_prep.create_impulse_image(voxel_grid_shape, impulse_position)
-#epsilon_i = exp_prep.create_impulse_cube(voxel_grid_shape, impulse_position, cube_size=3)
+#epsilon_i = exp_prep.create_impulse_cube(voxel_grid_shape, impulse_position, cube_size=5)
+#epsilon_i = exp_prep.create_impulse_disk(voxel_grid_shape, impulse_position, radius=3, thickness=1)
+
+
 
 
 # Find the coordinates where the value equals 1
@@ -153,8 +161,9 @@ for v, angle in enumerate(angles):
 
 if(geometry_type=='cone'):
     title_text = f"Sum of Sinogram Entries vs View Angle ({geometry_type.capitalize()} Beam), " \
-                 f"source_detector_dist: {source_detector_dist:.2f}, " \
-                 f"source_iso_dist: {source_iso_dist:.2f}"
+                 f"voxel: {delta_voxel:.2f}, " \
+                 f"channel: {delta_det_channel:.2f}" \
+                 f"M_0_inv: {M_0_inv:.2f}"
 elif(geometry_type=='parallel'):
     recon_algo = 'FBP'
     title_text = f"Sum of Sinogram Entries vs View Angle ({geometry_type.capitalize()} Beam), " \
@@ -211,7 +220,9 @@ time0 = time.time()
 filter_name = "ramp"
 if(geometry_type=='cone'):
     recon_algo = 'FDK'
-    recon = ct_model.fdk_recon(sinogram, filter_name=filter_name)
+    #recon = ct_model.fdk_recon(sinogram, filter_name=filter_name)
+    recon = ct_model.fdk_recon_scaled(sinogram, filter_name=filter_name)
+
 elif(geometry_type=='parallel'):
     recon_algo = 'FBP'
     recon = ct_model.fbp_recon(sinogram, filter_name=filter_name)
@@ -227,6 +238,7 @@ mbirjax.slice_viewer(phantom, recon, slice_axis=0, title=title, slice_label="Vie
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
+'''
 # Plot original slice
 im0 = axes[0].imshow(epsilon_i[z, :, :], cmap='gray')
 axes[0].set_title(f'Phantom slice along z-axis (view) at z={z}')
@@ -243,7 +255,7 @@ fig.colorbar(im1, ax=axes[1], orientation='vertical')
 # plt.tight_layout()
 plt.savefig('slice_comparison.png', dpi=600)
 plt.show()
-
+'''
 
 # Compute descriptive statistics about recon result
 max_diff = np.amax(np.abs(phantom - recon))
