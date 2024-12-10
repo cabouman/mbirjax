@@ -774,25 +774,44 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return y, pixel_mag
 
 
-    def fdk_recon_scaled(self, sinogram, filter_name="ramp"):
+    def fdk_recon_scaled(self, sinogram, num_det_rows, num_det_channels, filter_name="ramp"):
 
         num_views, num_rows, num_channels = sinogram.shape
         filter = generate_filter(num_channels, filter_name=filter_name)
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
 
+        delta_voxel = self.get_params('delta_voxel')
+        delta_det_row = self.get_params('delta_det_row')
+        delta_det_channel = self.get_params('delta_det_channel')
+        det_row_offset = self.get_params('det_row_offset')
+        det_channel_offset = self.get_params('det_channel_offset')
+        #num_det_rows = self.get_params('num_det_rows')
+        #num_det_channels = self.get_params('num_det_channels')
+
+        M_0 = source_detector_dist / source_iso_dist
+
         # Define the s and v coordinates (in pixel units)
-        s = (jnp.arange(num_channels) - (num_channels // 2))
-        v = (jnp.arange(num_rows - 1, -1, -1) - (num_rows // 2))  # Reversed to start from the top
+        n = (jnp.arange(num_channels) - (num_channels // 2))
+        m = (jnp.arange(num_rows - 1, -1, -1) - (num_rows // 2))  # Reversed to start from the top
 
         # Create the meshgrid
-        v_grid, s_grid = jnp.meshgrid(v, s, indexing='ij')
+        n_grid, m_grid = jnp.meshgrid(n, m, indexing='ij')
+
+        # Convert the coordinated to physical distance using the function of detector_nm_to_uv
+
+        t_grid, u_grid = self.detector_nm_to_uv(n_grid, m_grid, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
+                          num_det_channels)
 
         # Combine the s and v grids into a single matrix of coordinate pairs
-        coordinates = jnp.stack((s_grid, v_grid), axis=-1)
+        coordinates = jnp.stack((t_grid, u_grid), axis=-1)
 
-        pre_weight = source_iso_dist / jnp.sqrt(source_iso_dist ** 2 + jnp.sum(coordinates ** 2, axis=-1))
+
+        # Compute the weight
+        #pre_weight = source_iso_dist / jnp.sqrt(source_iso_dist ** 2 + jnp.sum(coordinates ** 2, axis=-1))
+        pre_weight = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + jnp.sum(coordinates ** 2, axis=-1))
 
         # Apply the pre-weighting factor to the sinogram
+        #sinogram = sinogram * M_0
         weighted_sinogram = sinogram * pre_weight
 
         # Define convolution for a single row (across its channels)
@@ -810,18 +829,15 @@ class ConeBeamModel(mbirjax.TomographyModel):
         recon = self.back_project(filtered_sinogram)
 
         # Scale
-        delta_voxel = self.get_params('delta_voxel')
-        delta_det_row = self.get_params('delta_det_row')
-        delta_det_channel = self.get_params('delta_det_channel')
-        M_0 = source_detector_dist / source_iso_dist
 
-        #print(delta_voxel, delta_det_row, delta_det_channel, M_0, num_views)
-        alpha = delta_det_row / delta_det_channel / delta_voxel**3 / M_0**2
+
+        print(delta_voxel, delta_det_row, delta_det_channel, M_0, num_views)
+        alpha = delta_det_row / delta_voxel**3 / M_0**2 * delta_det_channel **2
         recon *= jnp.pi / num_views * alpha
 
         # since delta_voxel changed according to M_0, the pixel size of the object not changed,
         # so the true size of the object changed to delta_voxel times
-        recon /= delta_voxel
+        #recon *= M_0
 
         return recon
 
