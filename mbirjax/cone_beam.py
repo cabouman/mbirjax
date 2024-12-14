@@ -808,50 +808,17 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Expand the 2D weight map to match the sinogram shape along the z dimension
         weight_map_3d = jnp.broadcast_to(weight_map, (num_views, num_rows, num_channels))
 
-        # Plot the pre_weight
-        print(weight_map_3d.shape)
-
-        '''
-        # Plot the (m, n) points
-        plt.figure(figsize=(8, 6))
-        plt.scatter(m_grid.flatten(), n_grid.flatten(), color='blue', s=10)  # Flatten for scatter plot
-        plt.title("Scatter Plot of (m, n) Points from Meshgrid")
-        plt.xlabel("m")
-        plt.ylabel("n")
-        plt.xlim(m_grid.min(), m_grid.max())
-        plt.ylim(n_grid.min(), n_grid.max())
-        plt.grid()
-        plt.show()
-
-        # Plot the (u, v) points
-        plt.figure(figsize=(8, 6))
-        plt.scatter(u_grid.flatten(), v_grid.flatten(), color='red', s=10)  # Flatten for scatter plot
-        plt.title("Scatter Plot of (u, v) Points from Meshgrid")
-        plt.xlabel("u")
-        plt.ylabel("v")
-        plt.xlim(u_grid.min(), u_grid.max())
-        plt.ylim(v_grid.min(), v_grid.max())
-        plt.grid()
-        plt.show()
-
-        plt.figure(figsize=(8, 6))
-        # plt.imshow(weight_map, cmap='viridis', extent=[u.min(), u.max(), v.min(), v.max()])
-        plt.imshow(weight_map, cmap='viridis')
-        plt.colorbar(label="Weight_map Value")
-        plt.title("Weight_map Distribution")
-        plt.xlabel("Detector Channel (m)")
-        plt.ylabel("Detector Row (n)")
-        plt.show()
-        '''
-
         # Apply the pre-weighting factor to the sinogram
         weighted_sinogram = sinogram * weight_map_3d
 
-        print(sinogram.shape)
+        #print(sinogram.shape)
         print(f'delta_voxel: {delta_voxel}, delta_det_row: {delta_det_row}, delta_det_channel: {delta_det_channel}, '
               f'M_0: {M_0}, num_views: {num_views}')
 
         # Filter Scaling:
+        # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
+        # For a detailed theoretical derivation of this scaling factor, please refer to:
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
         alpha = delta_det_row / (delta_voxel ** 3 * M_0)
 
         # Compute the scaled filter
