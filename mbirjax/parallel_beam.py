@@ -322,7 +322,7 @@ class ParallelBeamModel(TomographyModel):
         # For a detailed theoretical derivation of this scaling factor, please refer to: https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1 / (delta_voxel**2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        recon_filter *= scaling_factor * recon_filter
+        recon_filter *= scaling_factor
 
         # Define convolution for a single row (across its channels)
         def convolve_row(row):
