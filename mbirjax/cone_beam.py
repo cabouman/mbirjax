@@ -738,16 +738,16 @@ class ConeBeamModel(mbirjax.TomographyModel):
             num_det_channels: Total number of channels in the detector.
 
         Returns:
-            u: Physical detector coordinate in the channel direction.
-            v: Physical detector coordinate in the row direction.
+            u: Physical detector coordinate in the row direction.
+            v: Physical detector coordinate in the channel direction.
         """
         # Calculate the center of the detector grid
         det_center_row = (num_det_rows - 1) / 2.0
         det_center_channel = (num_det_channels - 1) / 2.0
 
         # Compute detector coordinates (u, v)
-        v = (m - det_center_row) * delta_det_row - det_row_offset
-        u = (n - det_center_channel) * delta_det_channel - det_channel_offset
+        u = (m - det_center_row) * delta_det_row - det_row_offset
+        v = (n - det_center_channel) * delta_det_channel - det_channel_offset
 
         return u, v
 
