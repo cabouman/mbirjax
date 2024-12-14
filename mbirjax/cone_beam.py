@@ -793,8 +793,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
         m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
 
         # Coordinate transformation to physical distances:
-        # t = (n - n0) * delta_det_channel + det_channel_offset
-        # u = (m - m0) * delta_det_row + det_row_offset
         u_grid, v_grid = self.detector_mn_to_uv(
             m_grid, n_grid,
             delta_det_channel, delta_det_row,
@@ -854,7 +852,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
               f'M_0: {M_0}, num_views: {num_views}')
 
         # Filter Scaling:
-        # alpha = delta_det_row / (delta_voxel**3 * M_0**2)
         alpha = delta_det_row / (delta_voxel ** 3 * M_0)
 
         # Compute the scaled filter
