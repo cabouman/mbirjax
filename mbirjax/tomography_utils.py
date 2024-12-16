@@ -3,9 +3,9 @@ import jax.numpy as jnp
 
 def generate_direct_recon_filter(num_channels, filter_name="ramp"):
     """
-    Creates the specified filter in the time domain of size (2*num_channels - 1).
+    Creates the specified space domain filter of size (2*num_channels - 1).
 
-    Currently supported filters include: \"ramp\", \"shepp-Logan.\"
+    Currently supported filters include: \"ramp\", which corresponds to a ramp in frequency domain.
 
     Args:
         num_channels (int): Number of detector channels in the sinogram.
@@ -15,10 +15,14 @@ def generate_direct_recon_filter(num_channels, filter_name="ramp"):
         filter (jnp): The computed filter (filter.size = 2*num_channels + 1).
     """
 
-    # If you want to add a new filter, place it's name into supported_filters, and ...
+    # If you want to add a new filter, place its name into supported_filters, and ...
     # ... create a new if statement with the filter math.
-    supported_filters = ["ramp", "shepp-logan"]
-    # Raise error if inputed filter is not supported.
+    # TODO:  Anyone who adds a second filter will need to address how to document the set of available filters
+    # in a way that is easy to maintain and appears correctly on readthedocs.  Also, any new filters will need
+    # to have the proper scaling.
+    supported_filters = ["ramp"]
+
+    # Raise error if filter is not supported.
     if filter_name not in supported_filters:
         raise ValueError(f"Unsupported filter. Supported filters are: {', '.join(supported_filters)}.")
 
@@ -27,9 +31,6 @@ def generate_direct_recon_filter(num_channels, filter_name="ramp"):
     recon_filter = 0
     if filter_name == "ramp":
         recon_filter = (1 / 2) * jnp.sinc(n) - (1 / 4) * (jnp.sinc(n / 2)) ** 2
-
-    if filter_name == "shepp-logan":
-        recon_filter = (-2) / ((jnp.pi ** 2) * (4 * (n)**2 - 1))
 
     return recon_filter
 

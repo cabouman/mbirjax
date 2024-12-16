@@ -306,6 +306,11 @@ class ParallelBeamModel(TomographyModel):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementation, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
@@ -319,7 +324,8 @@ class ParallelBeamModel(TomographyModel):
         # Generate the reconstruction filter with appropriate scaling
         delta_voxel = self.get_params('delta_voxel')
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
-        # For a detailed theoretical derivation of this scaling factor, please refer to: https://mbirjax.readthedocs.io/en/latest/theory.html
+        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1 / (delta_voxel**2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
