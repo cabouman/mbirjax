@@ -4,6 +4,7 @@ from functools import partial
 from collections import namedtuple
 import warnings
 import mbirjax
+from mbirjax import tomography_utils
 
 
 class ConeBeamModel(mbirjax.TomographyModel):
@@ -721,6 +722,37 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
     @staticmethod
     @jax.jit
+    def detector_mn_to_uv(m, n, delta_det_channel, delta_det_row, det_channel_offset, det_row_offset, num_det_rows,
+                      num_det_channels):
+        """
+        Convert fractional detector grid indices (m, n) into detector coordinates (u, v).
+
+        Parameters:
+            m: Fractional row index on the detector grid (vertical direction).
+            n: Fractional channel index on the detector grid (horizontal direction).
+            delta_det_channel: Spacing (pitch) of the detector channels (horizontal direction).
+            delta_det_row: Spacing (pitch) of the detector rows (vertical direction).
+            det_channel_offset: Offset in the detector channel (horizontal) direction.
+            det_row_offset: Offset in the detector row (vertical) direction.
+            num_det_rows: Total number of rows in the detector.
+            num_det_channels: Total number of channels in the detector.
+
+        Returns:
+            u: Physical detector coordinate in the channel direction.
+            v: Physical detector coordinate in the row direction.
+        """
+        # Calculate the center of the detector grid
+        det_center_row = (num_det_rows - 1) / 2.0
+        det_center_channel = (num_det_channels - 1) / 2.0
+
+        # Compute detector coordinates (u, v)
+        v = (m - det_center_row) * delta_det_row - det_row_offset
+        u = (n - det_center_channel) * delta_det_channel - det_channel_offset
+
+        return u, v
+
+    @staticmethod
+    @jax.jit
     def compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params):
 
         gp = projector_params.geometry_params
@@ -740,3 +772,70 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # Convert from xyz to coordinates on detector
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
+
+
+    def fdk_recon(self, sinogram, filter_name="ramp"):
+        """
+        Perform FDK reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementation, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+
+        Returns:
+            recon (jax array): The reconstructed volume after FDK reconstruction.
+        """
+
+        # Get parameters
+        num_views, num_rows, num_channels = sinogram.shape
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        M_0 = self.get_magnification()
+
+        # Define the index arrays for channels and rows
+        m = jnp.arange(num_rows)  # Column vector for rows
+        n = jnp.arange(num_channels)  # Row vector for channels
+        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
+
+        # Coordinate transformation to physical distances:
+        u_grid, v_grid = self.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
+                                                det_channel_offset, det_row_offset, num_rows, num_channels)
+
+        # Compute the weight
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
+
+        # Apply the pre-weighting factor to the sinogram
+        weighted_sinogram = sinogram * weight_map[None, :, :]
+
+        # Compute the scaled filter
+        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
+        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
+        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        recon_filter = alpha * recon_filter
+
+        # Define convolution for a single row (across its channels)
+        def convolve_row(row):
+            return jnp.convolve(row, recon_filter, mode="valid")
+
+        # Apply above convolve func across each row of a view
+        def apply_convolution_to_view(view):
+            return jax.vmap(convolve_row)(view)
+
+        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
+        filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
+        # Reconstruction
+        recon = self.back_project(filtered_sinogram)
+        recon *= jnp.pi / num_views
+
+        return recon

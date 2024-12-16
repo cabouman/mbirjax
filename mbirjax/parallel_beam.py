@@ -2,7 +2,8 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
-from mbirjax import TomographyModel, ParameterHandler
+from mbirjax import TomographyModel, ParameterHandler, tomography_utils
+
 
 
 class ParallelBeamModel(TomographyModel):
@@ -86,7 +87,7 @@ class ParallelBeamModel(TomographyModel):
         """
         magnification = 1.0
         return magnification
-    
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
@@ -300,3 +301,48 @@ class ParallelBeamModel(TomographyModel):
         y = sine * x_tilde + cosine * y_tilde
 
         return x
+
+    def fbp_recon(self, sinogram, filter_name="ramp"):
+        """
+        Perform filtered back-projection (FBP) reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementation, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+
+        Returns:
+            recon (jax array): The reconstructed volume after FBP reconstruction.
+        """
+
+        num_views, _, num_channels = sinogram.shape
+
+        # Generate the reconstruction filter with appropriate scaling
+        delta_voxel = self.get_params('delta_voxel')
+        # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
+        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
+        scaling_factor = 1 / (delta_voxel**2)
+        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+        recon_filter *= scaling_factor
+
+        # Define convolution for a single row (across its channels)
+        def convolve_row(row):
+            return jnp.convolve(row, recon_filter, mode="valid")
+
+        # Apply above convolve func across each row of a view
+        def apply_convolution_to_view(view):
+            return jax.vmap(convolve_row)(view)
+
+        # Apply convolution across the channels of the sinogram per each fixed view & row
+        filtered_sinogram = jax.vmap(apply_convolution_to_view)(sinogram)
+
+        recon = self.back_project(filtered_sinogram)
+        recon *= jnp.pi / num_views  # scaling term
+
+        return recon
+
