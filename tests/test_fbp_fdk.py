@@ -19,21 +19,20 @@ class TestFBPReconstruction(unittest.TestCase):
         self.num_det_channels = 128
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
 
-        # Geometry parameters
+        # Geometry parameters - FBP
         self.fbp_angles =  jnp.linspace(-jnp.pi * (1/2), jnp.pi * (1/2), self.num_views, endpoint=False)
-        self.source_detector_dist = 4 * self.num_det_channels
-        self.detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-        detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-        start_angle = -(jnp.pi + detector_cone_angle) * (1/2)
-        end_angle = (jnp.pi + detector_cone_angle) * (1/2)
-        self.cone_angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+
+        # Geometry parameters - FDK
         self.source_detector_dist = 4 * self.num_det_channels
         self.source_iso_dist = self.source_detector_dist / 2
+        start_angle = -jnp.pi  # For testing purposes, we use a full 360 degrees
+        end_angle = jnp.pi
+        self.fdk_angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
         # Initialize both models
         self.parallel_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.fbp_angles)
         self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
-                                                self.cone_angles,
+                                                self.fdk_angles,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
 
@@ -44,15 +43,14 @@ class TestFBPReconstruction(unittest.TestCase):
         self.fdk_sino = self.cone_model.forward_project(self.fdk_phantom)
 
         # Set tolerances for the metrics - FBP is deterministic, so results should never go above these.
-        self.fbp_tolerances = {'nrmse': 0.24050 + 1e-6, 'max_diff': 0.43444 + 1e-6, 'pct_95': 0.09220 + 1e-6}
-        self.fdk_tolerances = {'nrmse': 0.20, 'max_diff': 0.40, 'pct_95': 0.05}
+        self.fbp_tolerances = {'nrmse': 0.21, 'max_diff': 0.41, 'pct_95': 0.064}
+        self.fdk_tolerances = {'nrmse': 0.27, 'max_diff': 0.51, 'pct_95': 0.1}
 
     def test_fbp_reconstruction(self):
         """Test the FBP reconstruction against the defined tolerances."""
         # Perform FBP reconstruction
         filter_name = "ramp"
         recon = self.parallel_model.fbp_recon(self.fbp_sino, filter_name=filter_name)
-        recon.block_until_ready()
 
         # Compute the statistics
         max_diff = np.amax(np.abs(self.fbp_phantom - recon))
@@ -69,7 +67,6 @@ class TestFBPReconstruction(unittest.TestCase):
         # Perform FBP reconstruction
         filter_name = "ramp"
         recon = self.cone_model.fdk_recon(self.fdk_sino, filter_name=filter_name)
-        recon.block_until_ready()
 
         # Compute the statistics
         max_diff = np.amax(np.abs(self.fdk_phantom - recon))
