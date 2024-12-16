@@ -307,7 +307,7 @@ class ParallelBeamModel(TomographyModel):
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
         Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
-        perform the backprojection.  This is different from many implementation, in which the backprojection is not
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
