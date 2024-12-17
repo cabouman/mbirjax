@@ -33,10 +33,12 @@ This is only available for registered maintainers.  Typically, you would perform
    View the package upload here:
    `https://test.pypi.org/project/mbirjax <https://test.pypi.org/project/mbirjax>`__
 
-3. Test the uploaded package::
+3. Test the uploaded package (NOTE: to test on the GPU, use 'pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax[cuda12]')::
 
     pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
     python -c "import mbirjax"     # spin the wheel
+    pip install pytest
+    pytest tests
 
 4. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
@@ -69,10 +71,12 @@ This is only available for registered maintainers.
    View the package upload here:
    `https://pypi.org/project/mbirjax <https://pypi.org/project/mbirjax>`__
 
-3. Test the uploaded package::
+3. Test the uploaded package (NOTE: to test on the GPU, use 'pip install mbirjax[cuda12]')::
 
     pip install mbirjax    # OR, "mbirjax==0.1.1" e.g. for a specific version number
     python -c "import mbirjax"     # spin the wheel
+    pip install pytest
+    pytest tests
 
 4. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
