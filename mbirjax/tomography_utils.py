@@ -39,13 +39,22 @@ def convolve_valid(f, g):
     Implementation of 1D convolution in "valid" mode where the filter g
     is always larger than the signal f. The output size is len(g) - len(f) + 1.
 
+    This function only handles cases where len(g) > len(f). If len(f) > len(g),
+    a NotImplementedError is raised.
+
     Args:
         f: Input 1D array (signal or row).
         g: Filter 1D array (always larger than f).
 
     Returns:
         Convolved output in "valid" mode with size len(g) - len(f) + 1.
+
+    Raises:
+        NotImplementedError: If len(f) > len(g), as this case is not supported.
     """
+    if len(f) > len(g):
+        raise NotImplementedError("This implementation only supports len(g) > len(f).")
+
     # Flip the filter
     g_flipped = g[::-1]
 
