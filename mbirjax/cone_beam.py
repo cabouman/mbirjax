@@ -143,7 +143,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         geometry_param_values.append(self.entries_per_cylinder_batch)
         geometry_param_values.append(self.slice_range_length)
 
-        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
         geometry_params = GeometryParams(*tuple(geometry_param_values))
 
@@ -825,7 +825,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Define convolution for a single row (across its channels)
         def convolve_row(row):
-            return jnp.convolve(row, recon_filter, mode="valid")
+            return tomography_utils.convolve_valid(row, recon_filter)
 
         # Apply above convolve func across each row of a view
         def apply_convolution_to_view(view):
