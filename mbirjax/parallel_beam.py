@@ -332,7 +332,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Define convolution for a single row (across its channels)
         def convolve_row(row):
-            return jnp.convolve(row, recon_filter, mode="valid")
+            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
 
         # Apply above convolve func across each row of a view
         def apply_convolution_to_view(view):
