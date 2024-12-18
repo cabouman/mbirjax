@@ -34,4 +34,30 @@ def generate_direct_recon_filter(num_channels, filter_name="ramp"):
 
     return recon_filter
 
+def convolve_valid(f, g):
+    """
+    Implementation of 1D convolution in "valid" mode where the filter g
+    is always larger than the signal f. The output size is len(g) - len(f) + 1.
 
+    Args:
+        f: Input 1D array (signal or row).
+        g: Filter 1D array (always larger than f).
+
+    Returns:
+        Convolved output in "valid" mode with size len(g) - len(f) + 1.
+    """
+    # Flip the filter
+    g_flipped = g[::-1]
+
+    # Calculate the output size for "valid" mode
+    output_size = g.shape[0] - f.shape[0] + 1
+    result = []
+
+    # Perform convolution manually for each valid index
+    for i in range(output_size):
+        # Slice the relevant part of g, ensuring bounds are respected
+        g_segment = g_flipped[i:i + f.shape[0]]  # Use f.shape[0], not f.shape[0] + 1
+        result.append(jnp.sum(f * g_segment))    # Compute dot product and store result
+
+    # Convert result list to a JAX array
+    return jnp.array(result)[::-1]
