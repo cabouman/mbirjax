@@ -25,7 +25,7 @@ import mbirjax
 geometry_type = 'cone'  # 'cone' or 'parallel'
 
 # Set parameters for the problem size
-num_views = 64
+num_views = 128
 num_det_rows = 128
 num_det_channels = 128
 
@@ -40,8 +40,8 @@ if geometry_type == 'cone':
 else:
     detector_cone_angle = 0
 
-start_angle = -(np.pi + detector_cone_angle) * (1/2)
-end_angle = (np.pi + detector_cone_angle) * (1/2)
+start_angle = -np.pi
+end_angle = np.pi
 
 """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
 
