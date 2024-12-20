@@ -13,6 +13,7 @@ Here are some demos to illustrate the basics of MBIRJAX along with some more adv
 2. **Large Object:**  `Jupyter notebook <https://colab.research.google.com/drive/1-kk_HeR8Y8f6pZ2zjTza8NTEpAgwgVRB?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_2_large_object.py>`__
 3. **Cropped Center:**  `Jupyter notebook <https://colab.research.google.com/drive/1WQwIJ_mDcuMMcWseM66aRPvtv6FmMWF-?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_3_cropped_center.py>`__
 4. **Wrong Rotation:**  `Jupyter notebook <https://colab.research.google.com/drive/1Gd-fMm3XK1WBsuJUklHdZ-4jjsvdpeIT?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_4_wrong_rotation_direction.py>`__
+5. **FBP/FDK:**  `Jupyter notebook <https://colab.research.google.com/drive/10ZiCSk1C9D4Fb7Uv6jTtQYxF2lKjmbyh?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_5_fbp_fdk.py>`__
 
 First browse the notebooks, then copy and run in your own notebook environment,
 or follow the installation instructions at :ref:`InstallationDocs` and run the scripts directly.
