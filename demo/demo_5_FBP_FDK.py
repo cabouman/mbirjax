@@ -8,11 +8,11 @@ Original file is located at
 
 **MBIRJAX: FBP and FDK Reconstruction Demo**
 
-See the [MBIRJAX documentation](https://mbirjax.readthedocs.io/en/latest/) for an overview and details.
+See the [MBIRJAX documentation](https://mbirjax.readthedocs.io/en/latest/) for an overview and details.  
 
 This script demonstrates the MBIRJAX code by creating a 3D phantom inspired by Shepp-Logan, forward projecting it to create a sinogram, and then using MBIRJAX to perform Filtered Back Projection (FBP) for parallel beam reconstruction and Feldkamp-Davis-Kress reconstruction (FDK) for cone beam reconstruntion.
 
-For the demo, we create some synthetic data by first making a phantom, then forward projecting it to obtain a sinogram.
+For the demo, we create some synthetic data by first making a phantom, then forward projecting it to obtain a sinogram.  
 
 In a real application, you would load your sinogram as a numpy array and use numpy.transpose if needed so that it
 has axes in the order (views, rows, channels).  For reference, assuming the rotation axis is vertical, then increasing the row index nominally moves down the rotation axis and increasing the channel index moves to the right as seen from the source.
@@ -25,10 +25,8 @@ Select a GPU as runtime type for best performance.
 
 import numpy as np
 import time
-import pprint
 import jax.numpy as jnp
 import mbirjax
-
 
 """**Set the geometry parameters**"""
 
@@ -42,16 +40,11 @@ num_det_rows = 128
 num_det_channels = 128
 
 # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
-# np.Inf is an allowable value, in which case this is essentially parallel beam
+# np.Inf is an allowable value, in which case this is essentially parallel beam.
 source_detector_dist = 4 * num_det_channels
 source_iso_dist = source_detector_dist
 
-# For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-if geometry_type == 'cone':
-    detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-else:
-    detector_cone_angle = 0
-
+# Set parameters for viewing angle.
 start_angle = -np.pi
 end_angle = np.pi
 
@@ -96,16 +89,6 @@ elif geometry_type == 'parallel':
 else:
     raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
-# Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
-weights = None
-# weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
-
-# Set reconstruction parameter values
-# Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
-# Decrease by 1 or 2 to get softer edges and smoother interiors.
-sharpness = 0.0
-ct_model_for_recon.set_params(sharpness=sharpness)
-
 # Print out model parameters
 ct_model_for_recon.print_params()
 
@@ -113,9 +96,6 @@ ct_model_for_recon.print_params()
 
 # ##########################
 # Perform FBP/FDK reconstruction
-
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
-
 if geometry_type == 'cone':
     print("Starting FDK recon")
     time0 = time.time()
@@ -128,9 +108,6 @@ else:
 recon.block_until_ready()
 elapsed = time.time() - time0
 # ##########################
-
-# Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
 
 max_diff = np.amax(np.abs(phantom - recon))
 print('Geometry = {}'.format(geometry_type))
