@@ -127,3 +127,20 @@ Positive values of ``offset`` will shift the region down relative to the detecto
 This is useful if you would like to reconstruct the top or bottom half of a conebeam reconstruction in order to save memory.
 
 
+Q: What are the differences between (iterative) recon and fbp_recon/fdk_recon?
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+A: The primary reconstruction method in MBIRJAX is iterative reconstruction (``mbirjax.TomographyModel.recon``)
+using a Bayesian formulation that balances a data-fitting loss function with a prior function on the reconstruction that
+reduces noise while maintaining sharp edges. This approach updates the reconstruction multiple times in order to
+minimize the sum of these two loss functions.
+
+In contrast, FBP (``mbirjax.ParallelBeamModel.fbp_recon``) and FDK (``mbirjax.ConeBeamModel.fdk_recon``) are direct
+methods, in which the sinograms are filtered and then backprojected once to form the reconstruction. In this case,
+there is no prior information and no attempt to denoise the sinogram or the reconstruction.
+
+In general, FBP and FDK work well when the number of views is large (at least as large as the number of channels in the
+detector) and the sinograms have little noise.  Iterative reconstruction typically works better when there are
+relatively few views and/or the sinograms are noisy.  Iterative reconstruction takes more time and memory than
+FBP/FDK but can produce significantly better reconstructions when the collected data is less than ideal.
+
