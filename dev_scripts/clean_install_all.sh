@@ -15,10 +15,10 @@ PYTHON_VERSION="3.12"
 
 # Remove any previous builds
 cd ..
-/bin/rm -r docs/build
-/bin/rm -r dist
-/bin/rm -r "$NAME.egg-info"
-/bin/rm -r build
+/bin/rm -r docs/build &> /dev/null
+/bin/rm -r dist &> /dev/null
+/bin/rm -r "$NAME.egg-info" &> /dev/null
+/bin/rm -r build &> /dev/null
 cd dev_scripts
 
 # Create and activate new conda environment
@@ -26,10 +26,15 @@ cd dev_scripts
 
 # Deactivate all conda environments
 while [ ${#CONDA_DEFAULT_ENV} -gt 0 ]; do
-    conda deactivate
+  echo "Deactivating $CONDA_DEFAULT_ENV"
+  conda deactivate
 done
-output=$(conda remove --name $NAME --all 2>&1)
+echo "No conda environment active"
+
+# Remove the environment
+output=$(yes | conda remove --name $NAME --all 2>&1)
 if echo "$output" | grep -q "DirectoryNotACondaEnvironmentError:"; then
+  # In some cases the directory may still exist but not really be an environment, so remove the directory itself.
   conda activate $NAME
   CUR_ENV_PATH=$CONDA_PREFIX
   conda deactivate
@@ -49,18 +54,21 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   pip install -e ..[cuda12]
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
+  echo "Installing on Gautschi"
   module load anaconda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..[cuda12]
 # Negishi (cpu)
 elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
+  echo "Installing on Negishi"
   module load anaconda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..
 # Other (cpu)
 else
+  echo "Installing on non-RCAC machine"
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..
