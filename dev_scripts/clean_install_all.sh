@@ -1,52 +1,73 @@
 #!/bin/bash
-# This script installs everything from scratch
+# This script installs mbirjax from scratch, but there may still be cached packaages.
+# To do a really clean install, first run
+#  source deep_clean_conda.sh
 
-# Steps to recover from jax/cuda mismatch
-# 1. Delete env from .conda directory.  This should be achieved with `conda remove env --name $NAME --all` but check
-# in /scratch/gilbreth/$USER/.conda/envs and ~/.conda/envs
-# 2. Delete all nvidia and jax related library dirs from /home/$USER/.local
-# 3. Delete numpy, scipy, importlib_metadata and other related dirs downloaded with jax installation command from .local
-# 4. Delete ~/.cache
 #####
 # Update the cluster host names, modules, and jax installation as needed, here and in
 # get_demo_data_server.sh
 #####
-GPUCLUSTER="gilbreth"
-CPUCLUSTER="negishi"
+NAME="mbirjax"
+GILBRETH="gilbreth"
+NEGISHI="negishi"
+GAUTSCHI="gautschi"
+PYTHON_VERSION="3.12"
 
-if [[ "$HOSTNAME" == *"$GPUCLUSTER"* ]]; then
-  module load  anaconda
-  echo "$GPUCLUSTER setting"
-  conda config --add pkgs_dirs /scratch/$GPUCLUSTER/$USER/.conda/pkgs
-  CONDA_ENVS_PATH="/scratch/$GPUCLUSTER/$USER/.conda/envs"
-  conda config --add envs_dirs /scratch/$GPUCLUSTER/$USER/.conda/envs
+# Remove any previous builds
+cd ..
+/bin/rm -r docs/build
+/bin/rm -r dist
+/bin/rm -r "$NAME.egg-info"
+/bin/rm -r build
+cd dev_scripts
+
+# Create and activate new conda environment
+# First check if the target environment is active and deactivate if so
+
+# Deactivate all conda environments
+while [ ${#CONDA_DEFAULT_ENV} -gt 0 ]; do
+    conda deactivate
+done
+output=$(conda remove --name $NAME --all 2>&1)
+if echo "$output" | grep -q "DirectoryNotACondaEnvironmentError:"; then
+  conda activate $NAME
+  CUR_ENV_PATH=$CONDA_PREFIX
+  conda deactivate
+  rm -rf $CUR_ENV_PATH
 fi
-if [[ "$HOSTNAME" == *"$CPUCLUSTER"* ]]; then
-  module load  anaconda
-  echo "$CPUCLUSTER setting"
-  conda config --add pkgs_dirs /scratch/$CPUCLUSTER/$USER/.conda/pkgs
-  CONDA_ENVS_PATH="/scratch/$CPUCLUSTER/$USER/.conda/envs"
-  conda config --add envs_dirs /scratch/$CPUCLUSTER/$USER/.conda/envs
-fi
 
-source install_conda_environment.sh
-
-if nvidia-smi | grep -q "CUDA"; then
-    pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-  # To install lower version of jax (say v0.4.13) incase of XLA parallel compilation warnings use the following
-#   pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-#  pip install --upgrade "jax[cuda12]==0.4.13" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-#  pip install jaxlib==0.4.13+cuda12.cudnn89 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-  # Ref: https://github.com/google/jax/issues/18027
-  echo " "
-  echo "To run with jax on Gilbreth, first load the cuda module using "
-  echo "    module load cudnn/cuda-12.1_8.9"
-  echo " "
+# Install based on the host
+# Gilbreth (gpu)
+if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
+  echo "Installing on Gilbreth"
+  module --force purge
+  # The following two lines are required in late 2024 to interface jax to an older version of cuda in use on gilbreth.
+  # After gilbreth/cuda is updated, then the pattern for gautschi could be used here.
+  module load jax/0.4.31
+  yes | conda create -n $NAME python=3.11.7
+  conda activate $NAME
+  pip install -e ..[cuda12]
+# Gautschi (gpu)
+elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
+  module load anaconda
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
+  conda activate $NAME
+  pip install -e ..[cuda12]
+# Negishi (cpu)
+elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
+  module load anaconda
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
+  conda activate $NAME
+  pip install -e ..
+# Other (cpu)
 else
-  pip install --upgrade "jax[cpu]"
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
+  conda activate $NAME
+  pip install -e ..
 fi
 
-#source install_package.sh
+pip install ..[test]
+pip install ..[docs]
 source build_docs.sh
 
 red=`tput setaf 1`
@@ -58,9 +79,3 @@ echo "Use"
 echo "${red}   conda activate mbirjax   ${reset}"
 echo "to activate the conda environment."
 echo " "
-
-if [[ "$HOSTNAME" == *"gilbreth"* ]]; then
-  echo " "
-  echo "Verify the versions of anaconda, jax, and cuda as specified in clean_install_all.sh"
-  echo " "
-fi

@@ -1,12 +1,7 @@
 #!/bin/bash
 # Create and activate new conda environment
 # First check if the target environment is active and deactivate if so
-NAME="mbirjax"
 NEW_NAME="test"
-
-if [ "$CONDA_DEFAULT_ENV" = "$NAME" ]; then
-    conda deactivate
-fi
 
 if [ "$CONDA_DEFAULT_ENV" = "$NEW_NAME" ]; then
     conda deactivate

@@ -23,8 +23,6 @@ dependencies = [
     "matplotlib",
     "numpy",
     "setuptools",
-    "jax",
-    "jaxlib",
     "ruamel.yaml",
     "psutil",
     "striprtf",
