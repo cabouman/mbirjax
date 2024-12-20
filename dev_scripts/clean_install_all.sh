@@ -55,7 +55,7 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
-  module load anaconda
+  module load conda/2024.09
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..[cuda12]
