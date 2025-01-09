@@ -21,6 +21,9 @@ Reconstruction and Projection
 Each geometry class is derived from :ref:`TomographyModelDocs`, which includes a number of powerful methods listed below for manipulating sinograms and reconstructions.
 Detailed documentation for each geometry class is provided in :ref:`ParallelBeamModelDocs` and :ref:`ConeBeamModelDocs`.
 
+Note that :ref:`ParallelBeamModelDocs` also includes ``fbp_recon`` and :ref:`ConeBeamModelDocs` includes ``fdk_recon``
+for direct (non-iterative) reconstruction in the case of many views and low-noise data.
+
 .. autosummary::
 
    mbirjax.TomographyModel.recon

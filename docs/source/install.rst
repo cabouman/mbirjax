@@ -30,16 +30,9 @@ In order to download the python code, move to a directory of your choice and run
 
 2. Install the conda environment and package
 
-Option 1: Clean install using mbirjax/dev_scripts - We provide bash scripts that will do a clean install of ``MBIRJAX`` in a new conda environment using the following commands::
+Clean install using mbirjax/dev_scripts - We provide bash scripts that will do a clean install of ``MBIRJAX`` in a new conda environment using the following commands::
 
     cd dev_scripts
     source clean_install_all.sh
-
-Option 2: Manual install - You can also manually install ``MBIRJAX`` from the main directory of the repository with the following commands::
-
-    conda env create --name mbirjax --file environment.yml
-    conda activate mbirjax
-    pip install .
-
 
 
