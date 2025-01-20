@@ -45,13 +45,13 @@ if __name__ == "__main__":
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
-    num_views = 32
+    num_views = 128
     num_det_rows = 40
     num_det_channels = 256
     start_angle = 0
     end_angle = np.pi
-    sharpness = 1.5
-    snr_db = 35
+    sharpness = 1.0
+    snr_db = 30
 
     # These can be adjusted to describe the geometry in the cone beam case.
     # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -95,19 +95,22 @@ if __name__ == "__main__":
 
     # 'granularity': {'val': [2, 48, 96, 128], 'recompile_flag': False},
     # 'partition_sequence': {'val': [0, 1, 2, 2, 2, 2, 3], 'recompile_flag': False},
+    granularity = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    partition_sequence = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    ct_model.set_params(granularity=granularity, partition_sequence=partition_sequence)
 
-    granularity_alt_1 = [1, 2, 4, 8, 16, 32, 64, 128, 256]
-    partition_sequence_alt_1 = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    granularity_alt_1 = ct_model.get_params('granularity')  # [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    partition_sequence_alt_1 = [0, ]
     # granularity_alt_1 = [1, 4, 16, 64, 256]
     # partition_sequence_alt_1 = [0, 1, 2, 3, 4]
 
-    granularity_alt_2 = [1, 3, 9, 27, 81, 243]
-    partition_sequence_alt_2 = [0, 1, 2, 3, 4, 5]
+    granularity_alt_2 = ct_model.get_params('granularity')  # [1, 3, 9, 27, 81, 243]
+    partition_sequence_alt_2 = [8]
 
     # ##########################
     # Perform default VCD reconstruction
     print('Starting default sequence')
-    num_iterations = 20
+    num_iterations = 10
     recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
                                                          compute_prior_loss=True)
     fm_rmse_default = recon_params_default.fm_rmse
@@ -115,7 +118,7 @@ if __name__ == "__main__":
     partition_sequence = recon_params_default.partition_sequence
     granularity = np.array(recon_params_default.granularity)
     granularity_sequence_default = granularity[partition_sequence]
-    label_default = 'Base: ' + str(granularity_sequence_default)
+    label_default = 'VCD'  # 'Base: ' + str(granularity_sequence_default)
 
     # Perform alt_1 default reconstruction
     print('Starting alt_1 sequence')
@@ -129,7 +132,7 @@ if __name__ == "__main__":
     partition_sequence = recon_params_alt_1.partition_sequence
     granularity = np.array(recon_params_alt_1.granularity)
     granularity_sequence_alt_1 = granularity[partition_sequence]
-    label_alt_1 = 'alt_1: ' + str(granularity_sequence_alt_1)
+    label_alt_1 = 'Gradient descent'  # 'alt_1: ' + str(granularity_sequence_alt_1)
 
     # Perform alt_2 reconstruction
     print('Starting alt_2 sequence')
@@ -143,7 +146,7 @@ if __name__ == "__main__":
     partition_sequence = recon_params_alt_2.partition_sequence
     granularity = np.array(recon_params_alt_2.granularity)
     granularity_sequence_alt_2 = granularity[partition_sequence]
-    label_alt_2 = 'alt_2: ' + str(granularity_sequence_alt_2)
+    label_alt_2 = 'Approximately ICD'  # 'alt_2: ' + str(granularity_sequence_alt_2)
     # ##########################
 
     # Display reconstructions
@@ -156,8 +159,8 @@ if __name__ == "__main__":
     fm_losses = [fm_rmse_alt_1, fm_rmse_default, fm_rmse_alt_2]
     prior_losses = [prior_loss_alt_1, prior_loss_default, prior_loss_alt_2]
     # labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256),
-                                      loss_ylim=(0.1, 15), fig_title=fig_title)
+    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 400),
+                                      loss_ylim=(0.01, 20), fig_title=fig_title)
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
