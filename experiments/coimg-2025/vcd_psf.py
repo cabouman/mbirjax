@@ -6,15 +6,14 @@ import time
 import matplotlib.pyplot as plt
 import gc
 import mbirjax.parallel_beam
+import vcd_coimg_utils
 
 if __name__ == "__main__":
     """
-    This is a script to develop, debug, and tune the parallel beam projector
+    Investigate the psf
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 32
-    pixel_batch_size = 2048
 
     # Initialize sinogram
     num_views = 128
@@ -63,17 +62,17 @@ if __name__ == "__main__":
     Ax = parallel_model.sparse_forward_project(voxel_values, indices[0])
     Aty = parallel_model.sparse_back_project(Ax, indices[0])
     Aty = parallel_model.reshape_recon(Aty)
-    reference = 40 / np.clip(np.abs(np.arange(num_recon_rows) - (num_recon_cols / 2)), 0.4, None)
-
-    slice_index = 0
+    slice_index = num_recon_slices // 2
+    Aty_normalized = Aty / Aty[i, j, slice_index]
+    reference = 0.5 / np.clip(np.abs(np.arange(num_recon_rows) - (num_recon_cols / 2)), 0.4, None)
 
     fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
-    ax[0].imshow(np.log10(Aty[:, :, slice_index]))
+    ax[0].imshow(np.log10(Aty_normalized[:, :, slice_index]))
     ax[0].set_title('log10(AtAx)')
-    ax[1].semilogy(Aty[:, num_recon_cols // 2, 0])
+    ax[1].semilogy(Aty_normalized[:, num_recon_cols // 2, 0])
     ax[1].semilogy(reference)
     ax[1].legend(['AtAx, restricted to a line', 'C / |v - v0|'])
-    ax[1].set_ylim(top=300)
+    ax[1].set_ylim(top=10)
     ax[1].set_title('Slice of Aty')
     plt.show()
 
