@@ -109,14 +109,7 @@ mbirjax.slice_viewer(phantom, recon, title=title)
 recon_proj = ct_model_for_generation.forward_project(recon)
 recon_proj = np.array(recon_proj)
 
-dot_products = np.array([np.sum(sinogram[i] * recon_proj[i]) for i in range(128)])
-print("Dot products for each tube pair:", dot_products)
-
-sino_norm = np.array([np.sum(sinogram[i] * sinogram[i]) for i in range(128)])
-print("Norm for sinogram pair:", sino_norm)
-
-# compute the optimal scale factor
-alpha_star = np.sum(dot_products)/np.sum(sino_norm)
+alpha_star = mbirjax.compute_scale_factor(recon_proj, sinogram)
 print("alpha:", alpha_star)
 
 print("Starting VCD recon")
