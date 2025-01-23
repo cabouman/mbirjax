@@ -522,3 +522,35 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
     return weights
 
+
+def compute_scale_factor(recon_proj, sinogram):
+    """
+    Computes the optimal scale factor alpha_star based on the given reconstruction and sinogram.
+
+    Parameters:
+        recon_proj (numpy.ndarray): The forward projectiono of reconstruction.
+        sinogram (numpy.ndarray): The measured sinogram data.
+
+    Returns:
+        float: The computed alpha_star scale factor.
+    """
+    try:
+
+        # Ensure recon_proj and sinogram have the same shape
+        if recon_proj.shape != sinogram.shape:
+            raise ValueError("Shape mismatch between sinogram and reconstructed projection")
+
+        # Compute dot products for each corresponding pair
+        dot_products = np.array([np.sum(sinogram[i] * recon_proj[i]) for i in range(sinogram.shape[0])])
+
+        # Compute norms for each sinogram slice
+        sino_norm = np.array([np.sum(sinogram[i] ** 2) for i in range(sinogram.shape[0])])
+
+        # Compute the optimal scale factor
+        alpha_star = np.sum(dot_products) / np.sum(sino_norm)
+
+        return alpha_star
+
+    except Exception as e:
+        print("An error occurred:", e)
+        return None
