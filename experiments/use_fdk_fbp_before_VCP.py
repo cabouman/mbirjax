@@ -3,6 +3,8 @@
 import numpy as np
 import time
 import jax.numpy as jnp
+from scipy.stats import alpha
+
 import mbirjax
 
 """**Set the geometry parameters**"""
@@ -104,9 +106,21 @@ title = (f"Phantom (left) vs {'FDK' if geometry_type == 'cone' else 'FBP'} Recon
 mbirjax.slice_viewer(phantom, recon, title=title)
 
 # use fdk_fbp result as initial condition for VCD recon
+recon_proj = ct_model_for_generation.forward_project(recon)
+recon_proj = np.array(recon_proj)
+
+dot_products = np.array([np.sum(sinogram[i] * recon_proj[i]) for i in range(128)])
+print("Dot products for each tube pair:", dot_products)
+
+sino_norm = np.array([np.sum(sinogram[i] * sinogram[i]) for i in range(128)])
+print("Norm for sinogram pair:", sino_norm)
+
+alpha_star = np.sum(dot_products)/np.sum(sino_norm)
+print("alpha:", alpha_star)
+
 print("Starting VCD recon")
 time0 = time.time()
-vcd_recon, vcd_recon_params = ct_model_for_recon.recon(sinogram, init_recon=recon)
+vcd_recon, vcd_recon_params = ct_model_for_recon.recon(sinogram, init_recon=recon*alpha_star)
 
 recon.block_until_ready()
 time_elapsed = time.time() - time0
@@ -115,7 +129,7 @@ print('Elapsed time for VCD recon is {:.3f} seconds'.format(time_elapsed))
 vcd_recon_0, vcd_recon_0_params = ct_model_for_recon.recon(sinogram)
 
 # display result
-title = 'VCD recon (right) using fdk_fbp result (right) as initial condition'
+title = 'FDK recon (left) vs using fdk_fbp result (right) as initial condition'
 mbirjax.slice_viewer(recon, vcd_recon, title=title)
 
 title = 'VCD recon zero initial condition (left) vs VCD recon using fdk_fbp result as initial condition (right)'
