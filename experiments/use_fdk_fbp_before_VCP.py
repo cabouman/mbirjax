@@ -115,6 +115,7 @@ print("Dot products for each tube pair:", dot_products)
 sino_norm = np.array([np.sum(sinogram[i] * sinogram[i]) for i in range(128)])
 print("Norm for sinogram pair:", sino_norm)
 
+# compute the optimal scale factor
 alpha_star = np.sum(dot_products)/np.sum(sino_norm)
 print("alpha:", alpha_star)
 
