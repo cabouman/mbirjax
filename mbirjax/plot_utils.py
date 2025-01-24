@@ -6,6 +6,7 @@ import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
+import mbirjax
 
 # Global variables to keep track of the circle, drawing state, and text box
 circle, circle2 = None, None
@@ -462,6 +463,12 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
     plt.tight_layout()
     plt.show()
 
-    figure_folder_name = 'figs'
+    figure_folder_name = mbirjax.make_figure_folder()
     os.makedirs(figure_folder_name, exist_ok=True)
-    fig.savefig(os.path.join(figure_folder_name, fig_title + '_plots.png'))
+    fig.savefig(os.path.join(figure_folder_name, fig_title + '_plots.png'), bbox_inches='tight')
+
+def make_figure_folder(fig_folder_name=None):
+    if fig_folder_name is None:
+        fig_folder_name = 'figs'
+    os.makedirs(fig_folder_name, exist_ok=True)
+    return fig_folder_name

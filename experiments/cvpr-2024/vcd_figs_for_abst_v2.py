@@ -30,7 +30,7 @@ def display_slices_for_abstract( recon1, recon2, recon3, labels, fig_title=None)
     ax[2].set_title(labels[2])
 
     plt.show()
-    figure_folder_name = 'figs'
+    figure_folder_name = vcu.make_figure_folder()
     os.makedirs(figure_folder_name, exist_ok=True)
     fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'))
 

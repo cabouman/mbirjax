@@ -33,8 +33,8 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # Print out model parameters
-    ct_model.print_params()
     ct_model.set_params(granularity=granularity, partition_sequence=partition_sequence)
+    ct_model.print_params()
 
     # Set comparison sequences
     granularity_alt_1 = granularity

@@ -64,16 +64,18 @@ if __name__ == "__main__":
     Aty = parallel_model.reshape_recon(Aty)
     slice_index = num_recon_slices // 2
     Aty_normalized = Aty / Aty[i, j, slice_index]
-    reference = 0.5 / np.clip(np.abs(np.arange(num_recon_rows) - (num_recon_cols / 2)), 0.4, None)
+    reference = 0.45 / np.clip(np.abs(np.arange(num_recon_rows) - (num_recon_cols / 2)), 0.45, None)
 
     fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
     ax[0].imshow(np.log10(Aty_normalized[:, :, slice_index]))
     ax[0].set_title('log10(AtAx)')
     ax[1].semilogy(Aty_normalized[:, num_recon_cols // 2, 0])
     ax[1].semilogy(reference)
-    ax[1].legend(['AtAx, restricted to a line', 'C / |v - v0|'])
+    ax[1].legend(['AtAx / max, restricted to a line', 'C / |v - v0|, clipped'])
     ax[1].set_ylim(top=10)
-    ax[1].set_title('Slice of Aty')
+    ax[1].set_title('Slice of AtAx')
+    fig_folder = mbirjax.make_figure_folder()
+    plt.savefig(os.path.join(fig_folder, 'AtAx_normalized.png'), bbox_inches='tight')
     plt.show()
 
     a = 0

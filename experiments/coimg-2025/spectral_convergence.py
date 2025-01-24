@@ -1,6 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import os
 import mbirjax
 import vcd_coimg_utils as vcu
 
@@ -34,6 +35,23 @@ if __name__ == "__main__":
     phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
     center_slice = num_phantom_slices // 2
     phantom = phantom[:, :, center_slice:center_slice+1]
+    phantom_fft = np.fft.fftn(phantom[:, :, 0])
+    phantom_fft = np.fft.fftshift(phantom_fft)
+
+    # Save the phantom and fft
+    figure_folder_name = mbirjax.make_figure_folder()
+    plt.imshow(phantom, cmap='grey')
+    fig_title = 'phantom'
+    plt.title(fig_title)
+    plt.savefig(os.path.join(figure_folder_name, fig_title + '.png'), bbox_inches='tight')
+    plt.show(block=True)
+    plt.imshow(20 * np.log10(1e-6 + np.abs(phantom_fft)), cmap='viridis', vmin=0, vmax=60)
+    plt.colorbar()
+    fig_title = '|FFT(phantom)|'
+    plt.title(fig_title)
+    plt.savefig(os.path.join(figure_folder_name, fig_title + '.png'), bbox_inches='tight')
+    plt.show(block=True)
+
 
     # Generate synthetic sinogram data
     print('Creating sinogram')

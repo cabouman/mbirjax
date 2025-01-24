@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+import mbirjax
 
 param_dict = {    # Set parameters
     'num_views' : 128,
@@ -8,8 +9,8 @@ param_dict = {    # Set parameters
     'num_det_channels' : 256,
     'start_angle' : 0,
     'end_angle' : np.pi,
-    'granularity': [1, 2, 4, 8, 16, 32, 64, 128, 256],
-    'partition_sequence' : [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    'granularity': [1, 8, 48, 128, 256, 256, 256, 256, 256, ],
+    'partition_sequence' : [0, 1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4,],
     'num_iterations' : 10
 }
 
@@ -45,7 +46,7 @@ def display_images_for_abstract(image1, image2, image3, labels, fig_title=None, 
         fig.colorbar(a2, cax=cbar_ax)
 
     plt.show()
-    figure_folder_name = 'figs'
+    figure_folder_name = mbirjax.make_figure_folder()
     os.makedirs(figure_folder_name, exist_ok=True)
-    fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'))
+    fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'), bbox_inches='tight')
 
