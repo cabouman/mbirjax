@@ -29,7 +29,7 @@ end_angle = np.pi
 
 """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
 
-Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
+Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.
 
 """
 
@@ -114,7 +114,7 @@ print("alpha:", alpha_star)
 
 print("Starting VCD recon")
 time0 = time.time()
-vcd_recon, vcd_recon_params = ct_model_for_recon.recon(sinogram, init_recon=recon*alpha_star)
+vcd_recon, vcd_recon_params = ct_model_for_recon.recon(sinogram, init_recon=recon/alpha_star)
 
 recon.block_until_ready()
 time_elapsed = time.time() - time0
