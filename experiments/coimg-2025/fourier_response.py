@@ -110,7 +110,6 @@ if __name__ == "__main__":
 
         # Set up parallel beam model
         parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
-        parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
         recon_shape = parallel_model.get_params('recon_shape')
         hess = parallel_model.compute_hessian_diagonal()[:, :, 0].reshape((-1, 1))
 

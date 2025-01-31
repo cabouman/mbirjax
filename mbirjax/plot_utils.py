@@ -1,3 +1,4 @@
+import os
 import warnings
 import matplotlib.pyplot as plt
 import numpy
@@ -5,6 +6,7 @@ import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
+import mbirjax
 
 # Global variables to keep track of the circle, drawing state, and text box
 circle, circle2 = None, None
@@ -410,7 +412,7 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
 
 
 def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None, loss_ylim=None,
-                              fig_title=None):
+                              fig_title='granularity'):
     """
     Plots multiple granularity and loss data sets on a single figure.
 
@@ -422,7 +424,7 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
         loss_ylim (tuple, optional): Limits for the loss axis (y-limits), applied to all plots.
     """
     num_plots = len(granularity_sequences)
-    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(6 * num_plots, 5), sharey='row')
+    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(6 * num_plots, 7), sharey='row')
     fig.suptitle(fig_title)
 
     if num_plots == 1:
@@ -433,8 +435,8 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
 
         # Plot granularity sequence on the first y-axis
         ax1 = ax
-        ax1.stem(index, granularity_sequence, label='Granularity Sequence', basefmt=" ", linefmt='b', markerfmt='bo')
-        ax1.set_ylabel('Granularity', color='b')
+        ax1.stem(index, granularity_sequence, label='Number of subsets', basefmt=" ", linefmt='b', markerfmt='bo')
+        ax1.set_ylabel('Number of subsets', color='b')
         ax1.tick_params(axis='y', labelcolor='b')
         if granularity_ylim:
             ax1.set_ylim(granularity_ylim)  # Apply fixed y-limit for granularity
@@ -456,9 +458,17 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
         # Add legends
         lines_1, labels_1 = ax1.get_legend_handles_labels()
         lines_2, labels_2 = ax2.get_legend_handles_labels()
-        ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left')
+        ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
 
     plt.tight_layout()
     plt.show()
 
-    fig.savefig('../figs/' + fig_title + '_plots.png')
+    figure_folder_name = mbirjax.make_figure_folder()
+    os.makedirs(figure_folder_name, exist_ok=True)
+    fig.savefig(os.path.join(figure_folder_name, fig_title + '_plots.png'), bbox_inches='tight')
+
+def make_figure_folder(fig_folder_name=None):
+    if fig_folder_name is None:
+        fig_folder_name = 'figs'
+    os.makedirs(fig_folder_name, exist_ok=True)
+    return fig_folder_name

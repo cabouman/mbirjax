@@ -1,5 +1,5 @@
 import numpy as np
-import time
+import os
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
@@ -30,7 +30,9 @@ def display_slices_for_abstract( recon1, recon2, recon3, labels, fig_title=None)
     ax[2].set_title(labels[2])
 
     plt.show()
-    fig.savefig('../figs/' + fig_title + '.png')
+    figure_folder_name = vcu.make_figure_folder()
+    os.makedirs(figure_folder_name, exist_ok=True)
+    fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'))
 
 
 if __name__ == "__main__":
