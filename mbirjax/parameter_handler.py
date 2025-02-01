@@ -51,6 +51,11 @@ class ParameterHandler():
                 cur_params[key]['val'] = new_val
                 cur_params[key]['shape'] = param_val.shape
 
+            # Also convert np.floats to native python floats
+            if isinstance(param_val, np.floating):
+                new_val = param_val.item()
+                cur_params[key]['val'] = new_val
+
         return cur_params
 
     @staticmethod
