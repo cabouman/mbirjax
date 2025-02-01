@@ -51,14 +51,14 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   module load jax/0.4.31
   yes | conda create -n $NAME python=3.11.7
   conda activate $NAME
-  pip install -e ..[cuda12]
+  pip install -e "..[cuda12]"
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
   module load conda/2024.09
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e ..[cuda12]
+  pip install -e "..[cuda12]"
 # Negishi (cpu)
 elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   echo "Installing on Negishi"
