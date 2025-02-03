@@ -269,9 +269,9 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
-        recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=self.main_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
-        recon = jnp.zeros(recon_shape)
+        recon = jnp.zeros(recon_shape, device=self.main_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
@@ -627,14 +627,11 @@ class TomographyModel(ParameterHandler):
         """
         # Check that sinogram and weights are not taking up GPU space
         if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.main_device:
-            raise ValueError(
-                'With limited GPU memory, sinogram should be either a numpy array or a jax array on the cpu.')
+            sinogram = jax.device_put(sinogram, self.main_device)
         if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.main_device:
-            raise ValueError(
-                'With limited GPU memory, weights should be either a numpy array or a jax array on the cpu.')
+            weights = jax.device_put(weights, self.main_device)
         if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
-            raise ValueError(
-                'With limited GPU memory, init_recon should be either a numpy array or a jax array on the cpu.')
+            init_recon = jax.device_put(init_recon, self.main_device)
 
         # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
         if compute_prior_loss:

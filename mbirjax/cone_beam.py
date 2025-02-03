@@ -832,7 +832,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+        batch_size = 100
+        filtered_sinogram = jax.lax.map(apply_convolution_to_view, weighted_sinogram, batch_size=batch_size)
 
         # Reconstruction
         recon = self.back_project(filtered_sinogram)

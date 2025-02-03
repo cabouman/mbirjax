@@ -339,7 +339,8 @@ class ParallelBeamModel(TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the sinogram per each fixed view & row
-        filtered_sinogram = jax.vmap(apply_convolution_to_view)(sinogram)
+        batch_size = 100
+        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=batch_size)
 
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term

@@ -11,6 +11,29 @@ import mbirjax
 
 if __name__ == "__main__":
 
+    subsample_factor = 1
+    filename = "nsi_sino{}x.npy".format(subsample_factor)
+    filepath = "/home/buzzard/PycharmProjects/mbirjax_applications/nsi/demo_data/" + filename
+    sino = np.load(filepath)
+    source_detector_distance = 4 * 1152.4588623046875 / subsample_factor
+    source_iso_distance = 4 * 330.7637023925781 / subsample_factor
+    det_row_offset = 4 * 4.348957061767578 / subsample_factor
+    det_channel_offset = 4 * -3.5313198566436768 / subsample_factor
+
+    snr_db = 30.0
+    sharpness = 0.0
+    delta_voxel = 0.2870069444179535
+    angles = np.linspace(2*np.pi, 0, sino.shape[0]+1)
+    angles = angles[:-1]
+    conebeam_model = mbirjax.ConeBeamModel(sino.shape, angles, source_detector_distance, source_iso_distance)
+    conebeam_model.set_params(delta_voxel=delta_voxel, det_row_offset=det_row_offset,
+                              det_channel_offset=det_channel_offset, snr_db=snr_db, sharpness=sharpness)
+    print('Starting fdk reconstruction')
+    time_start = time.time()
+    fdk_recon = conebeam_model.fdk_recon(sino)
+    print('Elapsed time: {}'.format(time.time()-time_start))
+    mbirjax.slice_viewer(fdk_recon, slice_axis=1)
+    exit(0)
     main_device = jax.devices('cpu')[0]
     worker = jax.devices('gpu')[0]
 
