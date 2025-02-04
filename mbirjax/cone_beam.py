@@ -839,3 +839,97 @@ class ConeBeamModel(mbirjax.TomographyModel):
         recon *= jnp.pi / num_views
 
         return recon
+
+    def fdk_recon_cpu(self, sinogram, filter_name="ramp"):
+        """
+        Perform FDK reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+
+        Returns:
+            recon (jax array): The reconstructed volume after FDK reconstruction.
+        """
+
+        # Get parameters
+        num_views, num_rows, num_channels = sinogram.shape
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        M_0 = self.get_magnification()
+
+        # Define the index arrays for channels and rows
+        m = jnp.arange(num_rows)  # Column vector for rows
+        n = jnp.arange(num_channels)  # Row vector for channels
+        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
+
+        # Coordinate transformation to physical distances:
+        u_grid, v_grid = self.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
+                                                det_channel_offset, det_row_offset, num_rows, num_channels)
+
+        # Compute the weight
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
+
+        # Apply the pre-weighting factor to the sinogram
+        weighted_sinogram = sinogram * weight_map[None, :, :]
+
+        # Compute the scaled filter
+        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
+        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
+        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        recon_filter = alpha * recon_filter
+
+        # Define convolution for a single row (across its channels)
+        def convolve_row(row):
+            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+
+        # Apply above convolve func across each row of a view
+        def apply_convolution_to_view(view):
+            return jax.vmap(convolve_row)(view)
+
+        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
+        #filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
+        # Use cpu
+        # Define a function to process each cluster
+
+        def conv_vmap(channels):
+            # Apply the convolution across each view and row in the cluster
+            return jax.vmap(apply_convolution_to_view)(channels)
+
+        # Split data into clusters
+
+        # Example setup for splitting the sinogram into clusters
+        #num_clusters = 5  # Fetch the correct number of devices
+        #views_per_cluster = weighted_sinogram.shape[0] // num_clusters
+        #clusters = weighted_sinogram.reshape(num_clusters, views_per_cluster, *weighted_sinogram.shape[1:])
+
+        # Keep the number of clusters as originally intended
+        num_clusters = 2
+        devices_to_use = jax.devices()[:num_clusters]  # Use only the first two devices
+
+        #weighted_sinogram = weighted_sinogram.reshape(2, -1, 128, 128)
+        clusters = weighted_sinogram.reshape(num_clusters, -1, *weighted_sinogram.shape[1:])
+
+        # Compute the filtered sinogram
+        #devices_to_use = jax.devices()[:2]  # Adjust according to your device setup
+        conv_pmap = jax.pmap(conv_vmap, in_axes=0, devices=devices_to_use)
+
+        filtered_sinogram = conv_pmap(clusters)
+        filtered_sinogram = filtered_sinogram.reshape(-1, *weighted_sinogram.shape[1:])
+
+        # Reconstruction
+        recon = self.back_project(filtered_sinogram)
+        recon *= jnp.pi / num_views
+
+        return recon

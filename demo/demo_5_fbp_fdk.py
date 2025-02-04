@@ -23,12 +23,18 @@ Select a GPU as runtime type for best performance.
 # Commented out IPython magic to ensure Python compatibility.
 # %pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
 
+import os
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=128"
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+
+
 import numpy as np
 import time
 import jax.numpy as jnp
 import mbirjax
 
-"""**Set the geometry parameters**"""
+
+
 
 # Choose the geometry type
 geometry_type = 'cone'  # 'cone' or 'parallel'
@@ -48,6 +54,7 @@ source_iso_dist = source_detector_dist
 start_angle = -np.pi
 end_angle = np.pi
 
+"""**Set the geometry parameters**"""
 """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
 
 Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
@@ -99,7 +106,7 @@ ct_model_for_recon.print_params()
 if geometry_type == 'cone':
     print("Starting FDK recon")
     time0 = time.time()
-    recon = ct_model_for_recon.fdk_recon(sinogram, filter_name="ramp")
+    recon = ct_model_for_recon.fdk_recon_cpu(sinogram, filter_name="ramp")
 else:
     print("Starting FBP recon")
     time0 = time.time()
