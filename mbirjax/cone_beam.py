@@ -143,7 +143,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         geometry_param_values.append(self.entries_per_cylinder_batch)
         geometry_param_values.append(self.slice_range_length)
 
-        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
         geometry_params = GeometryParams(*tuple(geometry_param_values))
 
@@ -831,11 +831,22 @@ class ConeBeamModel(mbirjax.TomographyModel):
         def apply_convolution_to_view(view):
             return jax.vmap(convolve_row)(view)
 
+        def conv_vmap(weighted_sinogram):
+            return jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+
+        conv_pmap = jax.pmap(conv_vmap, in_axes=(0), devices=jax.devices()) #
+
+        weighted_sinogram = weighted_sinogram.reshape(jax.device_count(), -1, num_rows, num_channels)
+        # when using pmap, we need to reshape the sinogram to have the same num of 'batch' at the 0th axis as the number of devices (GPU or CPU nodes)
+
+        filtered_sinogram = conv_pmap(weighted_sinogram)
+
+        filtered_sinogram = filtered_sinogram.reshape(num_views, num_rows, num_channels)
 
         # Reconstruction
         recon = self.back_project(filtered_sinogram)
-        recon *= jnp.pi / num_views
+        recon *= jnp.pi / (num_views)
 
         return recon
