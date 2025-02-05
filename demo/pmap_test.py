@@ -37,7 +37,7 @@ geometry_type = 'cone'  # 'cone' or 'parallel'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 120
+num_views = 120 # For demo purpose, the number of workers should be divisible by this number
 num_det_rows = 128
 num_det_channels = 128
 
