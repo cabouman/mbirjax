@@ -908,21 +908,13 @@ class ConeBeamModel(mbirjax.TomographyModel):
             return jax.vmap(apply_convolution_to_view)(channels)
 
         # Split data into clusters
+        num_clusters = 2 # Use only the first two devices
+        devices_to_use = jax.devices()[:num_clusters]
 
-        # Example setup for splitting the sinogram into clusters
-        #num_clusters = 5  # Fetch the correct number of devices
-        #views_per_cluster = weighted_sinogram.shape[0] // num_clusters
-        #clusters = weighted_sinogram.reshape(num_clusters, views_per_cluster, *weighted_sinogram.shape[1:])
-
-        # Keep the number of clusters as originally intended
-        num_clusters = 2
-        devices_to_use = jax.devices()[:num_clusters]  # Use only the first two devices
-
-        #weighted_sinogram = weighted_sinogram.reshape(2, -1, 128, 128)
+        #clusters = weighted_sinogram.reshape(2, -1, 128, 128)
         clusters = weighted_sinogram.reshape(num_clusters, -1, *weighted_sinogram.shape[1:])
 
         # Compute the filtered sinogram
-        #devices_to_use = jax.devices()[:2]  # Adjust according to your device setup
         conv_pmap = jax.pmap(conv_vmap, in_axes=0, devices=devices_to_use)
 
         filtered_sinogram = conv_pmap(clusters)
