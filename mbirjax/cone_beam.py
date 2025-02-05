@@ -836,7 +836,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
 
-        conv_pmap = jax.pmap(conv_vmap, in_axes=(0), devices=jax.devices()) #
+        conv_pmap = jax.pmap(conv_vmap, in_axes=(0), devices=jax.devices())
 
         weighted_sinogram = weighted_sinogram.reshape(jax.device_count(), -1, num_rows, num_channels)
         # when using pmap, we need to reshape the sinogram to have the same num of 'batch' at the 0th axis as the number of devices (GPU or CPU nodes)

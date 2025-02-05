@@ -319,7 +319,7 @@ class ParallelBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
-        num_views, _, num_channels = sinogram.shape
+        num_views, num_rows, num_channels = sinogram.shape
 
         # Generate the reconstruction filter with appropriate scaling
         delta_voxel = self.get_params('delta_voxel')
@@ -338,8 +338,15 @@ class ParallelBeamModel(TomographyModel):
         def apply_convolution_to_view(view):
             return jax.vmap(convolve_row)(view)
 
-        # Apply convolution across the channels of the sinogram per each fixed view & row
-        filtered_sinogram = jax.vmap(apply_convolution_to_view)(sinogram)
+        def conv_vmap(sinogram):
+            return jax.vmap(apply_convolution_to_view)(sinogram)
+
+        conv_pmap = jax.pmap(conv_vmap, in_axes=(0), devices=jax.devices())
+
+        sinogram = sinogram.reshape(jax.device_count(), -1, num_rows, num_channels)
+
+        filtered_sinogram = conv_pmap(sinogram)
+        filtered_sinogram = filtered_sinogram.reshape(num_views, num_rows, num_channels)
 
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term
