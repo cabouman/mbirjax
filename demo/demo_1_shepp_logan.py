@@ -32,7 +32,7 @@ import mbirjax
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-geometry_type = 'parallel'  # 'cone' or 'parallel'
+geometry_type = 'cone'  # 'cone' or 'parallel'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
@@ -111,7 +111,8 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
+recon_init = ct_model_for_recon.fdk_recon(sinogram)
+recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, init_recon=recon_init)
 
 recon.block_until_ready()
 elapsed = time.time() - time0
