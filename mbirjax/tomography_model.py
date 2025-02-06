@@ -32,6 +32,7 @@ class TomographyModel(ParameterHandler):
     def __init__(self, sinogram_shape, **kwargs):
 
         super().__init__()
+        #self.fdk_recon = None
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
         delta_voxel = self.get_params('delta_voxel')
         if delta_voxel is None:
@@ -51,6 +52,8 @@ class TomographyModel(ParameterHandler):
 
         self.set_devices_and_batch_sizes()
         self.create_projectors()
+        self.direct_recon = self.fdk_recon
+
 
     def set_devices_and_batch_sizes(self):
 
@@ -603,7 +606,7 @@ class TomographyModel(ParameterHandler):
         return recon_std
 
     def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
-              compute_prior_loss=False):
+              compute_prior_loss=False, use_direct_init=True):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -641,6 +644,13 @@ class TomographyModel(ParameterHandler):
             msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
             msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
             warnings.warn(msg)
+
+        # Run initial FDK recon if use_direct_init is Ture; otherwise, run FDK initial
+        if use_direct_init and self.direct_recon and init_recon is None:
+            init_recon = self.direct_recon(sinogram)
+            print('Use direct recon (FDK)')
+        elif init_recon is not None and use_direct_init:
+            warnings.warn("Initial reconstruction provided, ignoring direct initialization.")
 
         regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
