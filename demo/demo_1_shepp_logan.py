@@ -112,7 +112,7 @@ ct_model_for_recon.print_params()
 print('Starting recon')
 time0 = time.time()
 recon_init = ct_model_for_recon.fdk_recon(sinogram)
-# Tree options:
+# 3 options:
 #recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, init_recon=recon_init)
 #recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, init_recon=recon_init, use_direct_init=True)
 recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, init_recon=recon_init, use_direct_init=False)
