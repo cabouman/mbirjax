@@ -52,12 +52,16 @@ class TomographyModel(ParameterHandler):
 
         self.set_devices_and_batch_sizes()
         self.create_projectors()
-        self.direct_recon = self.fdk_recon
 
+        if isinstance(self, mbirjax.ConeBeamModel):
+            self.direct_recon = self.fdk_recon
+        elif isinstance(self, mbirjax.ParallelBeamModel):
+            self.direct_recon = self.fbp_recon
 
     def set_devices_and_batch_sizes(self):
 
         # Get the cpu and any gpus
+
         # If no gpu, then use the cpu and return
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
