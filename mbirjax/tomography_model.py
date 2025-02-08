@@ -277,8 +277,8 @@ class TomographyModel(ParameterHandler):
         return recon
 
     def sparse_forward_project(self, voxel_values, indices, output_device=None):
-        max_views = 256
-        max_pixels = 2048
+        max_views = 200
+        max_pixels = 8000
 
         # Batch the views and pixels
         sinogram_shape = self.get_params('sinogram_shape')
@@ -320,8 +320,8 @@ class TomographyModel(ParameterHandler):
                 cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
 
             sinogram.append(jax.device_put(cur_view_batch, output_device))
-            sinogram = jnp.concatenate(sinogram)
-            return sinogram
+        sinogram = jnp.concatenate(sinogram)
+        return sinogram
 
     def sparse_forward_project_old(self, voxel_values, indices, output_device=None):
         """
