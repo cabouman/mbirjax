@@ -276,7 +276,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, output_device):
+    def sparse_forward_project(self, voxel_values, indices, output_device=None):
         max_views = 256
         max_pixels = 2048
 
