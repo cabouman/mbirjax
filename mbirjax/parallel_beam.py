@@ -156,7 +156,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
@@ -183,7 +183,7 @@ class ParallelBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        # sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
         # Do the projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
@@ -192,7 +192,7 @@ class ParallelBeamModel(TomographyModel):
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
         return sinogram_view
 

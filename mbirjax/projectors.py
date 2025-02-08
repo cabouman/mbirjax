@@ -52,6 +52,7 @@ class Projectors:
         projector_param_values = (sinogram_shape, recon_shape, geometry_params)
         ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
         projector_params = ProjectorParams(*tuple(projector_param_values))
+        self.tomography_model.projector_params = projector_params
 
         view_params_array = self.tomography_model.get_params('view_params_array')
         pixel_batch_size = self.tomography_model.pixels_per_batch
