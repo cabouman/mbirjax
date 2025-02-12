@@ -143,7 +143,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         geometry_param_values.append(self.entries_per_cylinder_batch)
         geometry_param_values.append(self.slice_range_length)
 
-        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
         geometry_params = GeometryParams(*tuple(geometry_param_values))
 
@@ -813,7 +813,15 @@ class ConeBeamModel(mbirjax.TomographyModel):
         weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
 
         # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = sinogram * weight_map[None, :, :]
+        # weighted_sinogram = sinogram * weight_map[None, :, :]
+        batch_size = 900  # Adjust based on available memory
+
+        for i in range(0, sinogram.shape[0], batch_size):
+            batch_result = sinogram[i:i + batch_size] * weight_map[None, :, :]
+            sinogram[i:i + batch_size] = batch_result
+
+        del batch_result    # Clean memory
+
 
         # Compute the scaled filter
         # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
@@ -833,10 +841,20 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
         batch_size = 100
-        filtered_sinogram = jax.lax.map(apply_convolution_to_view, weighted_sinogram, batch_size=batch_size)
+        num_slices = sinogram.shape[0]  # 1800 slices
 
+        # Vectorize the convolution function over batch dimension
+        batched_apply_convolution = jax.vmap(apply_convolution_to_view)
+
+        for i in range(0, num_slices, batch_size):
+            batch = sinogram[i:i + batch_size]  # Extract batch
+            batch_result = batched_apply_convolution(batch)  # Apply vmap-ed function
+            sinogram[i:i + batch_size] = batch_result  # Store results
+
+        del batch_result
         # Reconstruction
-        recon = self.back_project(filtered_sinogram)
+        recon = self.back_project(sinogram) # problem: if I do jnp.array(sinogram) here, triggers OOM error.
+                                            # However, in later batch-processing, the extracted batches are converted to jnp array automatically
         recon *= jnp.pi / num_views
 
         return recon
