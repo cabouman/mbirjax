@@ -1,8 +1,14 @@
-import os
-import numpy as np
 import time
 import torch
 
+def set_sinogram_parameters():
+    # Specify sinogram info
+    num_views = 2000
+    num_det_rows = 1000
+    num_det_channels = 1000
+    return num_views, num_det_rows, num_det_channels
+
+@torch.compile
 def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, angles, output_device, worker):
     """
     Batch the views (angles) and voxels/indices, send batches to the GPU to project, and collect the results.
@@ -27,12 +33,14 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
     sinogram = []
 
     # Loop over the view batches
-    for j, view_index_start in enumerate(view_batch_indices[:1]):
+    for j, view_index_start in enumerate(view_batch_indices[:-1]):
         # Send a batch of views to worker
         view_index_end = view_batch_indices[j+1]
         cur_view_batch = torch.zeros([view_index_end-view_index_start, sinogram_shape[1], sinogram_shape[2]],
                                      device=worker)
         cur_view_params_batch = angles[view_index_start:view_index_end]
+
+        print('Starting view block {} of {}.'.format(j+1, view_batch_indices.shape[0]-1))
 
         # Loop over pixel batches
         for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
@@ -53,7 +61,7 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
     sinogram = torch.concatenate(sinogram)
     return sinogram
 
-
+@torch.compile
 def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, sinogram_view,
                                             sinogram_shape, recon_shape):
     """
@@ -155,11 +163,7 @@ def main():
     """
     This is a script to develop, debug, and tune the parallel beam projector
     """
-
-    # Specify sinogram info
-    num_views = 2000
-    num_det_rows = 1000
-    num_det_channels = 1000
+    num_views, num_det_rows, num_det_channels = set_sinogram_parameters()
     start_angle = 0
     end_angle = torch.pi
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
@@ -172,7 +176,7 @@ def main():
     # Generate phantom - all zero except a small cube
     recon_shape = (num_det_channels, num_det_channels, num_det_rows)
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = torch.zeros(recon_shape)  #mbirjax.gen_cube_phantom(recon_shape)
+    phantom = torch.zeros(recon_shape, device=output_device)  #mbirjax.gen_cube_phantom(recon_shape)
     i, j, k = recon_shape[0]//3, recon_shape[1]//2, recon_shape[2]//2
     phantom[i:i+5, j:j+5, k:k+5] = 1.0
 
@@ -199,8 +203,8 @@ def main():
         mem_used_gb = (total - free) / (1024 ** 3)
         print(mem_used_gb)
 
-    import mbirjax
-    mbirjax.slice_viewer(sinogram.to(output_device).detach().numpy(), slice_axis=0)
+    # import mbirjax
+    # mbirjax.slice_viewer(sinogram.detach().cpu().numpy(), slice_axis=0)
 
 
 if __name__ == "__main__":

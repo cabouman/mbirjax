@@ -7,6 +7,13 @@ from functools import partial
 
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
+def set_sinogram_parameters():
+    # Specify sinogram info
+    num_views = 2000
+    num_det_rows = 1000
+    num_det_channels = 1000
+    return num_views, num_det_rows, num_det_channels
+
 def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, angles, output_device, worker):
     """
     Batch the views (angles) and voxels/indices, send batches to the GPU to project, and collect the results.
@@ -17,6 +24,7 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
 
     indices = indices[:len(indices)-num_to_exclude]
     angles = jax.device_put(angles, device=worker)
+    print(len(angles))
 
     # Batch the views and pixels
     num_views = len(angles)
@@ -31,7 +39,7 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
     sinogram = []
 
     # Loop over the view batches
-    for j, view_index_start in enumerate(view_batch_indices[:1]):
+    for j, view_index_start in enumerate(view_batch_indices[:-1]):
         # Send a batch of views to worker
         view_index_end = view_batch_indices[j+1]
         cur_view_batch = jnp.zeros([view_index_end-view_index_start, sinogram_shape[1], sinogram_shape[2]],
@@ -39,6 +47,7 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
         cur_view_params_batch = angles[view_index_start:view_index_end]
         if j == 0:
             get_memory_stats()
+        print('Starting view block {} of {}.'.format(j+1, view_batch_indices.shape[0]-1))
 
         # Loop over pixel batches
         for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
@@ -162,21 +171,24 @@ def main():
     """
 
     # Specify sinogram info
-    num_views = 2000
-    num_det_rows = 1000
-    num_det_channels = 1000
+    num_views, num_det_rows, num_det_channels = set_sinogram_parameters()
     start_angle = 0
     end_angle = jnp.pi
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     output_device = jax.devices('cpu')[0]
-    worker = jax.devices('cuda')[0]
+    try:
+        worker = jax.devices('gpu')[0]
+        use_gpu = True
+    except RuntimeError:
+        worker = jax.devices('cpu')[0]
+        use_gpu = False
 
     # Generate phantom - all zero except a small cube
     recon_shape = (num_det_channels, num_det_channels, num_det_rows)
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    with jax.default_device(jax.devices('cpu')[0]):
+    with jax.default_device(output_device):
         phantom = jnp.zeros(recon_shape)  #mbirjax.gen_cube_phantom(recon_shape)
         i, j, k = recon_shape[0]//3, recon_shape[1]//2, recon_shape[2]//2
         phantom = phantom.at[i:i+5, j:j+5, k:k+5].set(1.0)
@@ -189,7 +201,7 @@ def main():
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[indices]
 
     print('Starting forward projection')
-    voxel_values, indices = jax.device_put([voxel_values, indices], jax.devices('cpu')[0])
+    voxel_values, indices = jax.device_put([voxel_values, indices], output_device)
     t0 = time.time()
     sinogram = sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, angles,
                                       output_device=output_device, worker=worker)
@@ -197,8 +209,9 @@ def main():
 
     # Determine resulting number of views, slices, and channels and image size
     print('Sinogram shape: {}'.format(sinogram.shape))
-    print('Memory stats after forward projection')
-    get_memory_stats(print_results=True)
+    if use_gpu:
+        print('Memory stats after forward projection')
+        get_memory_stats(print_results=True)
 
     # import mbirjax
     # mbirjax.slice_viewer(sinogram, slice_axis=0)
