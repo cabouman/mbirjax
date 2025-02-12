@@ -6,10 +6,6 @@ import jax.numpy as jnp
 import pprint
 import jax, scipy, pickle
 import sys
-source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
-if source_path not in sys.path:
-    sys.path.insert(0, source_path)
-
 import mbirjax
 
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
