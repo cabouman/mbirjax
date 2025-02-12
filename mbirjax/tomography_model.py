@@ -335,14 +335,16 @@ class TomographyModel(ParameterHandler):
         for j in range(len(view_batch_inds) - 1):
             cur_views = sinogram[view_batch_inds[j]:view_batch_inds[j + 1]]
             # Get the current devices and move the data to the worker
-            cur_views = jax.device_put(cur_views, self.worker)
+            # cur_views = jax.device_put(cur_views, self.worker)
+            cur_views = jax.device_put(cur_views, jax.devices('gpu')[0])
+            pixel_indices = jax.device_put(pixel_indices, jax.devices('gpu')[0]) # This should be modified, it should set automaticcaly with memory estimation & batch size
 
             cur_recon_at_indices = self.projector_functions.sparse_back_project(cur_views, pixel_indices,
                                                                                 view_indices=view_indices_batched[j],
                                                                                 coeff_power=coeff_power)
 
             # Put the data on the appropriate device
-            recon_at_indices += jax.device_put(cur_recon_at_indices, output_device)
+            recon_at_indices += jax.device_put(cur_recon_at_indices, output_device) # GPU stat: 35.56 GB / 77.62 GB. (For reference in case we need to modify the batch size)
 
         return recon_at_indices
 
