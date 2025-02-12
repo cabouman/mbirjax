@@ -36,8 +36,8 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_l
 
     obj_scan = obj_scan - dark_scan
     blank_scan = blank_scan - dark_scan
-    
-    #### compute the sinogram. 
+
+    #### compute the sinogram.
     # suppress warnings in np.log(), since the defective sino entries will be corrected.
     with np.errstate(divide='ignore', invalid='ignore'):
         sino = -np.log(obj_scan / blank_scan)
@@ -74,25 +74,25 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_l
         sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
     else:
         if defective_pixel_list:
-            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.") 
+            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
     return sino, defective_pixel_list
 
 
 def interpolate_defective_pixels(sino, defective_pixel_list):
     """
     Interpolates defective sinogram entries with the mean of neighboring pixels.
-        
+
     Args:
         sino (ndarray, float): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
-    Returns:    
+    Returns:
         2-element tuple containing:
         - **sino** (*ndarray, float*): Corrected sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **defective_pixel_list** (*list(tuple)*): Updated defective_pixel_list with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx). 
+        - **defective_pixel_list** (*list(tuple)*): Updated defective_pixel_list with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
     """
     defective_pixel_list_new = []
     num_views, num_det_rows, num_det_channels = sino.shape
-    weights = np.ones((num_views, num_det_rows, num_det_channels))
+    weights = np.ones_like(sino)
 
     for defective_pixel_idx in defective_pixel_list:
         if len(defective_pixel_idx) == 2:
@@ -122,7 +122,7 @@ def interpolate_defective_pixels(sino, defective_pixel_list):
             # Corner case: all the neighboring pixels are defective
             else:
                 print(f"Unable to correct sino entry ({v},{r},{c})! All neighborhood values are defective!")
-                defective_pixel_list_new.append((v,r,c)) 
+                defective_pixel_list_new.append((v,r,c))
     return sino, defective_pixel_list_new
 
 
@@ -136,9 +136,9 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
         sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         weights (float, ndarray): Sinogram weights, with the same array shape as ``sino``.
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in unit of radians.
-    
+
     Returns:
-        - A numpy array containing the corrected sinogram data if weights is None. 
+        - A numpy array containing the corrected sinogram data if weights is None.
         - A tuple (sino, weights) if weights is not None
     """
     sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
@@ -146,7 +146,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     if weights is None:
         return sino
     # weights provided
-    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.") 
+    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
@@ -269,7 +269,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
 def crop_scans(obj_scan, blank_scan, dark_scan,
                 crop_region=[(0, 1), (0, 1)],
                 defective_pixel_list=None):
-    """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly. 
+    """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
     Args:
         obj_scan (float): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
         blank_scan (float) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
@@ -277,9 +277,9 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
         crop_region ([(float, float),(float, float)] or [float, float, float, float]):
             [Default=[(0, 1), (0, 1)]] Two points to define the bounding box. Sequence of [(row0, row1), (col0, col1)] or
             [row0, row1, col0, col1], where 0<=row0 <= row1<=1 and 0<=col0 <= col1<=1.
-        
+
             The scan images will be cropped using the following algorithm:
-                obj_scan <- obj_scan[:,Nr_lo:Nr_hi, Nc_lo:Nc_hi], where 
+                obj_scan <- obj_scan[:,Nr_lo:Nr_hi, Nc_lo:Nc_hi], where
                     - Nr_lo = round(row0 * obj_scan.shape[1])
                     - Nr_hi = round(row1 * obj_scan.shape[1])
                     - Nc_lo = round(col0 * obj_scan.shape[2])
