@@ -13,12 +13,12 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
     """
     Batch the views (angles) and voxels/indices, send batches to the GPU to project, and collect the results.
     """
-    max_views = 700
+    max_views = 200
     max_pixels = 8000
     num_to_exclude = 0
 
     indices = indices[:len(indices)-num_to_exclude]
-    angles.to(worker)
+    angles = angles.to(worker)
 
     # Batch the views and pixels
     num_views = len(angles)
@@ -33,7 +33,7 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
     sinogram = []
 
     # Loop over the view batches
-    for j, view_index_start in enumerate(view_batch_indices[:-1]):
+    for j, view_index_start in enumerate(view_batch_indices[:2]):
         # Send a batch of views to worker
         view_index_end = view_batch_indices[j+1]
         cur_view_batch = torch.zeros([view_index_end-view_index_start, sinogram_shape[1], sinogram_shape[2]],
@@ -84,7 +84,7 @@ def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, 
     for n_offset in torch.arange(start=-psf_radius, end=psf_radius+1):
         n = n_p_center + n_offset
         abs_delta_p_c_n = torch.abs(n_p - n)
-        L_p_c_n = torch.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, torch.tensor(0), L_max)
+        L_p_c_n = torch.clamp((W_p_c + 1) / 2 - abs_delta_p_c_n, torch.zeros(1, device=torch.device('cuda')), L_max)
         A_chan_n = delta_voxel * L_p_c_n / cos_alpha_p_xy
         A_chan_n *= (n >= 0) * (n < num_det_channels)
         n = torch.clip(n, 0, num_det_channels - 1)  # n to a valid range and then not add anything.
@@ -200,8 +200,10 @@ def main():
         print('Memory stats after forward projection')
         device = torch.device('cuda:0')
         free, total = torch.cuda.mem_get_info(device)
-        mem_used_gb = (total - free) / (1024 ** 3)
-        print(mem_used_gb)
+        total_gb = total / (1024 ** 3)
+        free_gb = free / (1024 ** 3)
+        mem_used_gb = total_gb - free_gb
+        print('Used {:.2f}GB of {:.2f}GB total memory'.format(mem_used_gb, total_gb))
 
     # import mbirjax
     # mbirjax.slice_viewer(sinogram.detach().cpu().numpy(), slice_axis=0)

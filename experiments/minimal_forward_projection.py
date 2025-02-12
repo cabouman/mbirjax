@@ -9,30 +9,29 @@ os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
 def set_sinogram_parameters():
     # Specify sinogram info
-    num_views = 2000
-    num_det_rows = 1000
-    num_det_channels = 1000
+    num_views = 600
+    num_det_rows = 1500
+    num_det_channels = 2000
     return num_views, num_det_rows, num_det_channels
 
 def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, angles, output_device, worker):
     """
     Batch the views (angles) and voxels/indices, send batches to the GPU to project, and collect the results.
     """
-    max_views = 700
-    max_pixels = 8000
-    num_to_exclude = 0
+    max_views_per_batch = 200
+    max_pixels_per_batch = 8000
+    num_pixels_to_exclude = 1000
 
-    indices = indices[:len(indices)-num_to_exclude]
+    indices = indices[:len(indices)-num_pixels_to_exclude]
     angles = jax.device_put(angles, device=worker)
-    print(len(angles))
 
     # Batch the views and pixels
     num_views = len(angles)
-    view_batch_indices = jnp.arange(num_views, step=max_views)
+    view_batch_indices = jnp.arange(num_views, step=max_views_per_batch)
     view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
 
     num_pixels = len(indices)
-    pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+    pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels_per_batch)
     pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
 
     # Create the output sinogram
@@ -56,6 +55,9 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
             cur_voxel_batch, cur_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
                                                               indices[pixel_index_start:pixel_index_end]],
                                                               worker)
+            if len(cur_index_batch) < max_pixels_per_batch:
+                cur_voxel_batch = jnp.concatenate([cur_voxel_batch, jnp.zeros([max_pixels_per_batch-len(cur_index_batch), sinogram_shape[1],], device=worker)])
+                cur_index_batch = jnp.concatenate([cur_index_batch, jnp.zeros([max_pixels_per_batch-len(cur_index_batch)], device=worker)])
 
             def forward_project_pixel_batch_local(view, angle):
                 # Add the forward projection to the given existing view
