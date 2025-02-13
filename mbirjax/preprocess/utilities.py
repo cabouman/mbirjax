@@ -92,7 +92,7 @@ def interpolate_defective_pixels(sino, defective_pixel_list):
     """
     defective_pixel_list_new = []
     num_views, num_det_rows, num_det_channels = sino.shape
-    weights = np.ones_like(sino)
+    weights = np.ones((num_views, num_det_rows, num_det_channels), dtype=np.float32) # could even be int since it's a binary mask
 
     for defective_pixel_idx in defective_pixel_list:
         if len(defective_pixel_idx) == 2:
