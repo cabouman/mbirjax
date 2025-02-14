@@ -622,7 +622,7 @@ class TomographyModel(ParameterHandler):
             num_iterations (int, optional): number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
             restarting a recon using init_recon.
-            init_recon (jax array, optional): Optional reconstruction to be used for initialization.
+            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
             lead to slower reconstructions and is meant only for small recons.
 
@@ -690,7 +690,7 @@ class TomographyModel(ParameterHandler):
             partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
-            init_recon (jax array, optional): Initial reconstruction to use in reconstruction.
+            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
@@ -718,7 +718,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             with jax.default_device(self.main_device):
-                recon = jnp.zeros(recon_shape)
+                recon = self.direct_recon(sinogram)
             error_sinogram = sinogram
         else:
             # Make sure that init_recon has the correct shape and type

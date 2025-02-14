@@ -773,7 +773,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=100):
         return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=100):

@@ -302,7 +302,7 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=100):
         return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=100):
