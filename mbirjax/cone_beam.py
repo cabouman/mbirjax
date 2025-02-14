@@ -774,7 +774,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return y, pixel_mag
 
 
-    def fdk_recon(self, sinogram, filter_name="ramp"):
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=100):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -786,6 +786,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
             recon (jax array): The reconstructed volume after FDK reconstruction.
@@ -832,8 +833,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        batch_size = 100
-        filtered_sinogram = jax.lax.map(apply_convolution_to_view, weighted_sinogram, batch_size=batch_size)
+        filtered_sinogram = jax.lax.map(apply_convolution_to_view, weighted_sinogram, batch_size=view_batch_size)
 
         # Reconstruction
         recon = self.back_project(filtered_sinogram)

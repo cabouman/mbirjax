@@ -302,7 +302,7 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def fbp_recon(self, sinogram, filter_name="ramp"):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=100):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -314,6 +314,7 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
             recon (jax array): The reconstructed volume after FBP reconstruction.
@@ -339,8 +340,7 @@ class ParallelBeamModel(TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the sinogram per each fixed view & row
-        batch_size = 100
-        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=batch_size)
+        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
 
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term
