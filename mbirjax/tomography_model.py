@@ -1,8 +1,8 @@
 import types
 import numpy as np
 import warnings
-import time
 import os
+
 num_cpus = 3 * os.cpu_count() // 4
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
@@ -601,6 +601,11 @@ class TomographyModel(ParameterHandler):
         recon_std = typical_sinogram_value / typical_path_length
 
         return recon_std
+
+    def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+        warnings.warn('direct_recon not implemented for TomographyModel.')
+        recon_shape = self.get_params('recon_shape')
+        return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
               compute_prior_loss=False):
