@@ -7,6 +7,7 @@ import mbirjax.preprocess as preprocess
 import glob
 import pprint
 import time
+import mbirjax
 pp = pprint.PrettyPrinter(indent=4)
 
 
@@ -88,22 +89,28 @@ def compute_sino_and_params(dataset_dir,
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans ...")
     time0 = time.time()
+    mbirjax.get_memory_stats(print_results=True)
     sino, defective_pixel_list = \
             preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan # delete scan images to save memory
+    mbirjax.get_memory_stats(print_results=True)
     print(f"time to compute sino = {time.time()-time0:.2f} seconds")
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
     time0 = time.time()
+    mbirjax.get_memory_stats(print_results=True)
     background_offset = preprocess.estimate_background_offset(sino)
     print("background_offset = ", background_offset)
     sino = sino - background_offset
+    mbirjax.get_memory_stats(print_results=True)
     print(f"time to correct background offset = {time.time()-time0:.2f} seconds")
 
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
     time0 = time.time()
+    mbirjax.get_memory_stats(print_results=True)
     sino = preprocess.correct_det_rotation(sino, det_rotation=optional_params["det_rotation"])
     del optional_params["det_rotation"]
+    mbirjax.get_memory_stats(print_results=True)
     print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
 
     return sino, cone_beam_params, optional_params
