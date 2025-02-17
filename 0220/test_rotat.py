@@ -103,6 +103,8 @@ def compute_sino_and_params_rotat(dataset_dir,
     mbirjax.get_memory_stats(print_results=True)
     print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
 
+    return sino, cone_beam_params, optional_params
+
 
 
 

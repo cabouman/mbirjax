@@ -105,6 +105,8 @@ def compute_sino_and_params_compute_sino(dataset_dir,
     print(f"time to compute sino = {time.time()-time0:.2f} seconds")
     print(f'sino shape = {sino.shape}')
 
+    return sino, cone_beam_params, optional_params
+
 
 
 
