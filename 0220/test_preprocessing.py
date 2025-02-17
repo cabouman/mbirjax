@@ -3,7 +3,6 @@ import os
 import time
 import pprint
 import jax.numpy as jnp
-import pprint
 import jax, scipy, pickle
 import sys
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
