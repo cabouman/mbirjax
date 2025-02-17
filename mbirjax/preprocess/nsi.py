@@ -75,10 +75,13 @@ def compute_sino_and_params(dataset_dir,
     """
 
     print("\n\n########## Loading object, blank, dark scans, as well as geometry parameters from NSI dataset directory ...")
+    time0 = time.time()
     obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list = \
             load_scans_and_params(dataset_dir,
                                   downsample_factor=downsample_factor, crop_region=crop_region,
                                   subsample_view_factor=subsample_view_factor)
+    mbirjax.get_memory_stats(print_results=True)
+    print(f"time to load scans and params = {time.time()-time0:.2f} seconds")
 
     print("MBIRJAX geometry parameters:")
     pp.pprint(cone_beam_params)
