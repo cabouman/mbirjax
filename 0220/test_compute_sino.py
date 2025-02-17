@@ -131,6 +131,7 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
 
     """
     # take average of multiple blank/dark scans, and expand the dimension to be the same as obj_scan.
+    time00 = time.time()
     blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
     dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
 
@@ -142,6 +143,9 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
     with np.errstate(divide='ignore', invalid='ignore'):
         sino = -np.log(obj_scan / blank_scan)
 
+    print(f"time to compute new sino = {time.time()-time00:.2f} seconds")
+    print('2')
+    mbirjax.get_memory_stats(print_results=True)
     # set the sino pixels corresponding to the provided defective list to 0.0
     if defective_pixel_list is None:
         defective_pixel_list = []
@@ -193,7 +197,8 @@ def interpolate_defective_pixels_test(sino, defective_pixel_list):
     defective_pixel_list_new = []
     num_views, num_det_rows, num_det_channels = sino.shape
     weights = np.ones((num_views, num_det_rows, num_det_channels), dtype=np.float32) # could even be int since it's a binary mask
-
+    mbirjax.get_memory_stats(print_results=True)
+    print('3')
     for defective_pixel_idx in defective_pixel_list:
         if len(defective_pixel_idx) == 2:
             (r,c) = defective_pixel_idx
@@ -203,7 +208,8 @@ def interpolate_defective_pixels_test(sino, defective_pixel_list):
             weights[v,r,c] = 0.0
         else:
             raise Exception("replace_defective_with_mean: index information in defective_pixel_list cannot be parsed.")
-
+    mbirjax.get_memory_stats(print_results=True)
+    print('4')
     for defective_pixel_idx in defective_pixel_list:
         if len(defective_pixel_idx) == 2:
             v_list = list(range(num_views))
