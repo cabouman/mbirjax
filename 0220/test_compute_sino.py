@@ -132,20 +132,6 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
         - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
 
     """
-    # take average of multiple blank/dark scans, and expand the dimension to be the same as obj_scan.
-    # time00 = time.time()
-    # blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
-    # dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
-
-    # obj_scan = obj_scan - dark_scan
-    # blank_scan = blank_scan - dark_scan
-
-    # #### compute the sinogram.
-    # # suppress warnings in np.log(), since the defective sino entries will be corrected.
-    # with np.errstate(divide='ignore', invalid='ignore'):
-    #     sino = -np.log(obj_scan / blank_scan)
-
-    # print(f"time to compute new sino = {time.time()-time00:.2f} seconds")
 
     time00 = time.time()
     # Set batch size (adjust based on available GPU memory)
@@ -183,8 +169,6 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
         # Compute sinogram safely (avoid division by zero)
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
 
-        # Store the batch result in CPU memory
-        # sino_batches.append(sino_batch)
         sino_batches = jnp.concatenate([sino_batches, sino_batch], axis=0)  # Efficient
 
     # Concatenate all batches into a full sinogram (on CPU)
