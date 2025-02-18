@@ -202,7 +202,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -212,6 +212,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            sinogram_view (jax array): A single view to hold the projection
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -226,7 +227,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, angle, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params)
+        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params, sinogram_view)
 
         return sinogram_view
 
@@ -256,7 +257,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -269,6 +270,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            sinogram_view (jax array): A single view to hold the projection
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -284,7 +286,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        # sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):

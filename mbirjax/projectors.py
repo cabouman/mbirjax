@@ -44,14 +44,7 @@ class Projectors:
         forward_project_pixel_batch_to_one_view = tomography_model.forward_project_pixel_batch_to_one_view
         back_project_one_view_to_pixel_batch = tomography_model.back_project_one_view_to_pixel_batch
 
-        geometry_params = self.tomography_model.get_geometry_parameters()
-        sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
-
-        # Combine the needed parameters into a named tuple for named access compatible with jit
-        projector_param_names = ['sinogram_shape', 'recon_shape', 'geometry_params']
-        projector_param_values = (sinogram_shape, recon_shape, geometry_params)
-        ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
-        projector_params = ProjectorParams(*tuple(projector_param_values))
+        projector_params = self.tomography_model.projector_params
 
         view_params_array = self.tomography_model.get_params('view_params_array')
         pixel_batch_size = self.tomography_model.pixels_per_batch
