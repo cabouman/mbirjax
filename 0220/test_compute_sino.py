@@ -156,7 +156,8 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
     # Initialize a list to store sinogram batches (on CPU)
-    sino_batches = []
+    # sino_batches = []
+    sino_batches = jnp.empty((0, *obj_scan.shape[1:]))  # Pre-allocate JAX array
 
     # Get the total number of views
     num_views = obj_scan.shape[0]
@@ -182,21 +183,20 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
         # Compute sinogram safely (avoid division by zero)
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
 
-        # Move batch back to CPU
-        sino_batch_cpu = np.array(sino_batch)  # Converts JAX tensor back to NumPy
-
         # Store the batch result in CPU memory
-        sino_batches.append(sino_batch_cpu)
+        # sino_batches.append(sino_batch)
+        sino_batches = jnp.concatenate([sino_batches, sino_batch], axis=0)  # Efficient
 
     # Concatenate all batches into a full sinogram (on CPU)
-    sino = np.concatenate(sino_batches, axis=0)
-
+    del obj_scan_batch, obj_scan, blank_scan_batch, dark_scan_batch, blank_scan, dark_scan, dark_scan_mean, blank_scan_mean, sino_batch
+    sino = np.array(sino_batches)
+    del sino_batches
     print("Sinogram computation complete.")
-    
 
     print(f"time to compute new sino = {time.time()-time00:.2f} seconds")
     print('2')
     mbirjax.get_memory_stats(print_results=True)
+
     # set the sino pixels corresponding to the provided defective list to 0.0
     if defective_pixel_list is None:
         defective_pixel_list = []
