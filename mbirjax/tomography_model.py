@@ -297,17 +297,17 @@ class TomographyModel(ParameterHandler):
         return recon
 
     def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
-        max_views = self.max_views_per_batch
-        max_pixels = self.max_pixels_per_batch
+        max_views_per_batch = self.max_views_per_batch
+        max_pixels_per_batch = self.max_pixels_per_batch
 
         # Batch the views and pixels
         sinogram_shape = self.get_params('sinogram_shape')
         num_views = sinogram_shape[0]
-        view_batch_indices = jnp.arange(num_views, step=max_views)
+        view_batch_indices = jnp.arange(num_views, step=max_views_per_batch)
         view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
 
         num_pixels = len(pixel_indices)
-        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels_per_batch)
         pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
 
         # Prepare room for the output sinogram
@@ -344,17 +344,73 @@ class TomographyModel(ParameterHandler):
         return sinogram
 
     def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
-        max_views = self.max_views_per_batch
-        max_pixels = self.max_pixels_per_batch
+        max_views_per_batch = self.max_views_per_batch
+        max_pixels_per_batch = self.max_pixels_per_batch
 
         # Batch the views and pixels
         sinogram_shape = self.get_params('sinogram_shape')
         num_views = sinogram_shape[0]
-        view_batch_indices = jnp.arange(num_views, step=max_views)
+        view_batch_indices = jnp.arange(num_views, step=max_views_per_batch)
         view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
 
         num_pixels = len(pixel_indices)
-        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels_per_batch)
+        pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
+        recon_shape = self.get_params('recon_shape')
+        num_slices = recon_shape[2]
+
+        # Prepare room for the output voxels
+        output_voxels = jnp.zeros([len(pixel_indices), num_slices], device=self.main_device)
+        projector_params = self.projector_params
+        view_params_array = self.get_params('view_params_array')
+        pixel_indices, view_params_array = jax.device_put([pixel_indices, view_params_array], device=self.worker)
+
+        # Loop over the view batches
+        for j, view_index_start in enumerate(view_batch_indices[:-1]):
+            # Send a batch of views to worker
+            view_index_end = view_batch_indices[j + 1]
+            cur_view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.worker)
+            cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+
+            # Loop over pixel batches
+            for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
+                # Send a batch of pixels to worker
+                pixel_index_end = pixel_batch_indices[k + 1]
+                cur_index_batch = pixel_indices[pixel_index_start:pixel_index_end]
+                cur_voxel_batch = jnp.zeros([pixel_index_end - pixel_index_start, num_slices], device=self.worker)
+
+                def back_project_pixel_batch_local(view, view_params):
+                    # Add the forward projection to the given existing view
+                    return self.back_project_one_view_to_pixel_batch(view, cur_index_batch, view_params,
+                                                                        projector_params, cur_voxel_batch, coeff_power=coeff_power)
+
+                view_map = jax.vmap(back_project_pixel_batch_local)
+                voxel_batch = jnp.sum(view_map(cur_view_batch, cur_view_params_batch), axis=0)
+                voxel_batch = jax.device_put(voxel_batch, output_voxels.device)
+                voxel_batch = voxel_batch + output_voxels[pixel_index_start:pixel_index_end]
+                output_voxels = self.add_voxel_batch(output_voxels, voxel_batch, pixel_index_start, pixel_index_end)
+
+        return output_voxels
+
+    @staticmethod
+    @jax.jit
+    def add_voxel_batch(output_voxels, voxel_batch, index_start, index_end):
+        # output_voxels = output_voxels.at[index_start:index_end].add(voxel_batch)
+        output_voxels = jax.lax.dynamic_update_slice(output_voxels, voxel_batch, (index_start, 0))
+        return output_voxels
+
+    def sparse_back_project_v1(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
+        max_views_per_batch = self.max_views_per_batch
+        max_pixels_per_batch = self.max_pixels_per_batch
+
+        # Batch the views and pixels
+        sinogram_shape = self.get_params('sinogram_shape')
+        num_views = sinogram_shape[0]
+        view_batch_indices = jnp.arange(num_views, step=max_views_per_batch)
+        view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
+
+        num_pixels = len(pixel_indices)
+        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels_per_batch)
         pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
         recon_shape = self.get_params('recon_shape')
         num_slices = recon_shape[2]
