@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import mbirjax
 from mbirjax import ParameterHandler
 from collections import namedtuple
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 
 
 class TomographyModel(ParameterHandler):
