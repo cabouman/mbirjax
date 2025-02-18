@@ -234,7 +234,7 @@ class TomographyModel(ParameterHandler):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
-    def forward_project(self, recon):
+    def forward_project(self, recon, output_device=None):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
@@ -244,17 +244,18 @@ class TomographyModel(ParameterHandler):
 
         Args:
             recon (jnp array): The 3D reconstruction array.
+            output_device (jax device): Device on which to put the output
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        sinogram = self.sparse_forward_project(voxel_values, full_indices)
+        sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
 
-    def back_project(self, sinogram):
+    def back_project(self, sinogram, output_device=None):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
@@ -264,14 +265,15 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
+            output_device (jax device): Device on which to put the output
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
-        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=self.main_device)
+        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
-        recon = jnp.zeros(recon_shape, device=self.main_device)
+        recon = jnp.zeros(recon_shape, device=output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
@@ -687,7 +689,7 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
+            partitions (tuple or list): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
@@ -718,22 +720,19 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             with jax.default_device(self.main_device):
-                recon = self.direct_recon(sinogram)
-            error_sinogram = sinogram
-        else:
-            # Make sure that init_recon has the correct shape and type
-            if init_recon.shape != recon_shape:
-                error_message = "init_recon does not have the correct shape. \n"
-                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
-                                                                                              init_recon.shape)
-                raise ValueError(error_message)
+                init_recon = self.direct_recon(sinogram)
 
-            # Initialize VCD recon and error sinogram using the init_reco
-            recon = jax.device_put(init_recon, self.worker)
-            error_sinogram = self.forward_project(recon)
-            error_sinogram = jax.device_put(error_sinogram, self.main_device)
-            error_sinogram = sinogram - error_sinogram
+        # Make sure that init_recon has the correct shape and type
+        if init_recon.shape != recon_shape:
+            error_message = "init_recon does not have the correct shape. \n"
+            error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
+                                                                                          init_recon.shape)
+            raise ValueError(error_message)
 
+        # Initialize VCD recon and error sinogram using the init_reco
+        error_sinogram = self.forward_project(init_recon, output_device=self.main_device)
+        error_sinogram = sinogram - error_sinogram
+        recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
         error_sinogram = jax.device_put(error_sinogram, self.main_device)
 
