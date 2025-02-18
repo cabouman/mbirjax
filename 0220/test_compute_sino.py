@@ -192,11 +192,7 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
     sino = np.concatenate(sino_batches, axis=0)
 
     print("Sinogram computation complete.")
-
-    #### compute the sinogram.
-    # suppress warnings in np.log(), since the defective sino entries will be corrected.
-    with np.errstate(divide='ignore', invalid='ignore'):
-        sino = -np.log(obj_scan / blank_scan)
+    
 
     print(f"time to compute new sino = {time.time()-time00:.2f} seconds")
     print('2')
