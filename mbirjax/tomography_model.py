@@ -296,7 +296,7 @@ class TomographyModel(ParameterHandler):
 
     def sparse_forward_project(self, voxel_values, indices, output_device=None):
         max_views = 200
-        max_pixels = 800000
+        max_pixels = 8000
 
         # Batch the views and pixels
         sinogram_shape = self.get_params('sinogram_shape')

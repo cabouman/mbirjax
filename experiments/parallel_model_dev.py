@@ -5,7 +5,8 @@ import jax
 import time
 import matplotlib.pyplot as plt
 import gc
-import mbirjax.parallel_beam
+import mbirjax
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
 if __name__ == "__main__":
     """
@@ -13,16 +14,32 @@ if __name__ == "__main__":
     """
     # ##########################
     # Do all the setup
-    view_batch_size = 32
-    pixel_batch_size = 2048
+
+    # num_pixels = 8000
+    # num_rows = 2000
+    # num_channels = 200
+    # num_views = 200
+    # voxels = jnp.array(np.random.rand(num_pixels, num_rows))
+    # A = jnp.array(np.random.rand(1, num_pixels))
+    # inds = jnp.array(np.random.randint(0, num_channels, num_pixels))
+    # views = jnp.zeros((num_views, num_rows, num_channels))
+    #
+    # def update_view(view):
+    #     a = A * voxels.T
+    #     view = view.at[:, inds].add(1)
+    #     return view
+    #
+    # views = jax.lax.map(update_view, views, batch_size=20)
+    # mbirjax.get_memory_stats()
+    # exit(0)
 
     # Initialize sinogram
-    num_views = 128
-    num_det_rows = 20
-    num_det_channels = 128
+    num_views = 1000
+    num_det_rows = 2000
+    num_det_channels = 2000
     start_angle = 0
     end_angle = jnp.pi
-    sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
     # Initialize a random key
@@ -31,40 +48,60 @@ if __name__ == "__main__":
 
     # Set up parallel beam model
     # parallel_model = mbirjax.ParallelBeamModel.from_file('params_parallel.yaml')
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    parallel_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=4000, source_iso_dist=2000)
+    parallel_model.set_params(use_gpu='worker')
     # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mbirjax.gen_cube_phantom(recon_shape)
+    with jax.default_device(jax.devices('cpu')[0]):
+        phantom = jnp.zeros(recon_shape)  #mbirjax.gen_cube_phantom(recon_shape)
+        i, j, k = recon_shape[0]//3, recon_shape[1]//2, recon_shape[2]//2
+        phantom = phantom.at[i:i+5, j:j+5, k:k+5].set(1.0)
 
-    # Generate indices of pixels
-    num_subsets = 1
-    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
-    num_subsets = 5
-    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
-
-    # Generate sinogram data
-    voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
-
-    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
+        # Generate indices of pixels and sinogram data
+        num_subsets = 1
+        full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)[0]
+        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
+        num_subsets = 5
+        subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
 
     print('Starting forward projection')
-    sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0])
+    voxel_values, full_indices = jax.device_put([voxel_values, full_indices], jax.devices('cpu')[0])
+    t0 = time.time()
+    sinogram = parallel_model.sparse_forward_project(voxel_values, full_indices, output_device=jax.devices('cpu')[0])
+    print('Elapsed time:', time.time() - t0)
 
     # Determine resulting number of views, slices, and channels and image size
     print('Sinogram shape: {}'.format(sinogram.shape))
     print('Memory stats after forward projection')
     mbirjax.get_memory_stats(print_results=True)
-
+    # mbirjax.slice_viewer(sinogram, slice_axis=0)
+    mbirjax.slice_viewer(sinogram, slice_axis=0)
     # Get the vector of indices
     indices = jnp.arange(num_recon_rows * num_recon_cols)
-    num_trials = 3
+    num_trials = 1
     indices = jnp.mod(np.arange(num_trials, dtype=int).reshape((-1, 1)) + indices.reshape((1, -1)), num_recon_rows * num_recon_cols)
 
     sinogram = jnp.array(sinogram)
     indices = jnp.array(indices)
+    # ##########################
+    # Check the time taken per forward projection
+    #  NOTE: recompiling happens whenever sparse_forward_project is called with a new *length* of input indices
+    time_taken = 0
+
+    print('\nStarting multiple forward projections...')
+    for j in range(num_trials):
+        t0 = time.time()
+        fp = parallel_model.sparse_forward_project(voxel_values, full_indices)
+        time_taken += time.time() - t0
+        del fp
+        gc.collect()
+
+    print('Mean time per call = {}'.format(time_taken / num_trials))
+    print('Done')
+    exit(0)
 
     # Run once to finish compiling
     print('Starting back projection')
