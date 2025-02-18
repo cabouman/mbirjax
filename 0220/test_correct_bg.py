@@ -6,6 +6,7 @@ import mbirjax.preprocess as preprocess
 import numpy as np
 import os
 import sys
+import warnings
 from test_compute_sino import compute_sino_and_params_compute_sino
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
@@ -106,7 +107,7 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
-    background_offset = preprocess.estimate_background_offset(sino)
+    background_offset = estimate_background_offset_test(sino)
     print("background_offset = ", background_offset)
     sino = sino - background_offset
     mbirjax.get_memory_stats(print_results=True)
@@ -114,38 +115,83 @@ def compute_sino_and_params_corr_bg(dataset_dir,
 
     return sino, cone_beam_params, optional_params
 
+def estimate_background_offset_test(sino, option=0, edge_width=9):
+    """
+    Estimate background offset of a sinogram from the edge pixels.
+
+    This function estimates the background offset when no object is present by computing a robust centroid estimate using `edge_width` pixels along the edge of the sinogram across views.
+    Typically, this estimate is subtracted from the sinogram so that air is reconstructed as approximately 0.
+
+    Args:
+        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
+        option (int, optional): [Default=0] Option of algorithm used to calculate the background offset.
+        edge_width(int, optional): [Default=9] Width of the edge regions in pixels. It must be an odd integer >= 3.
+    Returns:
+        offset (float): Background offset value.
+    """
+
+    # Check validity of edge_width value
+    assert(isinstance(edge_width, int)), "edge_width must be an integer!"
+    if (edge_width % 2 == 0):
+        edge_width = edge_width+1
+        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
+
+    if (edge_width < 3):
+        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
+        edge_width = 3
+
+    _, _, num_det_channels = sino.shape
+
+    # calculate mean sinogram
+    sino_median=np.median(sino, axis=0)
+
+    # offset value of the top edge region.
+    # Calculated as median([median value of each horizontal line in top edge region])
+    median_top = np.median(np.median(sino_median[:edge_width], axis=1))
+
+    # offset value of the left edge region.
+    # Calculated as median([median value of each vertical line in left edge region])
+    median_left = np.median(np.median(sino_median[:, :edge_width], axis=0))
+
+    # offset value of the right edge region.
+    # Calculated as median([median value of each vertical line in right edge region])
+    median_right = np.median(np.median(sino_median[:, num_det_channels-edge_width:], axis=0))
+
+    # offset = median of three offset values from top, left, right edge regions.
+    offset = np.median([median_top, median_left, median_right])
+    return offset
+
+def main():
+    print('This script is a demonstration of the preprocessing module of NSI dataset. Demo functionality includes:\
+    \n\t * downloading NSI dataset from specified urls;\
+    \n\t * Loading object scans, blank scan, dark scan, view angles, and MBIRJAX geometry parameters;\
+    \n\t * Computing sinogram from object scan, blank scan, and dark scan images;\
+    \n\t * Computing a 3D reconstruction from the sinogram using MBIRJAX;\
+    \n\t * Displaying the results.\n')
+
+    # ###################### User defined params. Change the parameters below for your own use case.
+    output_path = './output/nsi_demo/'  # path to store output recon images
+    os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
 
 
+    dataset_dir = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/vert_no_metal'
+    # #### preprocessing parameters
+    downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
+    subsample_view_factor = 1  # view subsample factor.
 
-print('This script is a demonstration of the preprocessing module of NSI dataset. Demo functionality includes:\
-\n\t * downloading NSI dataset from specified urls;\
-\n\t * Loading object scans, blank scan, dark scan, view angles, and MBIRJAX geometry parameters;\
-\n\t * Computing sinogram from object scan, blank scan, and dark scan images;\
-\n\t * Computing a 3D reconstruction from the sinogram using MBIRJAX;\
-\n\t * Displaying the results.\n')
+    # #### recon parameters
+    sharpness = 0.0
+    # ###################### End of parameters
+    time_start = time.time()
+    print("\n*******************************************************",
+            "\n************** NSI dataset preprocessing **************",
+            "\n*******************************************************")
+    sino, cone_beam_params, optional_params = \
+        compute_sino_and_params_corr_bg(dataset_dir,
+                                                        downsample_factor=downsample_factor,
+                                                        subsample_view_factor=subsample_view_factor)
 
-# ###################### User defined params. Change the parameters below for your own use case.
-output_path = './output/nsi_demo/'  # path to store output recon images
-os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
+    print(f"Preprocessing time: {time.time() - time_start:.2f} seconds")
 
-
-dataset_dir = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/vert_no_metal'
-# #### preprocessing parameters
-downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
-subsample_view_factor = 1  # view subsample factor.
-
-# #### recon parameters
-sharpness = 0.0
-# ###################### End of parameters
-time_start = time.time()
-print("\n*******************************************************",
-        "\n************** NSI dataset preprocessing **************",
-        "\n*******************************************************")
-sino, cone_beam_params, optional_params = \
-    compute_sino_and_params_corr_bg(dataset_dir,
-                                                    downsample_factor=downsample_factor,
-                                                    subsample_view_factor=subsample_view_factor)
-
-print(f"Preprocessing time: {time.time() - time_start:.2f} seconds")
-
-
+if __name__ == '__main__':
+    main()
