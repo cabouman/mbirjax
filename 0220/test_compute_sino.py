@@ -136,39 +136,25 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
     time00 = time.time()
     # Set batch size (adjust based on available GPU memory)
     batch_size = 180
-
     # Compute mean for blank and dark scans and move them to GPU
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
-
     # Initialize a list to store sinogram batches (on CPU)
-    # sino_batches = []
     sino_batches = jnp.empty((0, *obj_scan.shape[1:]))  # Pre-allocate JAX array
-
     # Get the total number of views
     num_views = obj_scan.shape[0]
-
     # Process obj_scan in batches
     for i in range(0, num_views, batch_size):
         print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
-
-        # Ensure we don't exceed the total number of views
-        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]  # This ensures no out-of-bounds error
-
+        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)] # Ensures no out-of-bounds error
         # Move batch to GPU
         obj_scan_batch = jax.device_put(obj_scan_batch)
 
-        # Broadcast blank and dark scans to match batch shape
         blank_scan_batch = jnp.broadcast_to(blank_scan_mean, obj_scan_batch.shape)
         dark_scan_batch = jnp.broadcast_to(dark_scan_mean, obj_scan_batch.shape)
-
-        # Compute attenuation
         obj_scan_batch = obj_scan_batch - dark_scan_batch
         blank_scan_batch = blank_scan_batch - dark_scan_batch
-
-        # Compute sinogram safely (avoid division by zero)
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
-
         sino_batches = jnp.concatenate([sino_batches, sino_batch], axis=0)  # Efficient
 
     # Concatenate all batches into a full sinogram (on CPU)
