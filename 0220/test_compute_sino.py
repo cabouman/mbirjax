@@ -6,6 +6,8 @@ import mbirjax.preprocess as preprocess
 import numpy as np
 import os
 import sys
+import jax
+import jax.numpy as jnp
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
@@ -131,12 +133,65 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
 
     """
     # take average of multiple blank/dark scans, and expand the dimension to be the same as obj_scan.
-    time00 = time.time()
-    blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
-    dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
+    # time00 = time.time()
+    # blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
+    # dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
 
-    obj_scan = obj_scan - dark_scan
-    blank_scan = blank_scan - dark_scan
+    # obj_scan = obj_scan - dark_scan
+    # blank_scan = blank_scan - dark_scan
+
+    # #### compute the sinogram.
+    # # suppress warnings in np.log(), since the defective sino entries will be corrected.
+    # with np.errstate(divide='ignore', invalid='ignore'):
+    #     sino = -np.log(obj_scan / blank_scan)
+
+    # print(f"time to compute new sino = {time.time()-time00:.2f} seconds")
+
+    time00 = time.time()
+    # Set batch size (adjust based on available GPU memory)
+    batch_size = 180
+
+    # Compute mean for blank and dark scans and move them to GPU
+    blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
+    dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
+
+    # Initialize a list to store sinogram batches (on CPU)
+    sino_batches = []
+
+    # Get the total number of views
+    num_views = obj_scan.shape[0]
+
+    # Process obj_scan in batches
+    for i in range(0, num_views, batch_size):
+        print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
+
+        # Ensure we don't exceed the total number of views
+        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]  # This ensures no out-of-bounds error
+
+        # Move batch to GPU
+        obj_scan_batch = jax.device_put(obj_scan_batch)
+
+        # Broadcast blank and dark scans to match batch shape
+        blank_scan_batch = jnp.broadcast_to(blank_scan_mean, obj_scan_batch.shape)
+        dark_scan_batch = jnp.broadcast_to(dark_scan_mean, obj_scan_batch.shape)
+
+        # Compute attenuation
+        obj_scan_batch = obj_scan_batch - dark_scan_batch
+        blank_scan_batch = blank_scan_batch - dark_scan_batch
+
+        # Compute sinogram safely (avoid division by zero)
+        sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
+
+        # Move batch back to CPU
+        sino_batch_cpu = np.array(sino_batch)  # Converts JAX tensor back to NumPy
+
+        # Store the batch result in CPU memory
+        sino_batches.append(sino_batch_cpu)
+
+    # Concatenate all batches into a full sinogram (on CPU)
+    sino = np.concatenate(sino_batches, axis=0)
+
+    print("Sinogram computation complete.")
 
     #### compute the sinogram.
     # suppress warnings in np.log(), since the defective sino entries will be corrected.
