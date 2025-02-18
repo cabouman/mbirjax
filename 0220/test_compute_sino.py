@@ -252,28 +252,33 @@ def interpolate_defective_pixels_test(sino, defective_pixel_list):
                 defective_pixel_list_new.append((v,r,c))
     return sino, defective_pixel_list_new
 
-# ###################### User defined params. Change the parameters below for your own use case.
-output_path = './output/nsi_demo/'  # path to store output recon images
-os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
+
+def main():
+
+    # ###################### User defined params. Change the parameters below for your own use case.
+    output_path = './output/nsi_demo/'  # path to store output recon images
+    os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
 
 
-dataset_dir = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/vert_no_metal'
-# #### preprocessing parameters
-downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
-subsample_view_factor = 1  # view subsample factor.
+    dataset_dir = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/vert_no_metal'
+    # #### preprocessing parameters
+    downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
+    subsample_view_factor = 1  # view subsample factor.
 
-# #### recon parameters
-sharpness = 0.0
-# ###################### End of parameters
-time_start = time.time()
-print("\n*******************************************************",
-        "\n************** NSI dataset preprocessing **************",
-        "\n*******************************************************")
-sino, cone_beam_params, optional_params = \
-    compute_sino_and_params_compute_sino(dataset_dir,
-                                                    downsample_factor=downsample_factor,
-                                                    subsample_view_factor=subsample_view_factor)
+    # #### recon parameters
+    sharpness = 0.0
+    # ###################### End of parameters
+    time_start = time.time()
+    print("\n*******************************************************",
+            "\n************** NSI dataset preprocessing **************",
+            "\n*******************************************************")
+    sino, cone_beam_params, optional_params = \
+        compute_sino_and_params_compute_sino(dataset_dir,
+                                                        downsample_factor=downsample_factor,
+                                                        subsample_view_factor=subsample_view_factor)
 
-print(f"Preprocessing time: {time.time() - time_start:.2f} seconds")
+    print(f"Preprocessing time: {time.time() - time_start:.2f} seconds")
 
 
+if __name__ == "__main__":
+    main()

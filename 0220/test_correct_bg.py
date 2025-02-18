@@ -6,6 +6,7 @@ import mbirjax.preprocess as preprocess
 import numpy as np
 import os
 import sys
+from test_compute_sino import compute_sino_and_params_compute_sino
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
@@ -94,6 +95,13 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print('obj_scan shape = ', obj_scan.shape)
     print('blank_scan shape = ', blank_scan.shape)
     print('dark_scan shape = ', dark_scan.shape)
+
+
+    sino, cone_beam_params, optional_params = \
+    compute_sino_and_params_compute_sino(dataset_dir,
+                                                    downsample_factor=downsample_factor,
+                                                    subsample_view_factor=subsample_view_factor)
+
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
     time0 = time.time()
