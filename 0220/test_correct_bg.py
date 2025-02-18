@@ -109,7 +109,7 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
-    background_offset = estimate_background_offset_test(sino)
+    background_offset = estimate_background_offset_jax(sino)
     print("background_offset = ", background_offset)
     sino = sino - background_offset
     mbirjax.get_memory_stats(print_results=True)
