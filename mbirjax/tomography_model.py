@@ -51,6 +51,8 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = None
 
         self.set_devices_and_batch_sizes()
+        self.max_views_per_batch = 200
+        self.max_pixels_per_batch = 8000
         self.projector_params = self.get_projector_params()
         self.create_projectors()
 
@@ -228,8 +230,7 @@ class TomographyModel(ParameterHandler):
         return view
 
     @staticmethod
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, voxel_values, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
 
@@ -241,6 +242,7 @@ class TomographyModel(ParameterHandler):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            voxel_values (jax array): Array of size (len(pixel_indices), num_det_channels), where num_det_channels = recon_shape[0] = sinogram_shape[2]
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 for compute_hessian_diagonal.
 
@@ -249,7 +251,7 @@ class TomographyModel(ParameterHandler):
             the input sinogram view.
         """
         warnings.warn('Back projector not implemented for TomographyModel.')
-        return None
+        return voxel_values
 
     def forward_project(self, recon, output_device=None):
         """
@@ -294,9 +296,9 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, output_device=None):
-        max_views = 200
-        max_pixels = 8000
+    def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
+        max_views = self.max_views_per_batch
+        max_pixels = self.max_pixels_per_batch
 
         # Batch the views and pixels
         sinogram_shape = self.get_params('sinogram_shape')
@@ -304,14 +306,15 @@ class TomographyModel(ParameterHandler):
         view_batch_indices = jnp.arange(num_views, step=max_views)
         view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
 
-        num_pixels = len(indices)
+        num_pixels = len(pixel_indices)
         pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
         pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
 
-        # Create the output sinogram
+        # Prepare room for the output sinogram
         sinogram = []
         projector_params = self.projector_params
-        view_params_array = jax.device_put(self.get_params('view_params_array'), device=self.worker)
+        view_params_array = self.get_params('view_params_array')
+        pixel_indices, view_params_array = jax.device_put([pixel_indices, view_params_array], device=self.worker)
 
         # Loop over the view batches
         for j, view_index_start in enumerate(view_batch_indices[:-1]):
@@ -325,9 +328,8 @@ class TomographyModel(ParameterHandler):
             for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
                 # Send a batch of pixels to worker
                 pixel_index_end = pixel_batch_indices[k+1]
-                cur_voxel_batch, cur_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                                  indices[pixel_index_start:pixel_index_end]],
-                                                                  self.worker)
+                cur_voxel_batch = jax.device_put(voxel_values[pixel_index_start:pixel_index_end], self.worker)
+                cur_index_batch = pixel_indices[pixel_index_start:pixel_index_end]
 
                 def forward_project_pixel_batch_local(view, view_params):
                     # Add the forward projection to the given existing view
@@ -340,6 +342,54 @@ class TomographyModel(ParameterHandler):
             sinogram.append(jax.device_put(cur_view_batch, output_device))
         sinogram = jnp.concatenate(sinogram)
         return sinogram
+
+    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
+        max_views = self.max_views_per_batch
+        max_pixels = self.max_pixels_per_batch
+
+        # Batch the views and pixels
+        sinogram_shape = self.get_params('sinogram_shape')
+        num_views = sinogram_shape[0]
+        view_batch_indices = jnp.arange(num_views, step=max_views)
+        view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
+
+        num_pixels = len(pixel_indices)
+        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+        pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
+        recon_shape = self.get_params('recon_shape')
+        num_slices = recon_shape[2]
+
+        # Prepare room for the output voxels
+        output_voxels = []
+        projector_params = self.projector_params
+        view_params_array = self.get_params('view_params_array')
+        pixel_indices, view_params_array = jax.device_put([pixel_indices, view_params_array], device=self.worker)
+
+        # Loop over pixel batches
+        for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
+            # Send a batch of pixels to worker
+            pixel_index_end = pixel_batch_indices[k + 1]
+            cur_voxel_batch = jnp.zeros([pixel_index_end-pixel_index_start, num_slices], device=self.worker)
+            cur_index_batch = pixel_indices[pixel_index_start:pixel_index_end]
+
+            # Loop over the view batches
+            for j, view_index_start in enumerate(view_batch_indices[:-1]):
+                # Send a batch of views to worker
+                view_index_end = view_batch_indices[j+1]
+                cur_view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.worker)
+                cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+
+                def back_project_pixel_batch_local(view, view_params):
+                    # Add the forward projection to the given existing view
+                    return self.back_project_one_view_to_pixel_batch(view, cur_index_batch, view_params,
+                                                                        projector_params, cur_voxel_batch, coeff_power=coeff_power)
+
+                view_map = jax.vmap(back_project_pixel_batch_local)
+                cur_voxel_batch += jnp.sum(view_map(cur_view_batch, cur_view_params_batch), axis=0)
+
+            output_voxels.append(jax.device_put(cur_voxel_batch, output_device))
+        output_voxels = jnp.concatenate(output_voxels)
+        return output_voxels
 
     def sparse_forward_project_old(self, voxel_values, indices, output_device=None):
         """
@@ -372,7 +422,7 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, coeff_power=1, output_device=None):
+    def sparse_back_project_old(self, sinogram, indices, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using

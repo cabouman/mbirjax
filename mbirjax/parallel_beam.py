@@ -169,7 +169,7 @@ class ParallelBeamModel(TomographyModel):
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            sinogram_view (jax array): A single view to hold the projection
+            sinogram_view (jax array): A single view to hold the projection. The projection of voxels_values will be added to the existing sinogram_view.
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -199,7 +199,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, projector_params, voxel_values, coeff_power=1):
         """
         Apply parallel back projection to a single sinogram view and return the resulting voxel cylinders.
 
@@ -209,12 +209,13 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             angle (float): The projection angle in radians for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
+            voxel_values (jax array): Array of size (len(pixel_indices), num_det_channels), where num_det_channels = recon_shape[0] = sinogram_shape[2]
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
         Returns:
             jax array of shape (len(pixel_indices), num_det_rows)
         """
-        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # Get all the geometry parameters - we use the name gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
@@ -225,9 +226,6 @@ class ParallelBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1, W_p_c)
 
-        # Allocate the voxel cylinder array
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
-
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
@@ -236,9 +234,9 @@ class ParallelBeamModel(TomographyModel):
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
+            voxel_values = jnp.add(voxel_values, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
 
-        return det_voxel_cylinder
+        return voxel_values
 
     @staticmethod
     def compute_proj_data(pixel_indices, angle, projector_params):
