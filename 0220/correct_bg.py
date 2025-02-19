@@ -9,7 +9,7 @@ import sys
 import warnings
 import jax.numpy as jnp
 from jax import jit
-from test_compute_sino import compute_sino_and_params_compute_sino
+from compute_sino import compute_sino_and_params_compute_sino
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
