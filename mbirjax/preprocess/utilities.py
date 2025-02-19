@@ -9,6 +9,7 @@ import h5py
 import jax.numpy as jnp
 import jax
 from jax import jit
+import mbirjax
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
@@ -233,6 +234,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
         - A numpy array containing the corrected sinogram data if weights is None.
         - A tuple (sino, weights) if weights is not None
     """
+    print(f'no batch before:{mbirjax.get_memory_stats}')
     sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     # weights not provided
     if weights is None:
@@ -240,6 +242,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     # weights provided
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
+    print(f'no batch after:{mbirjax.get_memory_stats}')
     return sino, weights
 
 def estimate_background_offset(sino, option=0, edge_width=9):

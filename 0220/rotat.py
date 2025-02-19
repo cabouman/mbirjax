@@ -6,8 +6,6 @@ import mbirjax.preprocess as preprocess
 import numpy as np
 import os
 import sys
-import jax
-import jax.numpy as jnp
 import scipy
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
@@ -104,7 +102,7 @@ def compute_sino_and_params_rotat(dataset_dir,
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
-    sino = correct_det_rotation_jax(sino, det_rotation=optional_params["det_rotation"])
+    sino = correct_det_rotation_batch(sino, det_rotation=optional_params["det_rotation"])
     del optional_params["det_rotation"]
     mbirjax.get_memory_stats(print_results=True)
     print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
@@ -112,7 +110,7 @@ def compute_sino_and_params_rotat(dataset_dir,
     return sino, cone_beam_params, optional_params
 
 
-def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=10):
+def correct_det_rotation_batch(sino, weights=None, det_rotation=0.0, batch_size=180):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -128,12 +126,9 @@ def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=10
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
-    def rotate_sino(view):
-        return jax.scipy.ndimage.rotate(view, jnp.rad2deg(det_rotation), axes=(1, 2), reshape=False, order=3)
-
     num_views = sino.shape[0]  # Total number of views
-    sino_corrected = jnp.empty((0, *sino.shape[1:]))
-
+    sino_corrected = np.empty((0, *sino.shape[1:]), dtype=sino.dtype)
+    print(f'before batch:{mbirjax.get_memory_stats()}')
     # Process in batches with looping and progress printing
     for i in range(0, num_views, batch_size):
         print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
@@ -142,13 +137,11 @@ def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=10
         batch = sino[i : min(i + batch_size, num_views)]
 
         # Apply the rotation on this batch
-        batch_rotated = jax.scipy.ndimage.rotate(batch, jnp.rad2deg(det_rotation), axes=(1, 2), reshape=False, order=3)
+        batch_rotated = scipy.ndimage.rotate(batch, np.rad2deg(det_rotation), axes=(1, 2), reshape=False, order=3)
 
         # Append the rotated batch
-        sino_batches = jnp.concatenate([sino_batches, batch_rotated], axis=0)
-
-    # Combine all the rotated batches back into one array
-    sino_corrected = np.array(sino_batches)
+        sino_corrected = np.concatenate([sino_corrected, batch_rotated], axis=0)
+        print(f'After batch:{mbirjax.get_memory_stats()}')
 
     if weights is None:
         return sino_corrected
