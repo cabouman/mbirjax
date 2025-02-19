@@ -8,7 +8,6 @@ import os
 import h5py
 import jax.numpy as jnp
 import jax
-jax.config.update("jax_enable_x64", True)
 from jax import jit
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
