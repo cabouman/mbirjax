@@ -6,6 +6,8 @@ from PIL import Image
 import glob
 import os
 import h5py
+import jax.numpy as jnp
+from jax import jit
 
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
@@ -151,50 +153,34 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     return sino, weights
 
 
-def estimate_background_offset(sino, option=0, edge_width=9):
+@jit
+def estimate_background_offset(sino, edge_width=9):
     """
-    Estimate background offset of a sinogram from the edge pixels.
-
-    This function estimates the background offset when no object is present by computing a robust centroid estimate using `edge_width` pixels along the edge of the sinogram across views.
-    Typically, this estimate is subtracted from the sinogram so that air is reconstructed as approximately 0.
+    Estimate background offset of a sinogram using JAX for GPU acceleration.
 
     Args:
-        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        option (int, optional): [Default=0] Option of algorithm used to calculate the background offset.
-        edge_width(int, optional): [Default=9] Width of the edge regions in pixels. It must be an odd integer >= 3.
+        sino (jax.numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        edge_width (int, optional): Width of the edge regions in pixels. Must be an odd integer >= 3.
+
     Returns:
         offset (float): Background offset value.
     """
-
-    # Check validity of edge_width value
-    assert(isinstance(edge_width, int)), "edge_width must be an integer!"
+    sino = jnp.asarray(sino)
     if (edge_width % 2 == 0):
-        edge_width = edge_width+1
+        edge_width += 1
         warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
-
     if (edge_width < 3):
-        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
         edge_width = 3
+        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
 
     _, _, num_det_channels = sino.shape
+    # Extract edge regions directly from the sinogram (without computing a full median)
+    median_top = jnp.median(jnp.median(jnp.median(sino[:, :edge_width, :], axis=0), axis=1)) # Top edge
+    median_left = jnp.median(jnp.median(jnp.median(sino[:, :, :edge_width], axis=0), axis=0))  # Left edge
+    median_right = jnp.median(jnp.median(jnp.median(sino[:, :, num_det_channels-edge_width:], axis=0), axis=0))  # Right edge
+    # Compute final offset as median of the three regions
+    offset = jnp.median(jnp.array([median_top, median_left, median_right]))
 
-    # calculate mean sinogram
-    sino_median=np.median(sino, axis=0)
-
-    # offset value of the top edge region.
-    # Calculated as median([median value of each horizontal line in top edge region])
-    median_top = np.median(np.median(sino_median[:edge_width], axis=1))
-
-    # offset value of the left edge region.
-    # Calculated as median([median value of each vertical line in left edge region])
-    median_left = np.median(np.median(sino_median[:, :edge_width], axis=0))
-
-    # offset value of the right edge region.
-    # Calculated as median([median value of each vertical line in right edge region])
-    median_right = np.median(np.median(sino_median[:, num_det_channels-edge_width:], axis=0))
-
-    # offset = median of three offset values from top, left, right edge regions.
-    offset = np.median([median_top, median_left, median_right])
     return offset
 
 
