@@ -259,14 +259,14 @@ def main():
         dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
 
     # Get results from original function
-    sino_orig, cone_beam_params_orig, optional_params_orig = preprocess.compute_sino_transmission(
+    sino_orig, cone_beam_params_orig, optional_params_orig = preprocess.nsi.compute_sino_and_params(
         dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
 
-    # ✅ Check if both sinograms are numerically identical
+    # Check if both sinograms are numerically identical
     if np.array_equal(sino_opt, sino_orig):
-        print("✅ Both sinograms are **exactly identical**.")
+        print("Both sinograms are **exactly identical**.")
     else:
-        # ✅ Check for small numerical differences
+        # Check for small numerical differences
         diff = np.abs(sino_opt - sino_orig)
         max_diff = np.max(diff)
         mean_diff = np.mean(diff)
@@ -275,9 +275,9 @@ def main():
         print(f"🔍 Mean difference: {mean_diff:.8f}")
 
         if np.allclose(sino_opt, sino_orig, atol=1e-5):  # Adjust tolerance if needed
-            print("✅ Both sinograms are **numerically close** (small floating-point differences).")
+            print("Both sinograms are **numerically close** (small floating-point differences).")
         else:
-            print("❌ Sinograms are **not identical**. Significant differences exist!")
+            print("Sinograms are **not identical**. Significant differences exist!")
 
 
 if __name__ == "__main__":
