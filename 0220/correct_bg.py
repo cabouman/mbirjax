@@ -9,7 +9,6 @@ import sys
 import warnings
 import jax.numpy as jnp
 from jax import jit
-from compute_sino import compute_sino_and_params_compute_sino
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
@@ -100,11 +99,8 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print('dark_scan shape = ', dark_scan.shape)
 
 
-    sino, cone_beam_params, optional_params = \
-    compute_sino_and_params_compute_sino(dataset_dir,
-                                                    downsample_factor=downsample_factor,
-                                                    subsample_view_factor=subsample_view_factor)
-
+    sino, cone_beam_params, optional_params = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+    del obj_scan, blank_scan, dark_scan
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
     time0 = time.time()
