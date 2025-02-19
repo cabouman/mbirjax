@@ -20,7 +20,7 @@ pp = pp.PrettyPrinter(indent=4)
 
 def compute_sino_and_params_compute_sino(dataset_dir,
                             downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
-                            subsample_view_factor=1):
+                            subsample_view_factor=1, function='1'):
     """
     Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
@@ -99,9 +99,12 @@ def compute_sino_and_params_compute_sino(dataset_dir,
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans ...")
     time0 = time.time()
-    sino, defective_pixel_list = \
+    if function == '1':
+        sino, defective_pixel_list = \
             compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pixel_list)
-    del obj_scan, blank_scan, dark_scan # delete scan images to save memory
+    elif function == '2':
+        sino, defective_pixel_list = \
+            preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     print(f"time to compute sino = {time.time()-time0:.2f} seconds")
     print(f'sino shape = {sino.shape}')
 
@@ -256,11 +259,11 @@ def main():
 
     # Get results from optimized function
     sino_opt, cone_beam_params_opt, optional_params_opt = compute_sino_and_params_compute_sino(
-        dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
+        dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor, function= '1')
 
     # Get results from original function
-    sino_orig, cone_beam_params_orig, optional_params_orig = preprocess.nsi.compute_sino_and_params(
-        dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
+    sino_orig, cone_beam_params_orig, optional_params_orig = compute_sino_and_params_compute_sino(
+        dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor, function= '2')
 
     # Check if both sinograms are numerically identical
     if np.array_equal(sino_opt, sino_orig):
