@@ -80,7 +80,7 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_l
             print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
     return sino, defective_pixel_list
 
-def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
+def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True, batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
 
@@ -103,7 +103,6 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
 
     """
 
-    batch_size = 90  # Adjust based on available GPU memory
 
     # Compute mean for blank and dark scans and move them to GPU with float64 precision
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))

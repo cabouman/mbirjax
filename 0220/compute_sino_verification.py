@@ -102,7 +102,7 @@ def compute_sino_and_params_compute_sino(dataset_dir,
     time0 = time.time()
     if function == '1':
         sino, defective_pixel_list = \
-            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list, batch_size=90)
     elif function == '2':
         sino, defective_pixel_list = \
             preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list)

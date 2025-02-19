@@ -6,9 +6,8 @@ import mbirjax.preprocess as preprocess
 import numpy as np
 import os
 import sys
-import jax
-import jax.numpy as jnp
 import scipy
+import rotat
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
@@ -21,7 +20,7 @@ pp = pp.PrettyPrinter(indent=4)
 
 def compute_sino_and_params_rotat(dataset_dir,
                             downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
-                            subsample_view_factor=1):
+                            subsample_view_factor=1, function='1'):
     """
     Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
@@ -103,58 +102,17 @@ def compute_sino_and_params_rotat(dataset_dir,
                                                     subsample_view_factor=subsample_view_factor)
 
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
-    time0 = time.time()
-    mbirjax.get_memory_stats(print_results=True)
-    sino = correct_det_rotation_jax(sino, det_rotation=optional_params["det_rotation"])
+    if function == '1':
+        sino = rotat.correct_det_rotation_jax(sino, det_rotation=optional_params["det_rotation"])
+    if function == '2':
+        sino, cone_beam_params, optional_params = \
+            preprocess.correct_det_rotation(sino, weights=None, det_rotation=optional_params["det_rotation"])
+
     del optional_params["det_rotation"]
-    mbirjax.get_memory_stats(print_results=True)
+
     print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
 
     return sino, cone_beam_params, optional_params
-
-
-def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=10):
-    """
-    Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
-    Weights are not modified.
-
-    Args:
-        sino (jax.numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        weights (jax.numpy.ndarray, optional): Sinogram weights, with the same array shape as ``sino`` (kept unchanged).
-        det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
-        batch_size (int): Number of views to process in each batch to avoid memory overload.
-
-    Returns:
-        - A jax.numpy.ndarray containing the corrected sinogram data if weights is None.
-        - A tuple (sino_corrected, weights) if weights is not None.
-    """
-
-    def rotate_sino(view):
-        return jax.scipy.ndimage.rotate(view, jnp.rad2deg(det_rotation), axes=(1, 2), reshape=False, order=3)
-
-    num_views = sino.shape[0]  # Total number of views
-    sino_corrected = jnp.empty((0, *sino.shape[1:]))
-
-    # Process in batches with looping and progress printing
-    for i in range(0, num_views, batch_size):
-        print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
-
-        # Get the current batch (from i to i + batch_size)
-        batch = sino[i : min(i + batch_size, num_views)]
-
-        # Apply the rotation on this batch
-        batch_rotated = jax.scipy.ndimage.rotate(batch, jnp.rad2deg(det_rotation), axes=(1, 2), reshape=False, order=3)
-
-        # Append the rotated batch
-        sino_batches = jnp.concatenate([sino_batches, batch_rotated], axis=0)
-
-    # Combine all the rotated batches back into one array
-    sino_corrected = np.array(sino_batches)
-
-    if weights is None:
-        return sino_corrected
-
-    return sino_corrected, weights  # Keep weights unchanged
 
 
 def main():
@@ -187,7 +145,15 @@ def main():
     sino, cone_beam_params, optional_params = \
         compute_sino_and_params_rotat(dataset_dir,
                                                         downsample_factor=downsample_factor,
-                                                        subsample_view_factor=subsample_view_factor)
+                                                        subsample_view_factor=subsample_view_factor, function='1')
+    sino_orig, cone_beam_params_orig, optional_params_orig = \
+        compute_sino_and_params_rotat(dataset_dir,
+                                                        downsample_factor=downsample_factor,
+                                                        subsample_view_factor=subsample_view_factor, function='2')
+    if sino == sino_orig:
+        print('sino and sino_orig are the same')
+    elif np.allclose(sino, sino_orig, atol=1e-15):
+        print('sino and sino_orig are close')
 
     print(f"Preprocessing time: {time.time() - time_start:.2f} seconds")
 
