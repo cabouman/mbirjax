@@ -101,7 +101,7 @@ def compute_sino_and_params_compute_sino(dataset_dir,
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
     sino, defective_pixel_list = \
-            compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan # delete scan images to save memory
     mbirjax.get_memory_stats(print_results=True)
     print(f"time to compute sino = {time.time()-time0:.2f} seconds")
