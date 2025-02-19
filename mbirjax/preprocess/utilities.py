@@ -106,11 +106,11 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
     batch_size = 90  # Adjust based on available GPU memory
 
     # Compute mean for blank and dark scans and move them to GPU with float64 precision
-    blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True), dtype=jnp.float64)
-    dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True), dtype=jnp.float64)
+    blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
+    dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
     # Initialize an empty sinogram buffer (pre-allocate JAX array with float64 precision)
-    sino_batches = jnp.empty((0, *obj_scan.shape[1:]), dtype=jnp.float64)
+    sino_batches = jnp.empty((0, *obj_scan.shape[1:]))
 
     num_views = obj_scan.shape[0]  # Total number of views
 
@@ -118,7 +118,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
     for i in range(0, num_views, batch_size):
         print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
 
-        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)].astype(jnp.float64)  # Convert to float64
+        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
         obj_scan_batch = jax.device_put(obj_scan_batch)  # Move batch to GPU
 
         blank_scan_batch = jnp.broadcast_to(blank_scan_mean, obj_scan_batch.shape)
@@ -132,7 +132,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
 
     # Convert to NumPy array in float64 precision
     del obj_scan_batch, obj_scan, blank_scan_batch, dark_scan_batch, blank_scan, dark_scan, dark_scan_mean, blank_scan_mean, sino_batch
-    sino = np.array(sino_batches, dtype=np.float64)  # Ensure NumPy stores in float64
+    sino = np.array(sino_batches)  # Ensure NumPy stores in float64
     del sino_batches
     print("Sinogram computation complete.")
 
@@ -382,9 +382,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     defective_pixel_list = np.argwhere(good_pixel_count < 1)
 
     # compute block averaging by dividing block sum with number of good pixels in the block
-    obj_scan = obj_scan / good_pixel_count
-    blank_scan = blank_scan / good_pixel_count
-    dark_scan = dark_scan / good_pixel_count
+    obj_scan = (obj_scan / good_pixel_count).astype(np.float32)
+    blank_scan = (blank_scan / good_pixel_count).astype(np.float32)
+    dark_scan = (dark_scan / good_pixel_count).astype(np.float32)
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_list
 
