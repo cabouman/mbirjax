@@ -619,14 +619,19 @@ class TomographyModel(ParameterHandler):
         """
         if self.get_params('auto_regularize_flag'):
             # Make sure sinogram and weights are on the cpu to avoid duplication of large sinos on the GPU.
-            sinogram = np.array(sinogram)
-            if weights is None:
-                weights = 1
-            # Compute indicator function for sinogram support
-            sino_indicator = self._get_sino_indicator(sinogram)
-            self.auto_set_sigma_y(sinogram, sino_indicator, weights)
+            max_views_to_use = np.minimum(20, sinogram.shape[0])
+            step_size = sinogram.shape[0] // max_views_to_use
 
-            recon_std = self._get_estimate_of_recon_std(sinogram, sino_indicator)
+            small_sinogram = np.array(sinogram[::step_size])
+            if weights is None:
+                small_weights = 1
+            else:
+                small_weights = np.array(weights[::step_size])
+            # Compute indicator function for sinogram support
+            sino_indicator = self._get_sino_indicator(small_sinogram)
+            self.auto_set_sigma_y(small_sinogram, sino_indicator, small_weights)
+
+            recon_std = self._get_estimate_of_recon_std(small_sinogram, sino_indicator)
             self.auto_set_sigma_x(recon_std)
             self.auto_set_sigma_prox(recon_std)
 
