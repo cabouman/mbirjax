@@ -7,6 +7,7 @@ import numpy as np
 import os
 import sys
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
