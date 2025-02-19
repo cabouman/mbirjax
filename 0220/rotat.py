@@ -98,7 +98,7 @@ def compute_sino_and_params_rotat(dataset_dir,
     print('blank_scan shape = ', blank_scan.shape)
     print('dark_scan shape = ', dark_scan.shape)
 
-    sino, cone_beam_params, optional_params = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+    sino, defective_pixel_list = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan
 
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")

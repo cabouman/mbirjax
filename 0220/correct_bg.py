@@ -99,7 +99,7 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print('dark_scan shape = ', dark_scan.shape)
 
 
-    sino, cone_beam_params, optional_params = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+    sino, defective_pixel_list = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
