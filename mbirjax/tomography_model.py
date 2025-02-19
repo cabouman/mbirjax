@@ -50,9 +50,10 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
+        self.max_views_per_batch = 100
+        self.max_pixels_per_batch = 20000
         self.set_devices_and_batch_sizes()
-        self.max_views_per_batch = 200
-        self.max_pixels_per_batch = 8000
+
         self.projector_params = self.get_projector_params()
         self.create_projectors()
 
@@ -165,7 +166,7 @@ class TomographyModel(ParameterHandler):
                                                                                   subset_update_memory_required))
 
         print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-        print('views_per_batch = {}; pixels_per_batch = {}'.format(self.views_per_batch, self.pixels_per_batch))
+        print('views_per_batch = {}; pixels_per_batch = {}'.format(self.max_views_per_batch, self.max_pixels_per_batch))
 
         self.main_device = main_device
         self.worker = worker
@@ -253,7 +254,7 @@ class TomographyModel(ParameterHandler):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return voxel_values
 
-    def forward_project(self, recon, output_device=None):
+    def forward_project(self, recon):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
@@ -263,18 +264,19 @@ class TomographyModel(ParameterHandler):
 
         Args:
             recon (jnp array): The 3D reconstruction array.
-            output_device (jax device): Device on which to put the output
+
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
+        output_device = self.main_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
 
-    def back_project(self, sinogram, output_device=None):
+    def back_project(self, sinogram):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
@@ -284,12 +286,13 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
-            output_device (jax device): Device on which to put the output
+
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
+        output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
         recon = jnp.zeros(recon_shape, device=output_device)
@@ -323,6 +326,7 @@ class TomographyModel(ParameterHandler):
             cur_view_batch = jnp.zeros([view_index_end-view_index_start, sinogram_shape[1], sinogram_shape[2]],
                                        device=self.worker)
             cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+            # print('Forward projecting view batch {} of {}'.format(j, len(view_batch_indices)-1))
 
             # Loop over pixel batches
             for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
@@ -371,6 +375,7 @@ class TomographyModel(ParameterHandler):
             view_index_end = view_batch_indices[j + 1]
             cur_view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.worker)
             cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+            # print('Backprojecting view batch {} of {}'.format(j, len(view_batch_indices)-1))
 
             # Loop over pixel batches
             for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
@@ -785,7 +790,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
-              compute_prior_loss=False):
+              compute_prior_loss=False, nrms_stop_threshold=0.0002):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -802,6 +807,7 @@ class TomographyModel(ParameterHandler):
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
             lead to slower reconstructions and is meant only for small recons.
+            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 0.0002.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
@@ -836,7 +842,7 @@ class TomographyModel(ParameterHandler):
         # Compute reconstruction
         recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                              init_recon=init_recon, compute_prior_loss=compute_prior_loss,
-                                             first_iteration=first_iteration)
+                                             first_iteration=first_iteration, nrms_stop_threshold=nrms_stop_threshold)
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
@@ -857,7 +863,7 @@ class TomographyModel(ParameterHandler):
         return recon, recon_params
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None,
-                  compute_prior_loss=False, first_iteration=0):
+                  compute_prior_loss=False, first_iteration=0, nrms_stop_threshold=0.0002):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -872,6 +878,7 @@ class TomographyModel(ParameterHandler):
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
             restarting a recon using init_recon.
+            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 0.0002.
 
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
@@ -905,7 +912,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError(error_message)
 
         # Initialize VCD recon and error sinogram using the init_reco
-        error_sinogram = self.forward_project(init_recon, output_device=self.main_device)
+        error_sinogram = self.forward_project(init_recon)
         error_sinogram = sinogram - error_sinogram
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
@@ -979,6 +986,7 @@ class TomographyModel(ParameterHandler):
                 iter_output = 'After iteration {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration,
                                                                                                   100 * nrms_update[i],
                                                                                                   fm_rmse[i])
+                mbirjax.get_memory_stats()
                 if compute_prior_loss:
                     qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
                     b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
@@ -998,6 +1006,10 @@ class TomographyModel(ParameterHandler):
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
+
+            if nrms_update[i] < nrms_stop_threshold:
+                print('NRMS stopping condition reached')
+                break
 
         return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
 
