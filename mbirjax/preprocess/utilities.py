@@ -11,8 +11,76 @@ import jax
 jax.config.update("jax_enable_x64", True)
 from jax import jit
 
-
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
+    """
+    Compute sinogram from object, blank, and dark scans.
+
+    This function computes sinogram by taking the negative log of the attenuation estimate.
+    It can also take in a list of defective pixels and correct those pixel values.
+    The invalid sinogram entries are the union of defective pixel entries and sinogram entries with values of inf or Nan.
+
+    Args:
+        obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
+        dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
+        defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
+            If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
+        correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
+
+    Returns:
+        2-element tuple containing:
+        - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
+
+    """
+    # take average of multiple blank/dark scans, and expand the dimension to be the same as obj_scan.
+    blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
+    dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
+
+    obj_scan = obj_scan - dark_scan
+    blank_scan = blank_scan - dark_scan
+
+    #### compute the sinogram.
+    # suppress warnings in np.log(), since the defective sino entries will be corrected.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        sino = -np.log(obj_scan / blank_scan)
+
+    # set the sino pixels corresponding to the provided defective list to 0.0
+    if defective_pixel_list is None:
+        defective_pixel_list = []
+    else:    # if provided list is not None
+        for defective_pixel_idx in defective_pixel_list:
+            if len(defective_pixel_idx) == 2:
+                (r,c) = defective_pixel_idx
+                sino[:,r,c] = 0.0
+            elif len(defective_pixel_idx) == 3:
+                (v,r,c) = defective_pixel_idx
+                sino[v,r,c] = 0.0
+            else:
+                raise Exception("compute_sino_transmission: index information in defective_pixel_list cannot be parsed.")
+
+    # set NaN sino pixels to 0.0
+    nan_pixel_list = list(map(tuple, np.argwhere(np.isnan(sino)) ))
+    for (v,r,c) in nan_pixel_list:
+        sino[v,r,c] = 0.0
+
+    # set Inf sino pixels to 0.0
+    inf_pixel_list = list(map(tuple, np.argwhere(np.isinf(sino)) ))
+    for (v,r,c) in inf_pixel_list:
+        sino[v,r,c] = 0.0
+
+    # defective_pixel_list = union{input_defective_pixel_list, nan_pixel_list, inf_pixel_list}
+    defective_pixel_list = list(set().union(defective_pixel_list,nan_pixel_list,inf_pixel_list))
+
+    if correct_defective_pixels:
+        print("Interpolate invalid sinogram entries.")
+        sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
+    else:
+        if defective_pixel_list:
+            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
+    return sino, defective_pixel_list
+
+def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
     Compute sinogram from object, blank, and dark scans.
 
@@ -176,9 +244,54 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
+def estimate_background_offset(sino, option=0, edge_width=9):
+    """
+    Estimate background offset of a sinogram from the edge pixels.
+
+    This function estimates the background offset when no object is present by computing a robust centroid estimate using `edge_width` pixels along the edge of the sinogram across views.
+    Typically, this estimate is subtracted from the sinogram so that air is reconstructed as approximately 0.
+
+    Args:
+        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
+        option (int, optional): [Default=0] Option of algorithm used to calculate the background offset.
+        edge_width(int, optional): [Default=9] Width of the edge regions in pixels. It must be an odd integer >= 3.
+    Returns:
+        offset (float): Background offset value.
+    """
+
+    # Check validity of edge_width value
+    assert(isinstance(edge_width, int)), "edge_width must be an integer!"
+    if (edge_width % 2 == 0):
+        edge_width = edge_width+1
+        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
+
+    if (edge_width < 3):
+        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
+        edge_width = 3
+
+    _, _, num_det_channels = sino.shape
+
+    # calculate mean sinogram
+    sino_median=np.median(sino, axis=0)
+
+    # offset value of the top edge region.
+    # Calculated as median([median value of each horizontal line in top edge region])
+    median_top = np.median(np.median(sino_median[:edge_width], axis=1))
+
+    # offset value of the left edge region.
+    # Calculated as median([median value of each vertical line in left edge region])
+    median_left = np.median(np.median(sino_median[:, :edge_width], axis=0))
+
+    # offset value of the right edge region.
+    # Calculated as median([median value of each vertical line in right edge region])
+    median_right = np.median(np.median(sino_median[:, num_det_channels-edge_width:], axis=0))
+
+    # offset = median of three offset values from top, left, right edge regions.
+    offset = np.median([median_top, median_left, median_right])
+    return offset
 
 @jit
-def estimate_background_offset(sino, edge_width=9):
+def estimate_background_offset_jax(sino, edge_width=9):
     """
     Estimate background offset of a sinogram using JAX for GPU acceleration.
 
