@@ -85,7 +85,7 @@ These quantities correspond to the following python variables:
 
 
 **Proximal Map Prior:**
-The proximal map prior is provided as a option for advanced users would would like to use plug-and-play methods.
+The proximal map prior is provided as a option for advanced users who would like to use plug-and-play methods.
 If ``prox_image`` is supplied, then the proximal map prior model is used, and the qGGMRF parameters are ignored.
 In this case, the reconstruction solves the optimization problem:
 
