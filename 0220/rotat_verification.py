@@ -107,8 +107,7 @@ def compute_sino_and_params_rotat(dataset_dir,
         print(f"time to correct detector rotation in batches = {time.time()-time0:.2f} seconds")
     if function == '2':
         time0 = time.time()
-        sino, cone_beam_params, optional_params = \
-            preprocess.correct_det_rotation(sino, weights=None, det_rotation=optional_params["det_rotation"])
+        sino = preprocess.correct_det_rotation(sino, weights=None, det_rotation=optional_params["det_rotation"])
         print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
 
     del optional_params["det_rotation"]
@@ -135,7 +134,7 @@ def main():
 
     dataset_dir = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/vert_no_metal'
     # #### preprocessing parameters
-    downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
+    downsample_factor = [16, 16]  # downsample factor of scan images along detector rows and detector columns.
     subsample_view_factor = 1  # view subsample factor.
 
     # #### recon parameters
@@ -153,7 +152,7 @@ def main():
         compute_sino_and_params_rotat(dataset_dir,
                                                         downsample_factor=downsample_factor,
                                                         subsample_view_factor=subsample_view_factor, function='2')
-    if sino == sino_orig:
+    if np.array_equal(sino, sino_orig):
         print('sino and sino_orig are the same')
     elif np.allclose(sino, sino_orig, atol=1e-15):
         print('sino and sino_orig are close')

@@ -7,6 +7,9 @@ import numpy as np
 import os
 import sys
 import scipy
+import dm_pix
+import jax.numpy as jnp
+import jax
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
@@ -145,8 +148,50 @@ def correct_det_rotation_batch(sino, weights=None, det_rotation=0.0, batch_size=
 
     if weights is None:
         return sino_corrected
+    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
+    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
+    print(f'no batch after:{mbirjax.get_memory_stats()}')
+    return sino_corrected, weights
 
-    return sino_corrected, weights  # Keep weights unchanged
+def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=180):
+    """
+    Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
+    Weights are not modified.
+
+    Args:
+        sino (jax.numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
+        weights (jax.numpy.ndarray, optional): Sinogram weights, with the same array shape as ``sino`` (kept unchanged).
+        det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
+        batch_size (int): Number of views to process in each batch to avoid memory overload.
+
+    Returns:
+        - A jax.numpy.ndarray containing the corrected sinogram data if weights is None.
+        - A tuple (sino_corrected, weights) if weights is not None.
+    """
+
+    num_views = sino.shape[0]  # Total number of views
+    sino_batches = jnp.empty((0, *sino.shape[1:]))
+    print(f'before batch:{mbirjax.get_memory_stats()}')
+    # Process in batches with looping and progress printing
+    for i in range(0, num_views, batch_size):
+        print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
+
+        # Get the current batch (from i to i + batch_size)
+        batch = jax.device_put(sino[i : min(i + batch_size, num_views)])
+
+        # Apply the rotation on this batch
+        batch = dm_pix.rotate(batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
+
+        # Append the rotated batch
+        sino_batches = np.concatenate([sino_batches, batch], axis=0)
+        print(f'After batch:{mbirjax.get_memory_stats()}')
+
+    if weights is None:
+        return sino_batches
+    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
+    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
+    print(f'no batch after:{mbirjax.get_memory_stats()}')
+    return sino_batches, weights
 
 
 def main():
