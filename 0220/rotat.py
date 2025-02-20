@@ -105,7 +105,7 @@ def compute_sino_and_params_rotat(dataset_dir,
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
-    sino = correct_det_rotation_batch(sino, det_rotation=optional_params["det_rotation"])
+    sino = correct_det_rotation_batch_pix(sino, det_rotation=optional_params["det_rotation"])
     del optional_params["det_rotation"]
     mbirjax.get_memory_stats(print_results=True)
     print(f"time to correct detector rotation = {time.time()-time0:.2f} seconds")
@@ -153,7 +153,7 @@ def correct_det_rotation_batch(sino, weights=None, det_rotation=0.0, batch_size=
     print(f'no batch after:{mbirjax.get_memory_stats()}')
     return sino_corrected, weights
 
-def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=180):
+def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=60):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -183,9 +183,9 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
         batch = dm_pix.rotate(batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
 
         # Append the rotated batch
-        sino_batches = np.concatenate([sino_batches, batch], axis=0)
+        sino_batches = jnp.concatenate([sino_batches, batch], axis=0)
         print(f'After batch:{mbirjax.get_memory_stats()}')
-
+    sino_batches = np.array(sino_batches)
     if weights is None:
         return sino_batches
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
