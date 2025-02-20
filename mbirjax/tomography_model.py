@@ -47,10 +47,14 @@ class TomographyModel(ParameterHandler):
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
 
-        self.main_device, self.worker, self.pixels_per_batch, self.views_per_batch = None, None, None, None
+        self.main_device, self.worker = None, None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
+        self.transfer_view_batch_size = 1024
+        self.transfer_pixel_batch_size = 18000
+        self.process_view_batch_size = 256
+        self.pixels_per_batch = 2048
         self.set_devices_and_batch_sizes()
         self.create_projectors()
 
@@ -99,19 +103,17 @@ class TomographyModel(ParameterHandler):
         else:
             raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
 
-        # Set the default batch sizes, then adjust as needed and update memory requirements
-        self.views_per_batch = 256
-        self.pixels_per_batch = 2048
+        # Adjust the batch sizes for memory requirements
         num_slices = max(sinogram_shape[1], recon_shape[2])
         projection_memory_per_view = self.pixels_per_batch * reps_per_projection * num_slices * mem_per_entry
 
         subset_memory_excess = gpu_memory - subset_update_memory_required
         subset_views_per_batch = subset_memory_excess // projection_memory_per_view
-        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.views_per_batch))
+        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.process_view_batch_size))
 
         total_memory_excess = cpu_memory - total_memory_required
         total_views_per_batch = total_memory_excess // projection_memory_per_view
-        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.views_per_batch))
+        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.process_view_batch_size))
 
         subset_update_memory_required += subset_views_per_batch * projection_memory_per_view
         total_memory_required += total_views_per_batch * projection_memory_per_view
@@ -149,7 +151,7 @@ class TomographyModel(ParameterHandler):
                                                                                   subset_update_memory_required))
 
         print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-        print('views_per_batch = {}; pixels_per_batch = {}'.format(self.views_per_batch, self.pixels_per_batch))
+        print('process_view_batch_size = {}; pixels_per_batch = {}'.format(self.process_view_batch_size, self.pixels_per_batch))
 
         self.main_device = main_device
         self.worker = worker
@@ -281,7 +283,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, indices, output_device=None):
+    def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -289,23 +291,38 @@ class TomographyModel(ParameterHandler):
 
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
-            indices (jax array): Array of indices specifying which voxels to project.
+            pixel_indices (jax array): Array of indices specifying which voxels to project.
             output_device (jax device): Device on which to put the output
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        # Get the current devices and move the data to the worker
-        max_views = 256
+        # Batch the views and pixels for possible transfer to the gpu
+        transfer_view_batch_size = self.transfer_view_batch_size
+        transfer_pixel_batch_size = self.transfer_pixel_batch_size
         sinogram_shape = self.get_params('sinogram_shape')
         view_indices = jnp.arange(sinogram_shape[0])
-        num_batches = jnp.ceil(sinogram_shape[0] / max_views).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_batches)
-        voxel_values, indices = jax.device_put([voxel_values, indices], self.worker)
+        num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
+        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        sinogram_shape = self.get_params('sinogram_shape')
+
+        num_pixels = len(pixel_indices)
+        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
+        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
+        # voxel_values, indices = jax.device_put([voxel_values, pixel_indices], self.worker)
 
         sinogram = []
         for view_indices_batch in view_indices_batched:
-            sinogram_views = self.projector_functions.sparse_forward_project(voxel_values, indices, view_indices=view_indices_batch)
+            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.worker)
+            # Loop over pixel batches
+            for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
+                # Send a batch of pixels to worker
+                pixel_index_end = pixel_batch_boundaries[k + 1]
+                voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
+                                                                 pixel_indices[pixel_index_start:pixel_index_end]],
+                                                                self.worker)
+
+                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
             # Put the data on the appropriate device
             sinogram.append(jax.device_put(sinogram_views, output_device))
 
@@ -1116,7 +1133,7 @@ class TomographyModel(ParameterHandler):
             forward_linear, forward_quadratic
         """
         num_views = weighted_error_sinogram.shape[0]
-        views_per_batch = self.views_per_batch
+        views_per_batch = self.process_view_batch_size
 
         # If this can be done without data transfer, then do it.
         if self.worker == self.main_device:
