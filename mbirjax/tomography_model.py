@@ -1,6 +1,7 @@
 import types
 import numpy as np
 import warnings
+import time
 import os
 
 num_cpus = 3 * os.cpu_count() // 4
@@ -10,6 +11,7 @@ import jax.numpy as jnp
 import mbirjax
 from mbirjax import ParameterHandler
 from collections import namedtuple
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 
 
 class TomographyModel(ParameterHandler):
@@ -244,13 +246,15 @@ class TomographyModel(ParameterHandler):
 
         Args:
             recon (jnp array): The 3D reconstruction array.
+
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        sinogram = self.sparse_forward_project(voxel_values, full_indices)
+        output_device = self.main_device
+        sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
 
@@ -264,14 +268,16 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
+
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mbirjax.gen_full_indices(recon_shape)
-        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=self.main_device)
+        output_device = self.main_device
+        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
-        recon = jnp.zeros(recon_shape, device=self.main_device)
+        recon = jnp.zeros(recon_shape, device=output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
@@ -447,14 +453,19 @@ class TomographyModel(ParameterHandler):
         """
         if self.get_params('auto_regularize_flag'):
             # Make sure sinogram and weights are on the cpu to avoid duplication of large sinos on the GPU.
-            sinogram = np.array(sinogram)
-            if weights is None:
-                weights = 1
-            # Compute indicator function for sinogram support
-            sino_indicator = self._get_sino_indicator(sinogram)
-            self.auto_set_sigma_y(sinogram, sino_indicator, weights)
+            max_views_to_use = np.minimum(20, sinogram.shape[0])
+            step_size = sinogram.shape[0] // max_views_to_use
 
-            recon_std = self._get_estimate_of_recon_std(sinogram, sino_indicator)
+            small_sinogram = np.array(sinogram[::step_size])
+            if weights is None:
+                small_weights = 1
+            else:
+                small_weights = np.array(weights[::step_size])
+            # Compute indicator function for sinogram support
+            sino_indicator = self._get_sino_indicator(small_sinogram)
+            self.auto_set_sigma_y(small_sinogram, sino_indicator, small_weights)
+
+            recon_std = self._get_estimate_of_recon_std(small_sinogram, sino_indicator)
             self.auto_set_sigma_x(recon_std)
             self.auto_set_sigma_prox(recon_std)
 
@@ -608,7 +619,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
-              compute_prior_loss=False):
+              compute_prior_loss=False, nrms_stop_threshold=5e-5):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -625,6 +636,7 @@ class TomographyModel(ParameterHandler):
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
             lead to slower reconstructions and is meant only for small recons.
+            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 1e-5.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
@@ -659,7 +671,7 @@ class TomographyModel(ParameterHandler):
         # Compute reconstruction
         recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                              init_recon=init_recon, compute_prior_loss=compute_prior_loss,
-                                             first_iteration=first_iteration)
+                                             first_iteration=first_iteration, nrms_stop_threshold=nrms_stop_threshold)
 
         # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
         recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
@@ -680,14 +692,14 @@ class TomographyModel(ParameterHandler):
         return recon, recon_params
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None,
-                  compute_prior_loss=False, first_iteration=0):
+                  compute_prior_loss=False, first_iteration=0, nrms_stop_threshold=1e-5):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
 
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            partitions (tuple): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
+            partitions (tuple or list): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
@@ -695,6 +707,7 @@ class TomographyModel(ParameterHandler):
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
             restarting a recon using init_recon.
+            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 1e-5.
 
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
@@ -718,22 +731,19 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             with jax.default_device(self.main_device):
-                recon = self.direct_recon(sinogram)
-            error_sinogram = sinogram
-        else:
-            # Make sure that init_recon has the correct shape and type
-            if init_recon.shape != recon_shape:
-                error_message = "init_recon does not have the correct shape. \n"
-                error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
-                                                                                              init_recon.shape)
-                raise ValueError(error_message)
+                init_recon = self.direct_recon(sinogram)
 
-            # Initialize VCD recon and error sinogram using the init_reco
-            recon = jax.device_put(init_recon, self.worker)
-            error_sinogram = self.forward_project(recon)
-            error_sinogram = jax.device_put(error_sinogram, self.main_device)
-            error_sinogram = sinogram - error_sinogram
+        # Make sure that init_recon has the correct shape and type
+        if init_recon.shape != recon_shape:
+            error_message = "init_recon does not have the correct shape. \n"
+            error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
+                                                                                          init_recon.shape)
+            raise ValueError(error_message)
 
+        # Initialize VCD recon and error sinogram using the init_reco
+        error_sinogram = self.forward_project(init_recon)
+        error_sinogram = sinogram - error_sinogram
+        recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
         error_sinogram = jax.device_put(error_sinogram, self.main_device)
 
@@ -824,6 +834,10 @@ class TomographyModel(ParameterHandler):
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
+
+            if nrms_update[i] < nrms_stop_threshold:
+                print('NRMS stopping condition reached')
+                break
 
         return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
 
