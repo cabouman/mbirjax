@@ -135,8 +135,8 @@ def main():
         max_diff = np.max(diff)
         mean_diff = np.mean(diff)
 
-        print(f"🔍 Maximum difference: {max_diff:.8f}")
-        print(f"🔍 Mean difference: {mean_diff:.8f}")
+        print(f"Maximum difference: {max_diff:.8f}")
+        print(f"Mean difference: {mean_diff:.8f}")
 
         if np.allclose(sino_opt, sino_orig, atol=1e-5):  # Adjust tolerance if needed
             print("Both sinograms are **numerically close** (small floating-point differences).")
