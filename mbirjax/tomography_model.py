@@ -309,7 +309,6 @@ class TomographyModel(ParameterHandler):
         num_pixels = len(pixel_indices)
         pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
         pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
-        # voxel_values, indices = jax.device_put([voxel_values, pixel_indices], self.worker)
 
         sinogram = []
         for view_indices_batch in view_indices_batched:
@@ -323,13 +322,13 @@ class TomographyModel(ParameterHandler):
                                                                 self.worker)
 
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
-            # Put the data on the appropriate device
+            # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
 
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def sparse_back_project(self, sinogram, indices, coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -337,36 +336,46 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
-            indices (jnp array): Array of indices specifying which voxels to back project.
+            pixel_indices (jnp array): Array of indices specifying which voxels to back project.
             output_device (jax device): Device on which to put the output
 
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        max_views = 256
+        # Batch the views and pixels for possible transfer to the gpu
+        transfer_view_batch_size = self.transfer_view_batch_size
+        transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
         view_indices = jnp.arange(num_views)
-        num_batches = jnp.ceil(sinogram.shape[0] / max_views).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_batches)
+        num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
+        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        view_batch_boundaries = np.arange(start=0, stop=num_views, step=transfer_view_batch_size)
+        view_batch_boundaries = np.append(view_batch_boundaries, num_views)
+
+        pixel_indices = jax.device_put(pixel_indices, self.worker)
+        num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
+        pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
+
         recon_shape = self.get_params('recon_shape')
-        with jax.default_device(output_device):
-            recon_at_indices = jnp.zeros((len(indices), recon_shape[2]))
-            recon_at_indices = jax.device_put(recon_at_indices, output_device)
-        pixel_indices = jax.device_put(indices, self.worker)
+        recon_at_indices = []
+        for pixel_index_batch in pixel_indices_batched:
+            # Create space on the worker for voxels
+            voxel_batch = jnp.zeros((len(pixel_index_batch), recon_shape[2]), device=self.worker)
 
-        view_batch_inds = [index_set[0] for index_set in view_indices_batched] + [num_views]
-        for j in range(len(view_batch_inds) - 1):
-            cur_views = sinogram[view_batch_inds[j]:view_batch_inds[j + 1]]
-            # Get the current devices and move the data to the worker
-            cur_views = jax.device_put(cur_views, self.worker)
+            for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
+                view_index_end = view_batch_boundaries[j+1]
+                view_batch = sinogram[view_index_start:view_index_end]
+                # Get the current devices and move the data to the worker
+                view_batch = jax.device_put(view_batch, self.worker)
 
-            cur_recon_at_indices = self.projector_functions.sparse_back_project(cur_views, pixel_indices,
-                                                                                view_indices=view_indices_batched[j],
-                                                                                coeff_power=coeff_power)
+                voxel_batch = voxel_batch + self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
+                                                                                         view_indices=view_indices_batched[j],
+                                                                                         coeff_power=coeff_power)
 
-            # Put the data on the appropriate device
-            recon_at_indices += jax.device_put(cur_recon_at_indices, output_device)
+                # Put the data on the appropriate device
+                recon_at_indices.append(voxel_batch)
 
+        recon_at_indices = jnp.concatenate(recon_at_indices)
         return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
