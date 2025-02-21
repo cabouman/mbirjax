@@ -97,6 +97,7 @@ def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         granularity (list or tuple):  List of num_subsets to use for each partition
+        output_device (jax device): Device on which to place the output of the partition
 
     Returns:
         tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
@@ -300,7 +301,7 @@ def gen_full_indices(recon_shape):
     return full_indices
 
 
-def gen_cube_phantom(recon_shape):
+def gen_cube_phantom(recon_shape, device=None):
     """Code to generate a simple phantom """
     # Compute phantom height and width
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
@@ -320,7 +321,7 @@ def gen_cube_phantom(recon_shape):
         phantom[start_rows:stop_rows, (shift_cols + start_cols):(shift_cols + stop_cols), slice_index] = 1.0 / max(
             phantom_rows, phantom_cols)
 
-    return jnp.array(phantom)
+    return jnp.array(phantom, device=device)
 
 
 @jax.jit
@@ -451,12 +452,13 @@ def generate_3d_shepp_logan_reference(phantom_shape):
     return image.transpose((1, 0, 2))
 
 
-def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
+def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
 
     Args:
         phantom_shape (tuple): Phantom shape in (rows, columns, slices).
+        device (jax device): Device on which to place the output phantom.
 
     Returns:
         ndarray: A 3D numpy array of shape phantom_shape representing the voxel intensities of the phantom.
@@ -465,7 +467,8 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
         This function uses a memory-efficient approach to generating large phantoms.
     """
     # Get space for the result and set up the grids for add_ellipsoid
-    phantom = jnp.zeros(phantom_shape)
+    with jax.default_device(device):
+        phantom = jnp.zeros(phantom_shape, device=device)
     N, M, P = phantom_shape
     x_locations = jnp.linspace(-1, 1, N)
     y_locations = jnp.linspace(-1, 1, M)
@@ -491,7 +494,10 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape):
 
 def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
     """
-    Implementation of TomographyModel.gen_weights_mar
+    Implementation of TomographyModel.gen_weights_mar.  If metal_threshold is not provided, it will be estimated using
+     Otsu's method.  If init_recon is provided, it will be used along with metal threshold to estimate the region
+     containing metal, and this metal region will be forward projected, with the projection used to estimate the weights.
+    The weights are placed on ct_model.main_device.
     """
     # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method.
     if init_recon is None:
@@ -499,7 +505,7 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
         # assuming three categories: metal, non_metal, and background.
         [bk_thresh_sino, metal_thresh_sino] = multi_threshold_otsu(sinogram, classes=3)
         print("Distorted sinogram threshold = ", metal_thresh_sino)
-        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32))
+        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
 
     # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
     else:
@@ -510,12 +516,12 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
         print("metal_threshold = ", metal_threshold)
         # Identify metal voxels
-        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32))
+        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
         # Forward project metal mask to generate a sinogram mask
         metal_mask_projected = ct_model.forward_project(metal_mask)
 
         # metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
-        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32))
+        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
 
     # weights for undistorted sino entries
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)

@@ -52,9 +52,9 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = None
 
         self.transfer_view_batch_size = 1024
-        self.transfer_pixel_batch_size = 18000
-        self.process_view_batch_size = 256
-        self.pixels_per_batch = 2048
+        self.transfer_pixel_batch_size = 2000000
+        self.view_batch_size_for_vmap = 128
+        self.pixel_batch_size_for_vmap = 2048
         self.set_devices_and_batch_sizes()
         self.create_projectors()
 
@@ -105,15 +105,15 @@ class TomographyModel(ParameterHandler):
 
         # Adjust the batch sizes for memory requirements
         num_slices = max(sinogram_shape[1], recon_shape[2])
-        projection_memory_per_view = self.pixels_per_batch * reps_per_projection * num_slices * mem_per_entry
+        projection_memory_per_view = self.pixel_batch_size_for_vmap * reps_per_projection * num_slices * mem_per_entry
 
         subset_memory_excess = gpu_memory - subset_update_memory_required
         subset_views_per_batch = subset_memory_excess // projection_memory_per_view
-        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.process_view_batch_size))
+        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.view_batch_size_for_vmap))
 
         total_memory_excess = cpu_memory - total_memory_required
         total_views_per_batch = total_memory_excess // projection_memory_per_view
-        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.process_view_batch_size))
+        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.view_batch_size_for_vmap))
 
         subset_update_memory_required += subset_views_per_batch * projection_memory_per_view
         total_memory_required += total_views_per_batch * projection_memory_per_view
@@ -151,7 +151,7 @@ class TomographyModel(ParameterHandler):
                                                                                   subset_update_memory_required))
 
         print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-        print('process_view_batch_size = {}; pixels_per_batch = {}'.format(self.process_view_batch_size, self.pixels_per_batch))
+        print('process_view_batch_size = {}; pixels_per_batch = {}'.format(self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap))
 
         self.main_device = main_device
         self.worker = worker
@@ -322,6 +322,7 @@ class TomographyModel(ParameterHandler):
                                                                 self.worker)
 
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
+                # mbirjax.get_memory_stats()
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
 
@@ -1142,7 +1143,7 @@ class TomographyModel(ParameterHandler):
             forward_linear, forward_quadratic
         """
         num_views = weighted_error_sinogram.shape[0]
-        views_per_batch = self.process_view_batch_size
+        views_per_batch = self.view_batch_size_for_vmap
 
         # If this can be done without data transfer, then do it.
         if self.worker == self.main_device:
@@ -1280,8 +1281,7 @@ class TomographyModel(ParameterHandler):
         return mbirjax.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
                                        beta=beta, gamma=gamma)
 
-    @staticmethod
-    def gen_weights(sinogram, weight_type):
+    def gen_weights(self, sinogram, weight_type):
         """
         Compute the optional weights used in MBIR reconstruction.
 
@@ -1300,7 +1300,7 @@ class TomographyModel(ParameterHandler):
             Exception: Raised if ``weight_type`` is not one of the above options.
         """
         if weight_type == 'unweighted':
-            weights = jnp.ones(sinogram.shape)
+            weights = jnp.ones(sinogram.shape, device=self.main_device)
         elif weight_type == 'transmission':
             weights = jnp.exp(-sinogram)
         elif weight_type == 'transmission_root':
@@ -1320,7 +1320,7 @@ class TomographyModel(ParameterHandler):
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
         recon_shape = self.get_params('recon_shape')
-        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
         return phantom
 
     def reshape_recon(self, recon):

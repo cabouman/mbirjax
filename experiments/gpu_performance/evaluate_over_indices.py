@@ -39,7 +39,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
         sinogram_shape = (nv, nr, nc)
         parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
 
-        parallel_model.pixels_per_batch = ni
+        parallel_model.pixel_batch_size_for_vmap = ni
         parallel_model.views_per_batch = nv
         parallel_model.main_device = jax.devices('cpu')[0]
         parallel_model.worker = jax.devices('gpu')[0]

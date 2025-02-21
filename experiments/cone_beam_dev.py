@@ -60,7 +60,7 @@ if __name__ == "__main__":
         full_indices = np.array(full_indices[:num_indices])
         voxel_values = np.array(conebeam_model.get_voxels_at_indices(phantom, full_indices))
 
-    conebeam_model.pixels_per_batch = num_indices
+    conebeam_model.pixel_batch_size_for_vmap = num_indices
     conebeam_model.views_per_batch = num_views
 
     # New version
