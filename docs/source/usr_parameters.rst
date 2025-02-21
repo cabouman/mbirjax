@@ -13,7 +13,7 @@ Parameters that are specific to particular geometries are documented in the geom
 Reconstruction Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-sharpness : float  (Defaults to 0.0)
+sharpness : float  (Defaults to 1.0)
     Specifies the sharpness of the reconstruction.  Larger values produce sharper images. Smaller values produce softer images.
 
 snr_db : float  (Defaults to 30.0)
