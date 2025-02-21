@@ -373,7 +373,7 @@ class TomographyModel(ParameterHandler):
                                                                                          coeff_power=coeff_power)
 
                 # Put the data on the appropriate device
-                recon_at_indices.append(voxel_batch)
+                recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
 
         recon_at_indices = jnp.concatenate(recon_at_indices)
         return recon_at_indices
