@@ -757,6 +757,7 @@ class TomographyModel(ParameterHandler):
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
+            print('Starting direct recon for initial reconstruction')
             with jax.default_device(self.main_device):
                 init_recon = self.direct_recon(sinogram)
 
