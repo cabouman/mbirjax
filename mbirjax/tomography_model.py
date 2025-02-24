@@ -12,6 +12,8 @@ import mbirjax
 from mbirjax import ParameterHandler
 from collections import namedtuple
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+# Set the GPU memory fraction for JAX
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
 
 class TomographyModel(ParameterHandler):
@@ -51,8 +53,8 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
-        self.transfer_view_batch_size = 1024
-        self.transfer_pixel_batch_size = 2000000
+        self.transfer_view_batch_size = 2000
+        self.transfer_pixel_batch_size = 200000
         self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.set_devices_and_batch_sizes()
@@ -350,8 +352,8 @@ class TomographyModel(ParameterHandler):
         view_indices = jnp.arange(num_views)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
-        view_batch_boundaries = np.arange(start=0, stop=num_views, step=transfer_view_batch_size)
-        view_batch_boundaries = np.append(view_batch_boundaries, num_views)
+        view_batch_boundaries = [view_indices_batched[j][0] for j in range(len(view_indices_batched))]
+        view_batch_boundaries = np.append(np.array(view_batch_boundaries), num_views)
 
         pixel_indices = jax.device_put(pixel_indices, self.worker)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
@@ -373,8 +375,8 @@ class TomographyModel(ParameterHandler):
                                                                                          view_indices=view_indices_batched[j],
                                                                                          coeff_power=coeff_power)
 
-                # Put the data on the appropriate device
-                recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
+            # Put the data on the appropriate device
+            recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
 
         recon_at_indices = jnp.concatenate(recon_at_indices)
         return recon_at_indices
@@ -901,13 +903,12 @@ class TomographyModel(ParameterHandler):
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
-            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times = vcd_subset_updater(flat_recon,
+            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(flat_recon,
                                                                                                        error_sinogram,
                                                                                                        subset, subset_worker, times)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
         # Debug code to go with timing info in vcd_subset_updater
-        time_names = ['wterrsin ', 'bproj', 'forhess', 'qggmrf', 'deltrec', 'priorlin', 'pquad', 'fproj', 'forlqu ', 'scaledr', 'flatrec', 'deltsin', 'stats']
         max_len = max(len(s) for s in time_names)
         formatted_names = [f"{s:<{max_len}}," for s in time_names]
         formatted_names = " ".join(formatted_names)
@@ -982,80 +983,97 @@ class TomographyModel(ParameterHandler):
             # All the time assignments and block_until_ready() are for debugging/performance tracking only.
             # The cryptic labels in the comments match the printed timing labels when these are activated.
             time_index = 0
-            time_start = time.time()  # wterrsin
-            if not const_weights:
-                weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
-            else:
-                weighted_error_sinogram = error_sinogram
-            weighted_error_sinogram = weighted_error_sinogram.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
-
-            # Transfer to worker for later use
-            time_start = time.time()  # bproj
-
-            # Back project to get the gradient
-            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
-                                                               output_device=self.main_device)
-            forward_grad = forward_grad.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
-
-            # Get the forward hessian for this subset
-            time_start = time.time()  # forhess
-            forward_hess = fm_constant * fm_hessian[pixel_indices]
-            forward_hess = forward_hess.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            time_names = []
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
-            time_start = time.time()  # qggmrf
+            time_names.append('qggmrf')
+            time_start = time.time()
             if prox_input is None:
+
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                 with jax.default_device(self.main_device):
-                    prior_grad, prior_hess = (
-                        mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                       qggmrf_params))
+                    if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+                        prior_grad, prior_hess = (
+                            mbirjax.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
+                                                                           qggmrf_params, self.main_device, self.worker))
+                    else:
+                        prior_grad, prior_hess = (
+                            mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                           qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = sigma_prox ** 2
                 prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
-            prior_grad = prior_grad.block_until_ready()
+            # prior_grad = prior_grad.block_until_ready()
+            times[time_index] += time.time() - time_start
+            time_index += 1
+
+            time_names.append('wterrsin')
+            time_start = time.time()
+            if not const_weights:
+                weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+            else:
+                weighted_error_sinogram = error_sinogram
+            # weighted_error_sinogram = weighted_error_sinogram.block_until_ready()
+            times[time_index] += time.time() - time_start
+            time_index += 1
+
+            # Transfer to worker for later use
+            time_names.append('bproj')
+            time_start = time.time()
+
+            # Back project to get the gradient
+            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
+                                                               output_device=self.main_device)
+            # forward_grad = forward_grad.block_until_ready()
+            times[time_index] += time.time() - time_start
+            time_index += 1
+
+            # Get the forward hessian for this subset
+            time_names.append('forhess')
+            time_start = time.time()
+            forward_hess = fm_constant * fm_hessian[pixel_indices]
+            # forward_hess = forward_hess.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Compute update vector update direction in recon domain
-            time_start = time.time()  # deltrec
+            time_names.append('deltrec')
+            time_start = time.time()
             delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
-            delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
+            # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            time_start = time.time()  # priorlin
+            time_start = time.time()
+            time_names.append('priorlin')
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
-            prior_linear = prior_linear.block_until_ready()
+            # prior_linear = prior_linear.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Estimated upper bound for hessian
-            time_start = time.time()  # pquad
+            time_names.append('pquad')
+            time_start = time.time()
             prior_overrelaxation_factor = 2
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
-            prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
+            # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Compute update direction in sinogram domain
-            time_start = time.time()  # fproj
+            time_names.append('fproj')
+            time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
                                                     output_device=self.worker)
-            delta_sinogram = delta_sinogram.block_until_ready()
+            # delta_sinogram = delta_sinogram.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
-            time_start = time.time()  # forlqu
+            time_names.append('forlqu')
+            time_start = time.time()
             forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
                                                                           weights, fm_constant, const_weights)
 
@@ -1064,8 +1082,8 @@ class TomographyModel(ParameterHandler):
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
             max_alpha = 1.5
-            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)  # a_max=alpha_clip_value
-            alpha = alpha.block_until_ready()
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
+            # alpha = alpha.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
@@ -1102,36 +1120,40 @@ class TomographyModel(ParameterHandler):
                 # Recompute sinogram projection
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.worker)
 
-            time_start = time.time()  # scaledr
+            time_names.append('scaledr')
+            time_start = time.time()
             # Perform sparse updates at index locations
             delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
-            delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
+            # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
-            time_start = time.time()  # flatrec
+            time_names.append('flatrec')
+            time_start = time.time()
             flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
-            flat_recon = flat_recon.block_until_ready()
+            # flat_recon = flat_recon.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
             # Update sinogram and loss
-            time_start = time.time()  # deltsin
+            time_names.append('deltsin')
+            time_start = time.time()
             delta_sinogram = float(alpha) * delta_sinogram
             error_sinogram = error_sinogram - delta_sinogram
-            error_sinogram = error_sinogram.block_until_ready()
+            # error_sinogram = error_sinogram.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
-            time_start = time.time()  # stats
+            time_names.append('stats')
+            time_start = time.time()
             norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
             alpha_for_subset = alpha
-            norm_squared_for_subset = norm_squared_for_subset.block_until_ready()
+            # norm_squared_for_subset = norm_squared_for_subset.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
 
-            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times
+            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times, time_names
 
         return vcd_subset_updater
 
