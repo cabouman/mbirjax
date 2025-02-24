@@ -152,7 +152,7 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
         obj_scan_batch = jax.device_put(obj_scan_batch)  # Move batch to GPU
 
         obj_scan_batch = obj_scan_batch - dark_scan_mean
-        blank_scan_batch = blank_scan_batch - dark_scan_mean
+        blank_scan_batch = blank_scan_mean - dark_scan_mean
 
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
         sino_batches_list.append(sino_batch)
