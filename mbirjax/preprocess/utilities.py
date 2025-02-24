@@ -381,7 +381,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0]>=1 and downsample_factor[1]>=1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    good_pixel_mask = np.ones((blank_scan.shape[1], blank_scan.shape[2]), dtype=int)
+    good_pixel_mask = np.ones((blank_scan.shape[1], blank_scan.shape[2]), dtype=np.uint8)
     if defective_pixel_list is not None:
         for (r,c) in defective_pixel_list:
             good_pixel_mask[r,c] = 0
@@ -421,9 +421,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     defective_pixel_list = np.argwhere(good_pixel_count < 1)
 
     # compute block averaging by dividing block sum with number of good pixels in the block
-    obj_scan = (obj_scan / good_pixel_count).astype(np.float32)
-    blank_scan = (blank_scan / good_pixel_count).astype(np.float32)
-    dark_scan = (dark_scan / good_pixel_count).astype(np.float32)
+    obj_scan = (obj_scan / good_pixel_count)
+    blank_scan = (blank_scan / good_pixel_count)
+    dark_scan = (dark_scan / good_pixel_count)
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_list
 
