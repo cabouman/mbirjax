@@ -101,7 +101,7 @@ def compute_sino_and_params_compute_sino(dataset_dir,
     time0 = time.time()
     mbirjax.get_memory_stats(print_results=True)
     sino, defective_pixel_list = \
-            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+            compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pixel_list)
     del obj_scan, blank_scan, dark_scan # delete scan images to save memory
     mbirjax.get_memory_stats(print_results=True)
     print(f"time to compute sino = {time.time()-time0:.2f} seconds")
@@ -140,8 +140,7 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
-    # Initialize an empty sinogram buffer (pre-allocate JAX array with float64 precision)
-    sino_batches = jnp.empty((0, *obj_scan.shape[1:]))
+    sino_batches_list = []  # Initialize a list to store sinogram batches
 
     num_views = obj_scan.shape[0]  # Total number of views
 
@@ -152,18 +151,15 @@ def compute_sino_transmission_test(obj_scan, blank_scan, dark_scan, defective_pi
         obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
         obj_scan_batch = jax.device_put(obj_scan_batch)  # Move batch to GPU
 
-        blank_scan_batch = jnp.broadcast_to(blank_scan_mean, obj_scan_batch.shape)
-        dark_scan_batch = jnp.broadcast_to(dark_scan_mean, obj_scan_batch.shape)
-
-        obj_scan_batch = obj_scan_batch - dark_scan_batch
-        blank_scan_batch = blank_scan_batch - dark_scan_batch
+        obj_scan_batch = obj_scan_batch - dark_scan_mean
+        blank_scan_batch = blank_scan_batch - dark_scan_mean
 
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
-        sino_batches = jnp.concatenate([sino_batches, sino_batch], axis=0)  # Efficient
+        sino_batches_list.append(sino_batch)
 
-    # Convert to NumPy array in float64 precision
-    del obj_scan_batch, obj_scan, blank_scan_batch, dark_scan_batch, blank_scan, dark_scan, dark_scan_mean, blank_scan_mean, sino_batch
-    sino = np.array(sino_batches)  # Ensure NumPy stores in float64
+    sino_batches = jnp.concatenate(sino_batches_list, axis=0)
+    del sino_batch, obj_scan, blank_scan, dark_scan, obj_scan_batch, blank_scan_batch, dark_scan_mean, blank_scan_mean
+    sino = np.array(sino_batches)
     del sino_batches
     print("Sinogram computation complete.")
 
