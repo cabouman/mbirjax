@@ -420,9 +420,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     defective_pixel_list = np.argwhere(good_pixel_count < 1)
 
     # compute block averaging by dividing block sum with number of good pixels in the block
-    obj_scan = (obj_scan / good_pixel_count)
-    blank_scan = (blank_scan / good_pixel_count)
-    dark_scan = (dark_scan / good_pixel_count)
+    obj_scan = obj_scan / good_pixel_count
+    blank_scan = blank_scan / good_pixel_count
+    dark_scan = dark_scan / good_pixel_count
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_list
 
