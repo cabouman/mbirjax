@@ -8,6 +8,7 @@ import os
 import sys
 import warnings
 import jax.numpy as jnp
+from correct_bg import estimate_background_offset_jax
 from jax import jit
 from compute_sino import compute_sino_and_params_compute_sino
 source_path = "/home/li5273/PycharmProjects/mbirjax/mbirjax"
@@ -98,17 +99,14 @@ def compute_sino_and_params_corr_bg(dataset_dir,
     print('dark_scan shape = ', dark_scan.shape)
 
 
-    sino, cone_beam_params, optional_params = \
-    compute_sino_and_params_compute_sino(dataset_dir,
-                                                    downsample_factor=downsample_factor,
-                                                    subsample_view_factor=subsample_view_factor)
-
+    sino, defective_pixel_list = \
+            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
 
 
     background_offset = preprocess.estimate_background_offset_jax(sino)
-    background_offset_orig = preprocess.estimate_background_offset(sino)
+    background_offset_orig = estimate_background_offset_jax(sino)
 
     if background_offset == background_offset_orig:
         print("Background offset values from JAX and NumPy match!")
