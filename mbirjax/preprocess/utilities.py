@@ -128,6 +128,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         blank_scan_batch = blank_scan_batch - dark_scan_batch
 
         sino_batch = -jnp.log(jnp.where(blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
+
         sino_batches = jnp.concatenate([sino_batches, sino_batch], axis=0)
 
     # Convert to NumPy array in float64 precision
@@ -415,7 +416,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     blank_scan = blank_scan.sum((2, 4))
     dark_scan = dark_scan.sum((2, 4))
     # number of good pixels in each down-sampling block
-    good_pixel_count = good_pixel_mask.sum((1,3))
+    good_pixel_count = good_pixel_mask.sum((1,3)).astype(np.int16)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
     defective_pixel_list = np.argwhere(good_pixel_count < 1)
