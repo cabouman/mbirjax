@@ -240,7 +240,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
-def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=60):
+def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=60):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -257,19 +257,22 @@ def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=60
     """
 
     num_views = sino.shape[0]  # Total number of views
-    sino_batches = jnp.empty((0, *sino.shape[1:]))
+    sino_batches_list = []  # Initialize a list to store sinogram batches
+
     # Process in batches with looping and progress printing
     for i in range(0, num_views, batch_size):
         print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
 
         # Get the current batch (from i to i + batch_size)
-        batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])  # Move batch to GPU
+        sino_batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])
 
         # Apply the rotation on this batch
-        batch = dm_pix.rotate(batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
+        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original codes
 
-        # Append the rotated batch
-        sino_batches = jnp.concatenate([sino_batches, batch], axis=0)
+        # Append the rotated batch to the list
+        sino_batches_list.append(sino_batch)
+
+    sino_batches = jnp.concatenate(sino_batches_list, axis=0)
     sino_batches = np.array(sino_batches)
     if weights is None:
         return sino_batches

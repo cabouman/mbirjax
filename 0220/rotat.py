@@ -170,21 +170,22 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
     """
 
     num_views = sino.shape[0]  # Total number of views
-    sino_batches = jnp.empty((0, *sino.shape[1:]))
-    print(f'before batch:{mbirjax.get_memory_stats()}')
+    sino_batches_list = []
+
     # Process in batches with looping and progress printing
     for i in range(0, num_views, batch_size):
         print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
 
         # Get the current batch (from i to i + batch_size)
-        batch = jax.device_put(sino[i : min(i + batch_size, num_views)])
+        sino_batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])
 
         # Apply the rotation on this batch
-        batch = dm_pix.rotate(batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
+        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
 
         # Append the rotated batch
-        sino_batches = jnp.concatenate([sino_batches, batch], axis=0)
-        print(f'After batch:{mbirjax.get_memory_stats()}')
+        sino_batches_list.append(sino_batch)
+
+    sino_batches = jnp.concatenate(sino_batches_list, axis=0)
     sino_batches = np.array(sino_batches)
     if weights is None:
         return sino_batches
