@@ -137,9 +137,9 @@ def estimate_background_offset_jax(sino, edge_width=9):
 
     _, _, num_det_channels = sino.shape
     # Extract edge regions directly from the sinogram (without computing a full median)
-    median_top = jnp.median(jnp.median(sino[:, :edge_width, :], axis=(0, 1))) # Top edge
-    median_left = jnp.median(jnp.median(sino[:, :, :edge_width], axis=(0, 0)))  # Left edge
-    median_right = jnp.median(jnp.median(sino[:, :, num_det_channels-edge_width:], axis=(0, 0)))  # Right edge
+    median_top = jnp.median(jnp.median(jnp.median(sino[:, :edge_width, :], axis=0), axis=1)) # Top edge
+    median_left = jnp.median(jnp.median(jnp.median(sino[:, :, :edge_width], axis=0), axis=0))  # Left edge
+    median_right = jnp.median(jnp.median(jnp.median(sino[:, :, num_det_channels-edge_width:], axis=0), axis=0))  # Right edge
     print('2')
     mbirjax.get_memory_stats(print_results=True)
     # Compute final offset as median of the three regions
