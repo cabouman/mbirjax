@@ -118,7 +118,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
 
         obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
-        obj_scan_batch = jax.device_put(obj_scan_batch)  # Move batch to GPU
+        obj_scan_batch = jax.device_put(obj_scan_batch, jax.devices('gpu')[0])  # Move batch to GPU
 
         obj_scan_batch = obj_scan_batch - dark_scan_mean
         blank_scan_batch = blank_scan_mean - dark_scan_mean
@@ -263,7 +263,7 @@ def correct_det_rotation_jax(sino, weights=None, det_rotation=0.0, batch_size=60
         print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
 
         # Get the current batch (from i to i + batch_size)
-        batch = jax.device_put(sino[i : min(i + batch_size, num_views)])
+        batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])  # Move batch to GPU
 
         # Apply the rotation on this batch
         batch = dm_pix.rotate(batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original code
