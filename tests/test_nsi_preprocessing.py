@@ -42,7 +42,7 @@ class TestNSIPreprocessing(unittest.TestCase):
 
         # Compare sinograms
         self.assertTrue(np.allclose(sino_jax, self.sino_gdt, atol=self.compute_sino_tolerance['atol']),
-                        f"Sinograms differ more than {self.tolerance['compute_sino']}. Max diff: {np.max(np.abs(sino_jax - self.sino_gdt))}")
+                        f"Sinograms differ more than {self.compute_sino_tolerance['atol']}. Max diff: {np.max(np.abs(sino_jax - self.sino_gdt))}")
 
     def test_background_offset_correction(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
