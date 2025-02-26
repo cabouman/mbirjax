@@ -64,7 +64,7 @@ class TestNSIPreprocessing(unittest.TestCase):
             pct_95 = np.percentile(np.abs(sino_rotated_jax - sino_rotated_gdt), 95)
 
             # Compare results
-            self.assertTrue(np.allclose(sino_rotated_jax, sino_rotated_gdt, atol=self.atol),
+            self.assertTrue(np.allclose(sino_rotated_jax, sino_rotated_gdt, atol=self.detector_rotation_tolerance['atol']),
                             f"Sinograms differ more than {self.detector_rotation_tolerance['atol']}. Max diff: {np.max(np.abs(sino_rotated_jax - sino_rotated_gdt))}")
 
             self.assertTrue(nrmse < self.detector_rotation_tolerance['nrmse'], f"NRMSE too high: {nrmse}")
