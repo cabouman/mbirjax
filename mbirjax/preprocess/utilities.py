@@ -267,7 +267,7 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
         sino_batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])
 
         # Apply the rotation on this batch
-        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0) # mode and cval are set according to the original codes
+        sino_batch = dm_pix.rotate(sino_batch.transpose(1,2,0), det_rotation, order=1, mode='constant', cval=0.0).transpose(2,0,1) # mode and cval are set according to the original codes
 
         # Append the rotated batch to the list
         sino_batches_list.append(sino_batch)
