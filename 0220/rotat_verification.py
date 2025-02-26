@@ -152,6 +152,10 @@ def main():
         compute_sino_and_params_rotat(dataset_dir,
                                                         downsample_factor=downsample_factor,
                                                         subsample_view_factor=subsample_view_factor, function='2')
+    nrmse = np.linalg.norm(sino - sino_orig) / np.linalg.norm(sino_orig)
+    pct_95 = np.percentile(np.abs(sino - sino_orig), 95)
+    print(f"NRMSE = {nrmse:.8f}")
+    print(f"95th percentile difference = {pct_95:.8f}")
     if np.array_equal(sino, sino_orig):
         print('sino and sino_orig are the same')
     elif np.allclose(sino, sino_orig, atol=1e-15):
