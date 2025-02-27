@@ -24,7 +24,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.crop_region = ((0, 1), (0, 1))  # Default: use entire scan
         self.compute_sino_tolerance = {'atol': 1e-5}
         self.background_offset_tolerance = 1e-8
-        self.detector_rotation_tolerance = {'atol': 0.6, 'nrmse': 0.1, 'pct_95': 0.1}
+        self.detector_rotation_tolerance = {'atol': 0.6, 'nrmse': 0.025, 'pct_95': 0.01}
 
         # Load scans and parameters
         self.obj_scan, self.blank_scan, self.dark_scan, self.cone_beam_params, self.optional_params, self.defective_pixel_list = \
