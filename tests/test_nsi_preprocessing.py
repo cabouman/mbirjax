@@ -22,7 +22,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.downsample_factor = [8, 8]
         self.subsample_view_factor = 1
         self.crop_region = ((0, 1), (0, 1))  # Default: use entire scan
-        self.compute_sino_tolerance = {'atol': 1e-5}
+        self.compute_sino_tolerance = {'atol': 1e-6}
         self.background_offset_tolerance = 1e-8
         self.detector_rotation_tolerance = {'atol': 0.6, 'nrmse': 0.025, 'pct_95': 0.01}
 
