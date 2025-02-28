@@ -9,7 +9,6 @@ import h5py
 import jax.numpy as jnp
 import jax
 from jax import jit
-import mbirjax
 import dm_pix
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
@@ -277,7 +276,6 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
         return sino_batches
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    print(f'no batch after:{mbirjax.get_memory_stats()}')
     return sino_batches, weights
 
 
