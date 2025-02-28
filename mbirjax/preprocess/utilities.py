@@ -411,7 +411,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     blank_scan = blank_scan.sum((2, 4))
     dark_scan = dark_scan.sum((2, 4))
     # number of good pixels in each down-sampling block
-    good_pixel_count = good_pixel_mask.sum((1,3)).astype(np.int16)
+    good_pixel_count = good_pixel_mask.sum((1,3)).astype(np.float32)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
     defective_pixel_list = np.argwhere(good_pixel_count < 1)
