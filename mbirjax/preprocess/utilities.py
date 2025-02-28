@@ -105,7 +105,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
     """
 
 
-    # Compute mean for blank and dark scans and move them to GPU with float64 precision
+    # Compute mean for blank and dark scans and move them to GPU if available
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
@@ -118,18 +118,17 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
 
         obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
-        obj_scan_batch = jax.device_put(obj_scan_batch, jax.devices('gpu')[0])  # Move batch to GPU
+        obj_scan_batch = jnp.array(obj_scan_batch)
 
         obj_scan_batch = obj_scan_batch - dark_scan_mean
         blank_scan_batch = blank_scan_mean - dark_scan_mean
 
         sino_batch = -jnp.log(jnp.where(obj_scan_batch / blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
-        sino_batches_list.append(sino_batch)
+        sino_batches_list.append(np.array(sino_batch))
 
-    sino_batches = jnp.concatenate(sino_batches_list, axis=0)
     del sino_batch, obj_scan, blank_scan, dark_scan, obj_scan_batch, blank_scan_batch, dark_scan_mean, blank_scan_mean
-    sino = np.array(sino_batches)
-    del sino_batches
+    sino = np.concatenate(sino_batches_list, axis=0)
+    del sino_batches_list
     print("Sinogram computation complete.")
 
     # set the sino pixels corresponding to the provided defective list to 0.0
