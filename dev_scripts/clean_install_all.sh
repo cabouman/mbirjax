@@ -45,10 +45,9 @@ fi
 # Gilbreth (gpu)
 if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   echo "Installing on Gilbreth"
-  module --force purge
-  # The following two lines are required in late 2024 to interface jax to an older version of cuda in use on gilbreth.
-  # After gilbreth/cuda is updated, then the pattern for gautschi could be used here.
-  module load jax/0.4.31
+  module load external
+  module load conda/2024.09
+  module load cuda/12.6.0
   yes | conda create -n $NAME python=3.11.7
   conda activate $NAME
   pip install -e "..[cuda12]"
