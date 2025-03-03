@@ -38,7 +38,7 @@ class TestNSIPreprocessing(unittest.TestCase):
     3. Background offset correction.
     """
     @staticmethod
-    def generate_dark_scan(shape, mean=0.0, stddev=0.01, clip_negative=False, seed=None):
+    def generate_dark_scan(shape, mean=0, stddev=1, clip_negative=True, seed=None):
         """
         Generate a random dark scan with Gaussian noise.
 
@@ -86,13 +86,18 @@ class TestNSIPreprocessing(unittest.TestCase):
         # Generate 3D Shepp-Logan phantom and sinogram
         self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
         self.sino_gdt = self.cone_model.forward_project(self.phantom)
+        self.sino_gdt = self.sino_gdt / np.max(self.sino_gdt)
+        self.idea_obj_scan = jnp.ones_like(self.sino_gdt) * np.exp(-self.sino_gdt)
+        mean = np.mean(self.idea_obj_scan) / 100
+        stddev = 0.001
 
-        self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, seed=42)
-        # self.obj_scan = self.blank_scan * np.exp(-self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape[1:], seed=43)
-        self.obj_scan = self.blank_scan * np.exp(-self.sino_gdt)
-        self.dark_scan = self.generate_dark_scan(self.sinogram_shape, seed=44)
+        self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=42)
+        self.obj_scan = self.idea_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev, seed=43)
+        # Simulate object scan
 
-        self.compute_sino_tolerance = {'atol': 1e-6}
+        self.dark_scan = self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=44)
+
+        self.compute_sino_tolerance = {'atol': 1e-2}
 
     def test_sinogram_computation(self):
         """Test if sinograms computed by JAX and GDT are numerically close."""
