@@ -119,8 +119,8 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
         obj_scan_batch = jnp.array(obj_scan_batch)
 
-        obj_scan_batch = obj_scan_batch - dark_scan_mean
-        blank_scan_batch = blank_scan_mean - dark_scan_mean
+        obj_scan_batch = jnp.abs(obj_scan_batch - dark_scan_mean)
+        blank_scan_batch = jnp.abs(blank_scan_mean - dark_scan_mean)
 
         sino_batch = -jnp.log(jnp.where(obj_scan_batch / blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
         sino_batches_list.append(np.array(sino_batch))
