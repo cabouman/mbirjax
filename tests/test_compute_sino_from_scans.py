@@ -111,8 +111,12 @@ class TestNSIPreprocessing(unittest.TestCase):
         """Test if sinograms computed by JAX and GDT are numerically close."""
         sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
         # Compare sinograms
-        self.assertTrue(np.allclose(sino_computed, self.sino_gdt, atol=self.compute_sino_tolerance['atol']),
-                        f"Sinograms differ more than {self.compute_sino_tolerance['atol']}. Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}")
+        self.assertTrue(
+            np.allclose(sino_computed, self.sino_gdt, atol=self.compute_sino_tolerance['atol']),
+            f"Sinograms differ more than {self.compute_sino_tolerance['atol']}. "
+            f"Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}, "
+            f"Mean diff: {np.mean(np.abs(sino_computed - self.sino_gdt))}")
+
 
     def test_background_offset_correction(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
@@ -124,8 +128,11 @@ class TestNSIPreprocessing(unittest.TestCase):
         sino_computed = sino_computed - background_offset
 
         # Compare offsets
-        self.assertTrue(np.allclose(sino_computed, self.sino_gdt, atol=self.estimate_bg_tolerance['atol']),
-                        f"Sinograms differ more than {self.estimate_bg_tolerance['atol']}. Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}")
+        self.assertTrue(
+            np.allclose(sino_computed, self.sino_gdt, atol=self.estimate_bg_tolerance['atol']),
+            f"Sinograms differ more than {self.estimate_bg_tolerance['atol']}. "
+            f"Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}, "
+            f"Mean diff: {np.mean(np.abs(sino_computed - self.sino_gdt))}")
 
 if __name__ == '__main__':
     unittest.main()
