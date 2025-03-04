@@ -86,28 +86,46 @@ class TestNSIPreprocessing(unittest.TestCase):
         # Generate 3D Shepp-Logan phantom and sinogram
         self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
         self.sino_gdt = self.cone_model.forward_project(self.phantom)
+        # Normalize the sinogram
         self.sino_gdt = self.sino_gdt / np.max(self.sino_gdt)
-        self.idea_obj_scan = jnp.ones_like(self.sino_gdt) * np.exp(-self.sino_gdt)
-        mean = np.mean(self.idea_obj_scan) / 100
+        self.ideal_obj_scan = jnp.ones_like(self.sino_gdt) * np.exp(-self.sino_gdt)
+        # Set the mean and standard deviation for the dark scan
+        mean = np.mean(self.ideal_obj_scan) / 100
         stddev = 0.001
 
         self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=42)
-        self.obj_scan = self.idea_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev, seed=43)
-        # Simulate object scan
+        self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev, seed=43)
+
+        # Randomly generate two defective pixel coordinates with length 2 and 3 to test the function's ability to handle different coordinate lengths
+        np.random.seed(25)
+        self.defective_pixel_list = [(np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)), (np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1))]
+        # Randomly set pixel to negative value to test the function's ability to handle negative object scan values
+        self.obj_scan = self.obj_scan.at[np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)].set(-1)
 
         self.dark_scan = self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=44)
 
         self.compute_sino_tolerance = {'atol': 1e-2}
+        self.estimate_bg_tolerance = {'atol': 1e-2}
 
     def test_sinogram_computation(self):
         """Test if sinograms computed by JAX and GDT are numerically close."""
-        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan)
-
-
+        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
         # Compare sinograms
         self.assertTrue(np.allclose(sino_computed, self.sino_gdt, atol=self.compute_sino_tolerance['atol']),
                         f"Sinograms differ more than {self.compute_sino_tolerance['atol']}. Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}")
 
+    def test_background_offset_correction(self):
+        """Test if background offset correction is consistent between JAX and GDT implementations."""
+        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
+
+        # Compute background offsets
+        background_offset = estimate_background_offset_jax(sino_computed)
+        print("background_offset = ", background_offset)
+        sino_computed = sino_computed - background_offset
+
+        # Compare offsets
+        self.assertTrue(np.allclose(sino_computed, self.sino_gdt, atol=self.estimate_bg_tolerance['atol']),
+                        f"Sinograms differ more than {self.estimate_bg_tolerance['atol']}. Max diff: {np.max(np.abs(sino_computed - self.sino_gdt))}")
 
 if __name__ == '__main__':
     unittest.main()
