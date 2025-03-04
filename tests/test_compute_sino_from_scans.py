@@ -127,7 +127,6 @@ class TestNSIPreprocessing(unittest.TestCase):
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 
-        # Compare offsets
         self.assertTrue(
             np.allclose(sino_computed, self.sino_gdt, atol=self.estimate_bg_tolerance['atol']),
             f"Sinograms differ more than {self.estimate_bg_tolerance['atol']}. "
