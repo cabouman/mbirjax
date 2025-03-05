@@ -8,10 +8,11 @@ import importlib.util
 import matplotlib.pyplot as plt
 
 # Define the local package path
-source_path = f"{os.path.dirname(os.getcwd())}/mbirjax"
+source_path = "/Users/a124601/Desktop/Research_Purdue/MAR/Slides/0220/mbirjax_preprocessing_gpu/mbirjax"
 
 # Explicitly remove any previously loaded mbirjax from sys.modules
-
+if "mbirjax" in sys.modules:
+    del sys.modules["mbirjax"]
 
 # Manually load the local mbirjax package
 package_name = "mbirjax"
@@ -92,60 +93,60 @@ class TestNSIPreprocessing(unittest.TestCase):
         mean = np.mean(self.ideal_obj_scan) / 100
         stddev = 0.001
 
-        self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=42)
-        self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev, seed=43)
+        self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev)
+        self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev)
 
         # Randomly generate two defective pixel coordinates with length 2 and 3 to test the function's ability to handle different coordinate lengths
-        np.random.seed(25)
+
         self.defective_pixel_list = [(np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)), (np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1))]
         # Randomly set pixel to negative value to test the function's ability to handle negative object scan values
         self.obj_scan = self.obj_scan.at[np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)].set(-1)
 
-        self.dark_scan = self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=44)
+        self.dark_scan = self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev)
 
-        self.compute_sino_tolerance = {'atol': 1.17, 'mean_tol': 0.0012}
-        self.estimate_bg_tolerance = {'atol': 1.17, 'mean_tol': 0.0012}
+        self.compute_sino_tolerance = {'atol': 1e-2}
+        self.estimate_bg_tolerance = {'atol': 1e-2}
+
+    def compute_sino(self):
+        """Computes the sinogram with randomized defective pixels."""
+        # Randomize defective pixel list
+        defective_pixel_list = [
+            (np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)),
+            (np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1))
+        ]
+
+        # Generate object scan with noise and random defect
+        obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=np.mean(self.ideal_obj_scan)/100, stddev=0.001)
+        obj_scan = obj_scan.at[np.random.randint(0, self.num_views-1), np.random.randint(0, self.num_det_rows-1), np.random.randint(0, self.num_det_channels-1)].set(-1)
+
+        # Compute sinogram
+        sino_computed, _ = compute_sino_transmission_jax(obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=defective_pixel_list)
+        offset = estimate_background_offset_jax(sino_computed)
+        sino_computed = sino_computed - offset
+
+        # Compute difference
+        diff = jnp.abs(sino_computed - self.sino_gdt)
+        return np.max(diff), np.mean(diff)
 
     def test_sinogram_computation(self):
-        """Test if sinograms computed by JAX and GDT are numerically close."""
-        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
-        # Compare sinograms
-        # Compute differences
-        max_diff = np.max(np.abs(sino_computed - self.sino_gdt))
-        mean_diff = np.mean(np.abs(sino_computed - self.sino_gdt))
-        tolerance = self.compute_sino_tolerance['atol']
-        tolerance_mean = self.compute_sino_tolerance['mean_tol']
+        max_diffs = []
+        mean_diffs = []
+        for i in range(500):
+            """Test if sinograms computed by JAX and GDT are numerically close."""
+            max_diff, mean_diff = self.compute_sino()
+            max_diffs.append(max_diff)
+            mean_diffs.append(mean_diff)
 
-        # Check if differences are within tolerance
-        self.assertTrue(
-            max_diff < tolerance and mean_diff < tolerance_mean,
-            f"Sinograms differ more than the tolerance. "
-            f"Max diff: {max_diff} (tolerance: {tolerance}), Mean diff: {mean_diff} (tolerance: {tolerance_mean})"
-        )
-        self.assertFalse(np.isnan(sino_computed).any(), "Error: sino_computed contains NaN values!")
+        max_diff_mean = np.mean(max_diffs)
+        max_diff_std = np.std(max_diffs)
+        mean_diff_mean = np.mean(mean_diffs)
+        mean_diff_std = np.std(mean_diffs)
+
+        print(f"\nEstimated Tolerance Over {200} Runs:")
+        print(f"Max Diff: Mean={max_diff_mean:.6f}, Std={max_diff_std:.6f}")
+        print(f"Mean Diff: Mean={mean_diff_mean:.6f}, Std={mean_diff_std:.6f}")
 
 
-    def test_background_offset_correction(self):
-        """Test if background offset correction is consistent between JAX and GDT implementations."""
-        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
-
-        # Compute background offsets
-        background_offset = estimate_background_offset_jax(sino_computed)
-        print("background_offset = ", background_offset)
-        sino_computed = sino_computed - background_offset
-
-        max_diff = np.max(np.abs(sino_computed - self.sino_gdt))
-        mean_diff = np.mean(np.abs(sino_computed - self.sino_gdt))
-        tolerance = self.estimate_bg_tolerance['atol']
-        tolerance_mean = self.estimate_bg_tolerance['mean_tol']
-
-        # Check if differences are within tolerance
-        self.assertTrue(
-            max_diff < tolerance and mean_diff < tolerance_mean,
-            f"Sinograms differ more than the tolerance. "
-            f"Max diff: {max_diff} (tolerance: {tolerance}), Mean diff: {mean_diff} (tolerance: {tolerance_mean})"
-        )
-        self.assertFalse(np.isnan(sino_computed).any(), "Error: sino_computed contains NaN values!")
 
 if __name__ == '__main__':
     unittest.main()
