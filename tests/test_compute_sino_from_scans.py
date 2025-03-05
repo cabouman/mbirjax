@@ -10,9 +10,6 @@ import matplotlib.pyplot as plt
 # Define the local package path
 source_path = f"{os.path.dirname(os.getcwd())}/mbirjax"
 
-# Explicitly remove any previously loaded mbirjax from sys.modules
-
-
 # Manually load the local mbirjax package
 package_name = "mbirjax"
 spec = importlib.util.spec_from_file_location(package_name, os.path.join(source_path, "__init__.py"))
@@ -23,18 +20,15 @@ spec.loader.exec_module(mbirjax)
 # Verify that the local version is loaded
 print("mbirjax loaded from:", mbirjax.__file__)
 
-from mbirjax.preprocess.nsi import load_scans_and_params
-from mbirjax.preprocess.utilities import compute_sino_transmission_jax, compute_sino_transmission
-from mbirjax.preprocess.utilities import estimate_background_offset_jax, estimate_background_offset
-from mbirjax.preprocess.utilities import correct_det_rotation_batch_pix, correct_det_rotation
+from mbirjax.preprocess.utilities import compute_sino_transmission_jax
+from mbirjax.preprocess.utilities import estimate_background_offset_jax
+
 
 class TestNSIPreprocessing(unittest.TestCase):
     """
     Unit tests for NSI dataset preprocessing functions.
     Tests:
-    1. Sinogram computation using JAX vs. GDT.
-    2. Geometry parameter consistency.
-    3. Background offset correction.
+    Sinogram computation from scans using JAX.
     """
     @staticmethod
     def generate_dark_scan(shape, mean=0, stddev=1, clip_negative=True, seed=None):
@@ -149,5 +143,4 @@ class TestNSIPreprocessing(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-elif "unittest" in sys.modules:
-    unittest.main()
+
