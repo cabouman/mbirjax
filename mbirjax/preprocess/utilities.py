@@ -262,16 +262,16 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
         print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
 
         # Get the current batch (from i to i + batch_size)
-        sino_batch = jax.device_put(sino[i : min(i + batch_size, num_views)], jax.devices('gpu')[0])
+        sino_batch = jnp.array(sino[i : min(i + batch_size, num_views)])
 
         # Apply the rotation on this batch
         sino_batch = dm_pix.rotate(sino_batch.transpose(1,2,0), det_rotation, order=1, mode='constant', cval=0.0).transpose(2,0,1) # mode and cval are set according to the original codes
 
         # Append the rotated batch to the list
-        sino_batches_list.append(sino_batch)
+        sino_batches_list.append(np.array(sino_batch))
 
-    sino_batches = jnp.concatenate(sino_batches_list, axis=0)
-    sino_batches = np.array(sino_batches)
+    sino_batches = np.concatenate(sino_batches_list, axis=0)
+
     if weights is None:
         return sino_batches
     print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
