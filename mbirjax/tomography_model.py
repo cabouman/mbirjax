@@ -49,12 +49,12 @@ class TomographyModel(ParameterHandler):
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
 
-        self.main_device, self.worker = None, None
+        self.main_device, self.sinogram_device, self.worker = None, None, None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
-        self.transfer_view_batch_size = 2000
-        self.transfer_pixel_batch_size = 200000
+        self.transfer_view_batch_size = None
+        self.transfer_pixel_batch_size = None
         self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.set_devices_and_batch_sizes()
@@ -86,17 +86,50 @@ class TomographyModel(ParameterHandler):
         sinogram_shape = self.get_params('sinogram_shape')
         recon_shape = self.get_params('recon_shape')
 
-        sino_reps_for_vcd = 6
-        recon_reps_for_vcd = 8
-        reps_for_vcd_update = 3
-
         zero = jnp.zeros(1)
         bits_per_byte = 8
         mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
         memory_per_sinogram = mem_per_entry * np.prod(sinogram_shape)
         memory_per_recon = mem_per_entry * np.prod(recon_shape)
 
+        sino_reps_for_vcd = 6
+        recon_reps_for_vcd = 8
+        reps_for_vcd_update = 3
+        frac_gpu_mem_to_use = 0.95
+        frac_gpu_mem_to_use_for_sino = 0.7
+
         total_memory_required = memory_per_sinogram * sino_reps_for_vcd + memory_per_recon * recon_reps_for_vcd
+
+        # If we have plenty of GPU memory, then put everything on the GPU in one step
+        if (total_memory_required < gpu_memory * frac_gpu_mem_to_use and use_gpu == 'automatic') or use_gpu == 'full':
+            self.main_device = gpus[0]
+            self.worker = gpus[0]
+            self.sinogram_device = gpus[0]
+            self.transfer_view_batch_size = sinogram_shape[0]
+            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
+        # Same if we have no GPU, except the devices are now the CPU
+        elif gpu_memory == 0 or use_gpu == 'none':
+            self.main_device = cpus[0]
+            self.worker = cpus[0]
+            self.sinogram_device = cpus[0]
+            self.transfer_view_batch_size = sinogram_shape[0]
+            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
+        # Otherwise, determine how to batch the sinogram and pixels for transfer
+        else:
+            self.main_device = cpus[0]
+            self.worker = gpus[0]
+            num_sino_batches = np.ceil(memory_per_sinogram * sino_reps_for_vcd / (gpu_memory * frac_gpu_mem_to_use_for_sino)).astype(int)
+            self.transfer_view_batch_size = np.ceil(sinogram_shape[0] / num_sino_batches).astype(int)
+            if num_sino_batches == 1:
+                self.sinogram_device = gpus[0]
+            else:
+                self.sinogram_device = cpus[0]
+
+            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
+
+        print(self.main_device, self.sinogram_device, self.worker)
+        return
+
         subset_update_memory_required = (memory_per_sinogram + memory_per_recon) * reps_for_vcd_update
         if isinstance(self, mbirjax.ConeBeamModel):
             reps_per_projection = 2  # This is determined empirically and should probably be determined by each subclass rather than set here.
@@ -423,7 +456,7 @@ class TomographyModel(ParameterHandler):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
-
+        mbirjax.get_memory_stats()
         hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, output_device=output_device)
 
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
@@ -672,10 +705,10 @@ class TomographyModel(ParameterHandler):
             recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
         # Check that sinogram and weights are not taking up GPU space
-        if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.main_device:
-            sinogram = jax.device_put(sinogram, self.main_device)
-        if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.main_device:
-            weights = jax.device_put(weights, self.main_device)
+        if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
+            sinogram = jax.device_put(sinogram, self.sinogram_device)
+        if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
+            weights = jax.device_put(weights, self.sinogram_device)
         if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
             init_recon = jax.device_put(init_recon, self.main_device)
 
@@ -751,7 +784,7 @@ class TomographyModel(ParameterHandler):
             weights = 1
             constant_weights = True
         else:
-            weights = jax.device_put(weights, self.main_device)
+            weights = jax.device_put(weights, self.sinogram_device)
             constant_weights = False
 
         recon_shape = self.get_params('recon_shape')
@@ -760,7 +793,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             print('Starting direct recon for initial reconstruction')
-            with jax.default_device(self.main_device):
+            with jax.default_device(self.sinogram_device):
                 init_recon = self.direct_recon(sinogram)
 
         # Make sure that init_recon has the correct shape and type
@@ -775,7 +808,7 @@ class TomographyModel(ParameterHandler):
         error_sinogram = sinogram - error_sinogram
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
-        error_sinogram = jax.device_put(error_sinogram, self.worker)
+        error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -804,7 +837,7 @@ class TomographyModel(ParameterHandler):
         if constant_weights:
             weights = 1
         else:
-            weights = jax.device_put(weights, self.worker)
+            weights = jax.device_put(weights, self.sinogram_device)
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
@@ -1067,7 +1100,7 @@ class TomographyModel(ParameterHandler):
             time_names.append('fproj')
             time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
-                                                    output_device=self.worker)
+                                                    output_device=self.sinogram_device)
             # delta_sinogram = delta_sinogram.block_until_ready()
             times[time_index] += time.time() - time_start
             time_index += 1
@@ -1075,7 +1108,8 @@ class TomographyModel(ParameterHandler):
             time_names.append('forlqu')
             time_start = time.time()
             forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
-                                                                          weights, fm_constant, const_weights)
+                                                                          weights, fm_constant, const_weights,
+                                                                          output_device=self.main_device)
 
             # Compute optimal update step
             alpha_numerator = forward_linear - prior_linear
@@ -1118,7 +1152,7 @@ class TomographyModel(ParameterHandler):
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
-                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.worker)
+                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.sinogram_device)
 
             time_names.append('scaledr')
             time_start = time.time()
@@ -1157,7 +1191,8 @@ class TomographyModel(ParameterHandler):
 
         return vcd_subset_updater
 
-    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights):
+    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
+                             output_device=None):
         """
         Compute
             forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
@@ -1171,6 +1206,7 @@ class TomographyModel(ParameterHandler):
             weights (jax array or constant):
             fm_constant (constant):
             const_weights (bool): True if the weights are constant 1
+            output_device (jax device): device on which the output will be placed
 
         Returns:
             tuple:
@@ -1180,59 +1216,62 @@ class TomographyModel(ParameterHandler):
         views_per_batch = self.view_batch_size_for_vmap
 
         # If this can be done without data transfer, then do it.
-        if self.worker == self.main_device:
+        if self.worker == self.sinogram_device:
             forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-            return forward_linear, forward_quadratic
 
         # Otherwise batch the sinogram by view, send to the worker and calculate linear and quadratic terms
         # First apply the batch projector directly to an initial batch to get the initial output
-        views_per_batch = num_views if views_per_batch is None else views_per_batch
-        num_remaining = num_views % views_per_batch
+        else:
+            views_per_batch = num_views if views_per_batch is None else views_per_batch
+            num_remaining = num_views % views_per_batch
 
-        # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
-        initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
-        # Make the weights into a 1D vector along views if it's a constant
+            # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
+            initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
+            # Make the weights into a 1D vector along views if it's a constant
 
-        def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
-            """
-            Send a batch to the worker and compute forward linear and quadratic for that batch.
-            """
-            worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
-            worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
-            if not const_weights:
-                worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
-            else:
-                worker_wts = weights
+            def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
+                """
+                Send a batch to the worker and compute forward linear and quadratic for that batch.
+                """
+                worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
+                worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
+                if not const_weights:
+                    worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
+                else:
+                    worker_wts = weights
 
-            # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
-            # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
+                # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
+                # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
 
-            previous_linear += sum_product(worker_wes, worker_ds)
-            worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
-            if not const_weights:
-                quadratic_entries = sum_product(worker_ds, worker_wts)
-            else:
-                quadratic_entries = jnp.sum(worker_ds)
-            previous_quadratic += quadratic_entries
+                previous_linear += sum_product(worker_wes, worker_ds)
+                worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
+                if not const_weights:
+                    quadratic_entries = sum_product(worker_ds, worker_wts)
+                else:
+                    quadratic_entries = jnp.sum(worker_ds)
+                previous_quadratic += quadratic_entries
 
-            del worker_wes, worker_ds, worker_wts
-            return previous_linear, previous_quadratic
+                del worker_wes, worker_ds, worker_wts
+                return previous_linear, previous_quadratic
 
-        forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
+            forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
 
-        # Then deal with the batches if there are any
-        if views_per_batch < num_views:
-            num_batches = (num_views - initial_batch_size) // views_per_batch
-            for j in jnp.arange(num_batches):
-                start_ind_j = initial_batch_size + j * views_per_batch
-                stop_ind_j = start_ind_j + views_per_batch
-                forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
-                                                                     forward_linear, forward_quadratic)
+            # Then deal with the batches if there are any
+            if views_per_batch < num_views:
+                num_batches = (num_views - initial_batch_size) // views_per_batch
+                for j in jnp.arange(num_batches):
+                    start_ind_j = initial_batch_size + j * views_per_batch
+                    stop_ind_j = start_ind_j + views_per_batch
+                    forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
+                                                                         forward_linear, forward_quadratic)
 
-        forward_linear = jax.device_put(forward_linear, self.main_device)
-        forward_quadratic = jax.device_put(forward_quadratic, self.main_device)
-        return fm_constant * forward_linear, fm_constant * forward_quadratic
+            forward_linear = fm_constant * forward_linear
+            forward_quadratic = fm_constant * forward_quadratic
+
+        forward_linear = jax.device_put(forward_linear, output_device)
+        forward_quadratic = jax.device_put(forward_quadratic, output_device)
+        return forward_linear, forward_quadratic
 
     @staticmethod
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
