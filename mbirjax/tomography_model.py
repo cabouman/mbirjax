@@ -89,17 +89,25 @@ class TomographyModel(ParameterHandler):
         zero = jnp.zeros(1)
         bits_per_byte = 8
         mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
-        memory_per_sinogram = mem_per_entry * np.prod(sinogram_shape)
+        memory_per_view = mem_per_entry * np.prod(sinogram_shape[1:])
+        memory_per_sinogram = memory_per_view * sinogram_shape[0]
         memory_per_recon = mem_per_entry * np.prod(recon_shape)
 
         sino_reps_for_vcd = 6
         recon_reps_for_vcd = 8
-        reps_for_vcd_update = 3
+        reps_for_projection = 3
         frac_gpu_mem_to_use = 0.95
-        frac_gpu_mem_to_use_for_sino = 0.7
+        frac_gpu_mem_for_sino = 0.7
+        frac_gpu_mem_for_pixels = 0.7
 
         total_memory_required = memory_per_sinogram * sino_reps_for_vcd + memory_per_recon * recon_reps_for_vcd
 
+        # We need to set 3 devices, some of which may be the same
+        # The worker device - the GPU if available, for doing projections
+        # The sinogram device - for storing several objects as big as the sinogram (error sinogram, weights, etc)
+        # The main device - for storing the recon and other objects as big as it.
+        # If the worker is the CPU, then all 3 are the CPU. If main is the GPU, then all 3 are GPU.
+        # If worker is GPU and main is CPU, then the sinogram device may be CPU or GPU depending on GPU memory size.
         # If we have plenty of GPU memory, then put everything on the GPU in one step
         if (total_memory_required < gpu_memory * frac_gpu_mem_to_use and use_gpu == 'automatic') or use_gpu == 'full':
             self.main_device = gpus[0]
@@ -118,14 +126,33 @@ class TomographyModel(ParameterHandler):
         else:
             self.main_device = cpus[0]
             self.worker = gpus[0]
-            num_sino_batches = np.ceil(memory_per_sinogram * sino_reps_for_vcd / (gpu_memory * frac_gpu_mem_to_use_for_sino)).astype(int)
+            gpu_mem_for_sino = gpu_memory * frac_gpu_mem_for_sino
+            num_sino_batches = np.ceil(memory_per_sinogram * sino_reps_for_vcd / gpu_mem_for_sino).astype(int)
             self.transfer_view_batch_size = np.ceil(sinogram_shape[0] / num_sino_batches).astype(int)
             if num_sino_batches == 1:
                 self.sinogram_device = gpus[0]
+                extra_gpu_memory = gpu_memory - memory_per_sinogram * sino_reps_for_vcd
             else:
                 self.sinogram_device = cpus[0]
+                memory_per_sinogram_batch = self.transfer_view_batch_size * memory_per_view
+                reps_per_projection = 2
+                extra_gpu_memory = gpu_memory - memory_per_sinogram_batch * reps_per_projection
 
-            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
+            # Determine the number of voxel cylinders that will fit into the extra gpu memory and how
+            # to do sub-batching by views and voxel cylinders on the GPU.
+            num_slices = recon_shape[2]
+            memory_per_cylinder = num_slices * mem_per_entry
+            max_cylinders = int(extra_gpu_memory * frac_gpu_mem_for_pixels / memory_per_cylinder)
+
+            self.transfer_pixel_batch_size = min(max_cylinders, recon_shape[0] * recon_shape[1])
+            extra_gpu_memory = extra_gpu_memory - self.transfer_pixel_batch_size * memory_per_cylinder
+            max_num_pixels_per_batch = int(extra_gpu_memory / (reps_for_projection * memory_per_cylinder))
+            views_per_batch = min(self.transfer_view_batch_size, max_num_pixels_per_batch // 20)
+            views_per_batch = max(views_per_batch, 1)
+            pixels_per_batch = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_batch / views_per_batch))
+            pixels_per_batch = max(pixels_per_batch, 1)
+            self.view_batch_size_for_vmap = views_per_batch
+            self.pixel_batch_size_for_vmap = pixels_per_batch
 
         print(self.main_device, self.sinogram_device, self.worker)
         return
