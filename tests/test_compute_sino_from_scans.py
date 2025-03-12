@@ -69,6 +69,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         start_angle = -jnp.pi  # For testing purposes, we use a full 360 degrees
         end_angle = jnp.pi
         self.fdk_angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        self.maximum_intensity = 4.0
 
         # Initialize CT model
         self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
@@ -81,12 +82,12 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.sino_gdt = self.cone_model.forward_project(self.phantom)
         # Normalize the sinogram
         self.sino_gdt = self.sino_gdt / np.max(self.sino_gdt)
-        self.ideal_obj_scan = jnp.ones_like(self.sino_gdt) * np.exp(-self.sino_gdt)
+        self.ideal_obj_scan = self.maximum_intensity * np.exp(-self.sino_gdt)
         # Set the mean and standard deviation for the dark scan
         mean = np.mean(self.ideal_obj_scan) / 100
         stddev = 0.001
 
-        self.blank_scan = jnp.ones_like(self.sino_gdt) + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=42)
+        self.blank_scan = self.maximum_intensity + self.generate_dark_scan(self.sinogram_shape, mean=mean, stddev=stddev, seed=42)
         self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=mean, stddev=stddev, seed=43)
 
         # Randomly generate two defective pixel coordinates with length 2 and 3 to test the function's ability to handle different coordinate lengths
