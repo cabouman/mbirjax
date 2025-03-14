@@ -5,8 +5,12 @@ import pprint
 import jax.numpy as jnp
 import sys
 import os
-source_path = "/home/li5273/Desktop/0313/mbirjax_preprocessing_gpu_testrotate/mbirjax"
 import importlib.util
+
+# Define the local package path
+source_path = f"{os.path.dirname(os.getcwd())}/mbirjax"
+
+# Manually load the local mbirjax package
 package_name = "mbirjax"
 spec = importlib.util.spec_from_file_location(package_name, os.path.join(source_path, "__init__.py"))
 mbirjax = importlib.util.module_from_spec(spec)
@@ -14,6 +18,7 @@ sys.modules[package_name] = mbirjax
 spec.loader.exec_module(mbirjax)
 
 print("mbirjax loaded from:", mbirjax.__file__)
+
 import pprint
 
 pp = pprint.PrettyPrinter(indent=4)
