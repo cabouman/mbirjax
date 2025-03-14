@@ -325,7 +325,6 @@ def estimate_background_offset(sino, option=0, edge_width=9):
     offset = np.median([median_top, median_left, median_right])
     return offset
 
-@jit
 def estimate_background_offset_jax(sino, edge_width=9):
     """
     Estimate background offset of a sinogram using JAX for GPU acceleration.

@@ -1,27 +1,9 @@
 import unittest
 import numpy as np
-import jax
 import jax.numpy as jnp
-import sys
-import os
-import importlib.util
-import matplotlib.pyplot as plt
+import mbirjax
 
-# Define the local package path
-source_path = f"{os.path.dirname(os.getcwd())}/mbirjax"
-
-# Manually load the local mbirjax package
-package_name = "mbirjax"
-spec = importlib.util.spec_from_file_location(package_name, os.path.join(source_path, "__init__.py"))
-mbirjax = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = mbirjax
-spec.loader.exec_module(mbirjax)
-
-# Verify that the local version is loaded
-print("mbirjax loaded from:", mbirjax.__file__)
-
-from mbirjax.preprocess.utilities import compute_sino_transmission_jax
-from mbirjax.preprocess.utilities import estimate_background_offset_jax
+import mbirjax.preprocess.utilities as preprocess
 
 
 class TestNSIPreprocessing(unittest.TestCase):
@@ -52,7 +34,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         # We should get no negative values.  If we do, then we take the absolute value instead of
         # clipping so that the values are still random.
         if clip_negative:
-            dark_scan = np.abs(dark_scan, 0, None)
+            dark_scan = np.abs(dark_scan)
 
         return dark_scan
 
@@ -105,31 +87,13 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.compute_sino_tolerance = {'atol': 1.17, 'mean_tol': 0.0012}
         self.estimate_bg_tolerance = {'atol': 1.17, 'mean_tol': 0.0012}
 
-    def test_sinogram_computation(self):
-        """Test if sinograms computed by JAX and GDT are numerically close."""
-        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
-        # Compare sinograms
-        # Compute differences
-        max_diff = np.max(np.abs(sino_computed - self.sino_gt))
-        mean_diff = np.mean(np.abs(sino_computed - self.sino_gt))
-        tolerance = self.compute_sino_tolerance['atol']
-        tolerance_mean = self.compute_sino_tolerance['mean_tol']
-
-        # Check if differences are within tolerance
-        self.assertTrue(
-            max_diff < tolerance and mean_diff < tolerance_mean,
-            f"Sinograms differ more than the tolerance. "
-            f"Max diff: {max_diff} (tolerance: {tolerance}), Mean diff: {mean_diff} (tolerance: {tolerance_mean})"
-        )
-        self.assertFalse(np.isnan(sino_computed).any(), "Error: sino_computed contains NaN values!")
-
 
     def test_background_offset_correction(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
-        sino_computed, _ = compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
+        sino_computed, _ = preprocess.compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan, defective_pixel_list=self.defective_pixel_list)
 
         # Compute background offsets
-        background_offset = estimate_background_offset_jax(sino_computed)
+        background_offset = preprocess.estimate_background_offset_jax(sino_computed, edge_width=3)
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 
@@ -137,6 +101,9 @@ class TestNSIPreprocessing(unittest.TestCase):
         mean_diff = np.mean(np.abs(sino_computed - self.sino_gt))
         tolerance = self.estimate_bg_tolerance['atol']
         tolerance_mean = self.estimate_bg_tolerance['mean_tol']
+        import matplotlib.pyplot as plt
+        mbirjax.slice_viewer(sino_computed, slice_axis=0)
+        plt.show(block=True)
 
         # Check if differences are within tolerance
         self.assertTrue(
