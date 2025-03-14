@@ -238,7 +238,7 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
-def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=60):
+def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.

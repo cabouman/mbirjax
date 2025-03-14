@@ -81,7 +81,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
         self.sino_gdt = self.cone_model.forward_project(self.phantom)
         # Normalize the sinogram
-        self.sino_gdt = self.sino_gdt / np.max(self.sino_gdt)
+        self.sino_gdt = self.sino_gdt / np.percentile(self.sino_gdt, 0.98)
         self.ideal_obj_scan = self.maximum_intensity * np.exp(-self.sino_gdt)
         # Set the mean and standard deviation for the dark scan
         mean = np.mean(self.ideal_obj_scan) / 100
