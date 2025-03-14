@@ -65,7 +65,8 @@ def qggmrf_loss(full_recon, qggmrf_params):
     return loss
 
 
-def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices, qggmrf_params, main_device, worker_device):
+def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices, qggmrf_params,
+                                                    main_device, worker_device, pixel_batch_size=10000):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
@@ -94,11 +95,24 @@ def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pix
 
     # Then work on slices - add in the contributions from neighbors in the same slice
     slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
-    gradient = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
-    hessian = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
-    gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
-
-    return gradient + gradient_cyl, hessian + hessian_cyl
+    # gradient = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
+    # hessian = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
+    # gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
+    # TODO: determine pixel_batch_size from TomographyModel
+    num_batches = jnp.ceil(len(pixel_indices) / pixel_batch_size).astype(int)
+    indices_batched = jnp.array_split(pixel_indices, num_batches)
+    grad, hess = [], []
+    for batch in indices_batched:
+        g = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
+        h = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
+        g, h = slice_map(flat_recon, recon_shape, batch, qggmrf_params, g, h)
+        grad.append(g)
+        hess.append(h)
+    gradient = jnp.concatenate(grad, axis=0)
+    hessian = jnp.concatenate(hess, axis=0)
+    gradient = gradient + gradient_cyl
+    hessian = hessian + hessian_cyl
+    return gradient, hessian
 
 
 @partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])

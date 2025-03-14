@@ -148,12 +148,14 @@ class TomographyModel(ParameterHandler):
             extra_gpu_memory = extra_gpu_memory - self.transfer_pixel_batch_size * memory_per_cylinder
             max_num_pixels_per_batch = int(extra_gpu_memory / (reps_for_projection * memory_per_cylinder))
             views_per_batch = min(self.transfer_view_batch_size, max_num_pixels_per_batch // 20)
+            views_per_batch = min(views_per_batch, 128)
             views_per_batch = max(views_per_batch, 1)
             pixels_per_batch = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_batch / views_per_batch))
+            pixels_per_batch = min(pixels_per_batch, 2048)
             pixels_per_batch = max(pixels_per_batch, 1)
             self.view_batch_size_for_vmap = views_per_batch
             self.pixel_batch_size_for_vmap = pixels_per_batch
-
+        print(self.transfer_view_batch_size, self.transfer_pixel_batch_size, self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap)
         print(self.main_device, self.sinogram_device, self.worker)
         return
 
@@ -821,7 +823,7 @@ class TomographyModel(ParameterHandler):
             # Initialize VCD recon, and error sinogram
             print('Starting direct recon for initial reconstruction')
             with jax.default_device(self.sinogram_device):
-                init_recon = self.direct_recon(sinogram)
+                init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
 
         # Make sure that init_recon has the correct shape and type
         if init_recon.shape != recon_shape:
@@ -831,6 +833,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError(error_message)
 
         # Initialize VCD recon and error sinogram using the init_reco
+        print('Initializing error sinogram')
         error_sinogram = self.forward_project(init_recon)
         error_sinogram = sinogram - error_sinogram
         recon = init_recon
@@ -898,7 +901,7 @@ class TomographyModel(ParameterHandler):
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
             nrms_update[i] = norm_squared_update / jnp.sum(flat_recon * flat_recon)
-            es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(error_sinogram.size)
+            es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
             alpha_values[i] = alpha
 
             if verbose >= 1:
