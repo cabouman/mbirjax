@@ -28,7 +28,8 @@ dependencies = [
     "ruamel.yaml",
     "psutil",
     "striprtf",
-    "h5py"
+    "h5py",
+    "dm-pix"
 ]
 
 [project.optional-dependencies]
