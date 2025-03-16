@@ -2,12 +2,9 @@ import os, sys
 import re
 import numpy as np
 import warnings
-import striprtf.striprtf as striprtf
 import mbirjax.preprocess as preprocess
 import glob
 import pprint
-import time
-import mbirjax
 pp = pprint.PrettyPrinter(indent=4)
 
 
@@ -52,9 +49,7 @@ def compute_sino_and_params(dataset_dir,
         tuple: [sinogram, cone_beam_params, optional_params]
 
             sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-
             cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
-
             optional_params (dict): Additional ConeBeamModel parameters to be set using set_params().
 
     Example:
@@ -74,8 +69,8 @@ def compute_sino_and_params(dataset_dir,
 
     """
 
-    print("\n\n########## Loading object, blank, dark scans, as well as geometry parameters from NSI dataset directory ...")
-    obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list = \
+    print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory ...")
+    obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_array = \
             load_scans_and_params(dataset_dir,
                                   downsample_factor=downsample_factor, crop_region=crop_region,
                                   subsample_view_factor=subsample_view_factor)
@@ -88,8 +83,7 @@ def compute_sino_and_params(dataset_dir,
     print('dark_scan shape = ', dark_scan.shape)
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans ...")
-    sino, defective_pixel_list = \
-            preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list)
+    sino = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_array)
     del obj_scan, blank_scan, dark_scan # delete scan images to save memory
 
     print("\n\n########## Correcting background offset to the sinogram from edge pixels ...")
@@ -99,7 +93,7 @@ def compute_sino_and_params(dataset_dir,
 
     print("\n\n########## Correcting sinogram data to account for detector rotation ...")
     sino = preprocess.correct_det_rotation_batch_pix(sino, det_rotation=optional_params["det_rotation"])
-    del optional_params["det_rotation"]
+    del optional_params["det_rotation"]  # We delete this since it's not an allowed parameter in TomographyModel.
     return sino, cone_beam_params, optional_params
 
 
@@ -122,30 +116,21 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
 
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
-
         crop_region (((float, float),(float, float)), optional) - Values of ((row_start, row_end), (col_start, col_end)) define a bounding box that crops the scan.
             The default of ((0, 1), (0, 1)) retains the entire scan.
-
         view_id_start (int, optional): view index corresponding to the first view.
-
         view_id_end (int, optional): view index corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
-
         subsample_view_factor (int, optional): view subsample factor.
 
     Returns:
         tuple: [obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list]
 
             obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
-
             blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
-
             dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
-
             cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
-
             optional_params (dict): Additional ConeBeamModel parameters to be set using set_params().
-
-            defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+            defective_pixel_array (ndarray): An nx2 array containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
     """
     ### automatically parse the paths to NSI metadata and scans from dataset_dir
     config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
@@ -302,19 +287,22 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     else:
         dark_scan = np.zeros(blank_scan.shape)
 
+    ### read object scans
     if view_id_end is None:
         view_id_end = num_acquired_scans
     view_ids = np.arange(start=view_id_start, stop=view_id_end, step=subsample_view_factor, dtype=np.int32)
+    print('Loading {} object scans from disk.'.format(len(view_ids)))
     obj_scan = preprocess.read_scan_dir(obj_scan_dir, view_ids)
+    print('Scans loaded.')
 
     ### Load defective pixel information
     if defective_pixel_path is not None:
         tag_section_list = [['Defect', 'Defective Pixels']]
         defective_loc = _read_str_from_config(defective_pixel_path, tag_section_list)
-        defective_pixel_list = np.array([defective_pixel_ind.split()[1::-1] for defective_pixel_ind in defective_loc ]).astype(int)
-        defective_pixel_list = list(map(tuple, defective_pixel_list))
+        defective_pixel_array = np.array([defective_pixel_ind.split()[1::-1] for defective_pixel_ind in defective_loc ]).astype(int)
     else:
-        defective_pixel_list = None
+        defective_pixel_array = ()
+    num_defective_pixels = len(defective_pixel_array)
 
     ### flip the scans according to flipH and flipV information from nsipro file
     if flipV:
@@ -323,20 +311,17 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
         blank_scan = np.flip(blank_scan, axis=1)
         dark_scan = np.flip(dark_scan, axis=1)
         # adjust the defective pixel information: vertical flip
-        if defective_pixel_list is not None:
-            for i in range(len(defective_pixel_list)):
-                (r,c) = defective_pixel_list[i]
-                defective_pixel_list[i] = (blank_scan.shape[1]-r-1, c)
+        if num_defective_pixels > 0:
+            defective_pixel_array[:, 0] = blank_scan.shape[1] - defective_pixel_array[:, 0] - 1
+
     if flipH:
         print("Flip scans horizontally!")
         obj_scan = np.flip(obj_scan, axis=2)
         blank_scan = np.flip(blank_scan, axis=2)
         dark_scan = np.flip(dark_scan, axis=2)
         # adjust the defective pixel information: horizontal flip
-        if defective_pixel_list is not None:
-            for i in range(len(defective_pixel_list)):
-                (r,c) = defective_pixel_list[i]
-                defective_pixel_list[i] = (r, blank_scan.shape[2]-c-1)
+        if num_defective_pixels > 0:
+            defective_pixel_array[:, 1] = blank_scan.shape[2] - defective_pixel_array[:, 1] - 1
 
     ### rotate the scans according to scan_rotate param
     rot_count = scan_rotate // 90
@@ -345,21 +330,20 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
         blank_scan = np.rot90(blank_scan, 1, axes=(2,1))
         dark_scan = np.rot90(dark_scan, 1, axes=(2,1))
         # adjust the defective pixel information: rotation (clockwise)
-        if defective_pixel_list is not None:
-            for i in range(len(defective_pixel_list)):
-                (r,c) = defective_pixel_list[i]
-                defective_pixel_list[i] = (c, blank_scan.shape[2]-r-1)
+        if num_defective_pixels > 0:
+            defective_pixel_array = np.fliplr(defective_pixel_array)
+            defective_pixel_array[:, 1] = blank_scan.shape[2] - defective_pixel_array[:, 1] - 1
 
     ### crop the scans based on input params
-    obj_scan, blank_scan, dark_scan, defective_pixel_list = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
-                                                                                  crop_region=crop_region,
-                                                                                  defective_pixel_list=defective_pixel_list)
+    obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
+                                                                                   crop_region=crop_region,
+                                                                                   defective_pixel_array=defective_pixel_array)
 
     ### downsample the scans with block-averaging
     if downsample_factor[0]*downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_list = preprocess.downsample_scans(obj_scan, blank_scan, dark_scan,
-                                                                                            downsample_factor=downsample_factor,
-                                                                                            defective_pixel_list=defective_pixel_list)
+        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.downsample_scans(obj_scan, blank_scan, dark_scan,
+                                                                                             downsample_factor=downsample_factor,
+                                                                                             defective_pixel_array=defective_pixel_array)
 
     ### compute projection angles based on angle_step and view_ids
     angles = np.deg2rad(np.array([(view_idx*angle_step) % 360.0 for view_idx in view_ids]))
@@ -388,7 +372,7 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
     optional_params["det_row_offset"] = det_row_offset
     optional_params["det_rotation"] = det_rotation # tilt angle of rotation axis
 
-    return obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list
+    return obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_array
 
 
 ######## subroutines for parsing NSI metadata

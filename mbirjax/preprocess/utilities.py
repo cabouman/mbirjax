@@ -9,6 +9,7 @@ import h5py
 import jax.numpy as jnp
 import jax
 import dm_pix
+import tqdm
 
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
@@ -80,7 +81,8 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_l
             print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
     return sino, defective_pixel_list
 
-def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True, batch_size=90):
+
+def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
 
@@ -92,18 +94,12 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
         blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
         dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
-        defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
+        defective_pixel_array (optional, ndarray): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
             If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
-        correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
 
     Returns:
-        2-element tuple containing:
         - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-
     """
-
-
     # Compute mean for blank and dark scans and move them to GPU if available
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
@@ -113,15 +109,15 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
     num_views = obj_scan.shape[0]  # Total number of views
 
     # Process obj_scan in batches
-    for i in range(0, num_views, batch_size):
-        print(f"Processing batch {i//batch_size + 1} / {num_views//batch_size + 1}")
+    for i in tqdm.tqdm(range(0, num_views, batch_size)):
 
-        obj_scan_batch = obj_scan[i : min(i + batch_size, num_views)]
+        obj_scan_batch = obj_scan[i:min(i + batch_size, num_views)]
         obj_scan_batch = jnp.array(obj_scan_batch)
 
         obj_scan_batch = jnp.abs(obj_scan_batch - dark_scan_mean)
         blank_scan_batch = jnp.abs(blank_scan_mean - dark_scan_mean)
 
+        # We use jnp.nan here because we'll later use np.nanmedian to get rid of nans and other defective pixels.
         sino_batch = -jnp.log(jnp.where(obj_scan_batch / blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
         sino_batches_list.append(np.array(sino_batch))
 
@@ -130,88 +126,95 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
     del sino_batches_list
     print("Sinogram computation complete.")
 
-    # set the sino pixels corresponding to the provided defective list to 0.0
-    if defective_pixel_list is None:
-        defective_pixel_list = []
-    else:    # if provided list is not None
-        for defective_pixel_idx in defective_pixel_list:
-            if len(defective_pixel_idx) == 2:
-                (r,c) = defective_pixel_idx
-                sino[:,r,c] = 0.0
-            elif len(defective_pixel_idx) == 3:
-                (v,r,c) = defective_pixel_idx
-                sino[v,r,c] = 0.0
-            else:
-                raise Exception("compute_sino_transmission: index information in defective_pixel_list cannot be parsed.")
+    print("Interpolating invalid sinogram entries.")
+    sino = interpolate_defective_pixels(sino, defective_pixel_array)
 
-    # set NaN sino pixels to 0.0
-    nan_pixel_list = list(map(tuple, np.argwhere(np.isnan(sino)) ))
-    for (v,r,c) in nan_pixel_list:
-        sino[v,r,c] = 0.0
-
-    # set Inf sino pixels to 0.0
-    inf_pixel_list = list(map(tuple, np.argwhere(np.isinf(sino)) ))
-    for (v,r,c) in inf_pixel_list:
-        sino[v,r,c] = 0.0
-
-    # defective_pixel_list = union{input_defective_pixel_list, nan_pixel_list, inf_pixel_list}
-    defective_pixel_list = list(set().union(defective_pixel_list,nan_pixel_list,inf_pixel_list))
-
-    if correct_defective_pixels:
-        print("Interpolate invalid sinogram entries.")
-        sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
-    else:
-        if defective_pixel_list:
-            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
-    return sino, defective_pixel_list
+    return sino
 
 
-def interpolate_defective_pixels(sino, defective_pixel_list):
+def interpolate_defective_pixels(sino, defective_pixel_array=()):
     """
     Interpolates defective sinogram entries with the mean of neighboring pixels.
 
     Args:
         sino (ndarray, float): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        defective_pixel_list (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+        defective_pixel_array (ndarray): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+
     Returns:
         2-element tuple containing:
         - **sino** (*ndarray, float*): Corrected sinogram data with shape (num_views, num_det_rows, num_det_channels).
         - **defective_pixel_list** (*list(tuple)*): Updated defective_pixel_list with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
     """
-    defective_pixel_list_new = []
-    num_views, num_det_rows, num_det_channels = sino.shape
-    weights = np.ones((num_views, num_det_rows, num_det_channels), dtype=np.float32) # could even be int since it's a binary mask
+    # We'll set all defective pixels to NaN to be able to use np.nanmedian
+    num_defective_pixels = len(defective_pixel_array)
+    if num_defective_pixels > 0:
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, sino.shape[1:])
+        # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
+        put_in_slice(sino, flat_indices, np.nan)
+    else:
+        defective_pixel_array = ()
+    num_defective_pixels = len(defective_pixel_array)
 
-    for defective_pixel_idx in defective_pixel_list:
-        if len(defective_pixel_idx) == 2:
-            (r,c) = defective_pixel_idx
-            weights[:,r,c] = 0.0
-        elif len(defective_pixel_idx) == 3:
-            (v,r,c) = defective_pixel_idx
-            weights[v,r,c] = 0.0
+    sino_shape = sino.shape
+    num_views, num_rows, num_channels = sino_shape
+    sino = np.nan_to_num(sino, copy=False, nan=np.nan, posinf=np.nan, neginf=np.nan)
+
+    # First handle the defective_pixel_array, each of which goes across all views
+    # For each nan entry, we take the 3x3 neighbors in the same view and apply nanmedian.
+    sino = sino.reshape((sino_shape[0], -1))
+    neighbor_radius = 1
+
+    # Generate all i_offset and j_offset combinations.  num_nbrs_1d = 2 * neighbor_radius + 1
+    offsets = np.arange(-neighbor_radius, neighbor_radius + 1)
+    i_offsets, j_offsets = np.meshgrid(offsets, offsets, indexing='ij')  # Shape (num_nbrs_1d, num_nbrs_1d)
+    i_offsets = i_offsets.ravel()  # (num_nbrs_1d^2,)
+    j_offsets = j_offsets.ravel()  # (num_nbrs_1d^2,)
+    offsets_expanded = np.stack((i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 2)
+
+    if num_defective_pixels > 0:
+        # Broadcast defective_pixel_array to match offset shapes
+        defective_pixel_expanded = defective_pixel_array[:, None, :]  # (num_defective_pixels, 1, 2)
+
+        # Add the indices and offsets to get valid neighbors, then convert to indices.  We use clip mode
+        # for raveling to stay in bounds.  If a neighbor is out of bounds, clipping will yield a neighbor.
+        neighbor_coords = defective_pixel_expanded + offsets_expanded  # (num_defective_pixels, num_nbrs_1d^2, 2)
+        flat_indices = np.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
+                                            sino_shape[1:], mode='clip')  # (num_defective_pixels, num_nbrs_1d^2)
+
+        # Gather neighbor values for all views and use nanmedian to replace the values in sino
+        neighbor_values_flat = sino[:, flat_indices]  # (num_views, num_defective_pixels, num_nbrs_1d^2)
+        median_values = np.nanmedian(neighbor_values_flat, axis=2)
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, sino_shape[1:])
+        put_in_slice(sino, flat_indices, median_values)
+
+    # Repeat on individual nans until there are no more.  Each index now has 3 components.
+    sino = sino.reshape(sino_shape)
+    nan_indices = np.argwhere(np.isnan(sino))
+    offsets_expanded = np.stack((0*i_offsets, i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 3)
+    num_nans = nan_indices.shape[0]
+    while num_nans > 0:
+        sino = sino.flatten()
+
+        nan_inds_expanded = nan_indices[:, None, :]  # (num_nans, 1, 3)
+        neighbor_coords = nan_inds_expanded + offsets_expanded  # (num_nans, num_nbrs_1d^2, 2)
+        flat_indices = np.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
+                                            sino_shape, mode='clip')  # (num_nans, num_nbrs_1d^2)
+
+        # Gather neighbor values for all views and replace the values, ignoring any nan values
+        neighbor_values_flat = sino[flat_indices]  # (num_nans, num_nbrs_1d^2)
+        median_values = np.nanmedian(neighbor_values_flat, axis=1)
+        flat_indices = np.ravel_multi_index(nan_indices.T, sino_shape)
+        sino[flat_indices] = median_values
+
+        sino = sino.reshape(sino_shape)
+        nan_indices = np.argwhere(np.isnan(sino))
+        new_num_nans = nan_indices.shape[0]
+        if new_num_nans >= num_nans:
+            raise ValueError('Unable to remove all defective pixels from sinogram.')
         else:
-            raise Exception("replace_defective_with_mean: index information in defective_pixel_list cannot be parsed.")
+            num_nans = new_num_nans
 
-    for defective_pixel_idx in defective_pixel_list:
-        if len(defective_pixel_idx) == 2:
-            v_list = list(range(num_views))
-            (r,c) = defective_pixel_idx
-        elif len(defective_pixel_idx) == 3:
-            (v,r,c) = defective_pixel_idx
-            v_list = [v,]
-
-        r_min, r_max = max(r-1, 0), min(r+2, num_det_rows)
-        c_min, c_max = max(c-1, 0), min(c+2, num_det_channels)
-        for v in v_list:
-            # Perform interpolation when there are non-defective pixels in the neighborhood
-            if np.sum(weights[v,r_min:r_max,c_min:c_max]) > 0:
-                sino[v,r,c] = np.average(sino[v,r_min:r_max,c_min:c_max],
-                                         weights=weights[v,r_min:r_max,c_min:c_max])
-            # Corner case: all the neighboring pixels are defective
-            else:
-                print(f"Unable to correct sino entry ({v},{r},{c})! All neighborhood values are defective!")
-                defective_pixel_list_new.append((v,r,c))
-    return sino, defective_pixel_list_new
+    return sino
 
 
 def correct_det_rotation(sino, weights=None, det_rotation=0.0):
@@ -238,14 +241,14 @@ def correct_det_rotation(sino, weights=None, det_rotation=0.0):
     weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
     return sino, weights
 
-def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_size=30):
+
+def correct_det_rotation_batch_pix(sino, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
 
     Args:
         sino (jax.numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        weights (jax.numpy.ndarray, optional): Sinogram weights, with the same array shape as ``sino`` (kept unchanged).
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
         batch_size (int): Number of views to process in each batch to avoid memory overload.
 
@@ -258,25 +261,22 @@ def correct_det_rotation_batch_pix(sino, weights=None, det_rotation=0.0, batch_s
     sino_batches_list = []  # Initialize a list to store sinogram batches
 
     # Process in batches with looping and progress printing
-    for i in range(0, num_views, batch_size):
-        print(f"Processing batch {i//batch_size + 1} / {(num_views // batch_size) + 1}")
+    for i in tqdm.tqdm(range(0, num_views, batch_size)):
 
         # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i : min(i + batch_size, num_views)])
+        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)])
 
         # Apply the rotation on this batch
-        sino_batch = dm_pix.rotate(sino_batch.transpose(1,2,0), det_rotation, order=1, mode='constant', cval=0.0).transpose(2,0,1) # mode and cval are set according to the original codes
+        sino_batch = sino_batch.transpose(1, 2, 0)
+        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0)
+        sino_batch = sino_batch.transpose(2, 0, 1)
 
         # Append the rotated batch to the list
         sino_batches_list.append(np.array(sino_batch))
 
-    sino_batches = np.concatenate(sino_batches_list, axis=0)
+    sino_rotated = np.concatenate(sino_batches_list, axis=0)
 
-    if weights is None:
-        return sino_batches
-    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
-    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    return sino_batches, weights
+    return sino_rotated
 
 
 def estimate_background_offset(sino, option=0, edge_width=9):
@@ -325,6 +325,7 @@ def estimate_background_offset(sino, option=0, edge_width=9):
     offset = np.median([median_top, median_left, median_right])
     return offset
 
+
 def estimate_background_offset_jax(sino, edge_width=9):
     """
     Estimate background offset of a sinogram using JAX for GPU acceleration.
@@ -336,19 +337,24 @@ def estimate_background_offset_jax(sino, edge_width=9):
     Returns:
         offset (float): Background offset value.
     """
-    sino = jnp.asarray(sino)
-    if (edge_width % 2 == 0):
+    if edge_width % 2 == 0:
         edge_width += 1
         warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
-    if (edge_width < 3):
+    if edge_width < 3:
         edge_width = 3
         warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
 
     _, _, num_det_channels = sino.shape
-    # Extract edge regions directly from the sinogram (without computing a full median)
-    median_top = jnp.median(jnp.median(jnp.median(sino[:, :edge_width, :], axis=0), axis=1)) # Top edge
-    median_left = jnp.median(jnp.median(jnp.median(sino[:, :, :edge_width], axis=0), axis=0))  # Left edge
-    median_right = jnp.median(jnp.median(jnp.median(sino[:, :, num_det_channels-edge_width:], axis=0), axis=0))  # Right edge
+    # Extract edge regions directly from the sinogram (without computing a full median or transferring full sino to gpu)
+    sino_edge = jnp.asarray(sino[:, :edge_width, :])
+    median_top = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=1))  # Top edge
+
+    sino_edge = jnp.asarray(sino[:, :, :edge_width])
+    median_left = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Left edge
+
+    sino_edge = jnp.asarray(sino[:, :, num_det_channels-edge_width:])
+    median_right = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Right edge
+
     # Compute final offset as median of the three regions
     offset = jnp.median(jnp.array([median_top, median_left, median_right]))
 
@@ -357,8 +363,7 @@ def estimate_background_offset_jax(sino, edge_width=9):
 
 # ####### subroutines for image cropping and down-sampling
 def downsample_scans(obj_scan, blank_scan, dark_scan,
-                     downsample_factor,
-                     defective_pixel_list=None):
+                     downsample_factor, defective_pixel_array=()):
     """Performs Down-sampling to the scan images in the detector plane.
 
     Args:
@@ -366,6 +371,8 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
         blank_scan (numpy array of floats): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
         dark_scan (numpy array of floats): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
         downsample_factor ([int, int]): Default=[1,1]] Two numbers to define down-sample factor.
+        defective_pixel_array (ndarray):
+
     Returns:
         Downsampled scans
         - **obj_scan** (*ndarray, float*): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
@@ -374,12 +381,18 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     """
 
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
-    assert (downsample_factor[0]>=1 and downsample_factor[1]>=1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
+    assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    good_pixel_mask = np.ones((blank_scan.shape[1], blank_scan.shape[2]), dtype=np.uint8)
-    if defective_pixel_list is not None:
-        for (r,c) in defective_pixel_list:
-            good_pixel_mask[r,c] = 0
+    # Create a mask of good pixels
+    good_pixel_mask = np.ones(blank_scan.shape[1:], dtype=np.uint8)
+    if len(defective_pixel_array) > 0:
+        # Set defective pixels to 0
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, good_pixel_mask.shape)
+        np.put(good_pixel_mask, flat_indices, 0)
+        np.put(blank_scan[0], flat_indices, 0)
+        np.put(dark_scan[0], flat_indices, 0)
+        # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
+        put_in_slice(obj_scan, flat_indices, 0.0)
 
     # crop the scan if the size is not divisible by downsample_factor.
     new_size1 = downsample_factor[0] * (obj_scan.shape[1] // downsample_factor[0])
@@ -390,42 +403,43 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
     good_pixel_mask = good_pixel_mask[0:new_size1, 0:new_size2]
 
-    ### Compute block sum of the high res scan images. Defective pixels are excluded.
+    # Compute block sum of the high res scan images. Defective pixels are excluded.
+    # We do this by reshaping using the downsampling factor and then taking the average
+    # over blocks, weighting by the block average of good_pixel_mask.
+    block_shape = (good_pixel_mask.shape[0] // downsample_factor[0], downsample_factor[0],
+                   good_pixel_mask.shape[1] // downsample_factor[1], downsample_factor[1])
     # filter out defective pixels
-    good_pixel_mask = good_pixel_mask.reshape(good_pixel_mask.shape[0] // downsample_factor[0], downsample_factor[0],
-                                              good_pixel_mask.shape[1] // downsample_factor[1], downsample_factor[1])
-    obj_scan = obj_scan.reshape(obj_scan.shape[0],
-                                obj_scan.shape[1] // downsample_factor[0], downsample_factor[0],
-                                obj_scan.shape[2] // downsample_factor[1], downsample_factor[1]) * good_pixel_mask
-
-    blank_scan = blank_scan.reshape(blank_scan.shape[0],
-                                    blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
-                                    blank_scan.shape[2] // downsample_factor[1], downsample_factor[1]) * good_pixel_mask
-    dark_scan = dark_scan.reshape(dark_scan.shape[0],
-                                  dark_scan.shape[1] // downsample_factor[0], downsample_factor[0],
-                                  dark_scan.shape[2] // downsample_factor[1], downsample_factor[1]) * good_pixel_mask
+    good_pixel_mask = good_pixel_mask.reshape((1,) + block_shape)
+    obj_scan = obj_scan.reshape((obj_scan.shape[0],) + block_shape)
+    blank_scan = blank_scan.reshape((blank_scan.shape[0],) + block_shape)
+    dark_scan = dark_scan.reshape((dark_scan.shape[0],) + block_shape)
 
     # compute block sum
     obj_scan = obj_scan.sum((2,4))
     blank_scan = blank_scan.sum((2, 4))
     dark_scan = dark_scan.sum((2, 4))
     # number of good pixels in each down-sampling block
-    good_pixel_count = good_pixel_mask.sum((1,3)).astype(np.float32)
+    good_pixel_count = good_pixel_mask.sum((2, 4)).astype(np.uint32)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    defective_pixel_list = np.argwhere(good_pixel_count < 1)
+    defective_pixel_list = np.argwhere(good_pixel_count[0] == 0)
+    if len(defective_pixel_list) > 0:
+        defective_pixel_array = np.array(defective_pixel_list)
+    else:
+        defective_pixel_array = ()
+    good_pixel_count = good_pixel_count.astype(np.float32)
 
     # compute block averaging by dividing block sum with number of good pixels in the block
+    # The division by good_pixel_count could give inf or nan, but only at defective pixels.
     obj_scan = obj_scan / good_pixel_count
     blank_scan = blank_scan / good_pixel_count
     dark_scan = dark_scan / good_pixel_count
 
-    return obj_scan, blank_scan, dark_scan, defective_pixel_list
+    return obj_scan, blank_scan, dark_scan, defective_pixel_array
 
 
 def crop_scans(obj_scan, blank_scan, dark_scan,
-                crop_region=[(0, 1), (0, 1)],
-                defective_pixel_list=None):
+                crop_region=((0, 1), (0, 1)), defective_pixel_array=()):
     """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
     Args:
         obj_scan (float): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
@@ -441,6 +455,7 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
                     - Nr_hi = round(row1 * obj_scan.shape[1])
                     - Nc_lo = round(col0 * obj_scan.shape[2])
                     - Nc_hi = round(col1 * obj_scan.shape[2])
+        defective_pixel_array (ndarray):
 
     Returns:
         Cropped scans
@@ -467,17 +482,13 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
     blank_scan = blank_scan[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
     dark_scan = dark_scan[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
 
-    # adjust the defective pixel information: any down-sampling block containing a defective pixel is also defective
-    i = 0
-    while i < len(defective_pixel_list):
-        (r,c) = defective_pixel_list[i]
-        (r_new, c_new) = (r-Nr_lo, c-Nc_lo)
-        # delete the index tuple if it falls outside the cropped region
-        if (r_new<0 or r_new>=obj_scan.shape[1] or c_new<0 or c_new>=obj_scan.shape[2]):
-            del defective_pixel_list[i]
-        else:
-            i+=1
-    return obj_scan, blank_scan, dark_scan, defective_pixel_list
+    # Remove any defective pixels that are outside the new cropped region
+    if len(defective_pixel_array) > 0:
+        in_bounds = (defective_pixel_array[:, 0] >= Nr_lo) & (defective_pixel_array[:, 0] < Nr_hi) & \
+                    (defective_pixel_array[:, 1] >= Nc_lo) & (defective_pixel_array[:, 1] < Nc_hi)
+        defective_pixel_array = defective_pixel_array[in_bounds]
+
+    return obj_scan, blank_scan, dark_scan, defective_pixel_array
 # ####### END subroutines for image cropping and down-sampling
 
 
@@ -732,3 +743,23 @@ def export_recon_to_hdf5(recon, filename, recon_description="", delta_pixel_imag
 
     return
 
+
+def put_in_slice(array, flat_indices, value):
+    """
+    Similar to numpy.put(array, flat_indices, value), which would produce array.flat[flat_indices] = value.
+    However, this function requires that array have an extra leading dimension, and that the value for a given
+    index is copied across that dimension.  With abuse of notation, array[:, flat_indices] = value
+
+    Args:
+        array (ndarray): Numpy array of dimension n+1
+        flat_indices (ndarray of int): Indices obtained using ravel_multi_index using array.shape[1:]
+        value (float or ndarray): Values to be copied in.  Must be able to broadcast to array.shape[1:]
+
+    Returns:
+        ndarray
+    """
+    array_shape = array.shape
+    array = array.reshape(array_shape[0], -1)
+    array[:, flat_indices] = value
+    array = array.reshape(array_shape)
+    return array

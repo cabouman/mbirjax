@@ -27,9 +27,10 @@ dependencies = [
     "jaxlib",
     "ruamel.yaml",
     "psutil",
-    "striprtf",
+    "tifffile",
     "h5py",
-    "dm-pix"
+    "dm-pix",
+    "tqdm"
 ]
 
 [project.optional-dependencies]
