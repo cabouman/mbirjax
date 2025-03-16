@@ -304,7 +304,7 @@ def load_scans_and_params(dataset_dir, downsample_factor=(1, 1), crop_region=((0
 
     if view_id_end is None:
         view_id_end = num_acquired_scans
-    view_ids = list(range(view_id_start, view_id_end, subsample_view_factor))
+    view_ids = np.arange(start=view_id_start, stop=view_id_end, step=subsample_view_factor, dtype=np.int32)
     obj_scan = preprocess.read_scan_dir(obj_scan_dir, view_ids)
 
     ### Load defective pixel information
@@ -487,14 +487,12 @@ def _read_detector_location_from_geom_report(geom_report_path):
     rtf_file = open(geom_report_path, 'r')
     rtf_raw = rtf_file.read()
     rtf_file.close()
-    # convert rft file content to plain text.
-    rtf_converted = striprtf.rtf_to_text(rtf_raw).split("\n")
-    for line in rtf_converted:
-        if "Image center" in line:
-            # read the two floating numbers immediately following the keyword "Image center".
-            # This is the X and Y coordinates of (0,0) detector pixel in units of mm.
-            data = re.findall(r"(\d+\.*\d*, \d+\.*\d*)", line)
-            break
+    # Find the image center in mm
+    start_index = rtf_raw.find('Image center')
+    end_index = start_index + rtf_raw[start_index:].find('[mm]')
+    line = rtf_raw[start_index:end_index+1]
+    data = re.findall(r"(\d+\.*\d*, \d+\.*\d*)", line)
+
     data = data[0].split(",")
     x_r = float(data[0])
     y_r = float(data[1])

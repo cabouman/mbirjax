@@ -2,14 +2,14 @@ import numpy as np
 import warnings
 import math
 import scipy
-from PIL import Image
+import tifffile
 import glob
 import os
 import h5py
 import jax.numpy as jnp
 import jax
-from jax import jit
 import dm_pix
+
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
     """
@@ -362,9 +362,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     """Performs Down-sampling to the scan images in the detector plane.
 
     Args:
-        obj_scan (float): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (float): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
-        dark_scan (float): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
+        obj_scan (numpy array of floats): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
+        blank_scan (numpy array of floats): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
+        dark_scan (numpy array of floats): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
         downsample_factor ([int, int]): Default=[1,1]] Two numbers to define down-sample factor.
     Returns:
         Downsampled scans
@@ -491,8 +491,7 @@ def read_scan_img(img_path):
     Returns:
         ndarray (float): 2D numpy array. A single scan image.
     """
-
-    img = np.asarray(Image.open(img_path))
+    img = tifffile.imread(img_path)
 
     if np.issubdtype(img.dtype, np.integer):
         # make float and normalize integer types
@@ -502,26 +501,33 @@ def read_scan_img(img_path):
     return img.astype(np.float32)
 
 
-def read_scan_dir(scan_dir, view_ids=[]):
+def read_scan_dir(scan_dir, view_ids=None):
     """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
 
     Args:
         scan_dir (string): Path to a ConeBeam Scan directory.
             Example: "<absolute_path_to_dataset>/Radiographs"
-        view_ids (list[int]): List of view indices to specify which scans to read.
+        view_ids (ndarray of ints, optional, default=None): List of view indices to specify which scans to read.
     Returns:
         ndarray (float): 3D numpy array, (num_views, num_det_rows, num_det_channels). A stack of scan images.
     """
 
-    if view_ids == []:
-        warnings.warn("view_ids should not be empty.")
-
-    img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*')))
+    # Get the files that are views and check that we have as many as we need
+    img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tif')))
+    # Set the view ids if none given or check that we have enough.  This assumes that all the views are in the
+    # directory and are labeled sequentially.
+    if view_ids is None:
+        view_ids = np.arange(len(img_path_list))
+    else:
+        max_view_id = np.amax(view_ids)
+        if max_view_id >= len(img_path_list):
+            raise FileNotFoundError('The max view index was given as {}, but there are only {} views in {}'.format(max_view_id, len(img_path_list), scan_dir))
     img_path_list = [img_path_list[idx] for idx in view_ids]
-    img_list = [read_scan_img(img_path) for img_path in img_path_list]
+
+    output_views = tifffile.imread(img_path_list, ioworkers=48, maxworkers=8)
 
     # return shape = num_views x num_det_rows x num_det_channels
-    return np.stack(img_list, axis=0)
+    return output_views
 # ####### END subroutines for loading scan images
 
 
