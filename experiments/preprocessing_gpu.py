@@ -1,27 +1,6 @@
-import numpy as np
-import os
 import time
-import pprint
-import jax.numpy as jnp
-import sys
-import os
-import importlib.util
+import mbirjax
 
-# Define the local package path
-source_path = f"{os.path.dirname(os.getcwd())}/mbirjax"
-
-# Manually load the local mbirjax package
-package_name = "mbirjax"
-spec = importlib.util.spec_from_file_location(package_name, os.path.join(source_path, "__init__.py"))
-mbirjax = importlib.util.module_from_spec(spec)
-sys.modules[package_name] = mbirjax
-spec.loader.exec_module(mbirjax)
-
-print("mbirjax loaded from:", mbirjax.__file__)
-
-import pprint
-
-pp = pprint.PrettyPrinter(indent=4)
 
 if __name__ == "__main__":
 
@@ -30,7 +9,8 @@ if __name__ == "__main__":
     # ##### params for dataset downloading. User may change these parameters for their own datasets.
     # An example NSI dataset (tarball) will be downloaded from `dataset_url`, and saved to `download_dir`.
     # url to NSI dataset.
-    dataset_dir = '/depot/bouman/data/nsi_demo_data/demo_nsi_vert_no_metal_all_views'
+    # dataset_dir = '/depot/bouman/data/nsi_demo_data/demo_nsi_vert_no_metal_all_views'
+    dataset_dir = '/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax_applications/nsi/demo_data/demo_data_nsi'
 
     downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
     subsample_view_factor = 1  # view subsample factor.
