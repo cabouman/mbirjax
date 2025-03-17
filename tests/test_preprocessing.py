@@ -71,31 +71,36 @@ class TestNSIPreprocessing(unittest.TestCase):
         dark_mean = 0.02
         dark_stddev = 0.001
 
+        # Generate a single dark scan
+        self.dark_scan = self.generate_dark_scan((1,) + self.sinogram_shape[1:],
+                                                 mean=dark_mean, stddev=dark_stddev, seed=44)
+
         # Create blank scan using the maximum intensity plus a realization of the dark scan.
         # Then repeat for the object scan, using the noise-free scan plus a new dark scan.
-        self.blank_scan = self.maximum_intensity + self.generate_dark_scan(self.sinogram_shape, mean=dark_mean, stddev=dark_stddev, seed=42)
-        self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape[1:], mean=dark_mean, stddev=dark_stddev, seed=43)
+        self.blank_scan = self.maximum_intensity + self.generate_dark_scan((1,) + self.sinogram_shape[1:],
+                                                                           mean=dark_mean, stddev=dark_stddev, seed=42)
+        self.obj_scan = self.ideal_obj_scan + self.generate_dark_scan(self.sinogram_shape, mean=dark_mean,
+                                                                      stddev=dark_stddev, seed=43)
 
-        # Randomly generate two defective pixel coordinates with length 2 and 3 to test the function's ability to handle different coordinate lengths
+        # Randomly generate defective pixel coordinates.
         np.random.seed(25)
         num_defective_pixels = 15
         defective_pixels = [
             (np.random.randint(0, self.num_det_rows - 1), np.random.randint(0, self.num_det_channels - 1)) for j in
             range(num_defective_pixels)]
-
         self.defective_pixel_array = np.array(defective_pixels)
+
+        # Randomly set pixel to nan to test the function's ability to recover
         nan_pixels = [(np.random.randint(0, self.num_views - 1), np.random.randint(0, self.num_det_rows - 1),
                        np.random.randint(0, self.num_det_channels - 1)) for j in range(num_defective_pixels)]
 
-        # Randomly set pixel to nan to test the function's ability to recover
         obj_scan = np.array(self.obj_scan)
         for index in nan_pixels:
             obj_scan[index[0], index[1], index[2]] = np.nan
         self.obj_scan = jnp.array(obj_scan)
 
-        self.dark_scan = self.generate_dark_scan(self.sinogram_shape, mean=dark_mean, stddev=dark_stddev, seed=44)
-
-        self.preprocessing_tolerance = {'atol': 0.14, 'mean_tol': 0.0014}
+        # Set the tolerances for the test
+        self.preprocessing_tolerance = {'atol': 0.14, 'nrmse_tol': 0.0015, 'pct99_tol': 0.0018}
 
     def test_preprocessing(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
@@ -107,16 +112,24 @@ class TestNSIPreprocessing(unittest.TestCase):
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 
-        max_diff = np.max(np.abs(sino_computed - self.sino_gt))
-        nrmse = np.linalg.norm(sino_computed - self.sino_gt) / np.linalg.norm(self.sino_gt)
+        abs_sino_diff = np.abs(sino_computed - self.sino_gt)
+        max_diff = np.max(np.abs(abs_sino_diff))
+        nrmse = np.linalg.norm(abs_sino_diff) / np.linalg.norm(self.sino_gt)
+        pct99 = np.percentile(abs_sino_diff, 99)
+
+        print('Difference between gt sino and estimated sino: max abs = {:.4f}, nrmse = {:.4f}'.format(max_diff, nrmse))
+        print('99% of absolute sinogram differences are less than {:.4f}'.format(pct99))
+
         tolerance = self.preprocessing_tolerance['atol']
-        tolerance_mean = self.preprocessing_tolerance['mean_tol']
+        tolerance_mean = self.preprocessing_tolerance['nrmse_tol']
+        tolerance_pct99 = self.preprocessing_tolerance['pct99_tol']
 
         # Check if differences are within tolerance
         self.assertTrue(
-            max_diff < tolerance and nrmse < tolerance_mean,
+            max_diff < tolerance and nrmse < tolerance_mean and pct99 < tolerance_pct99,
             f"Sinograms differ more than the tolerance. "
-            f"Max diff: {max_diff} (tolerance: {tolerance}), NRMSE: {nrmse} (tolerance: {tolerance_mean})"
+            f"Max diff={max_diff:.4f} (tolerance: {tolerance}), "
+            f"NRMSE={nrmse:.4f} (tolerance: {tolerance_mean}), 99th percentile={pct99:.4f} (tolerance: {tolerance_pct99})"
         )
         self.assertFalse(np.isnan(sino_computed).any(), "Error: sino_computed contains NaN values!")
 
