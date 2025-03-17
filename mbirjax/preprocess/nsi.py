@@ -77,7 +77,7 @@ def compute_sino_and_params(dataset_dir,
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
                                                                       crop_region=crop_region)
 
-    pprint("\n\n########## Cropping and downsampling scans")
+    print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
                                                                                    crop_region=crop_region,

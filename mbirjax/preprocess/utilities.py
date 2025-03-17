@@ -137,9 +137,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         sino_batch = interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
         sino_batches_list.append(np.array(sino_batch))
 
-    del sino_batch, obj_scan, blank_scan, dark_scan, obj_scan_batch, blank_scan_batch, dark_scan_mean, blank_scan_mean
     sino = np.concatenate(sino_batches_list, axis=0)
-    del sino_batches_list
     print("Sinogram computation complete.")
 
     return sino
@@ -367,7 +365,7 @@ def estimate_background_offset_jax(sino, edge_width=9):
 
 # ####### subroutines for image cropping and down-sampling
 def downsample_scans(obj_scan, blank_scan, dark_scan,
-                     downsample_factor, defective_pixel_array=()):
+                     downsample_factor, defective_pixel_array=(), batch_size=90):
     """Performs Down-sampling to the scan images in the detector plane.
 
     Args:
@@ -375,7 +373,8 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
         blank_scan (numpy array of floats): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
         dark_scan (numpy array of floats): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
         downsample_factor ([int, int]): Default=[1,1]] Two numbers to define down-sample factor.
-        defective_pixel_array (ndarray):
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2)
+        batch_size (int): Number of views to include in one jax batch.
 
     Returns:
         Downsampled scans
@@ -387,57 +386,56 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    # Create a mask of good pixels
-    good_pixel_mask = np.ones(blank_scan.shape[1:], dtype=np.uint8)
+    # Set defective pixels to nan for use with nanmean
     if len(defective_pixel_array) > 0:
         # Set defective pixels to 0
-        flat_indices = np.ravel_multi_index(defective_pixel_array.T, good_pixel_mask.shape)
-        np.put(good_pixel_mask, flat_indices, 0)
-        np.put(blank_scan[0], flat_indices, 0)
-        np.put(dark_scan[0], flat_indices, 0)
-        # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
-        obj_scan = put_in_slice(obj_scan, flat_indices, 0.0)
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
+        np.put(blank_scan[0], flat_indices, np.nan)
+        np.put(dark_scan[0], flat_indices, np.nan)
+    else:
+        flat_indices = None
 
     # crop the scan if the size is not divisible by downsample_factor.
     new_size1 = downsample_factor[0] * (obj_scan.shape[1] // downsample_factor[0])
     new_size2 = downsample_factor[1] * (obj_scan.shape[2] // downsample_factor[1])
 
-    obj_scan = obj_scan[:, 0:new_size1, 0:new_size2]
     blank_scan = blank_scan[:, 0:new_size1, 0:new_size2]
     dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
-    good_pixel_mask = good_pixel_mask[0:new_size1, 0:new_size2]
 
-    # Compute block sum of the high res scan images. Defective pixels are excluded.
-    # We do this by reshaping using the downsampling factor and then taking the average
-    # over blocks, weighting by the block average of good_pixel_mask.
-    block_shape = (good_pixel_mask.shape[0] // downsample_factor[0], downsample_factor[0],
-                   good_pixel_mask.shape[1] // downsample_factor[1], downsample_factor[1])
-    # filter out defective pixels
-    good_pixel_mask = good_pixel_mask.reshape((1,) + block_shape)
-    obj_scan = obj_scan.reshape((obj_scan.shape[0],) + block_shape)
+    # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
+    block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
+                   blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
+    # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
     blank_scan = blank_scan.reshape((blank_scan.shape[0],) + block_shape)
+    blank_scan = np.nanmean(blank_scan, axis=(2, 4))
     dark_scan = dark_scan.reshape((dark_scan.shape[0],) + block_shape)
+    dark_scan = np.nanmean(dark_scan, axis=(2, 4))
 
-    # compute block sum
-    obj_scan = obj_scan.sum((2,4))
-    blank_scan = blank_scan.sum((2, 4))
-    dark_scan = dark_scan.sum((2, 4))
-    # number of good pixels in each down-sampling block
-    good_pixel_count = good_pixel_mask.sum((2, 4)).astype(np.uint32)
+    # For obj_scan, we'll batch over the views.
+    num_views = obj_scan.shape[0]  # Total number of views
+    obj_scan_list = []  # Initialize a list to store sinogram batches
+
+    # Process in batches using jax with looping and progress printing
+    if flat_indices is not None:
+        flat_indices = jnp.array(flat_indices)
+    for i in tqdm.tqdm(range(0, num_views, batch_size)):        # Get the current batch (from i to i + batch_size)
+        obj_scan_batch = jnp.array(obj_scan[i:min(i + batch_size, num_views)])  # Send to the gpu if there is one
+        if flat_indices is not None:
+            obj_scan_batch = put_in_slice_jax(obj_scan_batch, flat_indices, jnp.nan)
+        # Crop and reshape into blocks
+        obj_scan_batch = obj_scan_batch[:, 0:new_size1, 0:new_size2]
+        obj_scan_batch = obj_scan_batch.reshape((obj_scan_batch.shape[0],) + block_shape)
+
+        # Compute block mean and append this batch to the list back on the cpu
+        obj_scan_batch = jnp.nanmean(obj_scan_batch, axis=(2, 4))
+        obj_scan_list.append(np.array(obj_scan_batch))
+
+    obj_scan = np.concatenate(obj_scan_list, axis=0)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    defective_pixel_list = np.argwhere(good_pixel_count[0] == 0)
-    if len(defective_pixel_list) > 0:
-        defective_pixel_array = np.array(defective_pixel_list)
-    else:
+    defective_pixel_array = np.argwhere(np.isnan(blank_scan[0]))
+    if len(defective_pixel_array) == 0:
         defective_pixel_array = ()
-    good_pixel_count = good_pixel_count.astype(np.float32)
-
-    # compute block averaging by dividing block sum with number of good pixels in the block
-    # The division by good_pixel_count could give inf or nan, but only at defective pixels.
-    obj_scan = obj_scan / good_pixel_count
-    blank_scan = blank_scan / good_pixel_count
-    dark_scan = dark_scan / good_pixel_count
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
 
