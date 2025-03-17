@@ -99,11 +99,11 @@ class TestNSIPreprocessing(unittest.TestCase):
 
     def test_preprocessing(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
-        sino_computed = preprocess.compute_sino_transmission_jax(self.obj_scan, self.blank_scan, self.dark_scan,
-                                                                 defective_pixel_array=self.defective_pixel_array)
+        sino_computed = preprocess.compute_sino_transmission(self.obj_scan, self.blank_scan, self.dark_scan,
+                                                             defective_pixel_array=self.defective_pixel_array)
 
         # Compute background offsets
-        background_offset = preprocess.estimate_background_offset_jax(sino_computed, edge_width=3)
+        background_offset = preprocess.estimate_background_offset(sino_computed, edge_width=3)
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 

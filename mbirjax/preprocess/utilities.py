@@ -12,77 +12,7 @@ import dm_pix
 import tqdm
 
 
-def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_list=None, correct_defective_pixels=True):
-    """
-    Compute sinogram from object, blank, and dark scans.
-
-    This function computes sinogram by taking the negative log of the attenuation estimate.
-    It can also take in a list of defective pixels and correct those pixel values.
-    The invalid sinogram entries are the union of defective pixel entries and sinogram entries with values of inf or Nan.
-
-    Args:
-        obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
-        dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
-        defective_pixel_list (optional, list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-            If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
-        correct_defective_pixels (optioonal, boolean): [Default=True] If true, the defective sinogram entries will be automatically corrected with `mbirjax.preprocess.interpolate_defective_pixels()`.
-
-    Returns:
-        2-element tuple containing:
-        - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **defective_pixel_list** (list(tuple)): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-
-    """
-    # take average of multiple blank/dark scans, and expand the dimension to be the same as obj_scan.
-    blank_scan = 0 * obj_scan + np.mean(blank_scan, axis=0, keepdims=True)
-    dark_scan = 0 * obj_scan + np.mean(dark_scan, axis=0, keepdims=True)
-
-    obj_scan = obj_scan - dark_scan
-    blank_scan = blank_scan - dark_scan
-
-    #### compute the sinogram.
-    # suppress warnings in np.log(), since the defective sino entries will be corrected.
-    with np.errstate(divide='ignore', invalid='ignore'):
-        sino = -np.log(obj_scan / blank_scan)
-
-    # set the sino pixels corresponding to the provided defective list to 0.0
-    if defective_pixel_list is None:
-        defective_pixel_list = []
-    else:    # if provided list is not None
-        for defective_pixel_idx in defective_pixel_list:
-            if len(defective_pixel_idx) == 2:
-                (r,c) = defective_pixel_idx
-                sino[:,r,c] = 0.0
-            elif len(defective_pixel_idx) == 3:
-                (v,r,c) = defective_pixel_idx
-                sino[v,r,c] = 0.0
-            else:
-                raise Exception("compute_sino_transmission: index information in defective_pixel_list cannot be parsed.")
-
-    # set NaN sino pixels to 0.0
-    nan_pixel_list = list(map(tuple, np.argwhere(np.isnan(sino)) ))
-    for (v,r,c) in nan_pixel_list:
-        sino[v,r,c] = 0.0
-
-    # set Inf sino pixels to 0.0
-    inf_pixel_list = list(map(tuple, np.argwhere(np.isinf(sino)) ))
-    for (v,r,c) in inf_pixel_list:
-        sino[v,r,c] = 0.0
-
-    # defective_pixel_list = union{input_defective_pixel_list, nan_pixel_list, inf_pixel_list}
-    defective_pixel_list = list(set().union(defective_pixel_list,nan_pixel_list,inf_pixel_list))
-
-    if correct_defective_pixels:
-        print("Interpolate invalid sinogram entries.")
-        sino, defective_pixel_list = interpolate_defective_pixels(sino, defective_pixel_list)
-    else:
-        if defective_pixel_list:
-            print("Invalid sino entries detected! Please correct then manually or with function `mbirjax.preprocess.interpolate_defective_pixels()`.")
-    return sino, defective_pixel_list
-
-
-def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
+def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
 
@@ -96,6 +26,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
         defective_pixel_array (optional, ndarray): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
             If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
+        batch_size (int): Size of view batch to use in passing data to gpu.
 
     Returns:
         - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
@@ -132,7 +63,7 @@ def compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pix
         num_defective_pixels = len(defective_pixel_array)
         if num_defective_pixels > 0:
             # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
-            sino_batch = put_in_slice_jax(sino_batch, flat_indices, jnp.nan)
+            sino_batch = put_in_slice(sino_batch, flat_indices, jnp.nan)
 
         sino_batch = interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
         sino_batches_list.append(np.array(sino_batch))
@@ -186,7 +117,7 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
         neighbor_values_flat = sino[:, flat_indices]  # (num_views, num_defective_pixels, num_nbrs_1d^2)
         median_values = jnp.nanmedian(neighbor_values_flat, axis=2)
         flat_indices = jnp.ravel_multi_index(defective_pixel_array.T, sino_shape[1:])
-        sino = put_in_slice_jax(sino, flat_indices, median_values)
+        sino = put_in_slice(sino, flat_indices, median_values)
 
     # Repeat on individual nans until there are no more.  Each index now has 3 components.
     sino = sino.reshape(sino_shape)
@@ -281,54 +212,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     return sino_rotated
 
 
-def estimate_background_offset(sino, option=0, edge_width=9):
-    """
-    Estimate background offset of a sinogram from the edge pixels.
-
-    This function estimates the background offset when no object is present by computing a robust centroid estimate using `edge_width` pixels along the edge of the sinogram across views.
-    Typically, this estimate is subtracted from the sinogram so that air is reconstructed as approximately 0.
-
-    Args:
-        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        option (int, optional): [Default=0] Option of algorithm used to calculate the background offset.
-        edge_width(int, optional): [Default=9] Width of the edge regions in pixels. It must be an odd integer >= 3.
-    Returns:
-        offset (float): Background offset value.
-    """
-
-    # Check validity of edge_width value
-    assert(isinstance(edge_width, int)), "edge_width must be an integer!"
-    if (edge_width % 2 == 0):
-        edge_width = edge_width+1
-        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
-
-    if (edge_width < 3):
-        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
-        edge_width = 3
-
-    _, _, num_det_channels = sino.shape
-
-    # calculate mean sinogram
-    sino_median=np.median(sino, axis=0)
-
-    # offset value of the top edge region.
-    # Calculated as median([median value of each horizontal line in top edge region])
-    median_top = np.median(np.median(sino_median[:edge_width], axis=1))
-
-    # offset value of the left edge region.
-    # Calculated as median([median value of each vertical line in left edge region])
-    median_left = np.median(np.median(sino_median[:, :edge_width], axis=0))
-
-    # offset value of the right edge region.
-    # Calculated as median([median value of each vertical line in right edge region])
-    median_right = np.median(np.median(sino_median[:, num_det_channels-edge_width:], axis=0))
-
-    # offset = median of three offset values from top, left, right edge regions.
-    offset = np.median([median_top, median_left, median_right])
-    return offset
-
-
-def estimate_background_offset_jax(sino, edge_width=9):
+def estimate_background_offset(sino, edge_width=9):
     """
     Estimate background offset of a sinogram using JAX for GPU acceleration.
 
@@ -421,7 +305,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     for i in tqdm.tqdm(range(0, num_views, batch_size)):        # Get the current batch (from i to i + batch_size)
         obj_scan_batch = jnp.array(obj_scan[i:min(i + batch_size, num_views)])  # Send to the gpu if there is one
         if flat_indices is not None:
-            obj_scan_batch = put_in_slice_jax(obj_scan_batch, flat_indices, jnp.nan)
+            obj_scan_batch = put_in_slice(obj_scan_batch, flat_indices, jnp.nan)
         # Crop and reshape into blocks
         obj_scan_batch = obj_scan_batch[:, 0:new_size1, 0:new_size2]
         obj_scan_batch = obj_scan_batch.reshape((obj_scan_batch.shape[0],) + block_shape)
@@ -746,33 +630,14 @@ def export_recon_to_hdf5(recon, filename, recon_description="", delta_pixel_imag
     return
 
 
+# Normally, this function would be too simple to jit.  However, by using jit, we may be able to
+# prevent jax from some extra memory use due to assignemt and/or reshaping.
+@jax.jit
 def put_in_slice(array, flat_indices, value):
     """
     Similar to numpy.put(array, flat_indices, value), which would produce array.flat[flat_indices] = value.
     However, this function requires that array have an extra leading dimension, and that the value for a given
-    index is copied across that dimension.  With abuse of notation, array[:, flat_indices] = value
-
-    Args:
-        array (ndarray): Numpy array of dimension n+1
-        flat_indices (ndarray of int): Indices obtained using ravel_multi_index using array.shape[1:]
-        value (float or ndarray): Values to be copied in.  Must be able to broadcast to array.shape[1:]
-
-    Returns:
-        ndarray
-    """
-    array_shape = array.shape
-    array = array.reshape(array_shape[0], -1)
-    array[:, flat_indices] = value
-    array = array.reshape(array_shape)
-    return array
-
-
-@jax.jit
-def put_in_slice_jax(array, flat_indices, value):
-    """
-    Similar to numpy.put(array, flat_indices, value), which would produce array.flat[flat_indices] = value.
-    However, this function requires that array have an extra leading dimension, and that the value for a given
-    index is copied across that dimension.  With abuse of notation, array[:, flat_indices] = value
+    index is copied across that dimension.  Roughly, array[:, flat_indices] = value
 
     Args:
         array (jax array): Numpy array of dimension n+1

@@ -90,12 +90,12 @@ def compute_sino_and_params(dataset_dir,
                                                                                              defective_pixel_array=defective_pixel_array)
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans")
-    sino = preprocess.compute_sino_transmission_jax(obj_scan, blank_scan, dark_scan, defective_pixel_array)
+    sino = preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
     scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
     del obj_scan, blank_scan, dark_scan  # delete scan images to save memory
 
     print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
-    background_offset = preprocess.estimate_background_offset_jax(sino)
+    background_offset = preprocess.estimate_background_offset(sino)
     print("background_offset = ", background_offset)
 
     det_rotation = optional_params["det_rotation"]
