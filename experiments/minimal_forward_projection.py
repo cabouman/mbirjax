@@ -67,14 +67,14 @@ def sparse_forward_project(voxel_values, indices, sinogram_shape, recon_shape, a
             view_map = jax.vmap(forward_project_pixel_batch_local)
             # print(jax.make_jaxpr(view_map)(cur_view_batch, cur_view_params_batch))
             # input('Enter to continue')
-            a = jax.jit(view_map).lower(cur_view_batch, cur_view_params_batch).compiler_ir('hlo')
-            with open("outfile.dot", "w") as f:
-                f.write(a.as_hlo_dot_graph())
+            # a = jax.jit(view_map).lower(cur_view_batch, cur_view_params_batch).compiler_ir('hlo')
+            # with open("outfile.dot", "w") as f:
+            #     f.write(a.as_hlo_dot_graph())
             # dot outfile.dot  -Tpng > outfile.png
             # or
             # dot -Tps outfile.dot -o outfile.ps
             # ps2pdf outfile.ps
-            print(jax.jit(view_map).lower(cur_view_batch, cur_view_params_batch).compile().as_text())
+            # print(jax.jit(view_map).lower(cur_view_batch, cur_view_params_batch).compile().as_text())
             cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
 
         sinogram.append(jax.device_put(cur_view_batch, output_device))
