@@ -212,41 +212,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     return sino_rotated
 
 
-def estimate_background_offset(sino, edge_width=9):
-    """
-    Estimate background offset of a sinogram using JAX for GPU acceleration.
-
-    Args:
-        sino (jax.numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        edge_width (int, optional): Width of the edge regions in pixels. Must be an odd integer >= 3.
-
-    Returns:
-        offset (float): Background offset value.
-    """
-    if edge_width % 2 == 0:
-        edge_width += 1
-        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
-    if edge_width < 3:
-        edge_width = 3
-        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
-
-    _, _, num_det_channels = sino.shape
-    # Extract edge regions directly from the sinogram (without computing a full median or transferring full sino to gpu)
-    sino_edge = jnp.asarray(sino[:, :edge_width, :])
-    median_top = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=1))  # Top edge
-
-    sino_edge = jnp.asarray(sino[:, :, :edge_width])
-    median_left = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Left edge
-
-    sino_edge = jnp.asarray(sino[:, :, num_det_channels-edge_width:])
-    median_right = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Right edge
-
-    # Compute final offset as median of the three regions
-    offset = jnp.median(jnp.array([median_top, median_left, median_right]))
-
-    return offset
-
-def estimate_background_offset_batch(sino, edge_width=9, batch_size=90):
+def estimate_background_offset(sino, edge_width=9, batch_size=90):
     """
     Estimate background offset of a sinogram using JAX for GPU acceleration.
 
