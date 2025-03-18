@@ -147,15 +147,17 @@ class TomographyModel(ParameterHandler):
 
             self.transfer_pixel_batch_size = min(max_cylinders, recon_shape[0] * recon_shape[1])
             extra_gpu_memory = extra_gpu_memory - self.transfer_pixel_batch_size * memory_per_cylinder
-            max_num_pixels_per_batch = int(extra_gpu_memory / (reps_for_projection * memory_per_cylinder))
-            views_per_batch = min(self.transfer_view_batch_size, max_num_pixels_per_batch // 20)
-            views_per_batch = min(views_per_batch, 128)
-            views_per_batch = max(views_per_batch, 1)
-            pixels_per_batch = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_batch / views_per_batch))
-            pixels_per_batch = min(pixels_per_batch, 2048)
-            pixels_per_batch = max(pixels_per_batch, 1)
-            self.view_batch_size_for_vmap = views_per_batch
-            self.pixel_batch_size_for_vmap = pixels_per_batch
+            max_num_pixels_per_vmap = int(extra_gpu_memory / (reps_for_projection * memory_per_cylinder))
+            views_per_vmap = min(self.transfer_view_batch_size, max_num_pixels_per_vmap // 20)
+            views_per_vmap = min(views_per_vmap, 200)
+            views_per_vmap = max(views_per_vmap, 1)
+            pixels_per_vmap = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_vmap / views_per_vmap))
+            pixels_per_vmap = min(pixels_per_vmap, 8000)
+            self.transfer_pixel_batch_size = pixels_per_vmap
+            self.transfer_view_batch_size = min(600, self.transfer_view_batch_size)
+            pixels_per_vmap = max(pixels_per_vmap, 1)
+            self.view_batch_size_for_vmap = views_per_vmap
+            self.pixel_batch_size_for_vmap = pixels_per_vmap
         print(self.transfer_view_batch_size, self.transfer_pixel_batch_size, self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap)
         print(self.main_device, self.sinogram_device, self.worker)
         return
@@ -216,7 +218,7 @@ class TomographyModel(ParameterHandler):
                                                                                   subset_update_memory_required))
 
         print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-        print('process_view_batch_size = {}; pixels_per_batch = {}'.format(self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap))
+        print('process_view_batch_size = {}; pixels_per_vmap = {}'.format(self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap))
 
         self.main_device = main_device
         self.worker = worker
@@ -1408,17 +1410,25 @@ class TomographyModel(ParameterHandler):
         Raises:
             Exception: Raised if ``weight_type`` is not one of the above options.
         """
-        if weight_type == 'unweighted':
-            weights = jnp.ones(sinogram.shape, device=self.main_device)
-        elif weight_type == 'transmission':
-            weights = jnp.exp(-sinogram)
-        elif weight_type == 'transmission_root':
-            weights = jnp.exp(-sinogram / 2)
-        elif weight_type == 'emission':
-            weights = 1.0 / (jnp.absolute(sinogram) + 0.1)
-        else:
-            raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
+        weight_list = []
+        num_views = sinogram.shape[0]
+        batch_size = self.transfer_view_batch_size
+        for i in range(0, num_views, batch_size):
+            sino_batch = sinogram[i:min(i + batch_size, num_views)]
 
+            if weight_type == 'unweighted':
+                weights = jnp.ones(sino_batch.shape)
+            elif weight_type == 'transmission':
+                weights = jnp.exp(-sino_batch)
+            elif weight_type == 'transmission_root':
+                weights = jnp.exp(-sino_batch / 2)
+            elif weight_type == 'emission':
+                weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
+            else:
+                raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
+            weight_list.append(jax.device_put(weights, self.sinogram_device))
+
+        weights = jnp.concatenate(weight_list, axis=0)
         return weights
 
     def gen_modified_3d_sl_phantom(self):
