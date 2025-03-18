@@ -246,6 +246,53 @@ def estimate_background_offset(sino, edge_width=9):
 
     return offset
 
+def estimate_background_offset_batch(sino, edge_width=9, batch_size=90):
+    """
+    Estimate background offset of a sinogram using JAX for GPU acceleration.
+
+    Args:
+        sino (jax.numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        edge_width (int, optional): Width of the edge regions in pixels. Must be an odd integer >= 3.
+
+    Returns:
+        offset (float): Background offset value.
+    """
+    if edge_width % 2 == 0:
+        edge_width += 1
+        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
+    if edge_width < 3:
+        edge_width = 3
+        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
+
+    num_views, _, num_det_channels = sino.shape
+    # Extract edge regions directly from the sinogram (without computing a full median or transferring full sino to gpu)
+    sino_top = []
+    sino_left = []
+    sino_right = []
+    for i in tqdm.tqdm(range(0, num_views, batch_size)):
+
+        sino_batch = sino[i:min(i + batch_size, num_views)]
+
+        sino_edge = jnp.asarray(sino_batch[:, :edge_width, :])
+        median_top = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=1))  # Top edge
+        sino_top.append(median_top)
+
+        sino_edge = jnp.asarray(sino_batch[:, :, :edge_width])
+        median_left = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Left edge
+        sino_left.append(median_left)
+
+        sino_edge = jnp.asarray(sino_batch[:, :, num_det_channels-edge_width:])
+        median_right = jnp.median(jnp.median(jnp.median(sino_edge, axis=0), axis=0))  # Right edge
+        sino_right.append(median_right)
+
+    # Compute final offset as median of the three regions
+    median_top = jnp.median(jnp.array(sino_top))
+    median_left = jnp.median(jnp.array(sino_left))
+    median_right = jnp.median(jnp.array(sino_right))
+    offset = jnp.median(jnp.array([median_top, median_left, median_right]))
+
+    return offset
+
 
 # ####### subroutines for image cropping and down-sampling
 def downsample_scans(obj_scan, blank_scan, dark_scan,
