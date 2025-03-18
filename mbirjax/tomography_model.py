@@ -53,6 +53,7 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
+        # The following will be determined based on memory in set_devices_and_batch_sizes()
         self.transfer_view_batch_size = None
         self.transfer_pixel_batch_size = None
         self.view_batch_size_for_vmap = 128
@@ -96,9 +97,9 @@ class TomographyModel(ParameterHandler):
         sino_reps_for_vcd = 6
         recon_reps_for_vcd = 8
         reps_for_projection = 3
-        frac_gpu_mem_to_use = 0.95
-        frac_gpu_mem_for_sino = 0.7
-        frac_gpu_mem_for_pixels = 0.7
+        frac_gpu_mem_to_use = 0.9
+        frac_gpu_mem_for_sino = 0.6
+        frac_gpu_mem_for_pixels = 0.6
 
         total_memory_required = memory_per_sinogram * sino_reps_for_vcd + memory_per_recon * recon_reps_for_vcd
 
@@ -347,7 +348,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
+    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -356,6 +357,7 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             pixel_indices (jax array): Array of indices specifying which voxels to project.
+            view_indices (jax array): Array of indices of views to project
             output_device (jax device): Device on which to put the output
 
         Returns:
@@ -365,7 +367,8 @@ class TomographyModel(ParameterHandler):
         transfer_view_batch_size = self.transfer_view_batch_size
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         sinogram_shape = self.get_params('sinogram_shape')
-        view_indices = jnp.arange(sinogram_shape[0])
+        if view_indices is None:
+            view_indices = jnp.arange(sinogram_shape[0])
         num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
         sinogram_shape = self.get_params('sinogram_shape')
@@ -393,7 +396,7 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -402,7 +405,9 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            output_device (jax device): Device on which to put the output
+            view_indices (jax array): Array of indices of views to project
+            coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
+            output_device (jax device, optional): Device on which to put the output
 
         Returns:
             A jax array of shape (len(indices), num_slices)
@@ -411,7 +416,8 @@ class TomographyModel(ParameterHandler):
         transfer_view_batch_size = self.transfer_view_batch_size
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
-        view_indices = jnp.arange(num_views)
+        if view_indices is None:
+            view_indices = jnp.arange(num_views)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
         view_batch_boundaries = [view_indices_batched[j][0] for j in range(len(view_indices_batched))]
