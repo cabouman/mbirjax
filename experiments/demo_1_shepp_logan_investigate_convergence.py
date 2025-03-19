@@ -84,7 +84,7 @@ ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_d
 # Generate synthetic sinogram data
 print('Creating sinogram')
 sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.array(sinogram)
+sinogram = np.asarray(sinogram)
 
 # View sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
