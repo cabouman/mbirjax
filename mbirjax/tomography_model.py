@@ -431,6 +431,10 @@ class TomographyModel(ParameterHandler):
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
 
         recon_shape = self.get_params('recon_shape')
+        num_pixels = len(pixel_indices)
+        num_slices = recon_shape[2]
+
+        # Original version
         recon_at_indices = []
         for pixel_index_batch in pixel_indices_batched:
             # Create space on the worker for voxels
@@ -450,6 +454,78 @@ class TomographyModel(ParameterHandler):
             recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
 
         recon_at_indices = jnp.concatenate(recon_at_indices)
+
+        # Original version
+        time0 = time.time()
+        recon_at_indices = []
+        for pixel_index_batch in pixel_indices_batched:
+            # Create space on the worker for voxels
+            voxel_batch = jnp.zeros((len(pixel_index_batch), recon_shape[2]), device=self.worker)
+
+            for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
+                view_index_end = view_batch_boundaries[j+1]
+                view_batch = sinogram[view_index_start:view_index_end]
+                # Get the current devices and move the data to the worker
+                view_batch = jax.device_put(view_batch, self.worker)
+
+                voxel_batch = voxel_batch + self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
+                                                                                         view_indices=view_indices_batched[j],
+                                                                                         coeff_power=coeff_power)
+
+            # Put the data on the appropriate device
+            recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
+
+        recon_at_indices = jnp.concatenate(recon_at_indices)
+
+        time1 = time.time()
+
+        # New version 1
+        # Get the final recon as a jax array
+        recon_at_indices0 = jnp.zeros((num_pixels, num_slices), device=self.main_device)
+        for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
+            view_index_end = view_batch_boundaries[j + 1]
+            view_batch = sinogram[view_index_start:view_index_end]
+            view_batch = jax.device_put(view_batch, self.worker)
+
+            # Loop over pixel batches
+            batch_start_index = 0
+            for pixel_index_batch in pixel_indices_batched:
+                # Back project a batch
+                batch_stop_index = batch_start_index + len(pixel_index_batch)
+                batch_indices = jnp.arange(batch_start_index, batch_stop_index)
+                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
+                                                                           view_indices=view_indices_batched[j],
+                                                                           coeff_power=coeff_power)
+                update_recon(recon_at_indices0, batch_indices, voxel_batch)
+                batch_start_index = batch_stop_index
+                # jax.clear_caches()
+                # mbirjax.get_memory_stats()
+
+
+        time2 = time.time()
+
+        # New version 2
+        # Get the final recon as a jax array
+        recon_at_indices0 = jnp.zeros((num_pixels, num_slices), device=self.main_device)
+        for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
+            view_index_end = view_batch_boundaries[j + 1]
+            view_batch = sinogram[view_index_start:view_index_end]
+            view_batch = jax.device_put(view_batch, self.worker)
+
+            # Loop over pixel batches
+            voxel_batch_list = []
+            for pixel_index_batch in pixel_indices_batched:
+                # Back project a batch
+                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
+                                                                           view_indices=view_indices_batched[j],
+                                                                           coeff_power=coeff_power)
+                voxel_batch_list.append(jax.device_put(voxel_batch, self.main_device))
+                # jax.clear_caches()
+                # mbirjax.get_memory_stats()
+            recon_at_indices0 = recon_at_indices0 + jnp.concatenate(voxel_batch_list, axis=0)
+
+        time3 = time.time()
+        print('{}, {}, {}'.format(time1-time0, time2-time1, time3-time2))
         return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
