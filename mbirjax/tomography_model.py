@@ -154,7 +154,7 @@ class TomographyModel(ParameterHandler):
             pixels_per_vmap = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_vmap / views_per_vmap))
             pixels_per_vmap = min(pixels_per_vmap, 8000)
             self.transfer_pixel_batch_size = pixels_per_vmap
-            self.transfer_view_batch_size = min(600, self.transfer_view_batch_size)
+            self.transfer_view_batch_size = 600
             pixels_per_vmap = max(pixels_per_vmap, 1)
             self.view_batch_size_for_vmap = views_per_vmap
             self.pixel_batch_size_for_vmap = pixels_per_vmap
@@ -389,8 +389,9 @@ class TomographyModel(ParameterHandler):
                 voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
                                                                  pixel_indices[pixel_index_start:pixel_index_end]],
                                                                 self.worker)
-
+                sinogram_views = sinogram_views.block_until_ready()
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
+                # jax.clear_caches()
                 # mbirjax.get_memory_stats()
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
