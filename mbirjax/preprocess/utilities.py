@@ -180,13 +180,13 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     Weights are not modified.
 
     Args:
-        sino (jax.numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
+        sino (numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
         background_offset (optional, float): background offset subtracted from sinogram data before correction.
         batch_size (int): Number of views to process in each batch to avoid memory overload.
 
     Returns:
-        - A jax.numpy.ndarray containing the corrected sinogram data if weights is None.
+        - A numpy.ndarray containing the corrected sinogram data if weights is None.
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
