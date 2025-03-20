@@ -328,9 +328,9 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
                 crop_region=((0, 1), (0, 1)), defective_pixel_array=()):
     """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
     Args:
-        obj_scan (float): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (float) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        dark_scan (float): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
+        obj_scan (array): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
+        blank_scan (array) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
+        dark_scan (array): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
         crop_region ([(float, float),(float, float)] or [float, float, float, float]):
             [Default=[(0, 1), (0, 1)]] Two points to define the bounding box. Sequence of [(row0, row1), (col0, col1)] or
             [row0, row1, col0, col1], where 0<=row0 <= row1<=1 and 0<=col0 <= col1<=1.
@@ -349,10 +349,7 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
         - **blank_scan** (*ndarray, float*): A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
         - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
     """
-    if isinstance(crop_region[0], (list, tuple)):
-        (row0, row1), (col0, col1) = crop_region
-    else:
-        row0, row1, col0, col1 = crop_region
+    (row0, row1), (col0, col1) = crop_region
 
     assert 0 <= row0 <= row1 <= 1 and 0 <= col0 <= col1 <= 1, 'crop_region should be sequence of [(row0, row1), (col0, col1)] ' \
                                                       'or [row0, row1, col0, col1], where 1>=row1 >= row0>=0 and 1>=col1 >= col0>=0.'
@@ -373,6 +370,7 @@ def crop_scans(obj_scan, blank_scan, dark_scan,
         in_bounds = (defective_pixel_array[:, 0] >= Nr_lo) & (defective_pixel_array[:, 0] < Nr_hi) & \
                     (defective_pixel_array[:, 1] >= Nc_lo) & (defective_pixel_array[:, 1] < Nc_hi)
         defective_pixel_array = defective_pixel_array[in_bounds]
+        defective_pixel_array -= np.array([Nr_lo, Nc_lo]).reshape(1, 2)
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
 # ####### END subroutines for image cropping and down-sampling

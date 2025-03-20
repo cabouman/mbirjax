@@ -356,10 +356,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_reg
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
 
     # Adjust geometry params according to crop_region and downsample_factor
-    if isinstance(crop_region[0], (list, tuple)):
-        (row0, row1), (col0, col1) = crop_region
-    else:
-        row0, row1, col0, col1 = crop_region
+    (row0, row1), (col0, col1) = crop_region
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]

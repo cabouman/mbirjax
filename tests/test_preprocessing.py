@@ -61,8 +61,26 @@ class TestNSIPreprocessing(unittest.TestCase):
                                                 source_iso_dist=self.source_iso_dist)
 
         # Generate 3D Shepp-Logan phantom and sinogram
+        # Define the crop region to test cropping and defective pixels.  We'll mask the phantom so that there is
+        # sufficient border to do background estimation.  We'll include (0, 0) and the opposite corners as defective
+        # pixels.  The crop region will exclude (0, 0) but include the opposite pixel.  In the crop region,
+        # we have (row_frac0, row_frac1), (col_frac0, col_frac1), so we need the form (row_frac0, 1), (0, 1) to meet these conditions.
+        self.crop_region = ((0.1, 1), (0, 1))
+        self.edge_width = 4
+        row0 = round(self.crop_region[0][0] * self.num_det_rows)
+        border_width = self.edge_width
+
         self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
-        self.sino_gt = self.cone_model.forward_project(self.phantom)
+        sino_gt = self.cone_model.forward_project(self.phantom)
+
+        # Mask the borders as needed
+        sino_gt = np.array(sino_gt)
+        sino_gt[:, :border_width + row0, :] = 0.0  # Top
+        sino_gt[:, -border_width:, :] = 0.0  # Bottom
+        sino_gt[:, :, :border_width] = 0.0  # Left
+        sino_gt[:, :, -border_width:] = 0.0  # Right
+        self.sino_gt = jnp.array(sino_gt)
+
         # Normalize the sinogram
         self.sino_gt = self.sino_gt / jnp.percentile(self.sino_gt, 98)
         self.ideal_obj_scan = self.maximum_intensity * jnp.exp(-self.sino_gt)
@@ -88,9 +106,11 @@ class TestNSIPreprocessing(unittest.TestCase):
         defective_pixels = [
             (np.random.randint(0, self.num_det_rows - 1), np.random.randint(0, self.num_det_channels - 1)) for j in
             range(num_defective_pixels)]
+        # Include (0, 0) to test the ability to crop when there are defective pixels.
+        defective_pixels = [(0, 0), (self.num_det_rows-1, self.num_det_channels-1)] + defective_pixels
         self.defective_pixel_array = np.array(defective_pixels)
 
-        # Randomly set pixel to nan to test the function's ability to recover
+        # Randomly set other pixels to nan to test the function's ability to recover
         nan_pixels = [(np.random.randint(0, self.num_views - 1), np.random.randint(0, self.num_det_rows - 1),
                        np.random.randint(0, self.num_det_channels - 1)) for j in range(num_defective_pixels)]
 
@@ -104,17 +124,22 @@ class TestNSIPreprocessing(unittest.TestCase):
 
     def test_preprocessing(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
-        sino_computed = preprocess.compute_sino_transmission(self.obj_scan, self.blank_scan, self.dark_scan,
-                                                             defective_pixel_array=self.defective_pixel_array)
+        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(self.obj_scan, self.blank_scan, self.dark_scan,
+                                                                                       defective_pixel_array=self.defective_pixel_array,
+                                                                                       crop_region=self.crop_region)
+        sino_computed = preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan,
+                                                             defective_pixel_array=defective_pixel_array)
 
         # Compute background offsets
-        background_offset = preprocess.estimate_background_offset(sino_computed, edge_width=3)
+        background_offset = preprocess.estimate_background_offset(sino_computed, edge_width=self.edge_width)
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 
-        abs_sino_diff = np.abs(sino_computed - self.sino_gt)
+        sino_gt_cropped, _, _, _ = preprocess.crop_scans(self.sino_gt, self.blank_scan, self.dark_scan,
+                                                      crop_region=self.crop_region)
+        abs_sino_diff = np.abs(sino_computed - sino_gt_cropped)
         max_diff = np.max(np.abs(abs_sino_diff))
-        nrmse = np.linalg.norm(abs_sino_diff) / np.linalg.norm(self.sino_gt)
+        nrmse = np.linalg.norm(abs_sino_diff) / np.linalg.norm(sino_gt_cropped)
         pct99 = np.percentile(abs_sino_diff, 99)
 
         print('Difference between gt sino and estimated sino: max abs = {:.4f}, nrmse = {:.4f}'.format(max_diff, nrmse))
