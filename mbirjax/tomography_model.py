@@ -496,7 +496,9 @@ class TomographyModel(ParameterHandler):
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
                                                                            view_indices=view_indices_batched[j],
                                                                            coeff_power=coeff_power)
-                update_recon(recon_at_indices0, batch_indices, voxel_batch)
+                batch_indices = jax.device_put(batch_indices, device=output_device)
+                voxel_batch = jax.device_put(voxel_batch, device=output_device)
+                recon_at_indices0 = update_recon(recon_at_indices0, batch_indices, voxel_batch)
                 batch_start_index = batch_stop_index
                 # jax.clear_caches()
                 # mbirjax.get_memory_stats()
