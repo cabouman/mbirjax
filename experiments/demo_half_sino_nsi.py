@@ -31,7 +31,7 @@ import mbirjax
 
 if __name__ == "__main__":
 
-    """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
+    """**Data generation:** We load the NSI files.
 
     Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.
 
@@ -41,9 +41,7 @@ if __name__ == "__main__":
     # Choose the geometry type
     geometry_type = 'cone'
 
-    # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
-    # channels, then the generated phantom may not have an interior.
-
+    # NSI file path
     dataset_dir = '/depot/bouman/data/nsi_demo_data/demo_nsi_vert_no_metal_all_views'
     # dataset_dir = '/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax_applications/nsi/demo_data/demo_data_nsi'
 
@@ -67,19 +65,19 @@ if __name__ == "__main__":
             "\n***************** Set up MBIRJAX model ****************",
             "\n*******************************************************")
     # ConeBeamModel constructor
-    ct_model_for_full_recon = mbirjax.ConeBeamModel(**cone_beam_params)
+    sinogram_shape = sinogram.shape
+    angles = cone_beam_params['angles']
+    source_detector_dist = cone_beam_params['source_detector_dist']
+    source_iso_dist = cone_beam_params['source_iso_dist']
+    ct_model_for_full_recon = mbirjax.ConeBeamModel(sinogram_shape, angles,
+                                                    source_detector_dist=source_detector_dist,
+                                                    source_iso_dist=source_iso_dist)
     # Set additional geometry arguments
     ct_model_for_full_recon.set_params(**optional_params)
     # Set reconstruction parameter values
     ct_model_for_full_recon.set_params(sharpness=sharpness, verbose=1)
 
-    angles = ct_model_for_full_recon.get_params('angles')
-    source_detector_dist = ct_model_for_full_recon.get_params('source_detector_dist')
-    source_iso_dist = ct_model_for_full_recon.get_params('source_iso_dist')
 
-
-    # Initialize sinogram
-    sinogram_shape = sinogram.shape
     # Take roughly the half of the sinogram and specify roughly half of the volume
     full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
     num_recon_slices = full_recon_shape[2]
