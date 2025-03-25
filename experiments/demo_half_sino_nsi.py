@@ -124,12 +124,7 @@ if __name__ == "__main__":
         # Perform VCD reconstruction
         print('Starting recon')
         time0 = time.time()
-        init_recon = ct_model_for_half_recon.fdk_recon(sinogram_half)
-        weights = ct_model_for_half_recon.gen_weights(sinogram_half, weight_type='transmission_root')
-        recon, recon_params = ct_model_for_half_recon.recon(sinogram_half, weights=weights, init_recon=init_recon)
-
-        # recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
-
+        recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
 
         recon.block_until_ready()
         elapsed = time.time() - time0
