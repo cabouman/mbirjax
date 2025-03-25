@@ -29,124 +29,127 @@ import pprint
 import jax.numpy as jnp
 import mbirjax
 
-"""**Set the geometry parameters**"""
+if __name__ == "__main__":
 
-# Choose the geometry type
-geometry_type = 'cone'
+    """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
 
-# Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
-# channels, then the generated phantom may not have an interior.
-num_views = 64
-num_det_rows = 80
-num_det_channels = 128
+    Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.
 
-# For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
-# np.Inf is an allowable value, in which case this is essentially parallel beam
-source_detector_dist = 4 * num_det_channels
-source_iso_dist = source_detector_dist
+    """
+    """**Set the geometry parameters**"""
 
-# For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-start_angle = -(np.pi + detector_cone_angle) * (1/2)
-end_angle = (np.pi + detector_cone_angle) * (1/2)
+    # Choose the geometry type
+    geometry_type = 'cone'
 
-"""**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
+    # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
+    # channels, then the generated phantom may not have an interior.
 
-Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.
+    dataset_dir = '/depot/bouman/data/nsi_demo_data/demo_nsi_vert_no_metal_all_views'
+    # dataset_dir = '/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax_applications/nsi/demo_data/demo_data_nsi'
 
-"""
+    downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
+    subsample_view_factor = 2  # view subsample factor.
 
-# Initialize sinogram
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+    # #### recon parameters
+    sharpness = 1.0
+    # ###################### End of parameters
 
-ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-
-# Generate 3D Shepp Logan phantom
-print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
-
-# Generate synthetic sinogram data
-print('Creating sinogram')
-sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.array(sinogram)
-
-# Get a model for this sinogram
-ct_model_for_full_recon = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-
-# Take roughly the half of the sinogram and specify roughly half of the volume
-full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
-num_recon_slices = full_recon_shape[2]
-half_recons = []
-num_extra_rows = 2
-num_det_rows_half = num_det_rows // 2 + num_extra_rows
-
-# Initialize the model for reconstruction.
-sinogram_half_shape = (sinogram_shape[0], num_det_rows_half, sinogram_shape[2])
-ct_model_for_half_recon = mbirjax.ConeBeamModel(sinogram_half_shape, angles, source_detector_dist=source_detector_dist,
-                                                source_iso_dist=source_iso_dist)
-recon_shape_half = ct_model_for_half_recon.get_params('recon_shape')
-num_recon_slices_half = recon_shape_half[2]
-
-for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -num_det_rows_half:]], [1, -1]):
-
-    # View sinogram
-    title = 'Half of sinogram \nUse the sliders to change the view or adjust the intensity range.'
-    mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
-
-    delta_voxel, delta_det_row = ct_model_for_generation.get_params(['delta_voxel', 'delta_det_row'])
-    recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
-    det_row_offset = sign * delta_det_row * ((num_det_rows-1)/2 - (num_det_rows_half-1)/2)
-
-    ct_model_for_half_recon.set_params(recon_slice_offset=recon_slice_offset, det_row_offset=det_row_offset)
-
-    # Print out model parameters
-    ct_model_for_half_recon.print_params()
-
-    """**Do the reconstruction and display the results.**"""
-
-    # ##########################
-    # Perform VCD reconstruction
-    print('Starting recon')
+    print("\n*******************************************************",
+            "\n************** NSI dataset preprocessing **************",
+            "\n*******************************************************")
     time0 = time.time()
-    recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+    sinogram, cone_beam_params, optional_params = \
+        mbirjax.preprocess.nsi.compute_sino_and_params(dataset_dir,
+                                                        downsample_factor=downsample_factor,
+                                                        subsample_view_factor=subsample_view_factor)
 
-    recon.block_until_ready()
-    elapsed = time.time() - time0
-    half_recons.append(recon)
-    # ##########################
-    mbirjax.slice_viewer(recon)
+    print("\n*******************************************************",
+            "\n***************** Set up MBIRJAX model ****************",
+            "\n*******************************************************")
+    # ConeBeamModel constructor
+    ct_model_for_full_recon = mbirjax.ConeBeamModel(**cone_beam_params)
+    # Set additional geometry arguments
+    ct_model_for_full_recon.set_params(**optional_params)
+    # Set reconstruction parameter values
+    ct_model_for_full_recon.set_params(sharpness=sharpness, verbose=1)
 
-num_overlap_slices = 2 * num_recon_slices_half - num_recon_slices
-num_non_overlap_slices = num_recon_slices - num_recon_slices_half
-recon = np.zeros(full_recon_shape)
-recon_top, recon_bottom = half_recons
-recon[:, :, :num_non_overlap_slices] = recon_top[:, :, :num_non_overlap_slices]
-recon[:, :, -num_non_overlap_slices:] = recon_bottom[:, :, -num_non_overlap_slices:]
-overlap_weights = (np.arange(num_overlap_slices) + 1.0) / (num_overlap_slices + 1.0)
-overlap_weights = overlap_weights.reshape((1, 1, -1))
-recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weights) * recon_top[:, :, -num_overlap_slices:]
-recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
+    angles = ct_model_for_full_recon.get_params('angles')
+    source_detector_dist = ct_model_for_full_recon.get_params('source_detector_dist')
+    source_iso_dist = ct_model_for_full_recon.get_params('source_iso_dist')
 
-# Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
 
-max_diff = np.amax(np.abs(phantom - recon))
-print('Geometry = {}'.format(geometry_type))
-nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-pct_95 = np.percentile(np.abs(recon - phantom), 95)
-print('NRMSE between recon and phantom = {}'.format(nrmse))
-print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
-print('95% of recon pixels are within {} of phantom'.format(pct_95))
+    # Initialize sinogram
+    sinogram_shape = sinogram.shape
+    # Take roughly the half of the sinogram and specify roughly half of the volume
+    full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
+    num_recon_slices = full_recon_shape[2]
+    half_recons = []
+    num_extra_rows = 2
+    num_det_rows_half = sinogram_shape[1] // 2 + num_extra_rows
 
-mbirjax.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+    # Initialize the model for reconstruction.
+    sinogram_half_shape = (sinogram_shape[0], num_det_rows_half, sinogram_shape[2])
 
-print('Computing full recon for comparison')
-full_recon, full_params = ct_model_for_generation.recon(sinogram)
+    # ConeBeamModel constructor
+    ct_model_for_half_recon = mbirjax.ConeBeamModel(sinogram_half_shape, angles=angles,
+                                                    source_detector_dist=source_detector_dist,
+                                                    source_iso_dist=source_iso_dist)
+    # Set additional geometry arguments
+    ct_model_for_half_recon.set_params(**optional_params)
+    # Set reconstruction parameter values
+    ct_model_for_half_recon.set_params(sharpness=sharpness, verbose=1)
 
-# Display results
-title = 'Standard VCD recon (left) and residual with 2 halves stitched VCD Recon (right) \nThe residual is (stitched recon) - (standard recon).'
-mbirjax.slice_viewer(full_recon, recon-full_recon, title=title)
+    recon_shape_half = ct_model_for_half_recon.get_params('recon_shape')
+    num_recon_slices_half = recon_shape_half[2]
 
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
+    for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -num_det_rows_half:]], [1, -1]):
+
+        # View sinogram
+        title = 'Half of sinogram \nUse the sliders to change the view or adjust the intensity range.'
+        mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
+
+        delta_voxel, delta_det_row = ct_model_for_full_recon.get_params(['delta_voxel', 'delta_det_row'])
+        recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
+        det_row_offset = sign * delta_det_row * ((sinogram_shape[1]-1)/2 - (num_det_rows_half-1)/2)
+
+        ct_model_for_half_recon.set_params(recon_slice_offset=recon_slice_offset, det_row_offset=det_row_offset)
+
+        # Print out model parameters
+        ct_model_for_half_recon.print_params()
+
+        """**Do the reconstruction and display the results.**"""
+
+        # ##########################
+        # Perform VCD reconstruction
+        print('Starting recon')
+        time0 = time.time()
+        recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+
+        recon.block_until_ready()
+        elapsed = time.time() - time0
+        half_recons.append(recon)
+        # ##########################
+        mbirjax.slice_viewer(recon)
+
+    num_overlap_slices = 2 * num_recon_slices_half - num_recon_slices
+    num_non_overlap_slices = num_recon_slices - num_recon_slices_half
+    recon = np.zeros(full_recon_shape)
+    recon_top, recon_bottom = half_recons
+    recon[:, :, :num_non_overlap_slices] = recon_top[:, :, :num_non_overlap_slices]
+    recon[:, :, -num_non_overlap_slices:] = recon_bottom[:, :, -num_non_overlap_slices:]
+    overlap_weights = (np.arange(num_overlap_slices) + 1.0) / (num_overlap_slices + 1.0)
+    overlap_weights = overlap_weights.reshape((1, 1, -1))
+    recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weights) * recon_top[:, :, -num_overlap_slices:]
+    recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
+
+    # Print parameters used in recon
+    pprint.pprint(recon_params._asdict(), compact=True)
+
+    mbirjax.get_memory_stats()
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+
+    # Display results
+    title = 'Standard VCD recon (left) and residual with 2 halves stitched VCD Recon (right) \nThe residual is (stitched recon) - (standard recon).'
+    mbirjax.slice_viewer(recon, title=title)
+
+    """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
