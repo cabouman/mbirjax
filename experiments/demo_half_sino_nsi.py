@@ -28,6 +28,7 @@ import time
 import pprint
 import jax.numpy as jnp
 import mbirjax
+import os
 
 if __name__ == "__main__":
 
@@ -37,6 +38,8 @@ if __name__ == "__main__":
 
     """
     """**Set the geometry parameters**"""
+
+    output_path = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/0327_results/'
 
     # Choose the geometry type
     geometry_type = 'cone'
@@ -121,7 +124,12 @@ if __name__ == "__main__":
         # Perform VCD reconstruction
         print('Starting recon')
         time0 = time.time()
-        recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+        init_recon = ct_model_for_half_recon.fdk_recon(sinogram_half)
+        weights = ct_model_for_half_recon.gen_weights(sinogram_half, weight_type='transmission_root')
+        recon, recon_params = ct_model_for_half_recon.recon(sinogram_half, weights=weights, init_recon=init_recon)
+
+        # recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+
 
         recon.block_until_ready()
         elapsed = time.time() - time0
@@ -139,6 +147,12 @@ if __name__ == "__main__":
     overlap_weights = overlap_weights.reshape((1, 1, -1))
     recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weights) * recon_top[:, :, -num_overlap_slices:]
     recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
+
+
+    mbirjax.preprocess.export_recon_to_hdf5(recon, os.path.join(output_path, "full_size_recon.h5"),
+                                            recon_description="MBIRJAX recon of MAR phantom",
+                                            alu_description="1 ALU = 0.508 mm")
+
 
     # Print parameters used in recon
     pprint.pprint(recon_params._asdict(), compact=True)
