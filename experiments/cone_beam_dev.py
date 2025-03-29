@@ -11,6 +11,27 @@ import mbirjax
 
 if __name__ == "__main__":
 
+    sino = jnp.zeros((512, 1000, 1536))
+    sino = sino.at[:, :, 400:-400].set(1)
+    num_channels = sino.shape[-1]
+
+    n = jnp.arange(-num_channels + 1, num_channels)
+    recon_filter = (1 / 2) * jnp.sinc(n) - (1 / 4) * (jnp.sinc(n / 2)) ** 2
+
+    # Define convolution for a single row (across its channels)
+    def convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+
+    # Apply above convolve func across each row of a view
+    def apply_convolution_to_view(view):
+        return jax.vmap(convolve_row)(view)
+
+    filtered_sino_128 = jax.lax.map(apply_convolution_to_view, sino, batch_size=128)
+    filtered_sino_512 = jax.lax.map(apply_convolution_to_view, sino, batch_size=512)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512)))
+    exit(0)
     main_device = jax.devices('cpu')[0]
     worker = jax.devices('gpu')[0]
 
