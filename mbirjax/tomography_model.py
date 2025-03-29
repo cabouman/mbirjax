@@ -4,6 +4,8 @@ import warnings
 import time
 import os
 
+from jaxlib.xla_extension import XlaRuntimeError
+
 num_cpus = 3 * os.cpu_count() // 4
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
@@ -11,6 +13,8 @@ import jax.numpy as jnp
 import mbirjax
 from mbirjax import ParameterHandler
 from collections import namedtuple
+import subprocess
+import re
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
@@ -53,18 +57,32 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
 
-        # The following will be determined based on memory in set_devices_and_batch_sizes()
-        self.transfer_view_batch_size = None
-        self.transfer_pixel_batch_size = None
-        self.view_batch_size_for_vmap = 128
+        # The following may be adjusted based on memory in set_devices_and_batch_sizes()
+        self.view_batch_size_for_vmap = 512
         self.pixel_batch_size_for_vmap = 2048
+        self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
+        self.gpu_memory = 0
+        self.cpu_memory = 0
+        self.mem_required_for_gpu = 0
+        self.mem_required_for_cpu = 0
+        self.use_gpu = 'none'  # This is set in set_devices_and_batch_sizes based on memory and get_params('use_gpu')
         self.set_devices_and_batch_sizes()
         self.create_projectors()
 
     def set_devices_and_batch_sizes(self):
+        """
+        Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
+        the recons needed for vcd, then determine whether to use the GPU for projections only, or for all sinograms,
+        or for the entire reconstruction, or nothing.
+
+        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
+        'automatic', 'full', 'sinograms', 'projections', 'none'
+
+        Returns:
+            Nothing, but instance variables are set to appropriate values.
+        """
 
         # Get the cpu and any gpus
-        # If no gpu, then use the cpu and return
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
         use_gpu = self.get_params('use_gpu')
@@ -75,153 +93,153 @@ class TomographyModel(ParameterHandler):
             gpu_memory /= gb
         except RuntimeError:
             if use_gpu not in ['automatic', 'none']:
-                raise RuntimeError("'use_gpu' is set to {} but no gpu is available.  Reset to 'automatic' or 'none'.".format(use_gpu))
+                warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
+                              "Use 'set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
             gpus = []
             gpu_memory = 0
+        self.gpu_memory = gpu_memory
 
-        # Estimate the memory available and required for this problem
-        cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
-        cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
-        cpu_memory /= gb
+        # Estimate the CPU memory available
+        cpu_memory = 0
+        try:
+            # On SLURM at Purdue, we can parse the job info to determine the allocated memory
+            status = subprocess.run(['scontrol', 'show', 'job', os.environ['SLURM_JOB_ID']], check=True, text=True,
+                                    capture_output=True)
+            # status.stdout is an output string with multiple lines, one of which looks like this:
+            #   ReqTRES=cpu=42,mem=386400M,node=1,billing=1,gres/gpu=1
+            # Use a regular expression to capture the digits and one letter between 'mem=' and ',node'
+            pattern = r"mem=(\d+)([A-Za-z]),node"
+            match = re.search(pattern, status.stdout)
+            if match:
+                number = int(match.group(1))  # Capture the digits
+                letter = match.group(2)  # Capture the letter
+                # Convert the indicated memory to GB
+                scales = ['K', 'M', 'G', 'T']
+                scale_factor = scales.index(letter) - scales.index('G')
+                cpu_memory = number * (1024 ** scale_factor)
 
+        except subprocess.CalledProcessError:
+            pass
+
+        if cpu_memory == 0:
+            cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
+            cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
+            cpu_memory /= gb
+        self.cpu_memory = cpu_memory
+
+        # Get basic parameters
         sinogram_shape = self.get_params('sinogram_shape')
+        num_views, num_det_rows, num_det_channels = sinogram_shape
         recon_shape = self.get_params('recon_shape')
+        num_slices = recon_shape[2]
 
         zero = jnp.zeros(1)
         bits_per_byte = 8
         mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
-        memory_per_view = mem_per_entry * np.prod(sinogram_shape[1:])
-        memory_per_sinogram = memory_per_view * sinogram_shape[0]
-        memory_per_recon = mem_per_entry * np.prod(recon_shape)
+        mem_per_cylinder = num_slices * mem_per_entry
 
-        sino_reps_for_vcd = 6
-        recon_reps_for_vcd = 8
-        reps_for_projection = 3
+        # Make an empirical estimate of memory used per projection (on H100 as of 2025):
+        # vmap works in parallel over a batch of views, so we have view_batch_size_for_vmap * mem_per_view,
+        # with a rough floor on the number of channels, all multiplied by a constant factor from the implementation of
+        # the projectors.
+        mem_per_view_with_floor = mem_per_entry * num_det_rows * max(num_det_channels, 512)
+        cone_beam_projection_factor = 16  # This says cone beam but is very similar for parallel beam
+        mem_per_projection =  cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
+        mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
+
+        # Make an estimate of the memory needed to do all sinogram processing and projections on gpu
+        # To do all sinos on the GPU, we use the greater of the following two since sino_reps_for_vcd includes
+        # copies of the sino that are not used during projection:
+        #       sino_reps_for_vcd * mem_per_sinogram + mem_per_voxel_batch
+        #       mem_for_minimal_vcd_sinos + mem_per_projection + mem_per_voxel_batch
+        sino_reps_for_vcd = 6  # error sinogram, weights, weighted error sinogram, delta sinogram, 2 intermediate copies
+        sino_reps_minimal = 3  # error sinogram, weights, weighted error sinogram
+        mem_per_sinogram = mem_per_entry * num_views * num_det_rows * num_det_channels
+
+        # The memory when all sinograms are on GPU appears to have a floor on detector rows.
+        mem_per_sinogram_with_floor = mem_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
+        mem_for_vcd_sinos_gpu = sino_reps_for_vcd * mem_per_sinogram_with_floor
+        mem_for_minimal_vcd_sinos_gpu = sino_reps_minimal * mem_per_sinogram_with_floor
+
+        mem_for_all_sinos_on_gpu = max(mem_for_vcd_sinos_gpu, mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
+
+        # Reducing vmap batch size can reduce memory, but reducing below 128 = 512 / 4 increases time substantially.
+        # Estimate the memory required in the minimal case.
+        mem_for_minimal_sinos_on_gpu = max(mem_for_vcd_sinos_gpu, mem_for_minimal_vcd_sinos_gpu + mem_per_projection / 4) + mem_per_voxel_batch
+
+        mem_per_recon = mem_per_entry * np.prod(recon_shape)
+        recon_reps_for_vcd = 6
+        mem_for_all_vcd = recon_reps_for_vcd * mem_per_recon + mem_for_all_sinos_on_gpu - mem_per_voxel_batch
+
         frac_gpu_mem_to_use = 0.9
-        frac_gpu_mem_for_sino = 0.6
-        frac_gpu_mem_for_pixels = 0.6
+        gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
-        total_memory_required = memory_per_sinogram * sino_reps_for_vcd + memory_per_recon * recon_reps_for_vcd
+        # 'full':  Everything on GPU
+        if mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']:
+            self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
+            self.use_gpu = 'full'
+            mem_required_for_gpu = mem_for_all_vcd
+            mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
 
-        # We need to set 3 devices, some of which may be the same
-        # The worker device - the GPU if available, for doing projections
-        # The sinogram device - for storing several objects as big as the sinogram (error sinogram, weights, etc)
-        # The main device - for storing the recon and other objects as big as it.
-        # If the worker is the CPU, then all 3 are the CPU. If main is the GPU, then all 3 are GPU.
-        # If worker is GPU and main is CPU, then the sinogram device may be CPU or GPU depending on GPU memory size.
-        # If we have plenty of GPU memory, then put everything on the GPU in one step
-        if (total_memory_required < gpu_memory * frac_gpu_mem_to_use and use_gpu == 'automatic') or use_gpu == 'full':
-            self.main_device = gpus[0]
-            self.worker = gpus[0]
-            self.sinogram_device = gpus[0]
-            self.transfer_view_batch_size = sinogram_shape[0]
-            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
-        # Same if we have no GPU, except the devices are now the CPU
-        elif gpu_memory == 0 or use_gpu == 'none':
-            self.main_device = cpus[0]
-            self.worker = cpus[0]
-            self.sinogram_device = cpus[0]
-            self.transfer_view_batch_size = sinogram_shape[0]
-            self.transfer_pixel_batch_size = recon_shape[0] * recon_shape[1]
-        # Otherwise, determine how to batch the sinogram and pixels for transfer
+        # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
+        elif mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none', 'projections']:
+            self.main_device, self.sinogram_device, self.worker = cpus[0], gpus[0], gpus[0]
+            self.use_gpu = 'sinograms'
+            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
+            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
+            self.view_batch_size_for_vmap = int(self.view_batch_size_for_vmap * projection_scale)
+
+            # Recalculate the memory per projection with the new batch size
+            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
+
+            mem_required_for_gpu = max(mem_for_vcd_sinos_gpu,
+                                       mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
+            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
+
+        # 'projections': Only projections on GPU.  Adjust projection vmap batch size if needed.
+        elif mem_per_projection / 16 < gpu_memory_to_use and use_gpu not in ['none']:
+            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], gpus[0]
+            self.use_gpu = 'projections'
+            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch
+            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
+            self.view_batch_size_for_vmap = int(self.view_batch_size_for_vmap * projection_scale)
+
+            # Recalculate the memory per projection with the new batch size
+            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
+
+            mem_required_for_gpu = mem_per_projection
+            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + sino_reps_for_vcd * mem_per_sinogram
+
+        # 'none': All on CPU
         else:
-            self.main_device = cpus[0]
-            self.worker = gpus[0]
-            gpu_mem_for_sino = gpu_memory * frac_gpu_mem_for_sino
-            num_sino_batches = np.ceil(memory_per_sinogram * sino_reps_for_vcd / gpu_mem_for_sino).astype(int)
-            self.transfer_view_batch_size = np.ceil(sinogram_shape[0] / num_sino_batches).astype(int)
-            if num_sino_batches == 1:
-                self.sinogram_device = gpus[0]
-                extra_gpu_memory = gpu_memory - memory_per_sinogram * sino_reps_for_vcd
-            else:
-                self.sinogram_device = cpus[0]
-                memory_per_sinogram_batch = self.transfer_view_batch_size * memory_per_view
-                reps_per_projection = 2
-                extra_gpu_memory = gpu_memory - memory_per_sinogram_batch * reps_per_projection
+            if gpu_memory > 0:
+                warnings.warn('MBIRJAX is installed with cuda, but there is not enough GPU memory to use cuda. This may lead to a fatal error.')
 
-            # Determine the number of voxel cylinders that will fit into the extra gpu memory and how
-            # to do sub-batching by views and voxel cylinders on the GPU.
-            num_slices = recon_shape[2]
-            memory_per_cylinder = num_slices * mem_per_entry
-            max_cylinders = int(extra_gpu_memory * frac_gpu_mem_for_pixels / memory_per_cylinder)
+            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], cpus[0]
+            self.use_gpu = 'none'
 
-            self.transfer_pixel_batch_size = min(max_cylinders, recon_shape[0] * recon_shape[1])
-            extra_gpu_memory = extra_gpu_memory - self.transfer_pixel_batch_size * memory_per_cylinder
-            max_num_pixels_per_vmap = int(extra_gpu_memory / (reps_for_projection * memory_per_cylinder))
-            views_per_vmap = min(self.transfer_view_batch_size, max_num_pixels_per_vmap // 20)
-            views_per_vmap = min(views_per_vmap, 200)
-            views_per_vmap = max(views_per_vmap, 1)
-            pixels_per_vmap = min(self.transfer_pixel_batch_size, int(max_num_pixels_per_vmap / views_per_vmap))
-            pixels_per_vmap = min(pixels_per_vmap, 8000)
-            self.transfer_pixel_batch_size = pixels_per_vmap
-            self.transfer_view_batch_size = 600
-            pixels_per_vmap = max(pixels_per_vmap, 1)
-            self.view_batch_size_for_vmap = views_per_vmap
-            self.pixel_batch_size_for_vmap = pixels_per_vmap
-        print(self.transfer_view_batch_size, self.transfer_pixel_batch_size, self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap)
-        print(self.main_device, self.sinogram_device, self.worker)
+            mem_required_for_gpu = 0
+            mem_required_for_cpu = mem_for_all_vcd
+
+        if cpu_memory < mem_required_for_cpu:
+            warnings.warn('CPU memory may be insufficient for this problem.  This may lead to a fatal error.')
+
+        self.mem_required_for_gpu = mem_required_for_gpu
+        self.mem_required_for_cpu = mem_required_for_cpu
+
+        if self.get_params('verbose') >= 2:
+            print('mem per recon = {}'.format(mem_per_recon))
+            print('mem per sino = {}'.format(mem_per_sinogram))
+            print('mem per projection = {}'.format(mem_per_projection))
+            print('mem for vcd sinograms = {}'.format(mem_for_vcd_sinos_gpu))
+            print('mem for all sinos on gpu = {}'.format(mem_for_all_sinos_on_gpu))
+            print('mem for all vcd = {}'.format(mem_for_all_vcd))
+
+        print('GPU used for: {}'.format(self.use_gpu))
+        print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_gpu, gpu_memory))
+        print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_cpu, cpu_memory))
+
         return
-
-        subset_update_memory_required = (memory_per_sinogram + memory_per_recon) * reps_for_vcd_update
-        if isinstance(self, mbirjax.ConeBeamModel):
-            reps_per_projection = 2  # This is determined empirically and should probably be determined by each subclass rather than set here.
-        elif isinstance(self, mbirjax.ParallelBeamModel):
-            reps_per_projection = 2
-        else:
-            raise ValueError('Unknown reps_per_projection for {}.'.format(self.get_params('geometry_type')))
-
-        # Adjust the batch sizes for memory requirements
-        num_slices = max(sinogram_shape[1], recon_shape[2])
-        projection_memory_per_view = self.pixel_batch_size_for_vmap * reps_per_projection * num_slices * mem_per_entry
-
-        subset_memory_excess = gpu_memory - subset_update_memory_required
-        subset_views_per_batch = subset_memory_excess // projection_memory_per_view
-        subset_views_per_batch = int(np.clip(subset_views_per_batch, 2, self.view_batch_size_for_vmap))
-
-        total_memory_excess = cpu_memory - total_memory_required
-        total_views_per_batch = total_memory_excess // projection_memory_per_view
-        total_views_per_batch = int(np.clip(total_views_per_batch, 2, self.view_batch_size_for_vmap))
-
-        subset_update_memory_required += subset_views_per_batch * projection_memory_per_view
-        total_memory_required += total_views_per_batch * projection_memory_per_view
-
-        if (gpu_memory > total_memory_required and use_gpu == 'automatic') or use_gpu == 'full':
-            main_device = gpus[0]
-            worker = gpus[0]
-        elif (gpu_memory > subset_update_memory_required and use_gpu == 'automatic') or use_gpu == 'worker':
-            main_device = cpus[0]
-            worker = gpus[0]
-            if use_gpu != 'worker':
-                warnings.warn("GPU memory likely smaller than full problem size. Estimated required = {}GB.  "
-                              "Available = {}GB.".format(subset_update_memory_required, gpu_memory))
-                warnings.warn("Using CPU for main memory and  "
-                              "GPU for update steps only, which will increase recon time.")
-                warnings.warn("  Use set_params(use_gpu='full') to try the full problem on GPU.")
-        elif cpu_memory > total_memory_required:
-            main_device = cpus[0]
-            worker = cpus[0]
-            gpu_memory_required = 0
-            if len(gpus) > 0 and use_gpu != 'none':
-                warnings.warn('Insufficient GPU memory for this problem. Estimated required = {}GB.  '
-                              'Available = {}GB.'.format(subset_update_memory_required, gpu_memory))
-                warnings.warn('Trying on CPU, but this may be slow.')
-                warnings.warn("  Use set_params(use_gpu='worker') to try projections on the GPU.")
-        else:
-            message = 'Problem is likely too large for available memory.'
-            message += '\nEstimated memory required = {:.3f}GB.  Available:  CPU = {:.3f}GB, GPU = {:.3f}GB.'.format(
-                total_memory_required, cpu_memory, gpu_memory)
-            warnings.warn(message)
-
-        if gpu_memory > 0:
-            print('Available GPU memory = {:.3f}GB.'.format(gpu_memory))
-        print('Estimated memory required = {:.3f}GB full, {:.3f}GB update'.format(total_memory_required,
-                                                                                  subset_update_memory_required))
-
-        print('Using {} for main memory, {} as worker.'.format(main_device, worker))
-        print('process_view_batch_size = {}; pixels_per_vmap = {}'.format(self.view_batch_size_for_vmap, self.pixel_batch_size_for_vmap))
-
-        self.main_device = main_device
-        self.worker = worker
 
     @classmethod
     def from_file(cls, filename):
@@ -366,7 +384,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.transfer_view_batch_size
+        transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         sinogram_shape = self.get_params('sinogram_shape')
         if view_indices is None:
@@ -391,8 +409,7 @@ class TomographyModel(ParameterHandler):
                                                                 self.worker)
                 sinogram_views = sinogram_views.block_until_ready()
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
-                # jax.clear_caches()
-                # mbirjax.get_memory_stats()
+
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
 
@@ -416,7 +433,7 @@ class TomographyModel(ParameterHandler):
             A jax array of shape (len(indices), num_slices)
         """
         # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.transfer_view_batch_size
+        transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
         if view_indices is None:
@@ -434,81 +451,8 @@ class TomographyModel(ParameterHandler):
         num_pixels = len(pixel_indices)
         num_slices = recon_shape[2]
 
-        # Original version
-        recon_at_indices = []
-        for pixel_index_batch in pixel_indices_batched:
-            # Create space on the worker for voxels
-            voxel_batch = jnp.zeros((len(pixel_index_batch), recon_shape[2]), device=self.worker)
-
-            for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
-                view_index_end = view_batch_boundaries[j+1]
-                view_batch = sinogram[view_index_start:view_index_end]
-                # Get the current devices and move the data to the worker
-                view_batch = jax.device_put(view_batch, self.worker)
-
-                voxel_batch = voxel_batch + self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                                         view_indices=view_indices_batched[j],
-                                                                                         coeff_power=coeff_power)
-
-            # Put the data on the appropriate device
-            recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
-
-        recon_at_indices = jnp.concatenate(recon_at_indices)
-
-        # Original version
-        time0 = time.time()
-        recon_at_indices = []
-        for pixel_index_batch in pixel_indices_batched:
-            # Create space on the worker for voxels
-            voxel_batch = jnp.zeros((len(pixel_index_batch), recon_shape[2]), device=self.worker)
-
-            for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
-                view_index_end = view_batch_boundaries[j+1]
-                view_batch = sinogram[view_index_start:view_index_end]
-                # Get the current devices and move the data to the worker
-                view_batch = jax.device_put(view_batch, self.worker)
-
-                voxel_batch = voxel_batch + self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                                         view_indices=view_indices_batched[j],
-                                                                                         coeff_power=coeff_power)
-
-            # Put the data on the appropriate device
-            recon_at_indices.append(jax.device_put(voxel_batch, device=output_device))
-
-        recon_at_indices = jnp.concatenate(recon_at_indices)
-
-        time1 = time.time()
-
-        # New version 1
         # Get the final recon as a jax array
-        recon_at_indices0 = jnp.zeros((num_pixels, num_slices), device=self.main_device)
-        for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
-            view_index_end = view_batch_boundaries[j + 1]
-            view_batch = sinogram[view_index_start:view_index_end]
-            view_batch = jax.device_put(view_batch, self.worker)
-
-            # Loop over pixel batches
-            batch_start_index = 0
-            for pixel_index_batch in pixel_indices_batched:
-                # Back project a batch
-                batch_stop_index = batch_start_index + len(pixel_index_batch)
-                batch_indices = jnp.arange(batch_start_index, batch_stop_index)
-                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batched[j],
-                                                                           coeff_power=coeff_power)
-                batch_indices = jax.device_put(batch_indices, device=output_device)
-                voxel_batch = jax.device_put(voxel_batch, device=output_device)
-                recon_at_indices0 = update_recon(recon_at_indices0, batch_indices, voxel_batch)
-                batch_start_index = batch_stop_index
-                # jax.clear_caches()
-                # mbirjax.get_memory_stats()
-
-
-        time2 = time.time()
-
-        # New version 2
-        # Get the final recon as a jax array
-        recon_at_indices0 = jnp.zeros((num_pixels, num_slices), device=self.main_device)
+        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=self.main_device)
         for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
             view_index_end = view_batch_boundaries[j + 1]
             view_batch = sinogram[view_index_start:view_index_end]
@@ -521,13 +465,11 @@ class TomographyModel(ParameterHandler):
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
                                                                            view_indices=view_indices_batched[j],
                                                                            coeff_power=coeff_power)
+                voxel_batch = voxel_batch.block_until_ready()
                 voxel_batch_list.append(jax.device_put(voxel_batch, self.main_device))
-                # jax.clear_caches()
-                # mbirjax.get_memory_stats()
-            recon_at_indices0 = recon_at_indices0 + jnp.concatenate(voxel_batch_list, axis=0)
 
-        time3 = time.time()
-        print('{}, {}, {}'.format(time1-time0, time2-time1, time3-time2))
+            recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
+
         return recon_at_indices
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
@@ -572,7 +514,6 @@ class TomographyModel(ParameterHandler):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
-        mbirjax.get_memory_stats()
         hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, output_device=output_device)
 
         return hessian_diagonal.reshape((num_recon_rows, num_recon_cols, num_recon_slices))
@@ -605,11 +546,12 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'worker', 'none']:
+        if use_gpu not in ['automatic', 'full', 'sinograms', 'projections', 'none']:
             error_message = "use_gpu must be one of \n"
             error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
             error_message += " 'full' (use gpu for all calculations),\n"
-            error_message += " 'worker' (use gpu for projections only),\n"
+            error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
+            error_message += " 'projections' (use gpu for projections only),\n"
             error_message += " 'none' (do not use gpu at all)."
             raise ValueError(error_message)
 
@@ -820,52 +762,69 @@ class TomographyModel(ParameterHandler):
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
             recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
-        # Check that sinogram and weights are not taking up GPU space
-        if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
-            sinogram = jax.device_put(sinogram, self.sinogram_device)
-        if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
-            weights = jax.device_put(weights, self.sinogram_device)
-        if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
-            init_recon = jax.device_put(init_recon, self.main_device)
+        try:
 
-        # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-        if compute_prior_loss:
-            msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
-            msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
-            warnings.warn(msg)
+            # Check that sinogram and weights are not taking up GPU space
+            if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
+                sinogram = jax.device_put(sinogram, self.sinogram_device)
+            if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
+                weights = jax.device_put(weights, self.sinogram_device)
+            if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
+                init_recon = jax.device_put(init_recon, self.main_device)
 
-        regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
+            # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
+            if compute_prior_loss:
+                msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
+                msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
+                warnings.warn(msg)
 
-        # Generate set of voxel partitions
-        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
-        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+            regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
-        # Generate sequence of partitions to use
-        partition_sequence = self.get_params('partition_sequence')
-        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
-        partition_sequence = partition_sequence[first_iteration:]
+            # Generate set of voxel partitions
+            recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+            partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
+            partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
-        # Compute reconstruction
-        recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
-                                             init_recon=init_recon, compute_prior_loss=compute_prior_loss,
-                                             first_iteration=first_iteration, nrms_stop_threshold=nrms_stop_threshold)
+            # Generate sequence of partitions to use
+            partition_sequence = self.get_params('partition_sequence')
+            partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
+            partition_sequence = partition_sequence[first_iteration:]
 
-        # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
-        recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                             'regularization_params', 'nrms_recon_change', 'alpha_values']
-        ReconParams = namedtuple('ReconParams', recon_param_names)
-        partition_sequence = [int(val) for val in partition_sequence]
-        fm_rmse = [float(val) for val in loss_vectors[0]]
-        if compute_prior_loss:
-            prior_loss = [float(val) for val in loss_vectors[1]]
-        else:
-            prior_loss = [0]
-        nrms_recon_change = [float(val) for val in loss_vectors[2]]
-        alpha_values = [float(val) for val in loss_vectors[3]]
-        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params._asdict(), nrms_recon_change, alpha_values]
-        recon_params = ReconParams(*tuple(recon_param_values))
+            # Compute reconstruction
+            recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
+                                                 init_recon=init_recon, compute_prior_loss=compute_prior_loss,
+                                                 first_iteration=first_iteration, nrms_stop_threshold=nrms_stop_threshold)
+
+            # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
+            recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
+                                 'regularization_params', 'nrms_recon_change', 'alpha_values']
+            ReconParams = namedtuple('ReconParams', recon_param_names)
+            partition_sequence = [int(val) for val in partition_sequence]
+            fm_rmse = [float(val) for val in loss_vectors[0]]
+            if compute_prior_loss:
+                prior_loss = [float(val) for val in loss_vectors[1]]
+            else:
+                prior_loss = [0]
+            nrms_recon_change = [float(val) for val in loss_vectors[2]]
+            alpha_values = [float(val) for val in loss_vectors[3]]
+            recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
+                                  regularization_params._asdict(), nrms_recon_change, alpha_values]
+            recon_params = ReconParams(*tuple(recon_param_values))
+
+        except MemoryError as e:
+            print('Insufficient CPU memory')
+            raise e
+        except XlaRuntimeError as e:
+            print(e)
+            if self.gpu_memory > 0:
+                if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
+                    print('Insufficient memory for jax (likely insufficient CPU memory)')
+                else:
+                    print('Insufficient memory for jax (likely insufficient GPU memory)')
+            else:
+                print('Insufficient memory for jax (CPU memory)')
+
+            raise e
 
         return recon, recon_params
 
@@ -992,7 +951,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = 'After iteration {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration,
+                iter_output = '\nAfter iteration {} of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, num_iters,
                                                                                                   100 * nrms_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
@@ -1058,19 +1017,19 @@ class TomographyModel(ParameterHandler):
                                                                                                        subset, subset_worker, times)
             norm_squared_for_partition += norm_squared_for_subset
             alpha_sum += alpha_for_subset
-        # Debug code to go with timing info in vcd_subset_updater
-        max_len = max(len(s) for s in time_names)
-        formatted_names = [f"{s:<{max_len}}," for s in time_names]
-        formatted_names = " ".join(formatted_names)
-
-        pct_times = 100 * times / np.sum(times)
-        formatted_times = ['{:.2f}'.format(pct_times[j]) for j in range(len(pct_times))]
-        formatted_times = [f"{s:<{max_len}}," for s in formatted_times]
-        formatted_times = " ".join(formatted_times)
-        print('Pct time = ')
-        print(formatted_names)
-        print(formatted_times)
-        # End debug code
+        # # Debug code to go with timing info in vcd_subset_updater
+        # max_len = max(len(s) for s in time_names)
+        # formatted_names = [f"{s:<{max_len}}," for s in time_names]
+        # formatted_names = " ".join(formatted_names)
+        #
+        # pct_times = 100 * times / np.sum(times)
+        # formatted_times = ['{:.2f}'.format(pct_times[j]) for j in range(len(pct_times))]
+        # formatted_times = [f"{s:<{max_len}}," for s in formatted_times]
+        # formatted_times = " ".join(formatted_times)
+        # print('Pct time = ')
+        # print(formatted_names)
+        # print(formatted_times)
+        # # End debug code
 
         return flat_recon, error_sinogram, norm_squared_for_partition, alpha_sum / partition.shape[0]
 
@@ -1132,12 +1091,12 @@ class TomographyModel(ParameterHandler):
             # Assumes Loss(delta) = 1/(2 sigma_y^2) || error_sinogram - A delta ||_weights^2
             # All the time assignments and block_until_ready() are for debugging/performance tracking only.
             # The cryptic labels in the comments match the printed timing labels when these are activated.
-            time_index = 0
+            # time_index = 0
             time_names = []
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
-            time_names.append('qggmrf')
-            time_start = time.time()
+            # time_names.append('qggmrf')
+            # time_start = time.time()
             if prox_input is None:
 
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
@@ -1155,74 +1114,74 @@ class TomographyModel(ParameterHandler):
                 prior_hess = sigma_prox ** 2
                 prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
             # prior_grad = prior_grad.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
-            time_names.append('wterrsin')
-            time_start = time.time()
+            # time_names.append('wterrsin')
+            # time_start = time.time()
             if not const_weights:
                 weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
             else:
                 weighted_error_sinogram = error_sinogram
             # weighted_error_sinogram = weighted_error_sinogram.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Transfer to worker for later use
-            time_names.append('bproj')
-            time_start = time.time()
+            # time_names.append('bproj')
+            # time_start = time.time()
 
             # Back project to get the gradient
             forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
                                                                output_device=self.main_device)
             # forward_grad = forward_grad.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Get the forward hessian for this subset
-            time_names.append('forhess')
-            time_start = time.time()
+            # time_names.append('forhess')
+            # time_start = time.time()
             forward_hess = fm_constant * fm_hessian[pixel_indices]
             # forward_hess = forward_hess.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Compute update vector update direction in recon domain
-            time_names.append('deltrec')
-            time_start = time.time()
+            # time_names.append('deltrec')
+            # time_start = time.time()
             delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
             # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            time_start = time.time()
-            time_names.append('priorlin')
+            # time_start = time.time()
+            # time_names.append('priorlin')
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
             # prior_linear = prior_linear.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Estimated upper bound for hessian
-            time_names.append('pquad')
-            time_start = time.time()
+            # time_names.append('pquad')
+            # time_start = time.time()
             prior_overrelaxation_factor = 2
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
             # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Compute update direction in sinogram domain
-            time_names.append('fproj')
+            # time_names.append('fproj')
             time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
                                                     output_device=self.sinogram_device)
             # delta_sinogram = delta_sinogram.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
-            time_names.append('forlqu')
+            # time_names.append('forlqu')
             time_start = time.time()
             forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
                                                                           weights, fm_constant, const_weights,
@@ -1235,8 +1194,8 @@ class TomographyModel(ParameterHandler):
             max_alpha = 1.5
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
             # alpha = alpha.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # # Debug/demo code to determine the quadratic part of the prior exactly, but expensively.
             # x_prime = flat_recon.reshape(recon_shape)
@@ -1271,38 +1230,38 @@ class TomographyModel(ParameterHandler):
                 # Recompute sinogram projection
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.sinogram_device)
 
-            time_names.append('scaledr')
+            # time_names.append('scaledr')
             time_start = time.time()
             # Perform sparse updates at index locations
             delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
             # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
-            time_names.append('flatrec')
+            # time_names.append('flatrec')
             time_start = time.time()
             flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
             # flat_recon = flat_recon.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             # Update sinogram and loss
-            time_names.append('deltsin')
+            # time_names.append('deltsin')
             time_start = time.time()
             delta_sinogram = float(alpha) * delta_sinogram
             error_sinogram = error_sinogram - delta_sinogram
             # error_sinogram = error_sinogram.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
-            time_names.append('stats')
+            # time_names.append('stats')
             time_start = time.time()
             norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
             alpha_for_subset = alpha
             # norm_squared_for_subset = norm_squared_for_subset.block_until_ready()
-            times[time_index] += time.time() - time_start
-            time_index += 1
+            # times[time_index] += time.time() - time_start
+            # time_index += 1
 
             return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times, time_names
 
@@ -1329,62 +1288,67 @@ class TomographyModel(ParameterHandler):
             tuple:
             forward_linear, forward_quadratic
         """
-        num_views = weighted_error_sinogram.shape[0]
-        views_per_batch = self.view_batch_size_for_vmap
+        forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
+        forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+
+        # The code below does batching of the sinogram on the GPU, but in a comparison on a sinogram
+        # of size 1800x512x512, it was noticeably faster to do the computation on the CPU.
 
         # If this can be done without data transfer, then do it.
-        if self.worker == self.sinogram_device:
-            forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
-            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-
+        # if True:  # self.worker == self.sinogram_device:
+        #     forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
+        #     forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+        #
         # Otherwise batch the sinogram by view, send to the worker and calculate linear and quadratic terms
         # First apply the batch projector directly to an initial batch to get the initial output
-        else:
-            views_per_batch = num_views if views_per_batch is None else views_per_batch
-            num_remaining = num_views % views_per_batch
-
-            # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
-            initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
-            # Make the weights into a 1D vector along views if it's a constant
-
-            def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
-                """
-                Send a batch to the worker and compute forward linear and quadratic for that batch.
-                """
-                worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
-                worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
-                if not const_weights:
-                    worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
-                else:
-                    worker_wts = weights
-
-                # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
-                # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
-
-                previous_linear += sum_product(worker_wes, worker_ds)
-                worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
-                if not const_weights:
-                    quadratic_entries = sum_product(worker_ds, worker_wts)
-                else:
-                    quadratic_entries = jnp.sum(worker_ds)
-                previous_quadratic += quadratic_entries
-
-                del worker_wes, worker_ds, worker_wts
-                return previous_linear, previous_quadratic
-
-            forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
-
-            # Then deal with the batches if there are any
-            if views_per_batch < num_views:
-                num_batches = (num_views - initial_batch_size) // views_per_batch
-                for j in jnp.arange(num_batches):
-                    start_ind_j = initial_batch_size + j * views_per_batch
-                    stop_ind_j = start_ind_j + views_per_batch
-                    forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
-                                                                         forward_linear, forward_quadratic)
-
-            forward_linear = fm_constant * forward_linear
-            forward_quadratic = fm_constant * forward_quadratic
+        # else:
+        #     num_views = weighted_error_sinogram.shape[0]
+        #     views_per_batch = self.view_batch_size_for_vmap
+        #     views_per_batch = num_views if views_per_batch is None else views_per_batch
+        #     num_remaining = num_views % views_per_batch
+        #
+        #     # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
+        #     initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
+        #     # Make the weights into a 1D vector along views if it's a constant
+        #
+        #     def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
+        #         """
+        #         Send a batch to the worker and compute forward linear and quadratic for that batch.
+        #         """
+        #         worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
+        #         worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
+        #         if not const_weights:
+        #             worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
+        #         else:
+        #             worker_wts = weights
+        #
+        #         # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
+        #         # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
+        #
+        #         previous_linear += sum_product(worker_wes, worker_ds)
+        #         worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
+        #         if not const_weights:
+        #             quadratic_entries = sum_product(worker_ds, worker_wts)
+        #         else:
+        #             quadratic_entries = jnp.sum(worker_ds)
+        #         previous_quadratic += quadratic_entries
+        #
+        #         del worker_wes, worker_ds, worker_wts
+        #         return previous_linear, previous_quadratic
+        #
+        #     forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
+        #
+        #     # Then deal with the batches if there are any
+        #     if views_per_batch < num_views:
+        #         num_batches = (num_views - initial_batch_size) // views_per_batch
+        #         for j in jnp.arange(num_batches):
+        #             start_ind_j = initial_batch_size + j * views_per_batch
+        #             stop_ind_j = start_ind_j + views_per_batch
+        #             forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
+        #                                                                  forward_linear, forward_quadratic)
+        #
+        #     forward_linear = fm_constant * forward_linear
+        #     forward_quadratic = fm_constant * forward_quadratic
 
         forward_linear = jax.device_put(forward_linear, output_device)
         forward_quadratic = jax.device_put(forward_quadratic, output_device)
@@ -1491,9 +1455,9 @@ class TomographyModel(ParameterHandler):
         """
         weight_list = []
         num_views = sinogram.shape[0]
-        batch_size = self.transfer_view_batch_size
+        batch_size = self.view_batch_size_for_vmap
         for i in range(0, num_views, batch_size):
-            sino_batch = sinogram[i:min(i + batch_size, num_views)]
+            sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], self.worker)
 
             if weight_type == 'unweighted':
                 weights = jnp.ones(sino_batch.shape)
