@@ -46,15 +46,16 @@ fi
 if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   echo "Installing on Gilbreth"
   module load external
-  module load conda/2024.09
-  module load cuda/12.6.0
-  yes | conda create -n $NAME python=3.11.7
+  module load conda
+  module load cuda
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e "..[cuda12]"
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
-  module load conda/2024.09
+  module load conda
+  module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e "..[cuda12]"
