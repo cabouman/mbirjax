@@ -9,9 +9,8 @@ import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
 
-def compute_sino_and_params(dataset_dir,
-                            downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),
-                            subsample_view_factor=1):
+def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
+                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
@@ -40,11 +39,10 @@ def compute_sino_and_params(dataset_dir,
 
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
-
-        crop_region (((float, float),(float, float)), optional) - Values of ((row_start, row_end), (col_start, col_end)) define a bounding box that crops the scan.
-            The default of ((0, 1), (0, 1)) retains the entire scan.
-
         subsample_view_factor (int, optional): View subsample factor. By default no view subsampling will be performed.
+        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
+        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
+        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
 
     Returns:
         tuple: [sinogram, cone_beam_params, optional_params]
@@ -75,12 +73,16 @@ def compute_sino_and_params(dataset_dir,
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
 
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
-                                                                      crop_region=crop_region)
+                                                                      crop_pixels_sides=crop_pixels_sides,
+                                                                      crop_pixels_top=crop_pixels_top,
+                                                                      crop_pixels_bottom=crop_pixels_bottom)
 
     print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
-                                                                                   crop_region=crop_region,
+                                                                                   crop_pixels_sides=crop_pixels_sides,
+                                                                                   crop_pixels_top=crop_pixels_top,
+                                                                                   crop_pixels_bottom=crop_pixels_bottom,
                                                                                    defective_pixel_array=defective_pixel_array)
 
     ### downsample the scans with block-averaging
@@ -332,7 +334,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     return obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array
 
 
-def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_region=((0, 1), (0, 1)),):
+def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     Convert geometry parameters from nsi into mbirjax format, including modification to reflect crop and downsample.
 
@@ -340,8 +342,9 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_reg
         nsi_params (dict):
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
-        crop_region (((float, float),(float, float)), optional) - Values of ((row_start, row_end), (col_start, col_end)) define a bounding box that crops the scan.
-            The default of ((0, 1), (0, 1)) retains the entire scan.
+        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
+        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
+        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
 
     Returns:
         cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
@@ -355,9 +358,6 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_reg
     source_detector_dist, source_iso_dist, magnification, det_rotation = calc_source_detector_params(r_a, r_n, r_h, r_s, r_r)
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
 
-    # Adjust geometry params according to crop_region and downsample_factor
-    (row0, row1), (col0, col1) = crop_region
-
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]
     num_det_channels = num_det_channels // downsample_factor[1]
@@ -366,13 +366,8 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_reg
     delta_det_channel *= downsample_factor[1]
 
     # Adjust detector size params w.r.t. cropping arguments
-    num_det_rows_shift0 = np.round(num_det_rows * row0)
-    num_det_rows_shift1 = np.round(num_det_rows * (1 - row1))
-    num_det_rows = num_det_rows - (num_det_rows_shift0 + num_det_rows_shift1)
-
-    num_det_channels_shift0 = np.round(num_det_channels * col0)
-    num_det_channels_shift1 = np.round(num_det_channels * (1 - col1))
-    num_det_channels = num_det_channels - (num_det_channels_shift0 + num_det_channels_shift1)
+    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
+    num_det_channels = num_det_channels - 2 * crop_pixels_sides
 
     # Set 1 ALU = delta_det_channel
     source_detector_dist /= delta_det_channel # mm to ALU

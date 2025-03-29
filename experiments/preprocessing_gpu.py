@@ -23,10 +23,18 @@ if __name__ == "__main__":
           "\n************** NSI dataset preprocessing **************",
           "\n*******************************************************")
     time0 = time.time()
+    crop_pixels_sides = 32
+    crop_pixels_top = 250
+    crop_pixels_bottom = 20
     sino, cone_beam_params, optional_params = \
         mbirjax.preprocess.nsi.compute_sino_and_params(dataset_dir,
                                                        downsample_factor=downsample_factor,
-                                                       subsample_view_factor=subsample_view_factor)
+                                                       subsample_view_factor=subsample_view_factor,
+                                                       crop_pixels_sides=crop_pixels_sides,
+                                                       crop_pixels_top=crop_pixels_top,
+                                                       crop_pixels_bottom=crop_pixels_bottom)
+
+    mbirjax.slice_viewer(sino, slice_axis=0)
 
     print("\n*******************************************************",
           "\n***************** Set up MBIRJAX model ****************",
