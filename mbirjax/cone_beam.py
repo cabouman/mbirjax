@@ -802,6 +802,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
+            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
+            view_batch_size = min(view_batch_size, max_view_batch_size)
 
         # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
         M_0 = self.get_magnification()
@@ -839,11 +841,11 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
         num_views = sinogram.shape[0]
-        transfer_batch_size = self.transfer_view_batch_size
         filtered_sino_list = []
-        for i in range(0, num_views, self.transfer_view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + transfer_batch_size, num_views)], self.worker)
+        for i in range(0, num_views, view_batch_size):
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
+            filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
 
