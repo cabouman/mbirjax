@@ -1,13 +1,15 @@
 
 import numpy as np
-import jax.numpy as jnp
-import jax
+
 import time
 import matplotlib.pyplot as plt
 import mbirjax
 
 # import os
 # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".03"
+
+import jax.numpy as jnp
+import jax
 
 if __name__ == "__main__":
 
@@ -26,11 +28,19 @@ if __name__ == "__main__":
     def apply_convolution_to_view(view):
         return jax.vmap(convolve_row)(view)
 
+
+    filtered_sino_128 = jax.vmap(apply_convolution_to_view)(sino[0:128])
+    filtered_sino_512 = jax.vmap(apply_convolution_to_view)(sino)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512[0:128])))
+
     filtered_sino_128 = jax.lax.map(apply_convolution_to_view, sino, batch_size=128)
     filtered_sino_512 = jax.lax.map(apply_convolution_to_view, sino, batch_size=512)
 
     print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
     print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512)))
+
     exit(0)
     main_device = jax.devices('cpu')[0]
     worker = jax.devices('gpu')[0]
