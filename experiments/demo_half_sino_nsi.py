@@ -39,14 +39,15 @@ if __name__ == "__main__":
     """
     """**Set the geometry parameters**"""
 
-    output_path = '/home/li5273/PycharmProjects/mbirjax_applications/nsi/demo_data/0327_results/'
+    output_path = './results'
+    if not os.path.exists(output_path):
+        raise NotADirectoryError(output_path)
 
     # Choose the geometry type
     geometry_type = 'cone'
 
     # NSI file path
     dataset_dir = '/depot/bouman/data/nsi_demo_data/demo_nsi_vert_no_metal_all_views'
-    # dataset_dir = '/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax_applications/nsi/demo_data/demo_data_nsi'
 
     downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
     subsample_view_factor = 2  # view subsample factor.
@@ -59,10 +60,18 @@ if __name__ == "__main__":
             "\n************** NSI dataset preprocessing **************",
             "\n*******************************************************")
     time0 = time.time()
+    crop_pixels_sides = 32
+    crop_pixels_top = 250
+    crop_pixels_bottom = 20
     sinogram, cone_beam_params, optional_params = \
         mbirjax.preprocess.nsi.compute_sino_and_params(dataset_dir,
-                                                        downsample_factor=downsample_factor,
-                                                        subsample_view_factor=subsample_view_factor)
+                                                       downsample_factor=downsample_factor,
+                                                       subsample_view_factor=subsample_view_factor,
+                                                       crop_pixels_sides=crop_pixels_sides,
+                                                       crop_pixels_top=crop_pixels_top,
+                                                       crop_pixels_bottom=crop_pixels_bottom)
+
+    # mbirjax.slice_viewer(sinogram, slice_axis=0, title='Full sinogram', slice_label='View')
 
     print("\n*******************************************************",
             "\n***************** Set up MBIRJAX model ****************",
@@ -85,7 +94,7 @@ if __name__ == "__main__":
     full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
     num_recon_slices = full_recon_shape[2]
     half_recons = []
-    num_extra_rows = 2
+    num_extra_rows = 5
     num_det_rows_half = sinogram_shape[1] // 2 + num_extra_rows
 
     # Initialize the model for reconstruction.
@@ -107,7 +116,7 @@ if __name__ == "__main__":
 
         # View sinogram
         title = 'Half of sinogram \nUse the sliders to change the view or adjust the intensity range.'
-        mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
+        # mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
 
         delta_voxel, delta_det_row = ct_model_for_full_recon.get_params(['delta_voxel', 'delta_det_row'])
         recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
@@ -130,19 +139,10 @@ if __name__ == "__main__":
         elapsed = time.time() - time0
         half_recons.append(recon)
         # ##########################
-        mbirjax.slice_viewer(recon)
+        # mbirjax.slice_viewer(recon)
 
     num_overlap_slices = 2 * num_recon_slices_half - num_recon_slices
-    num_non_overlap_slices = num_recon_slices - num_recon_slices_half
-    recon = np.zeros(full_recon_shape)
-    recon_top, recon_bottom = half_recons
-    recon[:, :, :num_non_overlap_slices] = recon_top[:, :, :num_non_overlap_slices]
-    recon[:, :, -num_non_overlap_slices:] = recon_bottom[:, :, -num_non_overlap_slices:]
-    overlap_weights = (np.arange(num_overlap_slices) + 1.0) / (num_overlap_slices + 1.0)
-    overlap_weights = overlap_weights.reshape((1, 1, -1))
-    recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weights) * recon_top[:, :, -num_overlap_slices:]
-    recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
-
+    recon = mbirjax.stitch_arrays(half_recons, num_overlap_slices)
 
     mbirjax.preprocess.export_recon_to_hdf5(recon, os.path.join(output_path, "full_size_recon.h5"),
                                             recon_description="MBIRJAX recon of MAR phantom",
