@@ -55,6 +55,7 @@ with termination in case of OOM.
 # Define the set of parameter values to test.
 PARAM_VALUES = [50, 100]  #, 200, 400, 800, 1200, 1600]
 BATCH_SIZES = [32, 64]  #, 128, 256, 512, 1024]
+OUTPUT_SYMBOL = "#"
 
 
 def worker_main(v, r, c):
@@ -87,7 +88,7 @@ def worker_main(v, r, c):
         ct_model = mbirjax.ConeBeamModel(sino.shape, angles,
                                          source_detector_dist=source_detector_dist,
                                          source_iso_dist=source_iso_dist)
-        ct_model.set_params(use_gpu='sinograms', verbose=1)
+        ct_model.set_params(use_gpu='sinograms', verbose=0)
         ct_model.view_batch_size_for_vmap = b
         weights = ct_model.gen_weights(sino, weight_type='unweighted')
 
@@ -104,19 +105,24 @@ def worker_main(v, r, c):
 
         # Retrieve memory stats.
         stats = mbirjax.get_memory_stats(print_results=False)
-        peak_memory = stats[0]['peak_bytes_in_use']
+        peak_memory = stats[0]['peak_bytes_in_use'] / (1024 ** 3)
         return peak_memory, elapsed_time0, elapsed_time1
 
     # Loop over b values
+    summary_output = ""
+    num_output_lines = 0
     for b in BATCH_SIZES:
         try:
             peak, elapsed0, elapsed1 = run_experiment(v, r, c, b)
             # Print CSV row: v, r, c, b, peak_memory, elapsed_time.
             # These values will be captured by the main process.
-            print(f"{v},{r},{c},{b},{peak},{elapsed0},{elapsed1}")
+            summary_output += OUTPUT_SYMBOL + f",{v},{r},{c},{b},{peak},{elapsed0},{elapsed1}\n"
+            num_output_lines += 1
         except Exception as e:
             # If an error occurs, print to stderr.
             print(f"{v},{r},{c},{b},Error: {e}", file=sys.stderr)
+
+    print(summary_output)
 
 
 def main():
@@ -128,12 +134,14 @@ def main():
     # Open the output CSV file and write the header.
     output_file_name = "memory_stats.csv"
     file_exists = os.path.isfile(output_file_name)
-    with open(output_file_name, "w", newline="") as csvfile:
+    with open(output_file_name, "a", newline="") as csvfile:
         writer = csv.writer(csvfile)
         if not file_exists:
-            writer.writerow(["v", "r", "c", "b", "peak_memory", "elapsed_time0", "elapsed_time1"])
+            writer.writerow(["num views", "num rows", "num channels", "batch size", "peak_memory (GB)", "elapsed_time0 (sec)", "elapsed_time1 (sec)"])
         # Iterate over all combinations of v, r, c.
         for v, r, c in itertools.product(PARAM_VALUES, repeat=3):
+            print('\nStarting multiple batches with v={}, r={}, c={}'.format(v, r, c))
+            print('Batch sizes = {}'.format(BATCH_SIZES))
             # Spawn a worker process for the given (v, r, c) combination.
             result = subprocess.run(
                 [sys.executable, __file__, "--worker", "--v", str(v), "--r", str(r), "--c", str(c)],
@@ -144,10 +152,8 @@ def main():
             for line in result.stdout.strip().splitlines():
                 # Expect each line to have the format: v,r,c,b,peak_memory
                 row = line.strip().split(",")
-                if len(row) == 5:
-                    writer.writerow(row)
-                else:
-                    print("Malformed row:", line, file=sys.stderr)
+                if row[0] == OUTPUT_SYMBOL:
+                    writer.writerow(row[1:])
             if result.stderr:
                 print(f"Error in worker for v={v}, r={r}, c={c}:", result.stderr, file=sys.stderr)
 
