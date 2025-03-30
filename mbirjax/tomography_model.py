@@ -118,7 +118,7 @@ class TomographyModel(ParameterHandler):
                 scale_factor = scales.index(letter) - scales.index('G')
                 cpu_memory = number * (1024 ** scale_factor)
 
-        except subprocess.CalledProcessError:
+        except Exception:  # If anything goes wrong, we'll just continue without detailed CPU memory info.
             pass
 
         if cpu_memory == 0:
