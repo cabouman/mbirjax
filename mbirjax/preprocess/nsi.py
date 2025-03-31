@@ -228,7 +228,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         flipV = False
 
     # Number of pixels to crop at edges (if any)
-    crop_width = NSI_params[10]
+    crop_width = np.array(NSI_params[10].split(' '), dtype=int)
 
     # Detector rotation angle step (degree)
     angle_step = np.single(NSI_params[11])
