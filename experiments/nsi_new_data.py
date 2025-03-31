@@ -9,7 +9,7 @@ if __name__ == "__main__":
     # ##### params for dataset downloading. User may change these parameters for their own datasets.
     # An example NSI dataset (tarball) will be downloaded from `dataset_url`, and saved to `download_dir`.
     # url to NSI dataset.
-    dataset_dir = '/home/li5273/Desktop/data/Autoinjector_HighRes_Unfired_2102414_D00161_146_AI_Horizontal/'
+    dataset_dir = '/home/li5273/Desktop/data/Autoinjector_HighRes_Unfired_2102414_D00161_146_AI_Horizontal'
     # dataset_dir = '/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax_applications/nsi/demo_data/demo_data_nsi'
 
     downsample_factor = [1, 1]  # downsample factor of scan images along detector rows and detector columns.
