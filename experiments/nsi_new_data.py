@@ -30,7 +30,8 @@ if __name__ == "__main__":
         mbirjax.preprocess.nsi.compute_sino_and_params(dataset_dir,
                                                        downsample_factor=downsample_factor,
                                                        subsample_view_factor=subsample_view_factor,
-                                                       crop_pixels_sides=crop_pixels_sides,
+                                                       crop_pixels_left=crop_pixels_sides,
+                                                       crop_pixels_right=crop_pixels_sides,
                                                        crop_pixels_top=crop_pixels_top,
                                                        crop_pixels_bottom=crop_pixels_bottom)
 
