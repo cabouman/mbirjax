@@ -83,7 +83,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
                                                                       crop_pixels_left=crop_pixels_left,
-                                                                      crop_pixel_right=crop_pixels_right,
+                                                                      crop_pixels_right=crop_pixels_right,
                                                                       crop_pixels_top=crop_pixels_top,
                                                                       crop_pixels_bottom=crop_pixels_bottom)
 
