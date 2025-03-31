@@ -72,6 +72,15 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
 
+    if nsi_params['crop_width'] is not None:
+        # If crop_width is provided in the NSI params, use it to set the crop_pixels_left/right/top/bottom.
+        # The order of the cropping values specified in the config file still needs to be confirmed.
+        # The assumed order here is: top, bottom, left, right.
+        crop_pixels_left = nsi_params['crop_width'][2]
+        crop_pixels_right = nsi_params['crop_width'][3]
+        crop_pixels_top = nsi_params['crop_width'][0]
+        crop_pixels_bottom = nsi_params['crop_width'][1]
+
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
                                                                       crop_pixels_left=crop_pixels_left,
                                                                       crop_pixel_right=crop_pixels_right,
@@ -341,7 +350,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     return obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array
 
 
-def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pixels_left=0, crop_pixel_right=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pixels_left=0, crop_pixels_right=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     Convert geometry parameters from nsi into mbirjax format, including modification to reflect crop and downsample.
 
@@ -361,11 +370,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     r_a, r_n, r_h, r_s, r_r = itemgetter('r_a', 'r_n', 'r_h', 'r_s', 'r_r')(nsi_params)
     delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(nsi_params)
     num_det_channels, num_det_rows, angles = itemgetter('num_det_channels', 'num_det_rows', 'angles')(nsi_params)
-    crop_width = itemgetter('crop_width')(nsi_params)
-    crop_pixels_top = crop_width[0]
-    crop_pixels_bottom = crop_width[1]
-    crop_pixels_left = crop_width[2]
-    crop_pixels_right = crop_width[3]
+
 
     source_detector_dist, source_iso_dist, magnification, det_rotation = calc_source_detector_params(r_a, r_n, r_h, r_s, r_r)
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
