@@ -10,7 +10,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
-                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+                            crop_pixels_left=0, crop_pixels_right=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
@@ -73,14 +73,16 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
 
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
-                                                                      crop_pixels_sides=crop_pixels_sides,
+                                                                      crop_pixels_left=crop_pixels_left,
+                                                                      crop_pixel_right=crop_pixels_right,
                                                                       crop_pixels_top=crop_pixels_top,
                                                                       crop_pixels_bottom=crop_pixels_bottom)
 
     print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
-                                                                                   crop_pixels_sides=crop_pixels_sides,
+                                                                                   crop_pixels_left=crop_pixels_left,
+                                                                                   crop_pixels_right=crop_pixels_right,
                                                                                    crop_pixels_top=crop_pixels_top,
                                                                                    crop_pixels_bottom=crop_pixels_bottom,
                                                                                    defective_pixel_array=defective_pixel_array)
@@ -165,6 +167,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
                         ['rotate', 'Correction'],                       # rotation of radiographs
                         ['flipH', 'Correction'],                        # Horizontal flip (boolean)
                         ['flipV', 'Correction'],                        # Vertical flip (boolean)
+                        ['crop', 'Correction'],                         # number of pixels to crop at edges
                         ['angleStep', 'Object Radiograph'],             # step size of adjacent view angles
                         ['clockwise', 'Processed'],                     # rotation direction (boolean)
                         ['axis', 'Result'],                             # unit vector in direction ofrotation axis
@@ -224,11 +227,14 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     else:
         flipV = False
 
+    # Number of pixels to crop at edges (if any)
+    crop_width = NSI_params[10]
+
     # Detector rotation angle step (degree)
-    angle_step = np.single(NSI_params[10])
+    angle_step = np.single(NSI_params[11])
 
     # Detector rotation direction
-    if NSI_params[11] == "True":
+    if NSI_params[12] == "True":
         print("clockwise rotation.")
     else:
         print("counter-clockwise rotation.")
@@ -236,18 +242,18 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         angle_step = -angle_step
 
     # Rotation axis
-    r_a = NSI_params[12].split(' ')
+    r_a = NSI_params[13].split(' ')
     r_a = np.array([np.single(elem) for elem in r_a])
     # make sure rotation axis points down
     if r_a[1] > 0:
         r_a = -r_a
 
     # Detector normal vector
-    r_n = NSI_params[13].split(' ')
+    r_n = NSI_params[14].split(' ')
     r_n = np.array([np.single(elem) for elem in r_n])
 
     # Detector horizontal vector
-    r_h = NSI_params[14].split(' ')
+    r_h = NSI_params[15].split(' ')
     r_h = np.array([np.single(elem) for elem in r_h])
 
     print("############ NSI geometry parameters ############")
@@ -328,13 +334,14 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         'delta_det_row': delta_det_row,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
-        'angles': angles
+        'angles': angles,
+        'crop_width': crop_width
     }
 
     return obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array
 
 
-def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pixels_left=0, crop_pixel_right=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     Convert geometry parameters from nsi into mbirjax format, including modification to reflect crop and downsample.
 
@@ -354,6 +361,11 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     r_a, r_n, r_h, r_s, r_r = itemgetter('r_a', 'r_n', 'r_h', 'r_s', 'r_r')(nsi_params)
     delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(nsi_params)
     num_det_channels, num_det_rows, angles = itemgetter('num_det_channels', 'num_det_rows', 'angles')(nsi_params)
+    crop_width = itemgetter('crop_width')(nsi_params)
+    crop_pixels_top = crop_width[0]
+    crop_pixels_bottom = crop_width[1]
+    crop_pixels_left = crop_width[2]
+    crop_pixels_right = crop_width[3]
 
     source_detector_dist, source_iso_dist, magnification, det_rotation = calc_source_detector_params(r_a, r_n, r_h, r_s, r_r)
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
@@ -367,8 +379,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
-    num_det_channels = num_det_channels - 2 * crop_pixels_sides
-
+    num_det_channels = num_det_channels - crop_pixels_left - crop_pixels_right
     # Set 1 ALU = delta_det_channel
     source_detector_dist /= delta_det_channel # mm to ALU
     source_iso_dist /= delta_det_channel # mm to ALU

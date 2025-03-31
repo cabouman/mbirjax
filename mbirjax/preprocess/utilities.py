@@ -324,7 +324,7 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
 
 
-def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0,
+def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_left=0, crop_pixels_right=0, crop_pixels_top=0, crop_pixels_bottom=0,
                defective_pixel_array=()):
     """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
     Args:
@@ -347,7 +347,7 @@ def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels
         - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
     """
 
-    assert (0 <= crop_pixels_sides < obj_scan.shape[2] // 2 and
+    assert ((0 <= crop_pixels_left and 0 <= crop_pixels_right and crop_pixels_left + crop_pixels_right < obj_scan.shape[2]), \
             0 <= crop_pixels_top and 0 <= crop_pixels_bottom and crop_pixels_top + crop_pixels_bottom < obj_scan.shape[1]), \
         ('crop_pixels should be nonnegative integers so that crop_pixels_top + crop_pixels_bottom < view height and'
          ' 2*crop_pixels_sides < view width')
@@ -355,8 +355,8 @@ def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels
     Nr_lo = crop_pixels_top
     Nr_hi = obj_scan.shape[1] - crop_pixels_bottom
 
-    Nc_lo = crop_pixels_sides
-    Nc_hi = obj_scan.shape[2] - crop_pixels_sides
+    Nc_lo = crop_pixels_left
+    Nc_hi = obj_scan.shape[2] - crop_pixels_right
 
     obj_scan = obj_scan[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
     blank_scan = blank_scan[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
