@@ -23,7 +23,7 @@ Select a GPU as runtime type for best performance.
 # Commented out IPython magic to ensure Python compatibility.
 # %pip install mbirjax
 
-import numpy as np
+import warnings
 import time
 import pprint
 import jax.numpy as jnp
@@ -41,6 +41,8 @@ if __name__ == "__main__":
 
     output_path = './results'
     if not os.path.exists(output_path):
+        warnings.warn('The output directory {} does not exist. \n'
+                      'Create one, preferably with a soft link to scratch, as in ln -s /scratch/gautschi/<username>/.cache/mbirjax {}.'.format(output_path, output_path))
         raise NotADirectoryError(output_path)
 
     # Choose the geometry type
@@ -110,6 +112,7 @@ if __name__ == "__main__":
     ct_model_for_half_recon.set_params(sharpness=sharpness, verbose=1)
 
     recon_shape_half = ct_model_for_half_recon.get_params('recon_shape')
+    ct_model_for_half_recon.set_params(use_gpu='sinograms')
     num_recon_slices_half = recon_shape_half[2]
 
     for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -num_det_rows_half:]], [1, -1]):
@@ -153,7 +156,7 @@ if __name__ == "__main__":
     pprint.pprint(recon_params._asdict(), compact=True)
 
     mbirjax.get_memory_stats()
-    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+    print('Elapsed time for recon is ' + time.strftime('%H hrs, %M mins, %S secs', time.gmtime(elapsed)))
 
     # Display results
     title = 'Standard VCD recon (left) and residual with 2 halves stitched VCD Recon (right) \nThe residual is (stitched recon) - (standard recon).'
