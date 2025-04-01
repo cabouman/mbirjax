@@ -65,9 +65,11 @@ class TestNSIPreprocessing(unittest.TestCase):
         # sufficient border to do background estimation.  We'll include (0, 0) and the opposite corners as defective
         # pixels.  The crop region will exclude (0, 0) but include the opposite pixel.  In the crop region,
         # we have (row_frac0, row_frac1), (col_frac0, col_frac1), so we need the form (row_frac0, 1), (0, 1) to meet these conditions.
-        self.crop_region = ((0.1, 1), (0, 1))
+        self.crop_pixels_sides = 1
+        self.crop_pixels_top = 5
+        self.crop_pixels_bottom = 0
         self.edge_width = 4
-        row0 = round(self.crop_region[0][0] * self.num_det_rows)
+        row0 = round(self.crop_pixels_top)
         border_width = self.edge_width
 
         self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
@@ -126,7 +128,9 @@ class TestNSIPreprocessing(unittest.TestCase):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
         obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(self.obj_scan, self.blank_scan, self.dark_scan,
                                                                                        defective_pixel_array=self.defective_pixel_array,
-                                                                                       crop_region=self.crop_region)
+                                                                                       crop_pixels_sides=self.crop_pixels_sides,
+                                                                                       crop_pixels_top=self.crop_pixels_top,
+                                                                                       crop_pixels_bottom=self.crop_pixels_bottom)
         sino_computed = preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan,
                                                              defective_pixel_array=defective_pixel_array)
 
@@ -136,7 +140,9 @@ class TestNSIPreprocessing(unittest.TestCase):
         sino_computed = sino_computed - background_offset
 
         sino_gt_cropped, _, _, _ = preprocess.crop_scans(self.sino_gt, self.blank_scan, self.dark_scan,
-                                                      crop_region=self.crop_region)
+                                                         crop_pixels_sides=self.crop_pixels_sides,
+                                                         crop_pixels_top=self.crop_pixels_top,
+                                                         crop_pixels_bottom=self.crop_pixels_bottom)
         abs_sino_diff = np.abs(sino_computed - sino_gt_cropped)
         max_diff = np.max(np.abs(abs_sino_diff))
         nrmse = np.linalg.norm(abs_sino_diff) / np.linalg.norm(sino_gt_cropped)
