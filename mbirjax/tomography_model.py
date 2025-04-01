@@ -175,19 +175,21 @@ class TomographyModel(ParameterHandler):
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
         # 'full':  Everything on GPU
-        if mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']:
+        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
             self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
             mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
 
         # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
-        elif mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none', 'projections']:
+        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none', 'projections']):
             self.main_device, self.sinogram_device, self.worker = cpus[0], gpus[0], gpus[0]
             self.use_gpu = 'sinograms'
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
             projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            self.view_batch_size_for_vmap = int(self.view_batch_size_for_vmap * projection_scale)
+            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
+            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
+            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
 
             # Recalculate the memory per projection with the new batch size
             mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
@@ -197,12 +199,14 @@ class TomographyModel(ParameterHandler):
             mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
         # 'projections': Only projections on GPU.  Adjust projection vmap batch size if needed.
-        elif mem_per_projection / 16 < gpu_memory_to_use and use_gpu not in ['none']:
+        elif use_gpu == 'projections' or (mem_per_projection / 16 < gpu_memory_to_use and use_gpu not in ['none']):
             self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], gpus[0]
             self.use_gpu = 'projections'
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch
             projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            self.view_batch_size_for_vmap = int(self.view_batch_size_for_vmap * projection_scale)
+            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
+            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
+            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
 
             # Recalculate the memory per projection with the new batch size
             mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
@@ -227,17 +231,20 @@ class TomographyModel(ParameterHandler):
         self.mem_required_for_gpu = mem_required_for_gpu
         self.mem_required_for_cpu = mem_required_for_cpu
 
-        if self.get_params('verbose') >= 2:
+        verbose = self.get_params('verbose')
+        if verbose >= 2:
             print('mem per recon = {}'.format(mem_per_recon))
             print('mem per sino = {}'.format(mem_per_sinogram))
             print('mem per projection = {}'.format(mem_per_projection))
             print('mem for vcd sinograms = {}'.format(mem_for_vcd_sinos_gpu))
             print('mem for all sinos on gpu = {}'.format(mem_for_all_sinos_on_gpu))
             print('mem for all vcd = {}'.format(mem_for_all_vcd))
+            print('view_batch_size_for_vmap = {}'.format(self.view_batch_size_for_vmap))
 
-        print('GPU used for: {}'.format(self.use_gpu))
-        print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_gpu, gpu_memory))
-        print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_cpu, cpu_memory))
+        if verbose >= 1:
+            print('GPU used for: {}'.format(self.use_gpu))
+            print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_gpu, gpu_memory))
+            print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_cpu, cpu_memory))
 
         return
 
