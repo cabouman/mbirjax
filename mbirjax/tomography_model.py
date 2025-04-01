@@ -241,11 +241,6 @@ class TomographyModel(ParameterHandler):
             print('mem for all vcd = {}'.format(mem_for_all_vcd))
             print('view_batch_size_for_vmap = {}'.format(self.view_batch_size_for_vmap))
 
-        if verbose >= 1:
-            print('GPU used for: {}'.format(self.use_gpu))
-            print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_gpu, gpu_memory))
-            print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(mem_required_for_cpu, cpu_memory))
-
         return
 
     @classmethod
@@ -746,7 +741,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
-              compute_prior_loss=False, nrms_stop_threshold=5e-5):
+              compute_prior_loss=False, nrms_stop_threshold=2e-5):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -769,6 +764,12 @@ class TomographyModel(ParameterHandler):
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
             recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
+
+        if self.get_params('verbose') >= 1:
+            print('GPU used for: {}'.format(self.use_gpu))
+            print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
+            print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
+
         try:
 
             # Check that sinogram and weights are not taking up GPU space
@@ -828,8 +829,12 @@ class TomographyModel(ParameterHandler):
                     print('Insufficient memory for jax (likely insufficient CPU memory)')
                 else:
                     print('Insufficient memory for jax (likely insufficient GPU memory)')
+                    if self.use_gpu == 'full':
+                        print(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
+                    elif self.use_gpu == 'sinograms':
+                        print(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
             else:
-                print('Insufficient memory for jax (CPU memory)')
+                print('Insufficient memory for jax (insufficient CPU memory)')
 
             raise e
 
