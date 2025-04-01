@@ -9,7 +9,7 @@ import time
 import os
 import mbirjax
 
-target_gb = 10
+target_gb = 40
 
 max_gb = 79
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(target_gb / max_gb)
@@ -53,8 +53,8 @@ with termination in case of OOM.
 """
 
 # Define the set of parameter values to test.
-PARAM_VALUES = [50, 100]  #, 200, 400, 800, 1200, 1600]
-BATCH_SIZES = [32, 64]  #, 128, 256, 512, 1024]
+PARAM_VALUES = [50, 100, 250, 500, 800, 1250]
+BATCH_SIZES = [100, 250, 500, 800]
 OUTPUT_SYMBOL = "#"
 
 
@@ -94,29 +94,31 @@ def worker_main(v, r, c):
 
         # Run the computation and block until complete.
         time0 = time.time()
-        recon, recon_params = ct_model.recon(sino, weights=weights)
+        recon, recon_params = ct_model.recon(sino, weights=weights, num_iterations=1)
         _ = recon.block_until_ready()
         elapsed_time0 = time.time() - time0
 
-        time0 = time.time()
-        recon, recon_params = ct_model.recon(sino, weights=weights)
-        _ = recon.block_until_ready()
-        elapsed_time1 = time.time() - time0
+        # time0 = time.time()
+        # recon, recon_params = ct_model.recon(sino, weights=weights, num_iterations=1)
+        # _ = recon.block_until_ready()
+        # elapsed_time1 = time.time() - time0
+        elapsed_time1 = elapsed_time0
 
         # Retrieve memory stats.
         stats = mbirjax.get_memory_stats(print_results=False)
         peak_memory = stats[0]['peak_bytes_in_use'] / (1024 ** 3)
-        return peak_memory, elapsed_time0, elapsed_time1
+        avail_memory = stats[0]['bytes_limit'] / (1024 ** 3)
+        return peak_memory, avail_memory, elapsed_time0, elapsed_time1
 
     # Loop over b values
     summary_output = ""
     num_output_lines = 0
     for b in BATCH_SIZES:
         try:
-            peak, elapsed0, elapsed1 = run_experiment(v, r, c, b)
+            peak, avail, elapsed0, elapsed1 = run_experiment(v, r, c, b)
             # Print CSV row: v, r, c, b, peak_memory, elapsed_time.
             # These values will be captured by the main process.
-            summary_output += OUTPUT_SYMBOL + f",{v},{r},{c},{b},{peak},{elapsed0},{elapsed1}\n"
+            summary_output += OUTPUT_SYMBOL + f",{v},{r},{c},{b},{peak:.3f},{avail:.3f},{elapsed0:.1f},{elapsed1:.1f}\n"
             num_output_lines += 1
         except Exception as e:
             # If an error occurs, print to stderr.
@@ -137,7 +139,7 @@ def main():
     with open(output_file_name, "a", newline="") as csvfile:
         writer = csv.writer(csvfile)
         if not file_exists:
-            writer.writerow(["num views", "num rows", "num channels", "batch size", "peak_memory (GB)", "elapsed_time0 (sec)", "elapsed_time1 (sec)"])
+            writer.writerow(["num views", "num rows", "num channels", "batch size", "peak memory (GB)", "avail memory (GB)", "elapsed time0 (sec)", "elapsed time1 (sec)"])
         # Iterate over all combinations of v, r, c.
         for v, r, c in itertools.product(PARAM_VALUES, repeat=3):
             print('\nStarting multiple batches with v={}, r={}, c={}'.format(v, r, c))
