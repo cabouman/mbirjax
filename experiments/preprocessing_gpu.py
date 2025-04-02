@@ -34,12 +34,16 @@ if __name__ == "__main__":
                                                        crop_pixels_top=crop_pixels_top,
                                                        crop_pixels_bottom=crop_pixels_bottom)
 
-    mbirjax.slice_viewer(sino, slice_axis=0)
+
+    elapsed = time.time() - time0
+    # Print out model parameters
+    print(f'Preprocessing finished. Total time: ' + time.strftime('%H hrs, %M mins, %S secs', time.gmtime(elapsed)))
 
     print("\n*******************************************************",
           "\n***************** Set up MBIRJAX model ****************",
           "\n*******************************************************")
     # ConeBeamModel constructor
+    time0 = time.time()
     ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
 
     # Set additional geometry arguments
@@ -47,6 +51,9 @@ if __name__ == "__main__":
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)
-
+    elapsed = time.time() - time0
     # Print out model parameters
-    print(f'Preprocessing finished, model initialized. Total time: {time.time() - time0:.2f} seconds.')
+    print(f'Model initialized. Total time: ' + time.strftime('%H hrs, %M mins, %S secs', time.gmtime(elapsed)))
+
+    # View the sinogram
+    mbirjax.slice_viewer(sino, slice_axis=0, title='Preprocessed and cropped sinogram')
