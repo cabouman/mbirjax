@@ -264,7 +264,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
     return flat_inds
 
 
-def gen_partition_sequence(partition_sequence, num_iterations):
+def gen_partition_sequence(partition_sequence, max_iterations):
     """
     Generates a sequence of voxel partitions of the specified length by extending the sequence
     with the last element if necessary.
@@ -274,9 +274,9 @@ def gen_partition_sequence(partition_sequence, num_iterations):
 
     # Check if the sequence needs to be extended
     current_length = partition_sequence.size
-    if num_iterations > current_length:
+    if max_iterations > current_length:
         # Calculate the number of additional elements needed
-        extra_elements_needed = num_iterations - current_length
+        extra_elements_needed = max_iterations - current_length
         # Get the last element of the array
         last_element = partition_sequence[-1]
         # Create an array of the last element repeated the necessary number of times
@@ -285,7 +285,7 @@ def gen_partition_sequence(partition_sequence, num_iterations):
         extended_partition_sequence = np.concatenate((partition_sequence, extension_array))
     else:
         # If no extension is needed, slice the original array to the desired length
-        extended_partition_sequence = partition_sequence[:num_iterations]
+        extended_partition_sequence = partition_sequence[:max_iterations]
 
     return extended_partition_sequence
 

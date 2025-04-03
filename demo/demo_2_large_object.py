@@ -71,7 +71,7 @@ phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 print('Creating sinogram')
 ct_model_for_generation.set_params(recon_shape=phantom_shape)
 sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.array(sinogram)
+sinogram = np.asarray(sinogram)
 
 # View sinogram
 mbirjax.slice_viewer(sinogram, title='Original sinogram\nChange view to see projections in and outside detector',
@@ -145,7 +145,7 @@ recon_col_scale = 1.5
 ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
 
 # Reset the default sharpness
-sharpness = 0
+sharpness = 1.0
 ct_model_for_recon.set_params(sharpness=sharpness)
 
 print('\nStarting enlarged recon - will have reduced artifacts, sharper edges, some extra pixel estimation.\n')

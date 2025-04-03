@@ -117,7 +117,7 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, num_iterations=4)
+recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=4)
 
 recon.block_until_ready()
 elapsed = time.time() - time0

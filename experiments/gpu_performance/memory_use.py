@@ -94,12 +94,12 @@ def worker_main(v, r, c):
 
         # Run the computation and block until complete.
         time0 = time.time()
-        recon, recon_params = ct_model.recon(sino, weights=weights, num_iterations=1)
+        recon, recon_params = ct_model.recon(sino, weights=weights, max_iterations=1)
         _ = recon.block_until_ready()
         elapsed_time0 = time.time() - time0
 
         # time0 = time.time()
-        # recon, recon_params = ct_model.recon(sino, weights=weights, num_iterations=1)
+        # recon, recon_params = ct_model.recon(sino, weights=weights, max_iterations=1)
         # _ = recon.block_until_ready()
         # elapsed_time1 = time.time() - time0
         elapsed_time1 = elapsed_time0

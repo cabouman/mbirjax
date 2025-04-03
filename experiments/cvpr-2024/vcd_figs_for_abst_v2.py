@@ -107,8 +107,8 @@ if __name__ == "__main__":
     # ##########################
     # Perform default VCD reconstruction
     print('Starting default sequence')
-    num_iterations = 20
-    recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    max_iterations = 20
+    recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
                                                          compute_prior_loss=True)
     fm_rmse_default = recon_params_default.fm_rmse
     prior_loss_default = recon_params_default.prior_loss
@@ -122,8 +122,8 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_1)
     granularity = np.array(granularity_alt_1)
     ct_model.set_params(granularity=granularity)
-    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_loss=True)
+    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+                                                     compute_prior_loss=True)
     fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
     prior_loss_alt_1 = recon_params_alt_1.prior_loss
     partition_sequence = recon_params_alt_1.partition_sequence
@@ -136,8 +136,8 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_2)
     granularity = np.array(granularity_alt_2)
     ct_model.set_params(granularity=granularity)
-    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_loss=True)
+    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+                                                     compute_prior_loss=True)
     fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
     prior_loss_alt_2 = recon_params_alt_2.prior_loss
     partition_sequence = recon_params_alt_2.partition_sequence

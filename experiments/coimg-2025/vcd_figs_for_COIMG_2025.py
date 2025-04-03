@@ -17,7 +17,7 @@ if __name__ == "__main__":
     end_angle = vcu.param_dict['end_angle']
     granularity = vcu.param_dict['granularity']
     partition_sequence = vcu.param_dict['partition_sequence']
-    num_iterations = vcu.param_dict['num_iterations']
+    max_iterations = vcu.param_dict['max_iterations']
 
     # Initialize sinogram
     sinogram = jnp.zeros((num_views, num_det_rows, num_det_channels))
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform default VCD reconstruction
     print('Starting default sequence')
-    recon_default, recon_params_default = ct_model.recon(sinogram, num_iterations=num_iterations,
+    recon_default, recon_params_default = ct_model.recon(sinogram, max_iterations=max_iterations,
                                                          compute_prior_loss=True)
     fm_rmse_default = recon_params_default.fm_rmse
     prior_loss_default = recon_params_default.prior_loss
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_1)
     granularity = np.array(granularity_alt_1)
     ct_model.set_params(granularity=granularity)
-    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, num_iterations=num_iterations,
+    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, max_iterations=max_iterations,
                                                      compute_prior_loss=True)
     fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
     prior_loss_alt_1 = recon_params_alt_1.prior_loss
@@ -74,7 +74,7 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_2)
     granularity = np.array(granularity_alt_2)
     ct_model.set_params(granularity=granularity)
-    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, num_iterations=num_iterations,
+    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, max_iterations=max_iterations,
                                                      compute_prior_loss=True)
     fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
     prior_loss_alt_2 = recon_params_alt_2.prior_loss
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # ##########################
 
     # Display reconstructions
-    fig_title = 'Recons with {} iterations'.format(num_iterations)
+    fig_title = 'Recons with {} iterations'.format(max_iterations)
     labels = [label_alt_1, label_default, label_alt_2]
     slice_index = recon_default.shape[-1] // 2
     images = [recon[:, :, slice_index] for recon in [recon_alt_1, recon_default, recon_alt_2]]

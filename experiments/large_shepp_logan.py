@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     time0 = time.time()
     sinogram = np.asarray(sinogram)
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, num_iterations=10)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, max_iterations=10)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

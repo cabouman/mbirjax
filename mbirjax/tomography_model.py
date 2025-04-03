@@ -1,7 +1,7 @@
 import types
 import numpy as np
 import warnings
-import time
+import time  # Used for debugging/performance tuning
 import os
 
 from jaxlib.xla_extension import XlaRuntimeError
@@ -454,7 +454,7 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[2]
 
         # Get the final recon as a jax array
-        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=self.main_device)
+        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
         for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
             view_index_end = view_batch_boundaries[j + 1]
             view_batch = sinogram[view_index_start:view_index_end]
@@ -468,7 +468,7 @@ class TomographyModel(ParameterHandler):
                                                                            view_indices=view_indices_batched[j],
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
-                voxel_batch_list.append(jax.device_put(voxel_batch, self.main_device))
+                voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
 
             recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
 
@@ -740,8 +740,8 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
 
-    def recon(self, sinogram, weights=None, num_iterations=13, first_iteration=0, init_recon=None,
-              compute_prior_loss=False, nrms_stop_threshold=2e-5):
+    def recon(self, sinogram, weights=None, max_iterations=13, nrms_stop_threshold=2e-5, first_iteration=0,
+              init_recon=None, compute_prior_loss=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -752,17 +752,17 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
-            num_iterations (int, optional): number of iterations of the VCD algorithm to perform.
+            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
+            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 2e-5.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
             restarting a recon using init_recon.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
             lead to slower reconstructions and is meant only for small recons.
-            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 1e-5.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
-            recon_params (namedtuple): num_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
+            recon_params (namedtuple): max_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
 
         if self.get_params('verbose') >= 1:
@@ -795,7 +795,7 @@ class TomographyModel(ParameterHandler):
 
             # Generate sequence of partitions to use
             partition_sequence = self.get_params('partition_sequence')
-            partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
+            partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
             partition_sequence = partition_sequence[first_iteration:]
 
             # Compute reconstruction
@@ -815,6 +815,7 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [0]
             nrms_recon_change = [float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
+            num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
                                   regularization_params._asdict(), nrms_recon_change, alpha_values]
             recon_params = ReconParams(*tuple(recon_param_values))
@@ -941,12 +942,13 @@ class TomographyModel(ParameterHandler):
                 print('--------')
 
         # Do the iterations
-        num_iters = partition_sequence.size
-        fm_rmse = np.zeros(num_iters)
-        pm_loss = np.zeros(num_iters)
-        nrms_update = np.zeros(num_iters)
-        alpha_values = np.zeros(num_iters)
-        for i in range(num_iters):
+        max_iters = partition_sequence.size
+        fm_rmse = np.zeros(max_iters)
+        pm_loss = np.zeros(max_iters)
+        nrms_update = np.zeros(max_iters)
+        alpha_values = np.zeros(max_iters)
+        num_iters = 0
+        for i in range(max_iters):
             # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
 
@@ -963,7 +965,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = '\nAfter iteration {} of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, num_iters,
+                iter_output = '\nAfter iteration {} of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
                                                                                                   100 * nrms_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
@@ -985,12 +987,13 @@ class TomographyModel(ParameterHandler):
                 if verbose >= 2:
                     mbirjax.get_memory_stats()
                     print('--------')
-
+            num_iters += 1
             if nrms_update[i] < nrms_stop_threshold:
                 print('NRMS stopping condition reached')
                 break
 
-        return self.reshape_recon(flat_recon), (fm_rmse, pm_loss, nrms_update, alpha_values)
+        return self.reshape_recon(flat_recon), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nrms_update[0:num_iters],
+                                                alpha_values[0:num_iters])
 
     def vcd_partition_iterator(self, vcd_subset_updater, flat_recon, error_sinogram, partition):
         """
@@ -1091,6 +1094,8 @@ class TomographyModel(ParameterHandler):
                 flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                 error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                 pixel_indices (jax array): 1D array of pixel indices.
+                pixel_indices_worker (jax array): Same as pixel_indices, but copied onto the worker device.
+                times (ndarray): 1D array of elapsed times for debugging/performance tuning.
 
             Returns:
                 flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset:
@@ -1186,7 +1191,7 @@ class TomographyModel(ParameterHandler):
 
             # Compute update direction in sinogram domain
             # time_names.append('fproj')
-            time_start = time.time()
+            # time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
                                                     output_device=self.sinogram_device)
             # delta_sinogram = delta_sinogram.block_until_ready()
@@ -1194,7 +1199,7 @@ class TomographyModel(ParameterHandler):
             # time_index += 1
 
             # time_names.append('forlqu')
-            time_start = time.time()
+            # time_start = time.time()
             forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
                                                                           weights, fm_constant, const_weights,
                                                                           output_device=self.main_device)
@@ -1243,7 +1248,7 @@ class TomographyModel(ParameterHandler):
                 delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.sinogram_device)
 
             # time_names.append('scaledr')
-            time_start = time.time()
+            # time_start = time.time()
             # Perform sparse updates at index locations
             delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
@@ -1252,7 +1257,7 @@ class TomographyModel(ParameterHandler):
             # time_index += 1
 
             # time_names.append('flatrec')
-            time_start = time.time()
+            # time_start = time.time()
             flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
             # flat_recon = flat_recon.block_until_ready()
             # times[time_index] += time.time() - time_start
@@ -1260,7 +1265,7 @@ class TomographyModel(ParameterHandler):
 
             # Update sinogram and loss
             # time_names.append('deltsin')
-            time_start = time.time()
+            # time_start = time.time()
             delta_sinogram = float(alpha) * delta_sinogram
             error_sinogram = error_sinogram - delta_sinogram
             # error_sinogram = error_sinogram.block_until_ready()
@@ -1268,7 +1273,7 @@ class TomographyModel(ParameterHandler):
             # time_index += 1
 
             # time_names.append('stats')
-            time_start = time.time()
+            # time_start = time.time()
             norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
             alpha_for_subset = alpha
             # norm_squared_for_subset = norm_squared_for_subset.block_until_ready()
@@ -1389,7 +1394,7 @@ class TomographyModel(ParameterHandler):
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=None, num_iterations=3, init_recon=None):
+    def prox_map(self, prox_input, sinogram, weights=None, max_iterations=3, init_recon=None):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -1398,7 +1403,7 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array): proximal map input with same shape as reconstruction.
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
-            num_iterations (int, optional): number of iterations of the VCD algorithm to perform.
+            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.
 
         Returns:
@@ -1411,7 +1416,7 @@ class TomographyModel(ParameterHandler):
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
-        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, num_iterations=num_iterations)
+        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
 
         # Compute reconstruction
         recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
@@ -1426,7 +1431,7 @@ class TomographyModel(ParameterHandler):
         This function computes sinogram weights that help to reduce metal artifacts.
         More specifically, it computes weights with the form:
 
-            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) )
+            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) ) )
 
         delta(metal) denotes a binary mask indicating the sino entries that contain projections of metal.
         Providing ``init_recon`` yields better metal artifact reduction.
@@ -1559,7 +1564,7 @@ def get_transpose(linear_map, input_shape):
     input_info = types.SimpleNamespace(shape=input_shape, dtype=jnp.dtype(jnp.float32))
     transpose_list = jax.linear_transpose(linear_map, input_info)
 
-    def transpose(input):
-        return transpose_list(input)[0]
+    def transpose(input_array):
+        return transpose_list(input_array)[0]
 
     return transpose
