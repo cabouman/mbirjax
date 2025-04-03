@@ -24,9 +24,11 @@ verbose : int  (Defaults to 1)
     Larger values produce more status information. Change to 0 for silent operation or 2 or 3 for more detailed output.
 
 use_gpu : string  (Defaults to 'automatic')
-    Possible values are 'automatic', 'full', 'worker', 'none'.  'full' tries to perform the entire reconstruction on the gpu;
+    Possible values are 'automatic', 'full', 'sinograms', 'worker', 'none'.  'full' tries to perform the entire reconstruction on the gpu;
+    'sinograms' uses the GPU for all of the sinogram storage and calculations but uses CPU memory for the reconstructions;
     'worker' uses the CPU for some computations and the GPU for projections only (to conserve memory);
     'automatic' tries to determine the appropriate choice based on available memory; 'none' disables GPU use.
+
 
 
 Geometry Parameters
