@@ -965,7 +965,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = '\nAfter iteration {} of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
+                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
                                                                                                   100 * nrms_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
