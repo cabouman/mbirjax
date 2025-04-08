@@ -91,10 +91,12 @@ if __name__ == "__main__":
     # Set reconstruction parameter values
     ct_model_for_full_recon.set_params(sharpness=sharpness, verbose=1)
 
-
     # Take roughly the half of the sinogram and specify roughly half of the volume
     full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
     num_recon_slices = full_recon_shape[2]
+    num_det_rows = sinogram_shape[1]
+    full_recon_det_row_offset = ct_model_for_full_recon.get_params('det_row_offset')
+
     half_recons = []
     num_extra_rows = 5
     num_det_rows_half = sinogram_shape[1] // 2 + num_extra_rows
@@ -121,9 +123,12 @@ if __name__ == "__main__":
         title = 'Half of sinogram \nUse the sliders to change the view or adjust the intensity range.'
         # mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
 
+        # Determine the recon slice and detector row offsets as the difference between the center using the full
+        # sinogram and the center using the half sinogram
         delta_voxel, delta_det_row = ct_model_for_full_recon.get_params(['delta_voxel', 'delta_det_row'])
-        recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
-        det_row_offset = sign * delta_det_row * ((sinogram_shape[1]-1)/2 - (num_det_rows_half-1)/2)
+        recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices - 1) / 2 - (num_recon_slices_half - 1) / 2))
+        det_row_offset = sign * delta_det_row * ((num_det_rows - 1) / 2 - (num_det_rows_half - 1) / 2)
+        det_row_offset = det_row_offset + full_recon_det_row_offset
 
         ct_model_for_half_recon.set_params(recon_slice_offset=recon_slice_offset, det_row_offset=det_row_offset)
 
