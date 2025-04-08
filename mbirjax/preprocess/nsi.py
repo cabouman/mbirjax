@@ -10,7 +10,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
-                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None):
     """
     Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
 
@@ -40,9 +40,9 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
         subsample_view_factor (int, optional): View subsample factor. By default no view subsampling will be performed.
-        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
-        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
-        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
+        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to None, in which case the NSI config file is used.
+        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to None, in which case the NSI config file is used.
+        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to None, in which case the NSI config file is used.
 
     Returns:
         tuple: [sinogram, cone_beam_params, optional_params]
@@ -71,6 +71,20 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
+
+    # Get the crops from the config file if not provided and make sure they are symmetric
+    # TODO:  adjust detector offsets for asymmetric crops
+    max_crop = nsi_params['max_crop']
+    if crop_pixels_sides is None:
+        crop_pixels_sides = max_crop
+    if crop_pixels_top is None:
+        crop_pixels_top = max_crop
+    if crop_pixels_bottom is None:
+        crop_pixels_bottom = max_crop
+    if crop_pixels_bottom != crop_pixels_top:
+        warnings.warn('Only symmetric cropping is allowed in this release.  Replacing top and bottom crops with their max.')
+        crop_pixels_top = max(crop_pixels_top, crop_pixels_bottom)
+        crop_pixels_bottom = max(crop_pixels_bottom, crop_pixels_top)
 
     cone_beam_params, optional_params = convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=downsample_factor,
                                                                       crop_pixels_sides=crop_pixels_sides,
@@ -169,7 +183,8 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
                         ['clockwise', 'Processed'],                     # rotation direction (boolean)
                         ['axis', 'Result'],                             # unit vector in direction ofrotation axis
                         ['normal', 'Result'],                           # unit vector in direction of source-detector line
-                        ['horizontal', 'Result']                        # unit vector in direction of detector rows
+                        ['horizontal', 'Result'],                       # unit vector in direction of detector rows
+                        ['crop', 'Radiograph']                          # 4-tuple of pixels to crop from each view
                        ]
     assert(os.path.isfile(config_file_path)), f'Error! NSI config file does not exist. Please check whether {config_file_path} is a valid file.'
     NSI_params = _read_str_from_config(config_file_path, tag_section_list)
@@ -249,6 +264,9 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     # Detector horizontal vector
     r_h = NSI_params[14].split(' ')
     r_h = np.array([np.single(elem) for elem in r_h])
+    crops = NSI_params[15].split(' ')
+    crops = np.array([np.int32(elem) for elem in crops])
+    max_crop = np.amax(crops)
 
     print("############ NSI geometry parameters ############")
     print("vector from origin to source = ", r_s, " [mm]")
@@ -258,6 +276,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     print("Unit vector of horizontal = ", r_h)
     print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({delta_det_row:.3f},{delta_det_channel:.3f}) [mm]")
     print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows},{num_det_channels})")
+    print(f"Pixels to crop from the border of each view = {max_crop}")
     print("############ End NSI geometry parameters ############")
     ### END load NSI parameters from an nsipro file
 
@@ -328,7 +347,8 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         'delta_det_row': delta_det_row,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
-        'angles': angles
+        'angles': angles,
+        'max_crop': max_crop
     }
 
     return obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array
@@ -525,6 +545,7 @@ def _read_str_from_config(filepath, tags_sections):
     except IOError:
         print("Could not read file:", filepath)
 
+    # TODO: Replace with more efficient code that doesn't use a nested loop
     for tag_str, section_start, section_end in zip(tag_strs, section_starts, section_ends):
         section_start_inds = [ind for ind, match in enumerate(lines) if section_start in match]
         section_end_inds = [ind for ind, match in enumerate(lines) if section_end in match]
