@@ -741,7 +741,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, max_iterations=13, nrms_stop_threshold=2e-5, first_iteration=0,
-              init_recon=None, compute_prior_loss=False):
+              init_recon=None, compute_prior_loss=False, num_iterations=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -759,11 +759,15 @@ class TomographyModel(ParameterHandler):
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
             lead to slower reconstructions and is meant only for small recons.
+            num_iterations (int, optional): This option is deprecated and will be used to set max_iterations if this is not None.  Defaults to None.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
             recon_params (namedtuple): max_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
+        if num_iterations is not None:
+            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\nUsing this value now to set max_iterations.')
+            max_iterations = num_iterations
 
         if self.get_params('verbose') >= 1:
             print('GPU used for: {}'.format(self.use_gpu))
