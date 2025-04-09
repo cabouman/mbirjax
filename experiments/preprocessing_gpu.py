@@ -24,7 +24,7 @@ if __name__ == "__main__":
           "\n*******************************************************")
     time0 = time.time()
     crop_pixels_sides = 32
-    crop_pixels_top = 250
+    crop_pixels_top = 20
     crop_pixels_bottom = 20
     sino, cone_beam_params, optional_params = \
         mbirjax.preprocess.nsi.compute_sino_and_params(dataset_dir,
