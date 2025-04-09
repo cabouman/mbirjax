@@ -773,8 +773,10 @@ class ConeBeamModel(mbirjax.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fdk_recon(self, sinogram, filter_name="ramp"):
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -786,6 +788,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
             recon (jax array): The reconstructed volume after FDK reconstruction.
@@ -796,6 +799,11 @@ class ConeBeamModel(mbirjax.TomographyModel):
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        if view_batch_size is None:
+            view_batch_size = self.view_batch_size_for_vmap
+            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
+            view_batch_size = min(view_batch_size, max_view_batch_size)
 
         # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
         M_0 = self.get_magnification()
@@ -813,7 +821,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
 
         # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = sinogram * weight_map[None, :, :]
+        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
 
         # Compute the scaled filter
         # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
@@ -832,9 +840,16 @@ class ConeBeamModel(mbirjax.TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        filtered_sinogram = jax.vmap(apply_convolution_to_view)(weighted_sinogram)
+        num_views = sinogram.shape[0]
+        filtered_sino_list = []
+        for i in range(0, num_views, view_batch_size):
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
+            filtered_sinogram_batch.block_until_ready()
+            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
+        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
 
-        # Reconstruction
+        # Apply backprojection
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views
 

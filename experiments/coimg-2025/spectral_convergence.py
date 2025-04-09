@@ -16,8 +16,8 @@ if __name__ == "__main__":
     end_angle = vcu.param_dict['end_angle']
     granularity = vcu.param_dict['granularity']
     partition_sequence = vcu.param_dict['partition_sequence']
-    num_iterations = vcu.param_dict['num_iterations']
-    num_iterations = 10
+    max_iterations = vcu.param_dict['max_iterations']
+    max_iterations = 10
 
     num_det_rows = 1  # We use only one detector row for efficiency
     num_phantom_slices = 10  # We use 10 phantom slices to get a non-trivial 3D phantom
@@ -75,13 +75,13 @@ if __name__ == "__main__":
     for j, sequence in enumerate(sequences):
         print('Starting reconstruction {}'.format(j+1))
         parallel_model.set_params(partition_sequence=sequence)
-        cur_residual = np.zeros((num_iterations,) + phantom.shape[0:2])
-        cur_recon = np.zeros((num_iterations,) + phantom.shape[0:2])
+        cur_residual = np.zeros((max_iterations,) + phantom.shape[0:2])
+        cur_recon = np.zeros((max_iterations,) + phantom.shape[0:2])
         recon = None
-        for iteration in range(num_iterations):
-            recon, cur_recon_params = parallel_model.recon(sinogram, num_iterations=iteration + 1,
-                                                               first_iteration=iteration, init_recon=recon,
-                                                               compute_prior_loss=True)
+        for iteration in range(max_iterations):
+            recon, cur_recon_params = parallel_model.recon(sinogram, max_iterations=iteration + 1,
+                                                           first_iteration=iteration, init_recon=recon,
+                                                           compute_prior_loss=True)
             cur_residual[iteration] = recon[:, :, 0] - phantom[:, :, 0]
             cur_recon[iteration] = recon[:, :, 0]
 
@@ -96,7 +96,7 @@ if __name__ == "__main__":
     vcd_residual_fft, gd_residual_fft, icd_residual_fft = residual_fft
 
     labels = ['Gradient descent', 'VCD', 'ICD']
-    for cur_iter in np.arange(num_iterations):
+    for cur_iter in np.arange(max_iterations):
         fig_title = 'Recon after {} iteration(s)'.format(cur_iter + 1)
         vcu.display_images_for_abstract(gd_recons[cur_iter], vcd_recons[cur_iter], icd_recons[cur_iter],
                                         labels=labels, fig_title=fig_title, show_colorbar=True)
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     # fm_rmse_vcd = cur_recon_params.fm_rmse
     # prior_loss_vcd = cur_recon_params.prior_loss
     # default_partition_sequence = parallel_model.get_params('partition_sequence')
-    # partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, num_iterations=num_iterations)
+    # partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
     # granularity_sequence_vcd = granularity[partition_sequence]
 
     a = 0

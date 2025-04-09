@@ -53,7 +53,7 @@ class TestProx(unittest.TestCase):
         # Evaluating the proximal map
         print('  Starting proximal map')
         prox_input = phantom
-        recon, recon_params = ct_model.prox_map(prox_input, sinogram, num_iterations=5, init_recon=prox_input)
+        recon, recon_params = ct_model.prox_map(prox_input, sinogram, max_iterations=5, init_recon=prox_input)
         recon.block_until_ready()
 
         max_diff = np.amax(np.abs(phantom - recon))

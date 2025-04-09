@@ -11,7 +11,7 @@ param_dict = {    # Set parameters
     'end_angle' : np.pi,
     'granularity': [1, 8, 48, 128, 256, 256, 256, 256, 256, ],
     'partition_sequence' : [0, 1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4,],
-    'num_iterations' : 10
+    'max_iterations' : 10
 }
 
 

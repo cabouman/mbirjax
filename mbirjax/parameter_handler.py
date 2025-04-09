@@ -42,7 +42,7 @@ class ParameterHandler():
         """
         for key, entry in cur_params.items():
             param_val = entry.get('val')
-            if type(param_val) in [type(jnp.ones(1)), type(np.ones(1))]:
+            if isinstance(param_val, (jnp.ndarray, np.ndarray)):
                 # Get the array values, then flatten them and put them in a string.
                 cur_array = np.array(param_val)
                 formatted_string = " ".join(f"{x:.7f}" for x in cur_array.flatten())
@@ -50,6 +50,11 @@ class ParameterHandler():
                 new_val = ParameterHandler.array_prefix + formatted_string
                 cur_params[key]['val'] = new_val
                 cur_params[key]['shape'] = param_val.shape
+
+            # Also convert np.floats to native python floats
+            if isinstance(param_val, np.floating):
+                new_val = param_val.item()
+                cur_params[key]['val'] = new_val
 
         return cur_params
 
@@ -92,20 +97,19 @@ class ParameterHandler():
         """
         output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
         # Convert any lists to tuples for consistency with load
-        keys = output_params.keys()
-        for key in keys:
+        for key in output_params.keys():
             if isinstance(output_params[key]['val'], list):
                 output_params[key]['val'] = tuple(output_params[key]['val'])
 
         # Determine file type
-        if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
+        if filename.endswith(('.yml', '.yaml')):
             # Save the full parameter dictionary
             with open(filename, 'w') as file:
                 yaml = YAML()
                 yaml.default_flow_style = False
                 yaml.dump(output_params, file)
         else:
-            raise ValueError('Filename must end in .yaml or .yml: ' + filename)
+            raise ValueError(f'Filename must end in .yaml or .yml: {filename}')
 
     @staticmethod
     def load_param_dict(filename, required_param_names=None, values_only=True):

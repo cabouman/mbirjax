@@ -61,7 +61,7 @@ if __name__ == "__main__":
     # Perform VCD reconstruction
     prox_input = phantom  # jnp.zeros_like(phantom)
     time0 = time.time()
-    recon, recon_params = ct_model.prox_map(prox_input, sinogram, weights=weights, num_iterations=10, init_recon=prox_input)
+    recon, recon_params = ct_model.prox_map(prox_input, sinogram, weights=weights, max_iterations=10, init_recon=prox_input)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

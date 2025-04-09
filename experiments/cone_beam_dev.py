@@ -1,7 +1,6 @@
 
 import numpy as np
-import jax.numpy as jnp
-import jax
+
 import time
 import matplotlib.pyplot as plt
 import mbirjax
@@ -9,8 +8,40 @@ import mbirjax
 # import os
 # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".03"
 
+import jax.numpy as jnp
+import jax
+
 if __name__ == "__main__":
 
+    sino = jnp.zeros((512, 1000, 1536))
+    sino = sino.at[:, :, 400:-400].set(1)
+    num_channels = sino.shape[-1]
+
+    n = jnp.arange(-num_channels + 1, num_channels)
+    recon_filter = (1 / 2) * jnp.sinc(n) - (1 / 4) * (jnp.sinc(n / 2)) ** 2
+
+    # Define convolution for a single row (across its channels)
+    def convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+
+    # Apply above convolve func across each row of a view
+    def apply_convolution_to_view(view):
+        return jax.vmap(convolve_row)(view)
+
+
+    filtered_sino_128 = jax.vmap(apply_convolution_to_view)(sino[0:128])
+    filtered_sino_512 = jax.vmap(apply_convolution_to_view)(sino)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512[0:128])))
+
+    filtered_sino_128 = jax.lax.map(apply_convolution_to_view, sino, batch_size=128)
+    filtered_sino_512 = jax.lax.map(apply_convolution_to_view, sino, batch_size=512)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512)))
+
+    exit(0)
     main_device = jax.devices('cpu')[0]
     worker = jax.devices('gpu')[0]
 
@@ -60,7 +91,7 @@ if __name__ == "__main__":
         full_indices = np.array(full_indices[:num_indices])
         voxel_values = np.array(conebeam_model.get_voxels_at_indices(phantom, full_indices))
 
-    conebeam_model.pixels_per_batch = num_indices
+    conebeam_model.pixel_batch_size_for_vmap = num_indices
     conebeam_model.views_per_batch = num_views
 
     # New version

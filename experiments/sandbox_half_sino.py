@@ -73,6 +73,7 @@ sinogram = np.array(sinogram)
 
 # Get a model for this sinogram
 ct_model_for_full_recon = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+full_recon_det_row_offset = ct_model_for_full_recon.get_params('det_row_offset')
 
 # Take roughly the half of the sinogram and specify roughly half of the volume
 full_recon_shape = ct_model_for_full_recon.get_params('recon_shape')
@@ -95,8 +96,12 @@ for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -n
     mbirjax.slice_viewer(sinogram_half, slice_axis=0, title=title, slice_label='View')
 
     delta_voxel, delta_det_row = ct_model_for_generation.get_params(['delta_voxel', 'delta_det_row'])
+
+    # Determine the recon slice and detector row offsets as the difference between the center using the full
+    # sinogram and the center using the half sinogram
     recon_slice_offset = sign * (- delta_voxel * ((num_recon_slices-1)/2 - (num_recon_slices_half-1)/2))
     det_row_offset = sign * delta_det_row * ((num_det_rows-1)/2 - (num_det_rows_half-1)/2)
+    det_row_offset = det_row_offset + full_recon_det_row_offset
 
     ct_model_for_half_recon.set_params(recon_slice_offset=recon_slice_offset, det_row_offset=det_row_offset)
 
