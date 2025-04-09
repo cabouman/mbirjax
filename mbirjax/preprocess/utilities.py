@@ -218,33 +218,26 @@ def estimate_background_offset(sino, edge_width=9):
 
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        edge_width (int, optional): Width of the edge regions in pixels. Must be an odd integer >= 3.
+        edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
 
     Returns:
         offset (float): Background offset value.
     """
-    if edge_width % 2 == 0:
-        edge_width += 1
-        warnings.warn(f"edge_width of background regions should be an odd number! Setting edge_width to {edge_width}.")
-    if edge_width < 3:
-        edge_width = 3
-        warnings.warn("edge_width of background regions should be >= 3! Setting edge_width to 3.")
+
+    if edge_width < 1:
+        edge_width = 1
+        warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
 
     _, _, num_det_channels = sino.shape
+
     # Extract edge regions from the sinogram (top, left, right)
-    sino_edge = sino[:, :edge_width, :]
-    median_top = np.median(np.median(np.median(sino_edge, axis=0), axis=1))  # Top edge
-
-    sino_edge = sino[:, :, :edge_width]
-    median_left = np.median(np.median(np.median(sino_edge, axis=0), axis=0))  # Left edge
-
-    sino_edge = sino[:, :, num_det_channels-edge_width:]
-    median_right = np.median(np.median(np.median(sino_edge, axis=0), axis=0))  # Right edge
-
-    # Compute final offset as median of the three regions
-    offset = np.median(np.array([median_top, median_left, median_right]))
+    sino_edge_left = sino[:, :, :edge_width].flatten()
+    sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
+    sino_edge_top = sino[:, :edge_width, :].flatten()
+    offset = np.median(np.concatenate((sino_edge_left, sino_edge_right, sino_edge_top)))
 
     return offset
+
 
 
 # ####### subroutines for image cropping and down-sampling
