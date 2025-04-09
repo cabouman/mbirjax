@@ -378,16 +378,16 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     source_detector_dist, source_iso_dist, magnification, det_rotation = calc_source_detector_params(r_a, r_n, r_h, r_s, r_r)
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
 
+    # Adjust detector size params w.r.t. cropping arguments
+    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
+    num_det_channels = num_det_channels - 2 * crop_pixels_sides
+
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]
     num_det_channels = num_det_channels // downsample_factor[1]
 
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
-
-    # Adjust detector size params w.r.t. cropping arguments
-    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
-    num_det_channels = num_det_channels - 2 * crop_pixels_sides
 
     # Set 1 ALU = delta_det_channel
     source_detector_dist /= delta_det_channel # mm to ALU
