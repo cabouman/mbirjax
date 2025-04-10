@@ -71,7 +71,7 @@ phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
 # Generate synthetic sinogram data
 print('Creating sinogram')
 sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.array(sinogram)
+sinogram = np.asarray(sinogram)
 
 # View sinogram
 title='Original sinogram'

@@ -1,5 +1,5 @@
 import numpy as np
-import time
+import os
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import mbirjax
@@ -30,7 +30,9 @@ def display_slices_for_abstract( recon1, recon2, recon3, labels, fig_title=None)
     ax[2].set_title(labels[2])
 
     plt.show()
-    fig.savefig('../figs/' + fig_title + '.png')
+    figure_folder_name = vcu.make_figure_folder()
+    os.makedirs(figure_folder_name, exist_ok=True)
+    fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'))
 
 
 if __name__ == "__main__":
@@ -105,8 +107,8 @@ if __name__ == "__main__":
     # ##########################
     # Perform default VCD reconstruction
     print('Starting default sequence')
-    num_iterations = 20
-    recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
+    max_iterations = 20
+    recon_default, recon_params_default = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
                                                          compute_prior_loss=True)
     fm_rmse_default = recon_params_default.fm_rmse
     prior_loss_default = recon_params_default.prior_loss
@@ -120,8 +122,8 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_1)
     granularity = np.array(granularity_alt_1)
     ct_model.set_params(granularity=granularity)
-    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_loss=True)
+    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+                                                     compute_prior_loss=True)
     fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
     prior_loss_alt_1 = recon_params_alt_1.prior_loss
     partition_sequence = recon_params_alt_1.partition_sequence
@@ -134,8 +136,8 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_2)
     granularity = np.array(granularity_alt_2)
     ct_model.set_params(granularity=granularity)
-    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, weights=weights, num_iterations=num_iterations,
-                                                       compute_prior_loss=True)
+    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+                                                     compute_prior_loss=True)
     fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
     prior_loss_alt_2 = recon_params_alt_2.prior_loss
     partition_sequence = recon_params_alt_2.partition_sequence
