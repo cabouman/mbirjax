@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, num_iterations=15)
+    recon, recon_params = ct_model.recon(sinogram, weights=weights, max_iterations=15)
 
     recon.block_until_ready()
     elapsed = time.time() - time0

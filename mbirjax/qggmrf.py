@@ -65,6 +65,56 @@ def qggmrf_loss(full_recon, qggmrf_params):
     return loss
 
 
+def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices, qggmrf_params,
+                                                    main_device, worker_device, pixel_batch_size=10000):
+    """
+    Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
+    the qGGMRF prior.
+    Calculations taken from Figure 8.5 (page 119) of FCI for the qGGMRF prior model.
+
+    Args:
+        flat_recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+        recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
+        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
+
+    Returns:
+        tuple of two arrays and a float (first_derivative, second_derivative, loss).  The first two entries have shape
+        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices. loss is 1x1.
+    """
+    # Initialize the neighborhood weights for averaging surrounding pixel values.
+    # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
+    b, sigma_x, p, q, T = qggmrf_params
+
+    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
+    cur_voxels = jax.device_put(flat_recon[pixel_indices], worker_device)
+    qggmrf_params = (b, sigma_x, p, q, T)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
+    gradient_cyl, hessian_cyl = cylinder_map(cur_voxels, qggmrf_params)
+    gradient_cyl, hessian_cyl = jax.device_put([gradient_cyl, hessian_cyl], device=main_device)
+
+    # Then work on slices - add in the contributions from neighbors in the same slice
+    slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
+    # gradient = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
+    # hessian = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
+    # gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
+    # TODO: determine pixel_batch_size from TomographyModel
+    num_batches = jnp.ceil(len(pixel_indices) / pixel_batch_size).astype(int)
+    indices_batched = jnp.array_split(pixel_indices, num_batches)
+    grad, hess = [], []
+    for batch in indices_batched:
+        g = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
+        h = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
+        g, h = slice_map(flat_recon, recon_shape, batch, qggmrf_params, g, h)
+        grad.append(g)
+        hess.append(h)
+    gradient = jnp.concatenate(grad, axis=0)
+    hessian = jnp.concatenate(hess, axis=0)
+    gradient = gradient + gradient_cyl
+    hessian = hessian + hessian_cyl
+    return gradient, hessian
+
+
 @partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
 def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
     """

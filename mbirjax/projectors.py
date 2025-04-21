@@ -55,8 +55,8 @@ class Projectors:
         self.tomography_model.projector_params = projector_params
 
         view_params_array = self.tomography_model.get_params('view_params_array')
-        pixel_batch_size = self.tomography_model.pixels_per_batch
-        view_batch_size = self.tomography_model.views_per_batch
+        pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
+        view_batch_size = self.tomography_model.view_batch_size_for_vmap
 
         def sparse_forward_project_fcn(voxel_values, pixel_indices, view_indices=()):
             """

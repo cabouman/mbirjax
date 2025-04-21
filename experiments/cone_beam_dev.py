@@ -1,7 +1,6 @@
 
 import numpy as np
-import jax.numpy as jnp
-import jax
+
 import time
 import matplotlib.pyplot as plt
 import mbirjax
@@ -9,30 +8,39 @@ import mbirjax
 # import os
 # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".03"
 
+import jax.numpy as jnp
+import jax
+
 if __name__ == "__main__":
 
-    subsample_factor = 1
-    filename = "nsi_sino{}x.npy".format(subsample_factor)
-    filepath = "/home/buzzard/PycharmProjects/mbirjax_applications/nsi/demo_data/" + filename
-    sino = np.load(filepath)
-    source_detector_distance = 4 * 1152.4588623046875 / subsample_factor
-    source_iso_distance = 4 * 330.7637023925781 / subsample_factor
-    det_row_offset = 4 * 4.348957061767578 / subsample_factor
-    det_channel_offset = 4 * -3.5313198566436768 / subsample_factor
+    sino = jnp.zeros((512, 1000, 1536))
+    sino = sino.at[:, :, 400:-400].set(1)
+    num_channels = sino.shape[-1]
 
-    snr_db = 30.0
-    sharpness = 0.0
-    delta_voxel = 0.2870069444179535
-    angles = np.linspace(2*np.pi, 0, sino.shape[0]+1)
-    angles = angles[:-1]
-    conebeam_model = mbirjax.ConeBeamModel(sino.shape, angles, source_detector_distance, source_iso_distance)
-    conebeam_model.set_params(delta_voxel=delta_voxel, det_row_offset=det_row_offset,
-                              det_channel_offset=det_channel_offset, snr_db=snr_db, sharpness=sharpness)
-    print('Starting fdk reconstruction')
-    time_start = time.time()
-    fdk_recon = conebeam_model.fdk_recon(sino)
-    print('Elapsed time: {}'.format(time.time()-time_start))
-    mbirjax.slice_viewer(fdk_recon, slice_axis=1)
+    n = jnp.arange(-num_channels + 1, num_channels)
+    recon_filter = (1 / 2) * jnp.sinc(n) - (1 / 4) * (jnp.sinc(n / 2)) ** 2
+
+    # Define convolution for a single row (across its channels)
+    def convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+
+    # Apply above convolve func across each row of a view
+    def apply_convolution_to_view(view):
+        return jax.vmap(convolve_row)(view)
+
+
+    filtered_sino_128 = jax.vmap(apply_convolution_to_view)(sino[0:128])
+    filtered_sino_512 = jax.vmap(apply_convolution_to_view)(sino)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512[0:128])))
+
+    filtered_sino_128 = jax.lax.map(apply_convolution_to_view, sino, batch_size=128)
+    filtered_sino_512 = jax.lax.map(apply_convolution_to_view, sino, batch_size=512)
+
+    print('Max with batch size = 128 is {}'.format(jnp.amax(filtered_sino_128)))
+    print('Max with batch size = 512 is {}'.format(jnp.amax(filtered_sino_512)))
+
     exit(0)
     main_device = jax.devices('cpu')[0]
     worker = jax.devices('gpu')[0]
@@ -83,7 +91,7 @@ if __name__ == "__main__":
         full_indices = np.array(full_indices[:num_indices])
         voxel_values = np.array(conebeam_model.get_voxels_at_indices(phantom, full_indices))
 
-    conebeam_model.pixels_per_batch = num_indices
+    conebeam_model.pixel_batch_size_for_vmap = num_indices
     conebeam_model.views_per_batch = num_views
 
     # New version

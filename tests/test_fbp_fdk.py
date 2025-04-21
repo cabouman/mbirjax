@@ -50,7 +50,7 @@ class TestFBPReconstruction(unittest.TestCase):
         """Test the FBP reconstruction against the defined tolerances."""
         # Perform FBP reconstruction
         filter_name = "ramp"
-        recon = self.parallel_model.fbp_recon(self.fbp_sino, filter_name=filter_name)
+        recon = self.parallel_model.direct_recon(self.fbp_sino, filter_name=filter_name)
 
         # Compute the statistics
         max_diff = np.amax(np.abs(self.fbp_phantom - recon))
@@ -66,7 +66,7 @@ class TestFBPReconstruction(unittest.TestCase):
         """Test the FDK reconstruction against the defined tolerances."""
         # Perform FBP reconstruction
         filter_name = "ramp"
-        recon = self.cone_model.fdk_recon(self.fdk_sino, filter_name=filter_name)
+        recon = self.cone_model.direct_recon(self.fdk_sino, filter_name=filter_name)
 
         # Compute the statistics
         max_diff = np.amax(np.abs(self.fdk_phantom - recon))

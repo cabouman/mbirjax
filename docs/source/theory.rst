@@ -35,7 +35,7 @@ where :math:`x` is the unknown image to be reconstructed,
 :math:`\Lambda` is the diagonal matrix of sinogram weights, :math:`\Vert y \Vert_\Lambda^2 = y^T \Lambda y`, and
 :math:`\sigma_y` is a parameter controlling the assumed standard deviation of the measurement noise.  More details
 about the forward model for specific geometries is available by downloading the associated
-`zip file <https://engineering.purdue.edu/~bouman/data_repository/data/tomography_geometry.zip>`_.
+`zip file <https://www.datadepot.rcac.purdue.edu/bouman/data/tomography_geometry.zip>`_.
 
 These quantities correspond to the following python variables:
 
@@ -85,7 +85,7 @@ These quantities correspond to the following python variables:
 
 
 **Proximal Map Prior:**
-The proximal map prior is provided as a option for advanced users would would like to use plug-and-play methods.
+The proximal map prior is provided as a option for advanced users who would like to use plug-and-play methods.
 If ``prox_image`` is supplied, then the proximal map prior model is used, and the qGGMRF parameters are ignored.
 In this case, the reconstruction solves the optimization problem:
 

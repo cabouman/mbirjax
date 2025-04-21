@@ -156,7 +156,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
@@ -183,7 +183,7 @@ class ParallelBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        # sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
         # Do the projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
@@ -192,7 +192,7 @@ class ParallelBeamModel(TomographyModel):
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
         return sinogram_view
 
@@ -302,7 +302,10 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def fbp_recon(self, sinogram, filter_name="ramp"):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -314,12 +317,17 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
         num_views, _, num_channels = sinogram.shape
+        if view_batch_size is None:
+            view_batch_size = self.view_batch_size_for_vmap
+            max_view_batch_size = 128  # Limit the view batch size here and ConeBeam due to https://github.com/jax-ml/jax/issues/27591
+            view_batch_size = min(view_batch_size, max_view_batch_size)
 
         # Generate the reconstruction filter with appropriate scaling
         delta_voxel = self.get_params('delta_voxel')
@@ -339,9 +347,16 @@ class ParallelBeamModel(TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         # Apply convolution across the channels of the sinogram per each fixed view & row
-        batch_size = 100
-        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=batch_size)
+        num_views = sinogram.shape[0]
+        filtered_sino_list = []
+        for i in range(0, num_views, view_batch_size):
+            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
+            filtered_sinogram_batch.block_until_ready()
+            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
+        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
 
+        # Apply backprojection
         recon = self.back_project(filtered_sinogram)
         recon *= jnp.pi / num_views  # scaling term
 

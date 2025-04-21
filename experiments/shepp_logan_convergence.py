@@ -117,11 +117,11 @@ print('Starting recon')
 time0 = time.time()
 recon = None
 iterations_per_step = 5
-num_iterations = 20
-for iteration in range(0, num_iterations, iterations_per_step):
-    recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, num_iterations=iteration + iterations_per_step,
-                                                       first_iteration=iteration, init_recon=recon,
-                                                       compute_prior_loss=True)
+max_iterations = 20
+for iteration in range(0, max_iterations, iterations_per_step):
+    recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=iteration + iterations_per_step,
+                                                   first_iteration=iteration, init_recon=recon,
+                                                   compute_prior_loss=True)
     mbirjax.slice_viewer(recon)
     mbirjax.slice_viewer(recon, slice_axis=1)
     # if iteration > 8:
