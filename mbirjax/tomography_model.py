@@ -736,6 +736,18 @@ class TomographyModel(ParameterHandler):
         return recon_std
 
     def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+        """
+        Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
+        implementation details are geometry specific, and direct_recon may not be available for all geometries.
+
+        Args:
+            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
+            view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
+
+        Returns:
+            recon (jax array): The reconstructed volume after direct reconstruction.
+        """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
@@ -750,8 +762,8 @@ class TomographyModel(ParameterHandler):
         the same partition sequence from where the previous recon left off.
 
         Args:
-            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
+            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.1.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
