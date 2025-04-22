@@ -752,8 +752,8 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
 
-    def recon(self, sinogram, weights=None, max_iterations=13, stop_threshold_change_pct=0.1, first_iteration=0,
-              init_recon=None, compute_prior_loss=False, num_iterations=None):
+    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=13, stop_threshold_change_pct=0.2, first_iteration=0,
+              compute_prior_loss=False, num_iterations=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -764,10 +764,10 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
-            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
-            stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.1.  Set this to 0 to guarantee exactly max_iterations.
-            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
+            stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
             num_iterations (int, optional): This option is deprecated and will be used to set max_iterations if this is not None.  Defaults to None.
 
@@ -856,8 +856,8 @@ class TomographyModel(ParameterHandler):
 
         return recon, recon_params
 
-    def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None,
-                  compute_prior_loss=False, first_iteration=0, stop_threshold_change_pct=0.1):
+    def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
+                  init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -866,14 +866,12 @@ class TomographyModel(ParameterHandler):
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             partitions (tuple or list): A collection of K partitions, with each partition being an (N_indices) integer index array of voxels to be updated in a flattened recon.
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
+            stop_threshold_change_pct (float): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
-            first_iteration (int, optional): Set this to be the number of iterations previously completed when
-            restarting a recon using init_recon.
-            stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.1.
-
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             recon_stats = (fm_rmse, pm_rmse, nrms_update), where fm is forward model, pm is prior model, and
@@ -1409,7 +1407,7 @@ class TomographyModel(ParameterHandler):
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=None, max_iterations=3, init_recon=None):
+    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, max_iterations=3, stop_threshold_change_pct=0.2, first_iteration=0):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -1417,9 +1415,11 @@ class TomographyModel(ParameterHandler):
         Args:
             prox_input (jax array): proximal map input with same shape as reconstruction.
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
+            init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
-            init_recon (jax array, optional): optional reconstruction to be used for initialization.
+            stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -1432,10 +1432,12 @@ class TomographyModel(ParameterHandler):
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
         partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
+        partition_sequence = partition_sequence[first_iteration:]
 
         # Compute reconstruction
-        recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
-                                             init_recon=init_recon, prox_input=prox_input)
+        recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, stop_threshold_change_pct,
+                                             weights=weights, init_recon=init_recon, prox_input=prox_input,
+                                             first_iteration=first_iteration)
 
         return recon, loss_vectors
 
