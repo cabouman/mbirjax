@@ -19,6 +19,8 @@ Reconstruction and Projection
 
 .. automethod:: mbirjax.TomographyModel.recon
 
+.. automethod:: mbirjax.TomographyModel.direct_recon
+
 .. automethod:: mbirjax.TomographyModel.scale_recon_shape
 
 .. automethod:: mbirjax.TomographyModel.prox_map

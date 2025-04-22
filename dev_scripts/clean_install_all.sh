@@ -74,8 +74,8 @@ else
   pip install -e ..
 fi
 
-pip install ..[test]
-pip install ..[docs]
+pip install "..[test]"
+pip install "..[docs]"
 source build_docs.sh
 
 red=`tput setaf 1`
