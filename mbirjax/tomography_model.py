@@ -752,7 +752,7 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
 
-    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=13, stop_threshold_change_pct=0.2, first_iteration=0,
+    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, num_iterations=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
@@ -1407,7 +1407,7 @@ class TomographyModel(ParameterHandler):
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, max_iterations=3, stop_threshold_change_pct=0.2, first_iteration=0):
+    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, stop_threshold_change_pct=0.2, max_iterations=3, first_iteration=0):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -1417,8 +1417,8 @@ class TomographyModel(ParameterHandler):
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
-            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
+            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
 
         Returns:
