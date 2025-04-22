@@ -23,8 +23,8 @@ dependencies = [
     "matplotlib",
     "numpy",
     "setuptools",
-    "jax",
-    "jaxlib",
+    "jax==0.5.3",
+    "jaxlib==0.5.3",
     "ruamel.yaml",
     "psutil",
     "tifffile",
@@ -35,7 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # "pip install mbirjax[cuda12]"
-cuda12 = ["jax[cuda12]"]
+cuda12 = ["jax[cuda12]==0.5.3"]
 test = ["pytest"]
 docs = [
      "sphinx",
