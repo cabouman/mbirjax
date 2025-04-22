@@ -736,11 +736,23 @@ class TomographyModel(ParameterHandler):
         return recon_std
 
     def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+        """
+        Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
+        implementation details are geometry specific, and direct_recon may not be available for all geometries.
+
+        Args:
+            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
+            view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
+
+        Returns:
+            recon (jax array): The reconstructed volume after direct reconstruction.
+        """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
 
-    def recon(self, sinogram, weights=None, max_iterations=13, nrms_stop_threshold=2e-5, first_iteration=0,
+    def recon(self, sinogram, weights=None, max_iterations=13, stop_threshold_change_pct=0.1, first_iteration=0,
               init_recon=None, compute_prior_loss=False, num_iterations=None):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
@@ -750,15 +762,13 @@ class TomographyModel(ParameterHandler):
         the same partition sequence from where the previous recon left off.
 
         Args:
-            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
+            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
-            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 2e-5.  Set this to 0 to guarantee exactly max_iterations.
-            first_iteration (int, optional): Set this to be the number of iterations previously completed when
-            restarting a recon using init_recon.
+            stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.1.  Set this to 0 to guarantee exactly max_iterations.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
             init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
-            compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will
-            lead to slower reconstructions and is meant only for small recons.
+            compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
             num_iterations (int, optional): This option is deprecated and will be used to set max_iterations if this is not None.  Defaults to None.
 
         Returns:
@@ -766,7 +776,7 @@ class TomographyModel(ParameterHandler):
             recon_params (namedtuple): max_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
         if num_iterations is not None:
-            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\nUsing this value now to set max_iterations.')
+            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\nIn the current run, the value of num_iterations will be used to set max_iterations.')
             max_iterations = num_iterations
 
         if self.get_params('verbose') >= 1:
@@ -805,11 +815,12 @@ class TomographyModel(ParameterHandler):
             # Compute reconstruction
             recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                                  init_recon=init_recon, compute_prior_loss=compute_prior_loss,
-                                                 first_iteration=first_iteration, nrms_stop_threshold=nrms_stop_threshold)
+                                                 first_iteration=first_iteration,
+                                                 stop_threshold_change_pct=stop_threshold_change_pct)
 
             # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
             recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                                 'regularization_params', 'nrms_recon_change', 'alpha_values']
+                                 'regularization_params', 'nmae_recon_change_pct', 'alpha_values']
             ReconParams = namedtuple('ReconParams', recon_param_names)
             partition_sequence = [int(val) for val in partition_sequence]
             fm_rmse = [float(val) for val in loss_vectors[0]]
@@ -817,11 +828,11 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [float(val) for val in loss_vectors[1]]
             else:
                 prior_loss = [0]
-            nrms_recon_change = [float(val) for val in loss_vectors[2]]
+            nmae_recon_change_pct = [float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params._asdict(), nrms_recon_change, alpha_values]
+                                  regularization_params._asdict(), nmae_recon_change_pct, alpha_values]
             recon_params = ReconParams(*tuple(recon_param_values))
 
         except MemoryError as e:
@@ -846,7 +857,7 @@ class TomographyModel(ParameterHandler):
         return recon, recon_params
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, weights=None, init_recon=None, prox_input=None,
-                  compute_prior_loss=False, first_iteration=0, nrms_stop_threshold=1e-5):
+                  compute_prior_loss=False, first_iteration=0, stop_threshold_change_pct=0.1):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -861,7 +872,7 @@ class TomographyModel(ParameterHandler):
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when
             restarting a recon using init_recon.
-            nrms_stop_threshold (float, optional): Stop reconstruction when NRMS change from one iteration to the next is below nrms_stop_threshold.  Defaults to 1e-5.
+            stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.1.
 
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
@@ -949,7 +960,7 @@ class TomographyModel(ParameterHandler):
         max_iters = partition_sequence.size
         fm_rmse = np.zeros(max_iters)
         pm_loss = np.zeros(max_iters)
-        nrms_update = np.zeros(max_iters)
+        nmae_update = np.zeros(max_iters)
         alpha_values = np.zeros(max_iters)
         num_iters = 0
         for i in range(max_iters):
@@ -957,20 +968,20 @@ class TomographyModel(ParameterHandler):
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, norm_squared_update, alpha = self.vcd_partition_iterator(vcd_subset_updater,
+            flat_recon, error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(vcd_subset_updater,
                                                                                                  flat_recon,
                                                                                                  error_sinogram,
                                                                                                  partition)
 
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
-            nrms_update[i] = norm_squared_update / jnp.sum(flat_recon * flat_recon)
+            nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_recon))
             es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
             alpha_values[i] = alpha
 
             if verbose >= 1:
                 iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
-                                                                                                  100 * nrms_update[i],
+                                                                                                  100 * nmae_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
                     qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
@@ -992,11 +1003,11 @@ class TomographyModel(ParameterHandler):
                     mbirjax.get_memory_stats()
                     print('--------')
             num_iters += 1
-            if nrms_update[i] < nrms_stop_threshold:
-                print('NRMS stopping condition reached')
+            if nmae_update[i] < stop_threshold_change_pct / 100:
+                print('Change threshold stopping condition reached')
                 break
 
-        return self.reshape_recon(flat_recon), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nrms_update[0:num_iters],
+        return self.reshape_recon(flat_recon), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
                                                 alpha_values[0:num_iters])
 
     def vcd_partition_iterator(self, vcd_subset_updater, flat_recon, error_sinogram, partition):
@@ -1013,15 +1024,15 @@ class TomographyModel(ParameterHandler):
             partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
 
         Returns:
-            (flat_recon, error_sinogram, norm_squared_for_partition, alpha): The first two have the same shape as above, but
+            (flat_recon, error_sinogram, ell1_for_partition, alpha): The first two have the same shape as above, but
             are updated to reduce overall loss function.
-            The norm_squared_for_partition includes the changes from all subsets of this partition.
+            The ell1_for_partition includes the changes from all subsets of this partition.
             alpha is the relative step size in the gradient descent step, averaged over the subsets
             in the partition.
         """
 
         # Loop over the subsets of the partition, using random subset_indices to order them.
-        norm_squared_for_partition = 0
+        ell1_for_partition = 0
         alpha_sum = 0
         subset_indices = np.random.permutation(partition.shape[0])
 
@@ -1031,10 +1042,10 @@ class TomographyModel(ParameterHandler):
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
-            flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(flat_recon,
+            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(flat_recon,
                                                                                                        error_sinogram,
                                                                                                        subset, subset_worker, times)
-            norm_squared_for_partition += norm_squared_for_subset
+            ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
         # # Debug code to go with timing info in vcd_subset_updater
         # max_len = max(len(s) for s in time_names)
@@ -1050,7 +1061,7 @@ class TomographyModel(ParameterHandler):
         # print(formatted_times)
         # # End debug code
 
-        return flat_recon, error_sinogram, norm_squared_for_partition, alpha_sum / partition.shape[0]
+        return flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0]
 
     def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
@@ -1102,9 +1113,9 @@ class TomographyModel(ParameterHandler):
                 times (ndarray): 1D array of elapsed times for debugging/performance tuning.
 
             Returns:
-                flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset:
+                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset:
                 The first two have the same shape as above, but are updated to reduce the overall loss function.
-                norm_squared is for the change to the recon from this one subset.
+                ell1_for_subset is for the change to the recon from this one subset.
                 alpha is the relative step size for this subset.
             """
 
@@ -1278,13 +1289,13 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('stats')
             # time_start = time.time()
-            norm_squared_for_subset = jnp.sum(delta_recon_at_indices * delta_recon_at_indices)
+            ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
             alpha_for_subset = alpha
             # norm_squared_for_subset = norm_squared_for_subset.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
 
-            return flat_recon, error_sinogram, norm_squared_for_subset, alpha_for_subset, times, time_names
+            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
 
         return vcd_subset_updater
 

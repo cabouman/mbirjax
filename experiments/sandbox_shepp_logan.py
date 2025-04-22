@@ -19,9 +19,12 @@ geometry_type = 'cone'  # 'cone' or 'parallel'
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
 num_views = 60
-num_det_rows = 40
-num_det_channels = 50
+num_det_rows = 100
+num_det_channels = 100
 sharpness = 1.0
+snr_db = 30
+max_iterations = 20
+stop_threshold_change_pct = 0.1
 
 # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
 # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -56,7 +59,6 @@ else:
 # Generate 3D Shepp Logan phantom
 print('Creating phantom')
 phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
-phantom = phantom[:, :, 180:-180]
 mbirjax.slice_viewer(phantom)
 
 num_det_rows = phantom.shape[2]
@@ -88,7 +90,7 @@ weights = None
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
 # Decrease by 1 or 2 to get softer edges and smoother interiors.
-ct_model_for_recon.set_params(sharpness=sharpness)
+ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db)
 
 # Print out model parameters
 ct_model_for_recon.print_params()
@@ -99,7 +101,8 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=4)
+recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=max_iterations,
+                                               stop_threshold_change_pct=stop_threshold_change_pct)
 
 recon.block_until_ready()
 elapsed = time.time() - time0
@@ -121,6 +124,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs Residual (right) \nUse the sliders to change the slice or adjust the intensity range.'
-mbirjax.slice_viewer(phantom, (recon-phantom), title=title, slice_axis=1)
+mbirjax.slice_viewer(phantom, (recon-phantom), title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
