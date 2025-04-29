@@ -3,15 +3,15 @@ import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
 import mbirjax
-from mbirjax import ConeBeamModel
+from mbirjax import TomographyModel
 
 
-class TranslationModel(ConeBeamModel):
+class TranslationModel(TomographyModel):
     """
     A class designed for handling forward and backward projections using translations with a cone beam source. This extends
-    :ref:`ConeBeamModelDocs`. This class offers specialized methods and parameters tailored for translation mode.
+    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for translation mode.
 
-    This class inherits all methods and properties from the :ref:`ConeBeamModelDocs` and may override some
+    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
     to suit translation mode geometrical requirements. See the documentation of the parent class for standard methods
     like setting parameters and performing projections and reconstructions.
 
@@ -28,7 +28,7 @@ class TranslationModel(ConeBeamModel):
 
     See Also
     --------
-    ConeBeamModel : The base class from which this class inherits.
+    TomographyModel : The base class from which this class inherits.
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
         # Convert the view-dependent vectors to an array
@@ -44,22 +44,22 @@ class TranslationModel(ConeBeamModel):
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
 
-        super().super().__init__(sinogram_shape, view_params_array=view_params_array,
+        super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          recon_slice_offset=0.0)
 
     @classmethod
     def from_file(cls, filename):
         """
-        Construct a ConeBeamModel from parameters saved using save_params()
+        Construct a TranslationModel from parameters saved using save_params()
 
         Args:
             filename (str): Name of the file containing parameters to load.
 
         Returns:
-            ConeBeamModel with the specified parameters.
+            TranslationModel with the specified parameters.
         """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
+        # Load the parameters and convert to use the TranslationModel keywords.
         required_param_names = ['sinogram_shape', 'source_detector_dist', 'source_iso_dist']
         required_params, params = mbirjax.ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
 
