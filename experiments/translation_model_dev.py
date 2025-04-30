@@ -86,29 +86,29 @@ if __name__ == "__main__":
     tt = TTFont("/System/Library/Fonts/Supplemental/Times New Roman.ttf")
 
     # now render without ever mentioning the .ttf path again
-    num_det_channels = 64
+    num_det_channels = 400
+    pad = num_det_channels // 5
     imgs = render_string_from_ttfont(
         height=num_det_channels,
         width=num_det_channels,
-        pad=num_det_channels // 8,
-        text="FuSe2",
+        pad=pad,
+        text="2F",
         ttfont=tt
     )
-    imgs = (imgs / 255.0).astype(np.float32)[::-1]
-    phantom = np.zeros((num_det_channels, num_det_channels, num_det_channels))
-    start_ind = num_det_channels // 2
     skip = 5
+    imgs = (imgs / 255.0).astype(np.float32)[::-1]
+    phantom = np.zeros((num_det_channels, skip * imgs.shape[0], num_det_channels))
+    start_ind = 0
     end_ind = start_ind + skip * imgs.shape[0]
-    phantom[:, start_ind:end_ind:skip, :] = imgs.transpose((2, 0, 1))
-    source_detector_dist = 4 * num_det_channels
-    source_iso_dist = source_detector_dist
+
+    source_detector_dist = 3. * phantom.shape[1]
+    source_iso_dist = source_detector_dist / 2
 
     # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-    detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-    start_angle = -np.pi / 2 - np.pi / 2
-    end_angle = -np.pi / 2 + np.pi / 2
+    start_angle = -np.pi / 2  # - np.pi / 2
+    end_angle = -np.pi / 2  # + np.pi / 2
     num_det_rows = num_det_channels
-    num_views = num_det_channels
+    num_views = 1
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
@@ -116,11 +116,34 @@ if __name__ == "__main__":
                                                     source_detector_dist=source_detector_dist,
                                                     source_iso_dist=source_iso_dist)
 
+    ct_model_for_generation.set_params(recon_shape=phantom.shape)
     print('Creating sinogram')
-    sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.asarray(sinogram)
-    mbirjax.slice_viewer(sinogram, slice_axis=0)
+    sinograms = []
+    width = 130
+    height = 180
+    for start in np.arange(start=0, stop=num_det_channels // 2, step=10):
+        phantom = 0 * phantom
+        # phantom[200:210, 0, 190:200] = 1
+        phantom[0:height, start_ind:end_ind:skip, start:start+width] = imgs.transpose((1, 0, 2))[100:100+height, :, 130:130+width]
+        # mbirjax.slice_viewer(phantom, slice_axis=1)
+        sinogram = ct_model_for_generation.forward_project(phantom)
+        sinograms.append(np.asarray(sinogram))
+        # mbirjax.slice_viewer(sinogram, slice_axis=0)
+        print(start)
+        start_x = start
+    for start in np.arange(start=0, stop=num_det_channels // 2, step=10):
+        phantom = 0 * phantom
+        # phantom[200:210, 0, 190:200] = 1
+        phantom[start:start+height, start_ind:end_ind:skip, start_x:start_x+width] = imgs.transpose((1, 0, 2))[100:100+height, :, 130:130+width]
+        # mbirjax.slice_viewer(phantom, slice_axis=1)
+        sinogram = ct_model_for_generation.forward_project(phantom)
+        sinograms.append(np.asarray(sinogram))
+        # mbirjax.slice_viewer(sinogram, slice_axis=0)
+        print(start)
+    sinograms = np.concatenate(sinograms, axis=0).transpose((0, 2, 1))
+    mbirjax.slice_viewer(sinograms, slice_axis=0)
 
+    exit(0)
     """
     This is a script to develop, debug, and tune the translation model projector
     """
