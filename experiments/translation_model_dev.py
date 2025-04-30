@@ -101,7 +101,7 @@ if __name__ == "__main__":
     start_ind = 0
     end_ind = start_ind + skip * imgs.shape[0]
 
-    source_detector_dist = 3. * phantom.shape[1]
+    source_detector_dist = 1.5 * phantom.shape[1]
     source_iso_dist = source_detector_dist / 2
 
     # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
@@ -141,6 +141,7 @@ if __name__ == "__main__":
         # mbirjax.slice_viewer(sinogram, slice_axis=0)
         print(start)
     sinograms = np.concatenate(sinograms, axis=0).transpose((0, 2, 1))
+    sinograms = np.concatenate([sinograms, sinograms[::-1]], axis=0)
     mbirjax.slice_viewer(sinograms, slice_axis=0)
 
     exit(0)
