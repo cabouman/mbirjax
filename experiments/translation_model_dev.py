@@ -82,6 +82,33 @@ def render_string_from_ttfont(
 
 if __name__ == "__main__":
 
+    num_det_channels = 100
+    skip = 5
+    phantom = np.zeros((num_det_channels, 10, num_det_channels))
+
+    source_detector_dist = 1.1 * phantom.shape[1]
+    source_iso_dist = source_detector_dist / 2
+
+    # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
+    start_angle = -np.pi / 2  # - np.pi / 2
+    end_angle = -np.pi / 2  # + np.pi / 2
+    num_det_rows = num_det_channels
+    num_views = 1
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+
+    ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles,
+                                                    source_detector_dist=source_detector_dist,
+                                                    source_iso_dist=source_iso_dist)
+
+    ct_model_for_generation.set_params(recon_shape=phantom.shape)
+    print('Creating sinogram')
+    phantom = 0 * phantom
+    # phantom[8:45, 5, 12:60] = 1
+    phantom[12:18, 5, 12:20] = 1
+    phantom[35:41, 5, 12:20] = 1
+    sinogram = ct_model_for_generation.forward_project(phantom)
+    mbirjax.slice_viewer(sinogram, slice_axis=0)
     # load your TNR file once
     tt = TTFont("/System/Library/Fonts/Supplemental/Times New Roman.ttf")
 
