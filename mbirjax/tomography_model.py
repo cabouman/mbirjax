@@ -828,7 +828,7 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [float(val) for val in loss_vectors[1]]
             else:
                 prior_loss = [0]
-            nmae_recon_change_pct = [float(val) for val in loss_vectors[2]]
+            nmae_recon_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
@@ -906,10 +906,23 @@ class TomographyModel(ParameterHandler):
                                                                                           init_recon.shape)
             raise ValueError(error_message)
 
-        # Initialize VCD recon and error sinogram using the init_reco
+        # Initialize VCD recon and error sinogram using the init_recon
+        # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
         print('Initializing error sinogram')
         error_sinogram = self.forward_project(init_recon)
-        error_sinogram = sinogram - error_sinogram
+        if not constant_weights:
+            weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+        else:
+            weighted_error_sinogram = error_sinogram
+        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
+        if wtd_err_sino_norm > 0:
+            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+        else:
+            alpha = 1
+        alpha = 1
+        error_sinogram = sinogram - alpha * error_sinogram
+        init_recon = alpha * init_recon
+
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
         error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
