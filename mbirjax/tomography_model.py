@@ -919,7 +919,7 @@ class TomographyModel(ParameterHandler):
             alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
         else:
             alpha = 1
-        alpha = 1
+
         error_sinogram = sinogram - alpha * error_sinogram
         init_recon = alpha * init_recon
 
