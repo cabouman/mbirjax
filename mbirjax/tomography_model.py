@@ -764,7 +764,7 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
-            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            init_recon (jax array or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
@@ -868,7 +868,7 @@ class TomographyModel(ParameterHandler):
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             stop_threshold_change_pct (float): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
-            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            init_recon (jax array or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
@@ -896,6 +896,8 @@ class TomographyModel(ParameterHandler):
             print('Starting direct recon for initial reconstruction')
             with jax.default_device(self.sinogram_device):
                 init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+        elif isinstance(init_recon, int) and init_recon == 0:
+            init_recon = jnp.zeros(recon_shape, device=self.main_device)
 
         # Make sure that init_recon has the correct shape and type
         if init_recon.shape != recon_shape:
