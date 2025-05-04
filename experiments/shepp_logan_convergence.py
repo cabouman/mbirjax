@@ -19,6 +19,7 @@ has axes in the order (views, rows, channels).  For reference, assuming the rota
 
 Select a GPU as runtime type for best performance.
 """
+import os
 
 # Commented out IPython magic to ensure Python compatibility.
 # %pip install mbirjax
@@ -28,127 +29,204 @@ import time
 import pprint
 import jax.numpy as jnp
 import mbirjax
+import matplotlib.pyplot as plt
 
 """**Set the geometry parameters**"""
 
-# Choose the geometry type
-geometry_type = 'parallel'  # 'cone' or 'parallel'
+def main():
+    # Choose the geometry type
+    geometry_type = 'parallel'  # 'cone' or 'parallel'
 
-# Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
-# channels, then the generated phantom may not have an interior.
-num_views = 32
-num_det_rows = 60
-num_det_channels = 256
-sharpness = 2.0
-snr_db = 40
+    # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
+    # channels, then the generated phantom may not have an interior.
+    num_views = 32
+    num_det_rows = 60
+    num_det_channels = 256
+    sharpness = 4.0
+    snr_db = 40
 
-# For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
-# np.Inf is an allowable value, in which case this is essentially parallel beam
-source_detector_dist = 4 * num_det_channels
-source_iso_dist = source_detector_dist
+    # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
+    # np.Inf is an allowable value, in which case this is essentially parallel beam
+    source_detector_dist = 4 * num_det_channels
+    source_iso_dist = source_detector_dist
 
-# For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-if geometry_type == 'cone':
-    detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-else:
-    detector_cone_angle = 0
-start_angle = -(np.pi + detector_cone_angle) * (1/2)
-end_angle = (np.pi + detector_cone_angle) * (1/2)
+    # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
+    if geometry_type == 'cone':
+        detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
+    else:
+        detector_cone_angle = 0
+    start_angle = -(np.pi + detector_cone_angle) * (1/2)
+    end_angle = (np.pi + detector_cone_angle) * (1/2)
 
-"""**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
+    """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
+    
+    Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
+    
+    """
 
-Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
+    # Initialize sinogram
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-"""
+    if geometry_type == 'cone':
+        ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    elif geometry_type == 'parallel':
+        ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    else:
+        raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
-# Initialize sinogram
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+    # Generate 3D Shepp Logan phantom
+    print('Creating phantom')
+    phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
 
-if geometry_type == 'cone':
-    ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-elif geometry_type == 'parallel':
-    ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
-else:
-    raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
+    # Generate synthetic sinogram data
+    print('Creating sinogram')
+    sinogram = ct_model_for_generation.forward_project(phantom)
+    sinogram = np.array(sinogram)
 
-# Generate 3D Shepp Logan phantom
-print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
+    # View sinogram
+    title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
+    # mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
 
-# Generate synthetic sinogram data
-print('Creating sinogram')
-sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.array(sinogram)
+    """**Initialize for the reconstruction**"""
 
-# View sinogram
-title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
-mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
+    # ####################
+    # Initialize the model for reconstruction.
+    if geometry_type == 'cone':
+        ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    else:
+        ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
 
-"""**Initialize for the reconstruction**"""
+    # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
+    weights = None
+    # weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
-# ####################
-# Initialize the model for reconstruction.
-if geometry_type == 'cone':
-    ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-else:
-    ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    # Set parameters
+    partition_sequence = ct_model_for_recon.get_params('partition_sequence')
+    ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db, partition_sequence=partition_sequence)
 
-# Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
-weights = None
-# weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # Print out model parameters
+    print('Evaluating convergence with sharpness = {}, snr_db = {}'.format(sharpness, snr_db))
 
-# Set reconstruction parameter values
-# Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
-# Decrease by 1 or 2 to get softer edges and smoother interiors.
+    # Get the baseline
+    compute_baseline = False
+    output_dir = 'convergence_output'
+    os.makedirs(output_dir, exist_ok=True)
+
+    max_iterations = 1000
+    iterations_per_step = 5
+    stop_threshold_change_pct = 0.0
+
+    if compute_baseline:
+
+        baseline, nrmse_baseline = recon_by_continuation(ct_model_for_recon, sinogram, weights,
+                                                         max_iterations, iterations_per_step, stop_threshold_change_pct,
+                                                         baseline=None)
+        np.savez(os.path.join(output_dir, 'baseline.npz'), baseline)
+
+        # Repeat to show convergence
+        recon = None
+        default_nrmse = np.zeros(np.ceil(max_iterations / iterations_per_step).astype(int))
+
+        for iteration in range(0, max_iterations, iterations_per_step):
+            i = iteration // iterations_per_step
+            recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights,
+                                                           max_iterations=iteration + iterations_per_step,
+                                                           first_iteration=iteration, init_recon=recon,
+                                                           compute_prior_loss=True,
+                                                           stop_threshold_change_pct=stop_threshold_change_pct)
+            default_nrmse[i] = np.linalg.norm(recon - baseline) / np.linalg.norm(baseline)
+
+        np.savez(os.path.join(output_dir, 'default.npz'), recon)
+        np.savez(os.path.join(output_dir, 'default_nrmse.npz'), default_nrmse)
+
+    try:
+        baseline = np.load(os.path.join(output_dir, 'baseline.npz'))['arr_0']
+        default_nrmse = np.load(os.path.join(output_dir, 'default_nrmse.npz'))['arr_0']
+    except FileNotFoundError as e:
+        raise FileNotFoundError('baseline and/or default files not found.  Rerun with compute_baseline = True')
+    # recon_nrmse = np.load(os.path.join(output_dir, 'recon_1000_nrmse.npz'))['arr_0']
+    # plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
+    # plt.plot(iterations_per_step * np.arange(len(recon_nrmse)), recon_nrmse)
+    # plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
+    # plt.legend(['Convergence to baseline', 'Convergence with varying sharpness/snr_db'])
+
+    # ##########################
+    # Perform reconstruction with varying sharpness/snr_db
+    max_iterations = 30
+    recon, recon_nrmse = recon_by_continuation(ct_model_for_recon, sinogram, weights,
+                                               max_iterations, iterations_per_step, stop_threshold_change_pct,
+                                               baseline=baseline)
+
+    np.savez(os.path.join(output_dir, 'recon.npz'), recon)
+    np.savez(os.path.join(output_dir, 'recon_nrmse.npz'), recon_nrmse)
+
+    plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
+    plt.plot(iterations_per_step * np.arange(len(recon_nrmse)), recon_nrmse)
+    plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
+    plt.legend(['Convergence to baseline', 'Convergence with varying sharpness/snr_db'])
+    mbirjax.slice_viewer(recon, recon - baseline, title='Recon (left) and recon-baseline (right)')
+    # Print parameters used in recon
+    pprint.pprint(recon_params._asdict(), compact=True)
+
+    max_diff = np.amax(np.abs(phantom - recon))
+    print('Geometry = {}'.format(geometry_type))
+    nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
+    pct_95 = np.percentile(np.abs(recon - phantom), 95)
+    print('NRMSE between recon and phantom = {}'.format(nrmse))
+    print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
+    print('95% of recon pixels are within {} of phantom'.format(pct_95))
+
+    # Display results
+    title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
+    mbirjax.slice_viewer(phantom, recon, title=title)
 
 
-# Set parameters
-ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db)
+def recon_by_continuation(ct_model_for_recon, sinogram, weights,
+                          max_iterations, iterations_per_step, stop_threshold_change_pct, baseline=None):
+    # ##########################
+    # Perform reconstruction with varying sharpness/snr_db
+    print('Starting recon')
+    recon = None
 
-# Print out model parameters
-ct_model_for_recon.print_params()
+    sharpness, snr_db, partition_sequence = ct_model_for_recon.get_params(['sharpness', 'snr_db', 'partition_sequence'])
+    nrmse = np.zeros(max_iterations // iterations_per_step)
+    time0 = time.time()
+    for iteration in range(0, max_iterations, iterations_per_step):
+        i = iteration // iterations_per_step
+        if iteration < iterations_per_step:
+            cur_sharpness = 1
+            cur_snr_db = 25
+            cur_partition_sequence = [0, 2, 4, 6, 7]
+        elif iteration < 2 * iterations_per_step:
+            cur_sharpness = (cur_sharpness + sharpness) / 2
+            # cur_snr_db = (cur_snr_db + snr_db) / 2
+            cur_partition_sequence = iterations_per_step * [0] + [4, 6, 7]
+        elif iteration < 4 * iterations_per_step:
+            cur_sharpness = (cur_sharpness + 3 * sharpness) / 4
+            cur_snr_db = (cur_snr_db + snr_db) / 2
+            cur_partition_sequence = 2 * iterations_per_step * [0] + [4, 6, 7]
+        else:
+            cur_sharpness = sharpness  # if iteration >= iterations_per_step else 1
+            cur_snr_db = snr_db  # if iteration >= iterations_per_step else 30
+            cur_partition_sequence = 3 * iterations_per_step * [0] + [7]
+        ct_model_for_recon.set_params(sharpness=cur_sharpness, snr_db=cur_snr_db, partition_sequence=cur_partition_sequence)
+        recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights,
+                                                       max_iterations=iteration + iterations_per_step,
+                                                       first_iteration=iteration, init_recon=recon,
+                                                       compute_prior_loss=True,
+                                                       stop_threshold_change_pct=stop_threshold_change_pct)
+        if baseline is not None:
+            nrmse[i] = np.linalg.norm(recon - baseline) / np.linalg.norm(baseline)
+        if recon_params._asdict()['stop_threshold_change_pct'][-1] < stop_threshold_change_pct:
+            break
 
-"""**Do the reconstruction and display the results.**"""
+    elapsed = time.time() - time0
+    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
-# ##########################
-# Perform VCD reconstruction
-print('Starting recon')
-time0 = time.time()
-recon = None
-iterations_per_step = 5
-max_iterations = 20
-for iteration in range(0, max_iterations, iterations_per_step):
-    recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=iteration + iterations_per_step,
-                                                   first_iteration=iteration, init_recon=recon,
-                                                   compute_prior_loss=True)
-    mbirjax.slice_viewer(recon)
-    mbirjax.slice_viewer(recon, slice_axis=1)
-    # if iteration > 8:
-    #     sharpness = 2.0
-    #     snr_db = 40
-    #     ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db)
+    ct_model_for_recon.set_params(sharpness=sharpness, snr_db=snr_db, partition_sequence=partition_sequence)
+    return recon, nrmse
 
-recon.block_until_ready()
-elapsed = time.time() - time0
-# ##########################
 
-# Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
-
-max_diff = np.amax(np.abs(phantom - recon))
-print('Geometry = {}'.format(geometry_type))
-nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-pct_95 = np.percentile(np.abs(recon - phantom), 95)
-print('NRMSE between recon and phantom = {}'.format(nrmse))
-print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
-print('95% of recon pixels are within {} of phantom'.format(pct_95))
-
-mbirjax.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
-
-# Display results
-title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
-mbirjax.slice_viewer(phantom, recon, title=title)
-
-"""**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
+if __name__ == "__main__":
+    main()
