@@ -117,6 +117,8 @@ def main():
     iterations_per_step = 5
     stop_threshold_change_pct = 0.0
 
+    short_iterations = 30
+
     if compute_baseline:
 
         baseline, nrmse_baseline = recon_by_continuation(ct_model_for_recon, sinogram, weights,
@@ -140,12 +142,29 @@ def main():
         np.savez(os.path.join(output_dir, 'default.npz'), recon)
         np.savez(os.path.join(output_dir, 'default_nrmse.npz'), default_nrmse)
 
+        baseline_short, baseline_short_nrmse = recon_by_continuation(ct_model_for_recon, sinogram, weights,
+                                                                     short_iterations, iterations_per_step,
+                                                                     stop_threshold_change_pct,
+                                                                     baseline=baseline)
+        np.savez(os.path.join(output_dir, 'baseline_short.npz'), baseline_short)
+        np.savez(os.path.join(output_dir, 'baseline_short_nrmse.npz'), baseline_short_nrmse)
+
     try:
         baseline = np.load(os.path.join(output_dir, 'baseline.npz'))['arr_0']
         default_nrmse = np.load(os.path.join(output_dir, 'default_nrmse.npz'))['arr_0']
+        baseline_short_nrmse = np.load(os.path.join(output_dir, 'baseline_short_nrmse.npz'))['arr_0']
+
+        plt.figure(1)
+        plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
+        plt.plot(iterations_per_step * np.arange(len(baseline_short_nrmse)), baseline_short_nrmse)
+        # plt.axis((0, 30, 0.01, 0.08))
+        plt.title('NRMSE relative to baseline vs iteration\nfor default recon and recon with increasing sharpness and snr_db')
+        plt.legend(['Default', 'New varying sharpness/snr_db'])
+        plt.show()
+
     except FileNotFoundError as e:
         raise FileNotFoundError('baseline and/or default files not found.  Rerun with compute_baseline = True')
-    recon_1000_nrmse = np.load(os.path.join(output_dir, 'recon_1000_nrmse.npz'))['arr_0']
+    # recon_1000_nrmse = np.load(os.path.join(output_dir, 'default_nrmse.npz'))['arr_0']
     # plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
     # plt.plot(iterations_per_step * np.arange(len(recon_1000_nrmse)), recon_1000_nrmse)
     # plt.axis((0, 30, 0.01, 0.08))
@@ -153,35 +172,21 @@ def main():
 
     # ##########################
     # Perform reconstruction with varying sharpness/snr_db
-    max_iterations = 30
     recon, recon_nrmse = recon_by_continuation(ct_model_for_recon, sinogram, weights,
-                                               max_iterations, iterations_per_step, stop_threshold_change_pct,
+                                               short_iterations, iterations_per_step, stop_threshold_change_pct,
                                                baseline=baseline)
 
     np.savez(os.path.join(output_dir, 'recon.npz'), recon)
     np.savez(os.path.join(output_dir, 'recon_nrmse.npz'), recon_nrmse)
 
-    plt.plot(iterations_per_step * np.arange(len(default_nrmse)), recon_1000_nrmse)
+    plt.figure(2)
+    plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
     plt.plot(iterations_per_step * np.arange(len(recon_nrmse)), recon_nrmse)
     plt.axis((0, max_iterations, 0.01, 0.08))
+    plt.legend(['Default', 'New varying sharpness/snr_db'])
     plt.show(block=True)
     # plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
-    plt.legend(['Default', 'New varying sharpness/snr_db'])
-    mbirjax.slice_viewer(recon, recon - baseline, title='Recon (left) and recon-baseline (right)')
-    # Print parameters used in recon
-    pprint.pprint(recon_params._asdict(), compact=True)
-
-    max_diff = np.amax(np.abs(phantom - recon))
-    print('Geometry = {}'.format(geometry_type))
-    nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-    pct_95 = np.percentile(np.abs(recon - phantom), 95)
-    print('NRMSE between recon and phantom = {}'.format(nrmse))
-    print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
-    print('95% of recon pixels are within {} of phantom'.format(pct_95))
-
-    # Display results
-    title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
-    mbirjax.slice_viewer(phantom, recon, title=title)
+    mbirjax.slice_viewer(recon, recon - baseline, title='New recon (left) and (new recon) - baseline (right)')
 
 
 def recon_by_continuation(ct_model_for_recon, sinogram, weights,
