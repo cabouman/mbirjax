@@ -145,10 +145,10 @@ def main():
         default_nrmse = np.load(os.path.join(output_dir, 'default_nrmse.npz'))['arr_0']
     except FileNotFoundError as e:
         raise FileNotFoundError('baseline and/or default files not found.  Rerun with compute_baseline = True')
-    # recon_nrmse = np.load(os.path.join(output_dir, 'recon_1000_nrmse.npz'))['arr_0']
+    recon_1000_nrmse = np.load(os.path.join(output_dir, 'recon_1000_nrmse.npz'))['arr_0']
     # plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
-    # plt.plot(iterations_per_step * np.arange(len(recon_nrmse)), recon_nrmse)
-    # plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
+    # plt.plot(iterations_per_step * np.arange(len(recon_1000_nrmse)), recon_1000_nrmse)
+    # plt.axis((0, 30, 0.01, 0.08))
     # plt.legend(['Convergence to baseline', 'Convergence with varying sharpness/snr_db'])
 
     # ##########################
@@ -161,10 +161,12 @@ def main():
     np.savez(os.path.join(output_dir, 'recon.npz'), recon)
     np.savez(os.path.join(output_dir, 'recon_nrmse.npz'), recon_nrmse)
 
-    plt.plot(iterations_per_step * np.arange(len(default_nrmse)), default_nrmse)
+    plt.plot(iterations_per_step * np.arange(len(default_nrmse)), recon_1000_nrmse)
     plt.plot(iterations_per_step * np.arange(len(recon_nrmse)), recon_nrmse)
-    plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
-    plt.legend(['Convergence to baseline', 'Convergence with varying sharpness/snr_db'])
+    plt.axis((0, max_iterations, 0.01, 0.08))
+    plt.show(block=True)
+    # plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
+    plt.legend(['Default', 'New varying sharpness/snr_db'])
     mbirjax.slice_viewer(recon, recon - baseline, title='Recon (left) and recon-baseline (right)')
     # Print parameters used in recon
     pprint.pprint(recon_params._asdict(), compact=True)
@@ -194,22 +196,26 @@ def recon_by_continuation(ct_model_for_recon, sinogram, weights,
     time0 = time.time()
     for iteration in range(0, max_iterations, iterations_per_step):
         i = iteration // iterations_per_step
-        if iteration < iterations_per_step:
+        if iteration == 0:
             cur_sharpness = 1
             cur_snr_db = 25
             cur_partition_sequence = [0, 2, 4, 6, 7]
-        elif iteration < 2 * iterations_per_step:
-            cur_sharpness = (cur_sharpness + sharpness) / 2
-            # cur_snr_db = (cur_snr_db + snr_db) / 2
-            cur_partition_sequence = iterations_per_step * [0] + [4, 6, 7]
-        elif iteration < 4 * iterations_per_step:
+        elif iteration == iterations_per_step:
             cur_sharpness = (cur_sharpness + 3 * sharpness) / 4
+            # cur_snr_db = (cur_snr_db + snr_db) / 2
+            cur_partition_sequence = [7]
+        elif iteration == 2 * iterations_per_step:
+            cur_sharpness = sharpness
+            # cur_snr_db = (cur_snr_db + snr_db) / 2
+            cur_partition_sequence = 2 * iterations_per_step * [0] + [7]
+        elif iteration == 3 * iterations_per_step:
+            cur_sharpness = sharpness
             cur_snr_db = (cur_snr_db + snr_db) / 2
-            cur_partition_sequence = 2 * iterations_per_step * [0] + [4, 6, 7]
+            cur_partition_sequence = 3 * iterations_per_step * [0] + [4, 6, 7]
         else:
             cur_sharpness = sharpness  # if iteration >= iterations_per_step else 1
             cur_snr_db = snr_db  # if iteration >= iterations_per_step else 30
-            cur_partition_sequence = 3 * iterations_per_step * [0] + [7]
+            cur_partition_sequence = 4 * iterations_per_step * [0] + [4, 6, 7]
         ct_model_for_recon.set_params(sharpness=cur_sharpness, snr_db=cur_snr_db, partition_sequence=cur_partition_sequence)
         recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights,
                                                        max_iterations=iteration + iterations_per_step,
