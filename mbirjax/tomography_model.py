@@ -820,7 +820,7 @@ class TomographyModel(ParameterHandler):
 
             # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
             recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                                 'regularization_params', 'nmae_recon_change_pct', 'alpha_values']
+                                 'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
             ReconParams = namedtuple('ReconParams', recon_param_names)
             partition_sequence = [int(val) for val in partition_sequence]
             fm_rmse = [float(val) for val in loss_vectors[0]]
@@ -828,11 +828,11 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [float(val) for val in loss_vectors[1]]
             else:
                 prior_loss = [0]
-            nmae_recon_change_pct = [100 * float(val) for val in loss_vectors[2]]
+            stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params._asdict(), nmae_recon_change_pct, alpha_values]
+                                  regularization_params._asdict(), stop_threshold_change_pct, alpha_values]
             recon_params = ReconParams(*tuple(recon_param_values))
 
         except MemoryError as e:
@@ -993,7 +993,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
+                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
                                                                                                   100 * nmae_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
