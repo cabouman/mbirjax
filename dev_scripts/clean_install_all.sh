@@ -50,7 +50,7 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[cuda12]"
+  pip install -e "..[rcac]"
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
@@ -58,7 +58,7 @@ elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[cuda12]"
+  pip install -e "..[rcac]"
 # Negishi (cpu)
 elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   echo "Installing on Negishi"
@@ -67,8 +67,13 @@ elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   conda activate $NAME
   pip install -e ..
 # Other (cpu)
+elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  echo "CUDA-enabled GPU detected via nvidia-smi."
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
+  conda activate $NAME
+  pip install -e "..[cuda12]"
 else
-  echo "Installing on non-RCAC machine"
+  echo "Installing on non-GPU machine"
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..

@@ -23,12 +23,8 @@ dependencies = [
     "matplotlib",
     "numpy",
     "setuptools",
-    "nvidia-cublas-cu12==12.6.3.3",
-    "nvidia-cuda-cupti-cu12==12.6.80",
-    "nvidia-cuda-nvcc-cu12==12.6.85",
-    "nvidia-cuda-runtime-cu12==12.6.77",
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
+    "jax",
+    "jaxlib",
     "ruamel.yaml",
     "psutil",
     "tifffile",
@@ -39,7 +35,15 @@ dependencies = [
 
 [project.optional-dependencies]
 # "pip install mbirjax[cuda12]"
-cuda12 = ["jax[cuda12]==0.5.3"]
+cuda12 = ["jax[cuda12]"]
+rcac = [
+    "jax[cuda12]==0.5.3",
+    "jaxlib==0.5.3",
+    "nvidia-cublas-cu12==12.6.3.3",
+    "nvidia-cuda-cupti-cu12==12.6.80",
+    "nvidia-cuda-nvcc-cu12==12.6.85",
+    "nvidia-cuda-runtime-cu12==12.6.77"
+]
 test = ["pytest"]
 docs = [
      "sphinx",
