@@ -11,7 +11,7 @@ NAME="mbirjax"
 GILBRETH="gilbreth"
 NEGISHI="negishi"
 GAUTSCHI="gautschi"
-PYTHON_VERSION="3.12"
+PYTHON_VERSION="3.11"
 
 # Remove any previous builds
 cd ..
@@ -50,15 +50,16 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[rcac]"
+  pip install -e "..[cuda12]"
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
+  module load modtree/gpu
   module load conda
-  module load cuda
+  module load cuda/12.9.0
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[rcac]"
+  pip install -e "..[cuda12]"
 # Negishi (cpu)
 elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   echo "Installing on Negishi"
