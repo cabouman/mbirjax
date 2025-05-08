@@ -83,16 +83,17 @@ def render_string_from_ttfont(
 if __name__ == "__main__":
 
     num_det_channels = 100
+    num_det_rows = 80
     skip = 5
-    phantom = np.zeros((num_det_channels, 10, num_det_channels))
+    phantom = np.zeros((10, num_det_channels, num_det_rows))
 
-    source_detector_dist = 1.1 * phantom.shape[1]
+    source_detector_dist = 1.1 * phantom.shape[0]
     source_iso_dist = source_detector_dist / 2
 
     # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-    start_angle = -np.pi / 2  # - np.pi / 2
-    end_angle = -np.pi / 2  # + np.pi / 2
-    num_det_rows = num_det_channels
+    start_angle = 0  # -np.pi / 2  # - np.pi / 2
+    end_angle = 0  # -np.pi / 2  # + np.pi / 2
+
     num_views = 1
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
@@ -105,15 +106,17 @@ if __name__ == "__main__":
     print('Creating sinogram')
     phantom = 0 * phantom
     # phantom[8:45, 5, 12:60] = 1
-    phantom[12:18, 5, 12:20] = 1
-    phantom[35:41, 5, 12:20] = 1
+    phantom[5, 12:18, 12:20] = 1
+    phantom[5, 35:41, 12:20] = 1
     sinogram = ct_model_for_generation.forward_project(phantom)
-    mbirjax.slice_viewer(sinogram, slice_axis=0)
+    mbirjax.slice_viewer(phantom.transpose((0, 2, 1)), slice_axis=0, title='phantom')
+    mbirjax.slice_viewer(sinogram, slice_axis=0, title='sinogram')
     # load your TNR file once
     tt = TTFont("/System/Library/Fonts/Supplemental/Times New Roman.ttf")
 
     # now render without ever mentioning the .ttf path again
     num_det_channels = 400
+    num_det_rows = 350
     pad = num_det_channels // 5
     imgs = render_string_from_ttfont(
         height=num_det_channels,
@@ -124,17 +127,17 @@ if __name__ == "__main__":
     )
     skip = 5
     imgs = (imgs / 255.0).astype(np.float32)[::-1]
-    phantom = np.zeros((num_det_channels, skip * imgs.shape[0], num_det_channels))
+    phantom = np.zeros((skip * imgs.shape[0], num_det_channels, num_det_rows))
     start_ind = 0
     end_ind = start_ind + skip * imgs.shape[0]
 
-    source_detector_dist = 1.5 * phantom.shape[1]
+    source_detector_dist = 1.5 * phantom.shape[0]
     source_iso_dist = source_detector_dist / 2
 
     # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-    start_angle = -np.pi / 2  # - np.pi / 2
-    end_angle = -np.pi / 2  # + np.pi / 2
-    num_det_rows = num_det_channels
+    start_angle = 0  # -np.pi / 2  # - np.pi / 2
+    end_angle = 0  # -np.pi / 2  # + np.pi / 2
+
     num_views = 1
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
@@ -147,13 +150,16 @@ if __name__ == "__main__":
     print('Creating sinogram')
     sinograms = []
     width = 130
-    height = 180
+    height = 200
     for start in np.arange(start=0, stop=num_det_channels // 2, step=10):
         phantom = 0 * phantom
         # phantom[200:210, 0, 190:200] = 1
-        phantom[0:height, start_ind:end_ind:skip, start:start+width] = imgs.transpose((1, 0, 2))[100:100+height, :, 130:130+width]
+        phantom[start_ind:end_ind:skip, 0:height, start:start+width] = imgs.transpose((0, 2, 1))[:, 100:100+height, 130:130+width]
+
+        mbirjax.slice_viewer(phantom.transpose((0, 2, 1)), slice_axis=0, title='phantom')
         # mbirjax.slice_viewer(phantom, slice_axis=1)
         sinogram = ct_model_for_generation.forward_project(phantom)
+        mbirjax.slice_viewer(sinogram, slice_axis=0, title='sinogram')
         sinograms.append(np.asarray(sinogram))
         # mbirjax.slice_viewer(sinogram, slice_axis=0)
         print(start)
@@ -161,7 +167,7 @@ if __name__ == "__main__":
     for start in np.arange(start=0, stop=num_det_channels // 2, step=10):
         phantom = 0 * phantom
         # phantom[200:210, 0, 190:200] = 1
-        phantom[start:start+height, start_ind:end_ind:skip, start_x:start_x+width] = imgs.transpose((1, 0, 2))[100:100+height, :, 130:130+width]
+        phantom[start:start+height, start_ind:end_ind:skip, start_x:start_x+width] = imgs.transpose((0, 2, 1))[:, 100:100+height, 130:130+width]
         # mbirjax.slice_viewer(phantom, slice_axis=1)
         sinogram = ct_model_for_generation.forward_project(phantom)
         sinograms.append(np.asarray(sinogram))
@@ -169,6 +175,7 @@ if __name__ == "__main__":
         print(start)
     sinograms = np.concatenate(sinograms, axis=0).transpose((0, 2, 1))
     sinograms = np.concatenate([sinograms, sinograms[::-1]], axis=0)
+
     mbirjax.slice_viewer(sinograms, slice_axis=0)
 
     exit(0)
