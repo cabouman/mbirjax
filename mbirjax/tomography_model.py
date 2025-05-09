@@ -764,7 +764,7 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
-            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            init_recon (jax array or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
@@ -820,7 +820,7 @@ class TomographyModel(ParameterHandler):
 
             # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
             recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                                 'regularization_params', 'nmae_recon_change_pct', 'alpha_values']
+                                 'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
             ReconParams = namedtuple('ReconParams', recon_param_names)
             partition_sequence = [int(val) for val in partition_sequence]
             fm_rmse = [float(val) for val in loss_vectors[0]]
@@ -828,11 +828,11 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [float(val) for val in loss_vectors[1]]
             else:
                 prior_loss = [0]
-            nmae_recon_change_pct = [float(val) for val in loss_vectors[2]]
+            stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params._asdict(), nmae_recon_change_pct, alpha_values]
+                                  regularization_params._asdict(), stop_threshold_change_pct, alpha_values]
             recon_params = ReconParams(*tuple(recon_param_values))
 
         except MemoryError as e:
@@ -868,7 +868,7 @@ class TomographyModel(ParameterHandler):
             partition_sequence (jax array): A sequence of integers that specify which partition should be used at each iteration.
             stop_threshold_change_pct (float): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.
             weights (jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to all 1s.
-            init_recon (jax array or None, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            init_recon (jax array or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
@@ -896,6 +896,8 @@ class TomographyModel(ParameterHandler):
             print('Starting direct recon for initial reconstruction')
             with jax.default_device(self.sinogram_device):
                 init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+        elif isinstance(init_recon, int) and init_recon == 0:
+            init_recon = jnp.zeros(recon_shape, device=self.main_device)
 
         # Make sure that init_recon has the correct shape and type
         if init_recon.shape != recon_shape:
@@ -904,10 +906,23 @@ class TomographyModel(ParameterHandler):
                                                                                           init_recon.shape)
             raise ValueError(error_message)
 
-        # Initialize VCD recon and error sinogram using the init_reco
+        # Initialize VCD recon and error sinogram using the init_recon
+        # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
         print('Initializing error sinogram')
         error_sinogram = self.forward_project(init_recon)
-        error_sinogram = sinogram - error_sinogram
+        if not constant_weights:
+            weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+        else:
+            weighted_error_sinogram = error_sinogram
+        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
+        if wtd_err_sino_norm > 0:
+            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+        else:
+            alpha = 1
+
+        error_sinogram = sinogram - alpha * error_sinogram
+        init_recon = alpha * init_recon
+
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
         error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
@@ -978,7 +993,7 @@ class TomographyModel(ParameterHandler):
             alpha_values[i] = alpha
 
             if verbose >= 1:
-                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters,
+                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
                                                                                                   100 * nmae_update[i],
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
