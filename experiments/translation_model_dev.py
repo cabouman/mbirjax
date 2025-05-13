@@ -82,25 +82,30 @@ def render_string_from_ttfont(
 
 if __name__ == "__main__":
 
-    num_det_channels = 100
+    # recon shape is (rows, cols, slices), with rows increasing towards the source, cols increasing to the right facing the detector, slices increasing down
+    # sinogram has shape (views, rows, channels), with channels increasing to the right, rows increasing down.
+    # So recon[i, :, :].T would be a vertical slice of the recon in the same orientation as sinogram[k, :, :]
     num_det_rows = 80
-    skip = 5
-    phantom = np.zeros((10, num_det_channels, num_det_rows))
+    num_det_channels = 100
+    row_skip = 5
+    num_recon_rows = 10
+    phantom = np.zeros((num_recon_rows, num_det_channels, num_det_rows))
 
     source_detector_dist = 1.1 * phantom.shape[0]
     source_iso_dist = source_detector_dist / 2
 
-    # For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-    start_angle = 0  # -np.pi / 2  # - np.pi / 2
-    end_angle = 0  # -np.pi / 2  # + np.pi / 2
-
-    num_views = 1
+    num_vert_translations = 5
+    num_horiz_translations = 3
+    translation_length = 1
+    num_views = num_vert_translations * num_horiz_translations
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
-    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+    translation_vectors = np.array([(translation_length * (i - num_vert_translations // 2),
+                                     translation_length * (j - num_horiz_translations // 2))
+                                    for i in range(num_vert_translations) for j in range(num_horiz_translations)])
 
-    ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles,
-                                                    source_detector_dist=source_detector_dist,
-                                                    source_iso_dist=source_iso_dist)
+    ct_model_for_generation = mbirjax.TranslationModel(sinogram_shape, translation_vectors,
+                                                       source_detector_dist=source_detector_dist,
+                                                       source_iso_dist=source_iso_dist)
 
     ct_model_for_generation.set_params(recon_shape=phantom.shape)
     print('Creating sinogram')
