@@ -11,7 +11,7 @@ NAME="mbirjax"
 GILBRETH="gilbreth"
 NEGISHI="negishi"
 GAUTSCHI="gautschi"
-PYTHON_VERSION="3.12"
+PYTHON_VERSION="3.11"
 
 # Remove any previous builds
 cd ..
@@ -54,8 +54,9 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
+  module load modtree/gpu
   module load conda
-  module load cuda
+  module load cuda/12.9.0
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e "..[cuda12]"
@@ -67,8 +68,13 @@ elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   conda activate $NAME
   pip install -e ..
 # Other (cpu)
+elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  echo "CUDA-enabled GPU detected via nvidia-smi."
+  yes | conda create -n $NAME python="$PYTHON_VERSION"
+  conda activate $NAME
+  pip install -e "..[cuda12]"
 else
-  echo "Installing on non-RCAC machine"
+  echo "Installing on non-GPU machine"
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
   pip install -e ..

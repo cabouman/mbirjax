@@ -20,11 +20,11 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
+    "jax",
+    "jaxlib",
     "matplotlib",
     "numpy",
     "setuptools",
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
     "ruamel.yaml",
     "psutil",
     "tifffile",
@@ -34,8 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# "pip install mbirjax[cuda12]"
-cuda12 = ["jax[cuda12]==0.5.3"]
+cuda12 = ["jax[cuda12]"]
 test = ["pytest"]
 docs = [
      "sphinx",
