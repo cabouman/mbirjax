@@ -1,3 +1,4 @@
+import warnings
 import jax
 import jax.numpy as jnp
 from functools import partial
@@ -30,14 +31,14 @@ class TranslationModel(TomographyModel):
     --------
     TomographyModel : The base class from which this class inherits.
     """
-    def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
+    def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist, recon_width):
         # Convert the view-dependent vectors to an array
         # This is more complicated than needed with only a single view-dependent vector but is included to
         # illustrate the process as shown in TemplateModel
         view_dependent_vecs = [vec.flatten() for vec in translation_vectors]
         self.bp_psf_radius = 1
         self.entries_per_cylinder_batch = 128
-        self.slice_range_length = 0
+        self.recon_width = recon_width
         try:
             view_params_array = jnp.stack(view_dependent_vecs, axis=0)
         except ValueError as e:
@@ -45,8 +46,7 @@ class TranslationModel(TomographyModel):
                              "same length.")
 
         super().__init__(sinogram_shape, view_params_array=view_params_array,
-                         source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         recon_slice_offset=0.0)
+                         source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     @classmethod
     def from_file(cls, filename):
@@ -72,6 +72,101 @@ class TranslationModel(TomographyModel):
         new_model = cls(**required_params)
         new_model.set_params(**params)
         return new_model
+
+    def get_magnification(self):
+        """
+        Returns the magnification for the cone beam geometry.
+
+        Returns:
+            magnification = source_detector_dist / source_iso_dist
+        """
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        if jnp.isinf(source_detector_dist):
+            magnification = 1
+        else:
+            magnification = source_detector_dist / source_iso_dist
+        return magnification
+
+    def get_psf_radius(self):
+        """
+        Compute the integer radius of the PSF kernel for cone beam projection.
+        """
+        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
+        magnification = self.get_magnification()
+
+        # Compute minimum detector pitch
+        delta_det = jnp.minimum(delta_det_row, delta_det_channel)
+
+        # Compute maximum magnification
+        if jnp.isinf(source_detector_dist):
+            raise ValueError('Distance from source to detector is infinite, which means all translated projections have the same information.')
+        else:
+            source_to_iso_dist = source_detector_dist / magnification
+            # Determine the closest and farthest points from the source to determine max and min magnification.
+            # iso is at the center of the recon volume, so we move half the length to get max/min distances.
+            # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
+            # for rotation, but for realistic cases it shouldn't matter.
+            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            max_magnification = source_detector_dist / source_to_closest_pixel
+            source_to_farthest_pixel = source_to_iso_dist + jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            min_magnification = source_detector_dist / source_to_farthest_pixel
+
+        if max_magnification < 0:
+            raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
+
+        # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
+        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
+        # Then repeat for the back projection from detector elements to voxels.
+        # The voxels closest to the detector will be covered the most by a given detector element.
+        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
+        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
+        self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
+        if psf_radius > 1:
+            warnings.warn('A single voxel may project onto several detector elements, which may lead to artifacts. Consider using smaller voxels.')
+        return psf_radius
+
+    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+        """ Compute the automatic recon shape cone beam reconstruction.
+        """
+        delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
+        num_det_rows, num_det_channels = sinogram_shape[1:3]
+        det_height = num_det_rows * delta_det_row
+        det_width = num_det_channels * delta_det_channel
+
+        # A positive det_row_offset causes a pixel seen in row i of the original sinogram to be seen in row i + index_offset
+        # of the new sinogram (i.e., the detector moves up, the observed pixel moves down).
+        det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+        # Get the bounds of the detector
+        v_top = - (num_det_rows / 2) * delta_det_row - det_row_offset
+        v_bottom = (num_det_rows / 2) * delta_det_row - det_row_offset
+        u_left = - (num_det_channels / 2) * delta_det_channel - det_channel_offset
+        u_right = (num_det_channels / 2) * delta_det_channel - det_channel_offset
+
+        # Get the inner and outer coordinates of the recon along the iso line
+        ymin_recon = - self.recon_width / 2
+        source_detector_dist = self.get_params('source_detector_distance')
+        max_magnification = source_detector_dist / ymin_recon
+        # Determine the voxel dimensions in terms of the detector elements and magnification
+        delta_voxel_x = delta_det_channel / max_magnification
+        delta_voxel_z = delta_det_row / max_magnification
+        delta_voxel_min = min(delta_voxel_x, delta_voxel_z)
+        # Determine delta_voxel_y - same aspect ratio as the triangle source-detector-(detector max)
+        ratio_vert = max(v_top, v_bottom) / source_detector_dist
+        delta_voxel_y = ratio_vert * delta_voxel_z
+        ratio_horiz = max(u_left, u_right) / source_detector_dist
+        delta_voxel_y = min(delta_voxel_y, ratio_horiz * delta_voxel_x)
+
+        # Determine the extent of the translations
+        # TODO
+
+        delta_voxel = self.get_params('delta_voxel')
+        num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
+        num_recon_cols = num_recon_rows
+        num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
+
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
