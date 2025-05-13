@@ -43,7 +43,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
         view_dependent_vecs = [vec.flatten() for vec in [angles]]
         self.bp_psf_radius = 1
         self.entries_per_cylinder_batch = 128
-        self.slice_range_length = 0
         try:
             view_params_array = jnp.stack(view_dependent_vecs, axis=1)
         except ValueError as e:
@@ -136,12 +135,11 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         # Then get additional parameters:
         geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
-                                 'entries_per_cylinder_batch', 'slice_range_length']
+                                 'entries_per_cylinder_batch']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
         geometry_param_values.append(self.bp_psf_radius)
         geometry_param_values.append(self.entries_per_cylinder_batch)
-        geometry_param_values.append(self.slice_range_length)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
@@ -166,11 +164,17 @@ class ConeBeamModel(mbirjax.TomographyModel):
             min_magnification = 1
         else:
             source_to_iso_dist = source_detector_dist / magnification
-            # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            # Determine the closest and farthest points from the source to determine max and min magnification.
+            # iso is at the center of the recon volume, so we move half the length to get max/min distances.
+            # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
+            # for rotation, but for realistic cases it shouldn't matter.
+            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
             min_magnification = source_detector_dist / source_to_farthest_pixel
+
+        if max_magnification < 0:
+            raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
@@ -179,9 +183,6 @@ class ConeBeamModel(mbirjax.TomographyModel):
         # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
         max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
         self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
-
-        self.slice_range_length = int(1 + 2 * self.bp_psf_radius + \
-                                  jnp.ceil(self.entries_per_cylinder_batch * max_voxels_per_detector))
 
         return psf_radius
 
