@@ -131,42 +131,77 @@ class TranslationModel(TomographyModel):
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         num_det_rows, num_det_channels = sinogram_shape[1:3]
-        det_height = num_det_rows * delta_det_row
-        det_width = num_det_channels * delta_det_channel
 
         # A positive det_row_offset causes a pixel seen in row i of the original sinogram to be seen in row i + index_offset
         # of the new sinogram (i.e., the detector moves up, the observed pixel moves down).
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
         # Get the bounds of the detector
-        v_top = - (num_det_rows / 2) * delta_det_row - det_row_offset
-        v_bottom = (num_det_rows / 2) * delta_det_row - det_row_offset
         u_left = - (num_det_channels / 2) * delta_det_channel - det_channel_offset
         u_right = (num_det_channels / 2) * delta_det_channel - det_channel_offset
+        v_top = - (num_det_rows / 2) * delta_det_row - det_row_offset
+        v_bottom = (num_det_rows / 2) * delta_det_row - det_row_offset
 
         # Get the inner and outer coordinates of the recon along the iso line
-        ymin_recon = - self.recon_width / 2
-        source_detector_dist = self.get_params('source_detector_distance')
-        max_magnification = source_detector_dist / ymin_recon
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        max_magnification = source_detector_dist / (source_iso_dist - self.recon_width / 2)
+        if max_magnification < 0:
+            raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
+        min_magnification = source_detector_dist / (source_iso_dist + self.recon_width / 2)
         # Determine the voxel dimensions in terms of the detector elements and magnification
-        delta_voxel_x = delta_det_channel / max_magnification
-        delta_voxel_z = delta_det_row / max_magnification
-        delta_voxel_min = min(delta_voxel_x, delta_voxel_z)
+        delta_voxel_x = delta_det_channel / max_magnification  # aka delta_col
+        delta_voxel_z = delta_det_row / max_magnification  # aka delta_slice
+
         # Determine delta_voxel_y - same aspect ratio as the triangle source-detector-(detector max)
         ratio_vert = max(v_top, v_bottom) / source_detector_dist
         delta_voxel_y = ratio_vert * delta_voxel_z
         ratio_horiz = max(u_left, u_right) / source_detector_dist
-        delta_voxel_y = min(delta_voxel_y, ratio_horiz * delta_voxel_x)
+        delta_voxel_y = min(delta_voxel_y, ratio_horiz * delta_voxel_x)  # aka delta_row
 
         # Determine the extent of the translations
-        # TODO
+        translation_vectors = self.get_params('view_params_array')
+        max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
+        min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
+        scale_detector_to_recon = (source_iso_dist + self.recon_width / 2) / source_detector_dist  # Scale to recon side closest to detector
+        recon_left = u_left * scale_detector_to_recon - max_translation[0]
+        recon_right = u_right * scale_detector_to_recon - min_translation[0]
+        recon_top = v_top * scale_detector_to_recon + min_translation[1]
+        recon_bottom = v_bottom * scale_detector_to_recon + max_translation[1]
 
-        delta_voxel = self.get_params('delta_voxel')
-        num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
-        num_recon_cols = num_recon_rows
-        num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
+        # Set the recon shape
+        num_recon_rows = int(jnp.round(self.recon_width / delta_voxel_y))
+        num_recon_cols = int(jnp.round((recon_right - recon_left) / delta_voxel_x))
+        num_recon_slices = int(jnp.round((recon_bottom - recon_top) / delta_voxel_z))
 
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+        delta_voxel = (delta_voxel_y, delta_voxel_x, delta_voxel_z)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
+
+    def get_geometry_parameters(self):
+        """
+        Function to get a list of the primary geometry parameters for translation model projection.
+
+        Returns:
+            namedtuple of required geometry parameters.
+        """
+        # First get the parameters managed by ParameterHandler
+        geometry_param_names = \
+            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
+             'source_detector_dist', 'source_iso_dist', 'delta_voxel']
+        geometry_param_values = self.get_params(geometry_param_names)
+
+        # Then get additional parameters:
+        geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
+                                 'entries_per_cylinder_batch']
+        geometry_param_values.append(self.get_magnification())
+        geometry_param_values.append(self.get_psf_radius())
+        geometry_param_values.append(self.bp_psf_radius)
+        geometry_param_values.append(self.entries_per_cylinder_batch)
+
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
+        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
+        geometry_params = GeometryParams(*tuple(geometry_param_values))
+
+        return geometry_params
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')

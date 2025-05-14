@@ -93,6 +93,7 @@ if __name__ == "__main__":
 
     source_detector_dist = 1.1 * phantom.shape[0]
     source_iso_dist = source_detector_dist / 2
+    recon_width = phantom.shape[0]
 
     num_vert_translations = 5
     num_horiz_translations = 3
@@ -105,7 +106,7 @@ if __name__ == "__main__":
 
     ct_model_for_generation = mbirjax.TranslationModel(sinogram_shape, translation_vectors,
                                                        source_detector_dist=source_detector_dist,
-                                                       source_iso_dist=source_iso_dist)
+                                                       source_iso_dist=source_iso_dist, recon_width=recon_width)
 
     ct_model_for_generation.set_params(recon_shape=phantom.shape)
     print('Creating sinogram')
