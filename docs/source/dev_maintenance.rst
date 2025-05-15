@@ -55,7 +55,7 @@ Uploading to Test PyPI
 
 This is only available for registered maintainers.  Typically, you would perform these steps on the prerelease branch before the final commit to main.
 
-Follow steps 0-3 as above.  Then upload to testpypi::
+Follow steps 0-3 as above.  Then continue from step 4.
 
 4. Upload to Test PyPI. You will need to get an API token from TestPyPI. You will be prompted for this token from the command line. NOTE: You cannot upload the same version more than once::
 
