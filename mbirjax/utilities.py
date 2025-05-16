@@ -1,325 +1,303 @@
 import os
-import warnings
 
+# === Core scientific/plotting libraries ===
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
-from matplotlib.widgets import RangeSlider, Slider
+from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
+
+# === Project-specific imports ===
 import mbirjax as mj
-import mbirjax.utilities as mju
-from matplotlib.widgets import Button, RadioButtons, RangeSlider
 import webview
-import json
 
+# === Persistent state for viewer interaction ===
+class SliceViewerState:
+    def __init__(self):
+        self.circles = []              # Circular ROI overlays
+        self.text_boxes = []           # Text annotations for stats
+        self.cur_slices = []           # Current slice index per volume
+        self.axes = []                 # Matplotlib axes per volume
+        self.images = []               # Image handles for display
+        self.is_drawing = False        # Flag to track drawing mode
+        self.data = []                 # View-oriented data arrays
+        self.original_data = []        # Original unmodified arrays
+        self.labels = []               # Axis titles per dataset
+        self.slice_axes = []           # Active slice axis per volume
 
-# Global variables to keep track of the circle, drawing state, and text box
-circle, circle2 = None, None
-is_drawing = False
-text_box, text_box2 = None, None
-cur_slice, cur_slice2 = None, None
-ax_data, ax_data2 = None, None
+viewer_state = SliceViewerState()
 
+# === Clear circle and text overlays from the viewer ===
+def remove_existing_graphics():
+    for item in viewer_state.circles + viewer_state.text_boxes:
+        if item is not None:
+            item.remove()
+    viewer_state.circles = [None] * len(viewer_state.axes)
+    viewer_state.text_boxes = [None] * len(viewer_state.axes)
 
-def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='Slice', slice_label2=None,
-                 slice_axis=2, slice_axis2=None, cmap='gray', show_instructions=True):
+# === Main interactive slice viewer ===
+def slice_viewer(*datasets, title='', vmin=None, vmax=None, slice_label=None, slice_axis=None,
+                 cmap='gray', show_instructions=True):
     """
-    Display slices of one or two 3D image volumes with a consistent grayscale across slices.
-    Allows interactive selection of slices and intensity window. If two images are provided,
-    they are displayed side by side for comparative purposes.  If the two images have the same shape, then zoom
-    and pan will be applied to each image simultaneously.  If not, pan and zoom are applied to one image at a time.
-    Also allows the user to click and drag to select a circle to compute the mean and standard deviation of the
-    values of the pixels whose centers lie inside the circle.
+    Launch an interactive viewer for one or more 3D image volumes.
+
+    This viewer allows users to scroll through slices of 3D volumes, adjust
+    intensity ranges, draw circular regions of interest (ROIs) to view local
+    statistics, and change the slicing axis interactively. When multiple volumes
+    are displayed, slice axes can be coupled or decoupled interactively.
 
     Args:
-        data (ndarray or jax array): 3D image volume with shape (height, width, depth) or 2D (height, width).
-        data2 (numpy array or jax array, optional): Second 2D or 3D image volume with the same constraints.
-        title (string, optional, default=''): Figure super title
-        vmin (float, optional): minimum for displayed intensity
-        vmax (float, optional): maximum for displayed intensity
-        slice_label (str, optional): Text label to be used for a given slice.  Defaults to 'Slice'
-        slice_label2 (str, optional): Text label to be used for a given slice for data2.  Defaults to slice_label.
-        slice_axis (int, optional): The dimension of data to use for the slice index.  That is, if slice_axis=1, then the
-            displayed images will be data[:, cur_slice, :]
-        slice_axis2 (int, optional): The dimension of data to use for the slice index for data2.
-        show_instructions (bool, optional): If True, then display basic instructions on the plot.
+        *datasets (ndarray): One or more 2D or 3D arrays representing image volumes.
+            Each volume must be at least 2D, and will be reshaped if needed.
+        title (str, optional): Title to display above the figure.
+        vmin (float, optional): Minimum intensity value for the color scale.
+        vmax (float, optional): Maximum intensity value for the color scale.
+        slice_label (str or list of str, optional): Label(s) to display above each image volume.
+            If a string is provided, it is broadcast to all datasets. Defaults to 'Slice'.
+        slice_axis (int or list of int, optional): The axis along which to slice each volume.
+            Can be a single int applied to all datasets, or a list specifying an axis per dataset.
+            Defaults to 2 if not specified.
+        cmap (str, optional): Colormap to use for displaying images. Default is 'gray'.
+        show_instructions (bool, optional): Whether to show usage instructions in the figure.
 
     Example:
-        .. code-block:: python
-
-            data1 = np.random.rand(100, 100, 50)  # Random 3D volume
-            data2 = np.random.rand(100, 100, 50)  # Another random 3D volume
-            slice_viewer(data1, data2, slice_axis=2, title='Slice Demo', slice_label='Current slice')  # View slices of both volumes side by side
+        >>> data1 = np.random.rand(100, 100, 50)
+        >>> data2 = np.random.rand(100, 100, 60)
+        >>> slice_viewer(data1, data2, slice_axis=[2, 2], title='Two volumes', slice_label='Axial')
     """
-    global cur_slice, cur_slice2, ax_data, ax_data2
-    if data.ndim < 2 or data.ndim > 3:  # or (data2 is not None and data.shape[slice_axis] != data2.shape[slice_axis]):
-        error_msg = 'The input data must be a 2D or 3D array'  #, and if data2 is provided, then data.shape[slice_axis] '
-        # error_msg += 'must equal data2.shape[slice_axis])'
-        raise ValueError(error_msg)
-    elif data.ndim == 2:
-        data = data.reshape(data.shape + (1,))
-    if data2 is not None:
-        if data2.ndim < 2 or data2.ndim > 3:
-            error_msg = 'The input data2 must be a 2D or 3D array'
-            raise ValueError(error_msg)
-        elif data2.ndim == 2:
-            data2 = data2.reshape(data2.shape + (1,))
+    state = viewer_state
+    n_volumes = len(datasets)
 
-    # Move the specified slice axis into the last position
-    data = np.moveaxis(data, slice_axis, 2)
-    if data2 is not None:
-        if slice_axis2 is None:
-            slice_axis2 = slice_axis
-        data2 = np.moveaxis(data2, slice_axis2, 2)
-        if slice_label2 is None:
-            slice_label2 = slice_label
-
-    # Define min and max grayscale values for consistent coloring across slices
-    if vmin is None:
-        vmin = min(data.min(), data2.min()) if data2 is not None else data.min()
-    if vmax is None:
-        vmax = max(data.max(), data2.max()) if data2 is not None else data.max()
-    if vmin > vmax:
-        raise ValueError('vmin must be less than or equal to vmax')
-    if vmin == vmax:
-        eps = 1e-6  # This is not floating point epsilon, just a small number for display purposes.
-        scale = np.clip(eps * np.abs(vmax), a_min=eps, a_max=None)
-        vmin = vmin - scale
-        vmax = vmax + scale
-
-    # Set up the plot
-    figwidth = 6 if data2 is None else 10
-    fig = plt.figure(figsize=(figwidth, 6))
-    fig.suptitle(title)
-
-    # Set up the subplots. One or two images in the first row along with colorbars.
-    gs = gridspec.GridSpec(nrows=3, ncols=2, height_ratios=[10, 1, 1])
-    if data2 is None:
-        ax_data = fig.add_subplot(gs[0, :])
+    # Normalize input formats for slice_axis and slice_label
+    if isinstance(slice_axis, int) or slice_axis is None:
+        slice_axes = [2 if slice_axis is None else slice_axis] * n_volumes
     else:
-        ax_data = fig.add_subplot(gs[0, 0])
-        share_axis = ax_data if data.shape == data2.shape else None
-        ax_data2 = fig.add_subplot(gs[0, 1], sharex=share_axis, sharey=share_axis)
+        slice_axes = list(slice_axis)
 
-    # Show the initial slice
-    cur_slice = data.shape[2] // 2
-    im = ax_data.imshow(data[:, :, cur_slice], cmap=cmap, vmin=vmin, vmax=vmax)
-    im2 = None
-    if data2 is not None:
-        cur_slice2 = data2.shape[2] // 2
-        im2 = ax_data2.imshow(data2[:, :, cur_slice2], cmap=cmap, vmin=vmin, vmax=vmax)
-        ax_data2.set_title(f'{slice_label2} {cur_slice2}')
+    if isinstance(slice_label, str) or slice_label is None:
+        slice_labels = [f"Slice {i+1}" if slice_label is None else slice_label for i in range(n_volumes)]
+    else:
+        slice_labels = list(slice_label)
 
-    # Set up a colorbar next to the rightmost image, but add extra space to both to make them the same size.
-    divider = make_axes_locatable(ax_data)
-    cax = divider.append_axes('right', size='5%', pad=0.05)
-    if data2 is not None:
-        divider2 = make_axes_locatable(ax_data2)
-        cax.axis('off')
-        cax = divider2.append_axes('right', size='5%', pad=0.05)
+    all_same_axis = all(ax == slice_axes[0] for ax in slice_axes)
 
-    fig.colorbar(im, cax=cax, orientation='vertical')
+    # Preprocess data: move specified slice axis to axis 2 for consistent viewing
+    state.original_data = list(datasets)
+    state.slice_axes = slice_axes.copy()
+    state.data = []
+    for i, data in enumerate(datasets):
+        if data.ndim == 2:
+            data = data[..., np.newaxis]
+        elif data.ndim != 3:
+            raise ValueError("Each input data must be a 2D or 3D array")
+        data = np.moveaxis(data, slice_axes[i], 2)
+        state.data.append(data)
 
-    # Then add the slice slider
+    # Determine default vmin/vmax intensity range across all datasets
+    all_data = np.concatenate([d.ravel() for d in state.data])
+    if vmin is None:
+        vmin = np.min(all_data)
+    if vmax is None:
+        vmax = np.max(all_data)
+    if vmin > vmax:
+        raise ValueError("vmin must be less than or equal to vmax")
+    if vmin == vmax:
+        eps = 1e-6
+        scale = np.clip(eps * np.abs(vmax), a_min=eps, a_max=None)
+        vmin -= scale
+        vmax += scale
+
+    # === Set up layout ===
+    figwidth = 6 * n_volumes
+    fig = plt.figure(figsize=(figwidth, 8))
+    fig.suptitle(title)
+    gs = gridspec.GridSpec(nrows=5, ncols=n_volumes, height_ratios=[10, 1, 1, 1, 1])
+
+    # === Main image display ===
+    state.axes = []
+    state.images = []
+    state.circles = [None] * n_volumes
+    state.text_boxes = [None] * n_volumes
+    state.cur_slices = [d.shape[2] // 2 for d in state.data]
+    state.labels = slice_labels
+
+    for i, d in enumerate(state.data):
+        ax = fig.add_subplot(gs[0, i])
+        img = ax.imshow(d[:, :, state.cur_slices[i]], cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_title(f"{slice_labels[i]} {state.cur_slices[i]}\nShape: {datasets[i].shape}")
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes('right', size='5%', pad=0.05)
+        fig.colorbar(img, cax=cax, orientation='vertical')
+        state.axes.append(ax)
+        state.images.append(img)
+
+    # === Shared slice index slider ===
     ax_slice_slider = fig.add_subplot(gs[1, :])
-    warnings.filterwarnings('ignore', category=UserWarning)
-    slice_slider = Slider(ax=ax_slice_slider, label=slice_label, valmin=0, valmax=data.shape[2] - 1,
-                          valinit=cur_slice, valfmt='%0.0f')
-    warnings.filterwarnings('default', category=UserWarning)
+    slice_slider = Slider(ax_slice_slider, label="Slice", valmin=0,
+                          valmax=max(d.shape[2] for d in state.data) - 1,
+                          valinit=state.cur_slices[0], valfmt='%0.0f')
 
-    # Then the intensity slider
+    # === Intensity range slider ===
     ax_intensity_slider = fig.add_subplot(gs[2, :])
-    log_intensity_range = np.log10(vmax - vmin)
-    num_digits = max(- int(np.round(log_intensity_range)) + 2, 0)
-    valfmt = '%0.' + str(num_digits) + 'f'
-    valinit = (vmin, vmax)
-    intensity_slider = RangeSlider(ax_intensity_slider, "Intensity\nrange", vmin, vmax,
-                                   valinit=valinit, valfmt=valfmt)
+    log_range = np.log10(vmax - vmin)
+    digits = max(-int(np.round(log_range)) + 2, 0)
+    valfmt = '%0.' + str(digits) + 'f'
+    intensity_slider = RangeSlider(ax=ax_intensity_slider, label="Intensity range",
+                                   valmin=vmin, valmax=vmax, valinit=(vmin, vmax), valfmt=valfmt)
 
-    ax_data.set_title(f'{slice_label} {cur_slice}')
+    # === Functions and controls for changing slice axis ===
+    def update_axis(i, new_axis):
+        if new_axis != state.slice_axes[i]:
+            orig = state.original_data[i]
+            state.slice_axes[i] = new_axis
+            new_data = np.moveaxis(orig, new_axis, 2)
+            state.data[i] = new_data
+            state.cur_slices[i] = new_data.shape[2] // 2
+            state.images[i].set_data(new_data[:, :, state.cur_slices[i]])
+            state.axes[i].set_title(f"{state.labels[i]} {state.cur_slices[i]}\nShape: {orig.shape}")
+            fig.canvas.draw_idle()
+
+    axis_buttons = []
+
+    def setup_axis_controls(decoupled):
+        nonlocal axis_buttons
+        for b in axis_buttons:
+            b.ax.clear()
+        axis_buttons.clear()
+        if not decoupled:
+            # Shared control
+            ax_shared = fig.add_subplot(gs[3, :])
+            buttons = RadioButtons(ax_shared, labels=["0", "1", "2"])
+            for label in buttons.labels: label.set_fontsize(8)
+            buttons.set_active(state.slice_axes[0])
+            def update_all_axes(label):
+                new_axis = int(label)
+                for i in range(n_volumes):
+                    update_axis(i, new_axis)
+            buttons.on_clicked(update_all_axes)
+            ax_shared.set_title("Slice axis")
+            axis_buttons.append(buttons)
+        else:
+            # Individual controls
+            for i in range(n_volumes):
+                ax_radio = fig.add_subplot(gs[3, i])
+                buttons = RadioButtons(ax_radio, labels=["0", "1", "2"])
+                for label in buttons.labels: label.set_fontsize(8)
+                buttons.set_active(state.slice_axes[i])
+                buttons.on_clicked(lambda label, i=i: update_axis(i, int(label)))
+                axis_buttons.append(buttons)
+
+    # === Create decoupling toggle and initial setup ===
+    if n_volumes == 1:
+        setup_axis_controls(False)
+    else:
+        ax_checkbox = fig.add_subplot(gs[4, 0])
+        cb = CheckButtons(ax_checkbox, labels=["Decouple slice axes"], actives=[not all_same_axis])
+        def toggle_decoupled(label):
+            for b in axis_buttons:
+                b.ax.remove()
+            axis_buttons.clear()
+            fig.canvas.draw_idle()
+            setup_axis_controls(cb.get_status()[0])
+        cb.on_clicked(toggle_decoupled)
+        setup_axis_controls(cb.get_status()[0])
+
+    # === Intensity slider callback ===
+    def update_intensity(val):
+        for img in state.images:
+            img.set_clim(val[0], val[1])
+        fig.canvas.draw_idle()
+
+    # === Slice slider callback ===
+    def update_slice(val):
+        new_slice = int(round(val))
+        for i, d in enumerate(state.data):
+            frac = new_slice / d.shape[2]
+            slice_idx = int(round(frac * d.shape[2]))
+            slice_idx = np.clip(slice_idx, 0, d.shape[2] - 1)
+            state.cur_slices[i] = slice_idx
+            state.images[i].set_data(d[:, :, slice_idx])
+            state.axes[i].set_title(f"{state.labels[i]} {slice_idx}\nShape: {state.original_data[i].shape}")
+        display_mean()
+        fig.canvas.draw_idle()
+
+    # === ROI statistics ===
+    def get_mask(data, x, y, r):
+        ny, nx = data.shape[:2]
+        xv, yv = np.meshgrid(np.arange(nx), np.arange(ny))
+        return (xv - x)**2 + (yv - y)**2 <= r**2
+
+    def display_mean():
+        if all(c is None for c in state.circles):
+            return
+        for i, circle in enumerate(state.circles):
+            if circle is None:
+                continue
+            x, y = circle.center
+            r = circle.get_radius()
+            mask = get_mask(state.data[i][:, :, state.cur_slices[i]], x, y, r)
+            values = state.data[i][:, :, state.cur_slices[i]][mask]
+            if values.size:
+                mean, std = np.mean(values), np.std(values)
+                state.text_boxes[i] = state.axes[i].text(0.05, 0.95,
+                    f"Mean: {mean:.3g}\nStd Dev: {std:.3g}",
+                    transform=state.axes[i].transAxes,
+                    fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
+        fig.canvas.draw_idle()
+
+    # === Mouse interaction for ROI drawing ===
+    def on_press(event):
+        if event.inaxes not in state.axes:
+            return
+        if hasattr(fig.canvas, 'toolbar') and getattr(fig.canvas.toolbar, 'mode', ''):
+            return
+        state.is_drawing = True
+        remove_existing_graphics()
+        for i, ax in enumerate(state.axes):
+            circ = plt.Circle((event.xdata, event.ydata), 0, color='red', lw=2, fill=False, alpha=1.0)
+            state.circles[i] = circ
+            ax.add_patch(circ)
+        fig.canvas.draw_idle()
+
+    def on_motion(event):
+        if not state.is_drawing or event.inaxes not in state.axes:
+            return
+        if hasattr(fig.canvas, 'toolbar') and getattr(fig.canvas.toolbar, 'mode', ''):
+            return
+        if event.xdata is not None and event.ydata is not None:
+            dx = event.xdata - state.circles[0].center[0]
+            dy = event.ydata - state.circles[0].center[1]
+            r = np.sqrt(dx**2 + dy**2)
+            for circ in state.circles:
+                if circ: circ.set_radius(r)
+        fig.canvas.draw_idle()
+
+    def on_release(event):
+        if event.inaxes not in state.axes:
+            return
+        if hasattr(fig.canvas, 'toolbar') and getattr(fig.canvas.toolbar, 'mode', ''):
+            return
+        state.is_drawing = False
+        display_mean()
+
+    def on_key(event):
+        if event.key == 'escape':
+            remove_existing_graphics()
+            fig.canvas.draw_idle()
+
+    # === Register events ===
+    fig.canvas.mpl_connect('button_press_event', on_press)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    fig.canvas.mpl_connect('button_release_event', on_release)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    slice_slider.on_changed(update_slice)
+    intensity_slider.on_changed(update_intensity)
 
     if show_instructions:
         fig.text(0.01, 0.85, 'Close plot\nto continue', rotation='vertical')
         fig.text(0.01, 0.3, 'Click and drag to select; esc to deselect.', rotation='vertical')
-
-    # Set up the callback functions for the sliders
-    def update_intensity(val):
-        # The val passed to a callback by the RangeSlider will
-        # be a tuple of (min, max), which are used to set vmin and vmax for both images.
-
-        # Update the image's colormap
-        im.norm.vmin = val[0]
-        im.norm.vmax = val[1]
-
-        if data2 is not None:
-            im2.norm.vmin = val[0]
-            im2.norm.vmax = val[1]
-
-        # Redraw the figure to ensure it updates
-        fig.canvas.draw_idle()
-
-    def update_slice(val):
-        # The val passed to a callback by the Slider is a single float.  We cast it to an int to index the slice.
-        global cur_slice, cur_slice2, ax_data, ax_data2
-        cur_slice = int(np.round(val))
-        im.set_data(data[:, :, cur_slice])
-        ax_data.set_title(f'{slice_label} {cur_slice}')
-        if data2 is not None:
-            slice_fraction = cur_slice / data.shape[2]
-            cur_slice2 = int(np.round(slice_fraction * data2.shape[2]))
-            im2.set_data(data2[:, :, cur_slice2])
-            ax_data2.set_title(f'{slice_label2} {cur_slice2}')
-
-        # Redraw the figure to ensure it updates
-        display_mean()
-        fig.canvas.draw_idle()
-
-    def on_button_press(event):
-        global circle, circle2, is_drawing, text_box, text_box2, ax_data, ax_data2
-        if event.inaxes != ax_data:
-            if data2 is None or event.inaxes != ax_data2:
-                return
-        # Check if zoom or pan tool is active
-        if event.canvas.toolbar.mode != '':
-            return
-        is_drawing = True
-        # Remove existing circle and text box if any
-        if circle is not None:
-            circle.remove()
-            circle = None
-        if circle2 is not None:
-            circle2.remove()
-            circle2 = None
-        if text_box is not None:
-            text_box.remove()
-            text_box = None
-        if text_box2 is not None:
-            text_box2.remove()
-            text_box2 = None
-        fig.canvas.draw_idle()
-        # Create a new circle at the click position with radius 0
-        circle = plt.Circle((event.xdata, event.ydata), 0, color='red', linewidth=2, fill=False, alpha=1.0)
-        ax_data.add_patch(circle)
-        if data2 is not None:
-            circle2 = plt.Circle((event.xdata, event.ydata), 0, color='red', linewidth=2, fill=False, alpha=1.0)
-            ax_data2.add_patch(circle2)
-        fig.canvas.draw_idle()
-
-    def on_motion_notify(event):
-        global circle, circle2, is_drawing, ax_data, ax_data2
-        if not is_drawing:
-            return
-        if (event.inaxes != ax_data and event.inaxes != ax_data2) or circle is None:
-            return
-        # Check if zoom or pan tool is active
-        if event.canvas.toolbar.mode != '':
-            return
-        # Update the radius of the circle based on mouse position
-        if event.xdata is not None and event.ydata is not None:
-            dx = event.xdata - circle.center[0]
-            dy = event.ydata - circle.center[1]
-            radius = np.sqrt(dx ** 2 + dy ** 2)
-            circle.set_radius(radius)
-            if circle2 is not None:
-                circle2.set_radius(radius)
-        fig.canvas.draw_idle()
-
-    def on_button_release(event):
-        global circle, is_drawing, ax_data, ax_data2
-        if event.inaxes != ax_data and event.inaxes != ax_data2:
-            return
-        # Check if zoom or pan tool is active
-        if event.canvas.toolbar.mode != '':
-            return
-        is_drawing = False
-        # if circle is None:
-        #     return
-        display_mean()
-
-    def get_mask(cur_data, center_x, center_y, radius):
-
-        # Get the image data dimensions
-        ny, nx = cur_data.shape[:2]
-        x = np.arange(nx)
-        y = np.arange(ny)
-        xv, yv = np.meshgrid(x, y)
-
-        # Calculate the distance from the circle center to each pixel
-        distances = np.sqrt((xv - center_x) ** 2 + (yv - center_y) ** 2)
-
-        # Create a mask for pixels inside the circle
-        mask = distances <= radius
-        return mask
-
-    def display_mean():
-        global circle, circle2, is_drawing, text_box, text_box2, cur_slice, cur_slice2, ax_data, ax_data2
-        # Compute mean and standard deviation of pixels inside the circle
-        if circle is None:
-            return
-        center_x, center_y = circle.center
-        # if center_x is None or center_y is None:
-        #     return
-        radius = circle.get_radius()
-        mask = get_mask(data, center_x, center_y, radius)
-
-        # Extract pixel values inside the circle
-        pixel_values = data[mask, cur_slice]
-
-        if text_box is not None:
-            text_box.remove()
-        if len(pixel_values) > 0:
-            # Calculate mean and standard deviation
-            mean_val = np.mean(pixel_values)
-            std_val = np.std(pixel_values)
-            # Display the text box with the results
-            text_str = f"Mean: {mean_val:.3g}\nStd Dev: {std_val:.3g}"
-            text_box = ax_data.text(0.05, 0.95, text_str, transform=ax_data.transAxes, fontsize=12,
-                                    verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
-
-        if data2 is not None:
-            if data2.shape != data.shape:
-                mask = get_mask(data2, center_x, center_y, radius)
-            pixel_values2 = data2[mask, cur_slice2]
-
-            if text_box2 is not None:
-                text_box2.remove()
-            if len(pixel_values2) > 0:
-                mean_val2 = np.mean(pixel_values2)
-                std_val2 = np.std(pixel_values2)
-                text_str2 = f"Mean: {mean_val2:.3g}\nStd Dev: {std_val2:.3g}"
-                text_box2 = ax_data2.text(0.05, 0.95, text_str2, transform=ax_data2.transAxes, fontsize=12,
-                                          verticalalignment='top', bbox=dict(facecolor='white', alpha=1.0))
-
-        fig.canvas.draw_idle()
-
-    def on_key_press(event):
-        global circle, circle2, text_box, text_box2
-        if event.key == 'escape':
-            # Remove the circle and text box if they exist
-            if circle is not None:
-                circle.remove()
-                circle = None
-            if circle2 is not None:
-                circle2.remove()
-                circle2 = None
-            if text_box is not None:
-                text_box.remove()
-                text_box = None
-            if text_box2 is not None:
-                text_box2.remove()
-                text_box2 = None
-            fig.canvas.draw_idle()
-
-    # Connect the event handlers to the figure
-    fig.canvas.mpl_connect('button_press_event', on_button_press)
-    fig.canvas.mpl_connect('motion_notify_event', on_motion_notify)
-    fig.canvas.mpl_connect('button_release_event', on_button_release)
-    fig.canvas.mpl_connect('key_press_event', on_key_press)
-
-    # Connect the sliders to the callback functions
-    intensity_slider.on_changed(update_intensity)
-    slice_slider.on_changed(update_slice)
 
     plt.tight_layout()
     plt.show()
