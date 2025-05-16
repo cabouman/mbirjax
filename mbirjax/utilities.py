@@ -3,12 +3,16 @@ import warnings
 
 import h5py
 import matplotlib.pyplot as plt
-import numpy
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider
-import mbirjax
+import mbirjax as mj
+import mbirjax.utilities as mju
+from matplotlib.widgets import Button, RadioButtons, RangeSlider
+import webview
+import json
+
 
 # Global variables to keep track of the circle, drawing state, and text box
 circle, circle2 = None, None
@@ -63,11 +67,11 @@ def slice_viewer(data, data2=None, title='', vmin=None, vmax=None, slice_label='
             data2 = data2.reshape(data2.shape + (1,))
 
     # Move the specified slice axis into the last position
-    data = numpy.moveaxis(data, slice_axis, 2)
+    data = np.moveaxis(data, slice_axis, 2)
     if data2 is not None:
         if slice_axis2 is None:
             slice_axis2 = slice_axis
-        data2 = numpy.moveaxis(data2, slice_axis2, 2)
+        data2 = np.moveaxis(data2, slice_axis2, 2)
         if slice_label2 is None:
             slice_label2 = slice_label
 
@@ -465,7 +469,7 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
     plt.tight_layout()
     plt.show()
 
-    figure_folder_name = mbirjax.make_figure_folder()
+    figure_folder_name = mj.make_figure_folder()
     os.makedirs(figure_folder_name, exist_ok=True)
     fig.savefig(os.path.join(figure_folder_name, fig_title + '_plots.png'), bbox_inches='tight')
 
@@ -561,3 +565,116 @@ def import_recon_from_hdf5(filename):
         'delta_pixel_image': delta_pixel_image,
         'alu_description': alu_description
     }
+
+
+class HDF5Browser:
+    def __init__(self):
+        self.filepaths = [None, None]
+        self.axis = 2
+        self.vmin = 0.0
+        self.vmax = 1.0
+        self.create_window()
+
+    def create_window(self):
+        html_content = '''
+        <html>
+        <body>
+            <h2>Select HDF5 Files</h2>
+            <button onclick="window.pywebview.api.select_file(0)">Select File 1</button>
+            <button onclick="window.pywebview.api.select_file(1)">Select File 2</button>
+            <br><br>
+            <h3>View Axis</h3>
+            <select id="axis">
+                <option value="0">0</option>
+                <option value="1">1</option>
+                <option value="2" selected>2</option>
+            </select>
+            <br><br>
+            <h3>Intensity Range</h3>
+            <label for="vmin">Min:</label>
+            <input type="number" id="vmin" value="0.0" step="0.1">
+            <br>
+            <label for="vmax">Max:</label>
+            <input type="number" id="vmax" value="1.0" step="0.1">
+            <br><br>
+            <button onclick="window.pywebview.api.view_slices()">View Slices</button>
+        </body>
+        </html>
+        '''
+
+        api = ApiHandler(self)
+        webview.create_window("HDF5 Browser", html=html_content, width=400, height=300, js_api=api)
+        webview.start()
+
+class ApiHandler:
+    def run_viewer(self, vmin, vmax, axis):
+        data1, data2 = None, None
+        if self.app.filepaths[0]:
+            data1 = mju.import_recon_from_hdf5(self.app.filepaths[0])['recon']
+        if self.app.filepaths[1]:
+            data2 = mju.import_recon_from_hdf5(self.app.filepaths[1])['recon']
+
+        print("Running viewer with vmin:", vmin, "vmax:", vmax, "axis:", axis)
+        mju.slice_viewer(data1, data2, vmin=vmin, vmax=vmax, slice_axis=axis)
+    def __init__(self, app):
+        self.app = app
+
+    def select_file(self, index):
+        file_path = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG, file_types=("HDF5 Files (*.h5)",))
+        if file_path:
+            self.app.filepaths[index] = file_path[0]
+            print(f"Selected file {index + 1}: {self.app.filepaths[index]}")
+
+    def view_slices(self):
+        window = webview.windows[0]
+        axis = int(window.evaluate_js("document.getElementById('axis').value"))
+        vmin = float(window.evaluate_js("document.getElementById('vmin').value"))
+        vmax = float(window.evaluate_js("document.getElementById('vmax').value"))
+
+        data1, data2 = None, None
+        if self.app.filepaths[0]:
+            data1 = mju.import_recon_from_hdf5(self.app.filepaths[0])['recon']
+        if self.app.filepaths[1]:
+            data2 = mju.import_recon_from_hdf5(self.app.filepaths[1])['recon']
+
+        print("Viewing slices with vmin:", vmin, "vmax:", vmax, "axis:", axis)
+
+        # Run the viewer on the main thread
+        webview.windows[0].evaluate_js(f"window.pywebview.api.run_viewer({vmin}, {vmax}, {axis})")
+        import threading
+
+        def run_viewer():
+            window = webview.windows[0]
+            axis = int(window.evaluate_js("document.getElementById('axis').value"))
+            vmin = float(window.evaluate_js("document.getElementById('vmin').value"))
+            vmax = float(window.evaluate_js("document.getElementById('vmax').value"))
+
+            data1, data2 = None, None
+            if self.app.filepaths[0]:
+                data1 = mju.import_recon_from_hdf5(self.app.filepaths[0])['recon']
+            if self.app.filepaths[1]:
+                data2 = mju.import_recon_from_hdf5(self.app.filepaths[1])['recon']
+
+            print("Viewing slices with vmin:", vmin, "vmax:", vmax, "axis:", axis)
+            mju.slice_viewer(data1, data2, vmin=vmin, vmax=vmax, slice_axis=axis)
+
+        threading.Thread(target=run_viewer).start()
+        window = webview.windows[0]
+        axis = int(window.evaluate_js("document.getElementById('axis').value"))
+        vmin = float(window.evaluate_js("document.getElementById('vmin').value"))
+        vmax = float(window.evaluate_js("document.getElementById('vmax').value"))
+
+        data1, data2 = None, None
+        if self.app.filepaths[0]:
+            data1_dict = mju.import_recon_from_hdf5(self.app.filepaths[0])
+        data1 = data1_dict['recon'] if 'recon' in data1_dict else None
+        if data1 is None:
+            print(f"Warning: 'recon' dataset not found in {self.app.filepaths[0]}")
+        if self.app.filepaths[1]:
+            data2_dict = mju.import_recon_from_hdf5(self.app.filepaths[1])
+        data2 = data2_dict['recon'] if 'recon' in data2_dict else None
+        if data2 is None:
+            print(f"Warning: 'recon' dataset not found in {self.app.filepaths[1]}")
+
+        print("Viewing slices with vmin:", vmin, "vmax:", vmax, "axis:", axis)
+        mju.slice_viewer(data1, data2, vmin=vmin, vmax=vmax, slice_axis=axis)
