@@ -18,5 +18,7 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 
    .. rubric:: **Functions:**
 
-   .. autosummary:: **Functions:**
+   .. autosummary::
+
+      mbirjax.plot_utils.slice_viewer
 
