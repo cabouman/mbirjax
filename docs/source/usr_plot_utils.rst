@@ -10,15 +10,9 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 .. image:: https://www.math.purdue.edu/~buzzard/images/slice_viewer_demo.gif
    :alt: An animated image of the slice viewer.
 
-.. automodule:: mbirjax.plot_utils
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: bysource
+Display Functions
+-----------------
 
-   .. rubric:: **Functions:**
-
-   .. autosummary::
-
-      mbirjax.plot_utils.slice_viewer
+.. automethod::
+   mbirjax.plot_utils.slice_viewer
 
