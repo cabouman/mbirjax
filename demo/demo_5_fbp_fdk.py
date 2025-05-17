@@ -26,7 +26,7 @@ Select a GPU as runtime type for best performance.
 import numpy as np
 import time
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
@@ -59,9 +59,9 @@ sinogram_shape = (num_views, num_det_rows, num_det_channels)
 angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
 if geometry_type == 'cone':
-    ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 elif geometry_type == 'parallel':
-    ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
 else:
     raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -76,16 +76,16 @@ sinogram = np.asarray(sinogram)
 
 # View sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
-mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
+mj.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
 # ####################
 # Initialize the model for reconstruction.
 if geometry_type == 'cone':
-    ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 elif geometry_type == 'parallel':
-    ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
 else:
     raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -117,13 +117,13 @@ print('NRMSE between recon and phantom = {}'.format(nrmse))
 print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
 print('95% of recon pixels are within {} of phantom'.format(pct_95))
 
-mbirjax.get_memory_stats()
+mj.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = (f"Phantom (left) vs {'FDK' if geometry_type == 'cone' else 'FBP'} Recon (right). "
          f"Filter used: ramp. \nUse the sliders to change the slice or adjust the intensity range.")
 
-mbirjax.slice_viewer(phantom, recon, title=title)
+mj.slice_viewer(phantom, recon, title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
