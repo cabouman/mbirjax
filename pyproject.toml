@@ -30,7 +30,8 @@ dependencies = [
     "tifffile",
     "h5py",
     "dm-pix",
-    "tqdm"
+    "tqdm",
+    "pywebview"
 ]
 
 [project.optional-dependencies]
