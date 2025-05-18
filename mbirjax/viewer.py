@@ -188,8 +188,8 @@ class SliceViewer:
         if all(c is None for c in self.circles):
             return
         for i, circle in enumerate(self.circles):
-            if circle is None:
-                continue
+            if circle is None or self._is_drawing or self._is_moving:
+                self.tooltips[i].set_visible(False)
             x, y = circle.center
             r = circle.get_radius()
             mask = self._get_mask(self.data[i][:, :, self.cur_slices[i]], x, y, r)
