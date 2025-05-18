@@ -78,9 +78,7 @@ class SliceViewer:
         self._add_axis_controls()
         self._connect_events()
 
-        if self.show_instructions:
-            self.fig.text(0.01, 0.85, 'Close plot\nto continue', rotation='vertical')
-            self.fig.text(0.01, 0.3, 'Click and drag to select; esc to deselect.', rotation='vertical')
+        self.fig.text(0.01, 0.85, 'Close plot\nto continue', rotation='vertical')
 
     def _draw_images(self):
         self.axes = []
@@ -198,6 +196,8 @@ class SliceViewer:
             values = self.data[i][:, :, self.cur_slices[i]][mask]
             if values.size:
                 mean, std = np.mean(values), np.std(values)
+                if self.text_boxes[i]:
+                    self.text_boxes[i].remove()
                 self.text_boxes[i] = self.axes[i].text(0.05, 0.95,
                     f"Mean: {mean:.3g}\nStd Dev: {std:.3g}",
                     transform=self.axes[i].transAxes,
@@ -208,15 +208,35 @@ class SliceViewer:
         for item in self.circles + self.text_boxes:
             if item is not None:
                 item.remove()
+        for tip in getattr(self, 'tooltips', []):
+            tip.set_visible(False)
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
 
     def _connect_events(self):
+        self._is_moving = False
+        self._move_offset = None
+        self.tooltips = [ax.annotate('Click and drag to move\nPress Esc to remove', xy=(0, 0), xytext=(10, 10),
+                                     textcoords='offset points', bbox=dict(boxstyle='round', fc='w'),
+                                     arrowprops=dict(arrowstyle='->'), visible=False)
+                         for ax in self.axes]
         self._drag_start = None
         self._is_drawing = False  # Add a flag to track drawing state
         def on_press(event):
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
+            for i, circle in enumerate(self.circles):
+                if circle is None: continue
+                x, y = circle.center
+                r = circle.get_radius()
+                if event.xdata is not None and event.ydata is not None:
+                    dx = event.xdata - x
+                    dy = event.ydata - y
+                    if dx**2 + dy**2 <= r**2:
+                        self._is_moving = True
+                        self._move_offset = (dx, dy)
+                        return
+
             self._remove_graphics()
             self._is_drawing = True
             self._drag_start = (event.xdata, event.ydata)
@@ -227,10 +247,23 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
         def on_motion(event):
-            if not self._is_drawing or self._drag_start is None: return
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
-            if event.xdata is not None and event.ydata is not None:
+
+            for i, circle in enumerate(self.circles):
+                if circle is None: continue
+                x, y = circle.center
+                r = circle.get_radius()
+                if event.xdata is not None and event.ydata is not None:
+                    dx = event.xdata - x
+                    dy = event.ydata - y
+                    if dx**2 + dy**2 <= r**2:
+                        self.tooltips[i].xy = (event.xdata, event.ydata)
+                        self.tooltips[i].set_visible(True)
+                    else:
+                        self.tooltips[i].set_visible(False)
+
+            if self._is_drawing and self._drag_start is not None:
                 x0, y0 = self._drag_start
                 r = np.sqrt((event.xdata - x0)**2 + (event.ydata - y0)**2)
                 for i, ax in enumerate(self.axes):
@@ -239,16 +272,34 @@ class SliceViewer:
                     circ = plt.Circle((x0, y0), r, color='red', lw=2, fill=False, alpha=1.0)
                     self.circles[i] = circ
                     ax.add_patch(circ)
-                self.fig.canvas.draw_idle()
+                self._display_mean()
+
+            elif getattr(self, '_is_moving', False):
+                dx, dy = self._move_offset
+                new_center = (event.xdata - dx, event.ydata - dy)
+                for j in range(self.n_volumes):
+                    self.circles[j].center = new_center
+                self._display_mean()
+
+            self.fig.canvas.draw_idle()
 
         def on_release(event):
+            if getattr(self, '_is_moving', False):
+                self._is_moving = False
+                self._move_offset = None
             self._is_drawing = False
             self._drag_start = None
             self._display_mean()
 
         def on_key(event):
             if event.key == 'escape':
+                for i in range(self.n_volumes):
+                    if self.text_boxes[i] is not None:
+                        self.text_boxes[i].remove()
+                self.text_boxes = [None] * self.n_volumes
                 self._remove_graphics()
+                self.circles = [None] * self.n_volumes
+                self._display_mean()
                 self.fig.canvas.draw_idle()
 
         self.fig.canvas.mpl_connect('button_press_event', on_press)
