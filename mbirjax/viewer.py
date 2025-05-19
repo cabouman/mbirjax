@@ -4,6 +4,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 
+
 class SliceViewer:
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
@@ -39,7 +40,7 @@ class SliceViewer:
             self.slice_axes = list(self.slice_axis)
 
         if isinstance(self.slice_label, str) or self.slice_label is None:
-            self.labels = [f"Slice {i+1}" if self.slice_label is None else self.slice_label
+            self.labels = [f"Slice {i + 1}" if self.slice_label is None else self.slice_label
                            for i in range(self.n_volumes)]
         else:
             self.labels = list(self.slice_label)
@@ -67,18 +68,21 @@ class SliceViewer:
             self.vmax += scale
 
     def _build_figure(self):
+        self._show_help = False  # Toggleable help overlay
         figwidth = 6 * self.n_volumes
         self.fig = plt.figure(figsize=(figwidth, 8))
         self.fig.suptitle(self.title)
-        self.gs = gridspec.GridSpec(nrows=5, ncols=self.n_volumes, height_ratios=[10, 1, 1, 1, 1])
+        self.gs = gridspec.GridSpec(nrows=5, ncols=self.n_volumes, height_ratios=[15, 1, 1, 1, 1])
 
         self._draw_images()
         self._add_slice_slider()
         self._add_intensity_slider()
         self._add_axis_controls()
         self._connect_events()
+        self._resize_index = None
+        self._resize_anchor = None
 
-        self.fig.text(0.01, 0.85, 'Close plot\nto continue', rotation='vertical')
+        self.fig.text(0.01, 0.95, 'Close plot\nto continue')
 
     def _draw_images(self):
         self.axes = []
@@ -97,14 +101,14 @@ class SliceViewer:
             self.images.append(img)
 
     def _add_slice_slider(self):
-        ax = self.fig.add_subplot(self.gs[1, :])
+        ax = self.fig.add_subplot(self.gs[3, :])
         self.slice_slider = Slider(ax, label="Slice", valmin=0,
                                    valmax=max(d.shape[2] for d in self.data) - 1,
                                    valinit=self.cur_slices[0], valfmt='%0.0f')
         self.slice_slider.on_changed(self._update_slice)
 
     def _add_intensity_slider(self):
-        ax = self.fig.add_subplot(self.gs[2, :])
+        ax = self.fig.add_subplot(self.gs[4, :])
         log_range = np.log10(self.vmax - self.vmin)
         digits = max(-int(np.round(log_range)) + 2, 0)
         valfmt = '%0.' + str(digits) + 'f'
@@ -114,13 +118,15 @@ class SliceViewer:
         self.intensity_slider.on_changed(self._update_intensity)
 
     def _add_axis_controls(self):
+        self._axis_controls_visible = True
         self.axis_buttons = []
         all_same = all(ax == self.slice_axes[0] for ax in self.slice_axes)
 
         if self.n_volumes == 1:
             self._create_axis_buttons(False)
         else:
-            self.cb_ax = self.fig.add_subplot(self.gs[4, 0])
+            # self.cb_ax = self.fig.add_axes([0.01, 0.4, 0.2, 0.04])
+            self.cb_ax = self.fig.add_subplot(self.gs[1, 0])
             self.cb = CheckButtons(self.cb_ax, labels=["Decouple slice axes"], actives=[not all_same])
             self.cb.on_clicked(self._toggle_decouple)
             self._create_axis_buttons(not all_same)
@@ -131,23 +137,26 @@ class SliceViewer:
         self.axis_buttons.clear()
 
         if not decoupled:
-            ax = self.fig.add_subplot(self.gs[3, :])
-            btns = RadioButtons(ax, labels=["0", "1", "2"])
+            ax = self.fig.add_subplot(self.gs[2, 0])
+            ax.set_title("Slice axis", loc='left', fontsize=9)
+            btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
             for lbl in btns.labels: lbl.set_fontsize(8)
             btns.set_active(self.slice_axes[0])
             btns.on_clicked(lambda label: [self._update_axis(i, int(label)) for i in range(self.n_volumes)])
-            ax.set_title("Slice axis")
             self.axis_buttons.append(btns)
         else:
             for i in range(self.n_volumes):
-                ax = self.fig.add_subplot(self.gs[3, i])
-                btns = RadioButtons(ax, labels=["0", "1", "2"])
+                ax = self.fig.add_subplot(self.gs[2, i])
+                ax.set_title("Slice axis", loc='left', fontsize=9)
+                btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
                 for lbl in btns.labels: lbl.set_fontsize(8)
                 btns.set_active(self.slice_axes[i])
                 btns.on_clicked(lambda label, i=i: self._update_axis(i, int(label)))
                 self.axis_buttons.append(btns)
 
     def _toggle_decouple(self, label):
+        if not self._axis_controls_visible:
+            return
         self._create_axis_buttons(self.cb.get_status()[0])
         self.fig.canvas.draw_idle()
 
@@ -182,7 +191,7 @@ class SliceViewer:
     def _get_mask(self, data, x, y, r):
         ny, nx = data.shape[:2]
         xv, yv = np.meshgrid(np.arange(nx), np.arange(ny))
-        return (xv - x)**2 + (yv - y)**2 <= r**2
+        return (xv - x) ** 2 + (yv - y) ** 2 <= r ** 2
 
     def _display_mean(self):
         if all(c is None for c in self.circles):
@@ -199,9 +208,9 @@ class SliceViewer:
                 if self.text_boxes[i]:
                     self.text_boxes[i].remove()
                 self.text_boxes[i] = self.axes[i].text(0.05, 0.95,
-                    f"Mean: {mean:.3g}\nStd Dev: {std:.3g}",
-                    transform=self.axes[i].transAxes,
-                    fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
+                                                       f"Mean: {mean:.3g}\nStd Dev: {std:.3g}",
+                                                       transform=self.axes[i].transAxes,
+                                                       fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
         self.fig.canvas.draw_idle()
 
     def _remove_graphics(self):
@@ -213,18 +222,55 @@ class SliceViewer:
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
 
+    def _toggle_axis_controls(self, label):
+        self._axis_controls_visible = not self._axis_controls_visible
+        for b in self.axis_buttons:
+            b.ax.set_visible(self._axis_controls_visible)
+        if hasattr(self, 'cb_ax'):
+            self.cb_ax.set_visible(self._axis_controls_visible)
+        self.fig.canvas.draw_idle()
+
     def _connect_events(self):
+        def toggle_help():
+            self._show_help = not self._show_help
+            if self._show_help:
+                self.help_overlay = self.fig.text(0.5, 0.5,
+                                                  "Keys:\n[a] Toggle axis controls\n[esc] Remove ROI",
+                                                  ha='center', va='center', fontsize=12,
+                                                  bbox=dict(facecolor='white', alpha=0.8), zorder=10)
+            else:
+                if hasattr(self, 'help_overlay') and self.help_overlay:
+                    self.help_overlay.remove()
+                    self.help_overlay = None
+            self.fig.canvas.draw_idle()
+
         self._is_moving = False
         self._move_offset = None
-        self.tooltips = [ax.annotate('Click and drag to move\nPress Esc to remove', xy=(0, 0), xytext=(10, 10),
-                                     textcoords='offset points', bbox=dict(boxstyle='round', fc='w'),
-                                     arrowprops=dict(arrowstyle='->'), visible=False)
-                         for ax in self.axes]
+        tooltip_text = (
+                "Click and drag to move" + chr(10) +
+                "Click edge to resize" + chr(10) +
+                "Press Esc to remove"
+        )
+        self.tooltips = [
+            ax.annotate(
+                tooltip_text,
+                xy=(0, 0), xytext=(10, 10), textcoords='offset points',
+                ha='left', fontsize=9,
+                bbox=dict(boxstyle='round', fc='w'),
+                arrowprops=dict(arrowstyle='->'),
+                visible=False
+            ) for ax in self.axes
+        ]
         self._drag_start = None
         self._is_drawing = False  # Add a flag to track drawing state
+
         def on_press(event):
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
+
+            self._resize_index = None
+            self._resize_anchor = None
+
             for i, circle in enumerate(self.circles):
                 if circle is None: continue
                 x, y = circle.center
@@ -232,7 +278,12 @@ class SliceViewer:
                 if event.xdata is not None and event.ydata is not None:
                     dx = event.xdata - x
                     dy = event.ydata - y
-                    if dx**2 + dy**2 <= r**2:
+                    dist = np.sqrt(dx ** 2 + dy ** 2)
+                    if abs(dist - r) <= 0.1 * r:
+                        self._resize_index = i
+                        self._resize_anchor = (x, y)
+                        return
+                    elif dx ** 2 + dy ** 2 <= r ** 2:
                         self._is_moving = True
                         self._move_offset = (dx, dy)
                         return
@@ -257,9 +308,13 @@ class SliceViewer:
                 if event.xdata is not None and event.ydata is not None:
                     dx = event.xdata - x
                     dy = event.ydata - y
-                    if dx**2 + dy**2 <= r**2:
-                        self.tooltips[i].xy = (event.xdata, event.ydata)
-                        self.tooltips[i].set_visible(True)
+                    dist2 = dx**2 + dy**2
+                    if not (self._is_drawing or self._is_moving or self._resize_index is not None):
+                        if dist2 <= (1.1 * r) ** 2:
+                            self.tooltips[i].xy = (event.xdata, event.ydata)
+                            self.tooltips[i].set_visible(True)
+                        else:
+                            self.tooltips[i].set_visible(False)
                     else:
                         self.tooltips[i].set_visible(False)
 
@@ -281,18 +336,28 @@ class SliceViewer:
                     self.circles[j].center = new_center
                 self._display_mean()
 
+            elif self._resize_index is not None and self._resize_anchor is not None:
+                x0, y0 = self._resize_anchor
+                new_radius = np.sqrt((event.xdata - x0)**2 + (event.ydata - y0)**2)
+                for j in range(self.n_volumes):
+                    self.circles[j].set_radius(new_radius)
+                self._display_mean()
+
             self.fig.canvas.draw_idle()
 
         def on_release(event):
-            if getattr(self, '_is_moving', False):
-                self._is_moving = False
-                self._move_offset = None
+            self._is_moving = False
+            self._move_offset = None
+            self._resize_index = None
+            self._resize_anchor = None
             self._is_drawing = False
             self._drag_start = None
             self._display_mean()
 
         def on_key(event):
-            if event.key == 'escape':
+            if event.key == 'a':
+                toggle_help()
+            elif event.key == 'escape':
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
