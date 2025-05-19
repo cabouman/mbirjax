@@ -5,6 +5,26 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 
 
+# === CONSTANTS ===
+TOOLTIP_FONT_SIZE = 9
+TOOLTIP_BOX_ALPHA = 0.9
+TOOLTIP_OFFSET = (10, 10)
+TOOLTIP_TEXT = (
+    "Click and drag to move" + chr(10) +
+    "Click edge to resize" + chr(10) +
+    "Press Esc to remove"
+)
+
+CIRCLE_COLOR = 'red'
+CIRCLE_LINEWIDTH = 2
+CIRCLE_ALPHA = 1.0
+CIRCLE_FILL = False
+
+SLICE_AXIS_FONT_SIZE = 9
+SLICE_AXIS_LABEL_FONT_SIZE = 8
+SLICE_AXIS_RADIO_SIZE = 30
+
+
 class SliceViewer:
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
@@ -138,9 +158,9 @@ class SliceViewer:
 
         if not decoupled:
             ax = self.fig.add_subplot(self.gs[2, 0])
-            ax.set_title("Slice axis", loc='left', fontsize=9)
-            btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
-            for lbl in btns.labels: lbl.set_fontsize(8)
+            ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
+            btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [SLICE_AXIS_RADIO_SIZE]})
+            for lbl in btns.labels: lbl.set_fontsize(SLICE_AXIS_LABEL_FONT_SIZE)
             btns.set_active(self.slice_axes[0])
             btns.on_clicked(lambda label: [self._update_axis(i, int(label)) for i in range(self.n_volumes)])
             self.axis_buttons.append(btns)
@@ -231,7 +251,7 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _create_circle(self, center, radius):
-        return plt.Circle(center, radius, color='red', lw=2, fill=False, alpha=1.0)
+        return plt.Circle(center, radius, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH, fill=CIRCLE_FILL, alpha=CIRCLE_ALPHA)
 
     def _connect_events(self):
         def toggle_help():
@@ -249,17 +269,13 @@ class SliceViewer:
 
         self._is_moving = False
         self._move_offset = None
-        tooltip_text = (
-                "Click and drag to move" + chr(10) +
-                "Click edge to resize" + chr(10) +
-                "Press Esc to remove"
-        )
+        tooltip_text = TOOLTIP_TEXT
         self.tooltips = [
             ax.annotate(
                 tooltip_text,
-                xy=(0, 0), xytext=(10, 10), textcoords='offset points',
-                ha='left', fontsize=9,
-                bbox=dict(boxstyle='round', fc='w'),
+                xy=(0, 0), xytext=TOOLTIP_OFFSET, textcoords='offset points',
+                ha='left', fontsize=TOOLTIP_FONT_SIZE,
+                bbox=dict(boxstyle='round', fc='w', alpha=TOOLTIP_BOX_ALPHA),
                 arrowprops=dict(arrowstyle='->'),
                 visible=False
             ) for ax in self.axes
