@@ -230,6 +230,9 @@ class SliceViewer:
             self.cb_ax.set_visible(self._axis_controls_visible)
         self.fig.canvas.draw_idle()
 
+    def _create_circle(self, center, radius):
+        return plt.Circle(center, radius, color='red', lw=2, fill=False, alpha=1.0)
+
     def _connect_events(self):
         def toggle_help():
             self._show_help = not self._show_help
@@ -292,7 +295,7 @@ class SliceViewer:
             self._is_drawing = True
             self._drag_start = (event.xdata, event.ydata)
             for i, ax in enumerate(self.axes):
-                circ = plt.Circle((event.xdata, event.ydata), 0, color='red', lw=2, fill=False, alpha=1.0)
+                circ = self._create_circle((event.xdata, event.ydata), 0)
                 self.circles[i] = circ
                 ax.add_patch(circ)
             self.fig.canvas.draw_idle()
@@ -311,7 +314,7 @@ class SliceViewer:
                     dist2 = dx**2 + dy**2
                     if not (self._is_drawing or self._is_moving or self._resize_index is not None):
                         if dist2 <= (1.1 * r) ** 2:
-                            self.tooltips[i].xy = (event.xdata, event.ydata)
+                            self.tooltips[i].xy = self.circles[i].center
                             self.tooltips[i].set_visible(True)
                         else:
                             self.tooltips[i].set_visible(False)
@@ -324,7 +327,7 @@ class SliceViewer:
                 for i, ax in enumerate(self.axes):
                     if self.circles[i]:
                         self.circles[i].remove()
-                    circ = plt.Circle((x0, y0), r, color='red', lw=2, fill=False, alpha=1.0)
+                    circ = self._create_circle((x0, y0), r)
                     self.circles[i] = circ
                     ax.add_patch(circ)
                 self._display_mean()
