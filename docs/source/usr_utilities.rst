@@ -18,9 +18,8 @@ Display Functions
 IO Functions
 ------------
 
-.. automethod::
-      mbirjax.utilities.export_recon_to_hdf5
+.. autofunction::
+   mbirjax.utilities.export_recon_to_hdf5
 
-.. automethod::
-      mbirjax.utilities.import_recon_from_hdf5
-
+.. autofunction::
+   mbirjax.utilities.import_recon_from_hdf5
