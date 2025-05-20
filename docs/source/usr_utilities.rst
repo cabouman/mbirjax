@@ -23,3 +23,6 @@ IO Functions
 
 .. autofunction::
    mbirjax.utilities.import_recon_from_hdf5
+
+.. autofunction::
+   mbirjax.utilities.download_and_extract_tar
