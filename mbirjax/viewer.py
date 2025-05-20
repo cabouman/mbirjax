@@ -40,11 +40,12 @@ class SliceViewer:
 
         self.original_data = []
         self.data = []
-        self.slice_axes = []
+        self.axes_perms = np.zeros(0).astype(int)
         self.labels = []
         self.cur_slices = []
-        self.axes = []
-        self.images = []
+        self.axes = [None] * self.n_volumes
+        self.caxes = [None] * self.n_volumes
+        self.images = [None] * self.n_volumes
         self.circles = []
         self.text_boxes = []
         self.axis_buttons = []
@@ -53,11 +54,16 @@ class SliceViewer:
         self._prepare_data()
         self._build_figure()
 
+    @staticmethod
+    def _get_perm_from_slice_ind(s):
+        return list({0, 1, 2} - {s}) + [s]
+
     def _normalize_inputs(self):
         if isinstance(self.slice_axis, int) or self.slice_axis is None:
-            self.slice_axes = [2 if self.slice_axis is None else self.slice_axis] * self.n_volumes
+            slice_axes = [2 if self.slice_axis is None else self.slice_axis] * self.n_volumes
         else:
-            self.slice_axes = list(self.slice_axis)
+            slice_axes = list(self.slice_axis)
+        self.axes_perms = np.array([self._get_perm_from_slice_ind(s) for s in slice_axes]).astype(int)
 
         if isinstance(self.slice_label, str) or self.slice_label is None:
             self.labels = [f"Slice {i + 1}" if self.slice_label is None else self.slice_label
@@ -70,17 +76,17 @@ class SliceViewer:
         for i, data in enumerate(self.datasets):
             if data.ndim == 2:
                 data = data[..., np.newaxis]
+                self.original_data[i] = data
             elif data.ndim != 3:
                 raise ValueError("Each input data must be a 2D or 3D array")
-            data = np.moveaxis(data, self.slice_axes[i], 2)
+            data = np.transpose(data, self.axes_perms[i])
             self.data.append(data)
 
         self.cur_slices = [d.shape[2] // 2 for d in self.data]
-        all_data = np.concatenate([d.ravel() for d in self.data])
         if self.vmin is None:
-            self.vmin = np.min(all_data)
+            self.vmin = np.min([np.min(d) for d in self.data])
         if self.vmax is None:
-            self.vmax = np.max(all_data)
+            self.vmax = np.max([np.max(d) for d in self.data])
         if self.vmin == self.vmax:
             eps = 1e-6
             scale = np.clip(eps * np.abs(self.vmax), a_min=eps, a_max=None)
@@ -105,20 +111,36 @@ class SliceViewer:
         self.fig.text(0.01, 0.95, 'Close plot\nto continue')
 
     def _draw_images(self):
-        self.axes = []
-        self.images = []
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
         for i, d in enumerate(self.data):
+            if len(self.axes) > i and self.axes[i]:
+                self.axes[i].remove()
+                self.caxes[i].remove()
             ax = self.fig.add_subplot(self.gs[0, i])
             img = ax.imshow(d[:, :, self.cur_slices[i]], cmap=self.cmap,
+                            aspect='equal',
                             vmin=self.vmin, vmax=self.vmax)
-            ax.set_title(f"{self.labels[i]} {self.cur_slices[i]}\nShape: {self.datasets[i].shape}")
+            ax.set_title(f"{self.labels[i]} {self.cur_slices[i]}" + chr(10) + f"Shape: {self.datasets[i].shape}")
             divider = make_axes_locatable(ax)
             cax = divider.append_axes('right', size='5%', pad=0.05)
             self.fig.colorbar(img, cax=cax, orientation='vertical')
-            self.axes.append(ax)
-            self.images.append(img)
+
+            self.axes[i] = ax
+            self.caxes[i] = cax
+            self.images[i] = img
+
+        # Rebuild tooltips to match updated axes
+        self.tooltips = [
+            ax.annotate(
+                TOOLTIP_TEXT,
+                xy=(0, 0), xytext=TOOLTIP_OFFSET, textcoords='offset points',
+                ha='left', fontsize=TOOLTIP_FONT_SIZE,
+                bbox=dict(boxstyle='round', fc='w', alpha=TOOLTIP_BOX_ALPHA),
+                arrowprops=dict(arrowstyle='->'),
+                visible=False
+            ) for ax in self.axes
+        ]
 
     def _add_slice_slider(self):
         ax = self.fig.add_subplot(self.gs[3, :])
@@ -138,9 +160,8 @@ class SliceViewer:
         self.intensity_slider.on_changed(self._update_intensity)
 
     def _add_axis_controls(self):
-        self._axis_controls_visible = True
         self.axis_buttons = []
-        all_same = all(ax == self.slice_axes[0] for ax in self.slice_axes)
+        all_same = all(ax_ind == self.axes_perms[0, -1] for ax_ind in self.axes_perms[:, -1])
 
         if self.n_volumes == 1:
             self._create_axis_buttons(False)
@@ -161,7 +182,9 @@ class SliceViewer:
             ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
             btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [SLICE_AXIS_RADIO_SIZE]})
             for lbl in btns.labels: lbl.set_fontsize(SLICE_AXIS_LABEL_FONT_SIZE)
-            btns.set_active(self.slice_axes[0])
+            btns.set_active(int(self.axes_perms[0, -1]))
+            for i in range(self.n_volumes):
+                self._update_axis(i, int(self.axes_perms[0, -1]))
             btns.on_clicked(lambda label: [self._update_axis(i, int(label)) for i in range(self.n_volumes)])
             self.axis_buttons.append(btns)
         else:
@@ -170,25 +193,40 @@ class SliceViewer:
                 ax.set_title("Slice axis", loc='left', fontsize=9)
                 btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
                 for lbl in btns.labels: lbl.set_fontsize(8)
-                btns.set_active(self.slice_axes[i])
-                btns.on_clicked(lambda label, i=i: self._update_axis(i, int(label)))
+                btns.set_active(int(self.axes_perms[i, -1]))
+                btns.on_clicked(lambda label, index=i: self._update_axis(index, int(label)))
                 self.axis_buttons.append(btns)
 
     def _toggle_decouple(self, label):
-        if not self._axis_controls_visible:
-            return
         self._create_axis_buttons(self.cb.get_status()[0])
+        self._update_slice_slider()
+
+    def _update_slice_slider(self):
+        # Update slice slider max if any volume changed depth
+        new_max = max(d.shape[2] for d in self.data) - 1
+        self.slice_slider.valmax = new_max
+        self.slice_slider.ax.set_xlim(self.slice_slider.valmin, new_max)
+        self.slice_slider.set_val(self.cur_slices[0])
         self.fig.canvas.draw_idle()
 
     def _update_axis(self, i, new_axis):
-        if new_axis != self.slice_axes[i]:
+        if new_axis != self.axes_perms[i, -1]:
             orig = self.original_data[i]
-            self.slice_axes[i] = new_axis
-            new_data = np.moveaxis(orig, new_axis, 2)
+            prev_slice_axis = self.axes_perms[i, -1]
+            prev_fraction = self.cur_slices[i] / orig.shape[prev_slice_axis]
+            new_perm = self._get_perm_from_slice_ind(new_axis)
+            self.axes_perms[i] = new_perm
+            new_data = np.transpose(orig, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = new_data.shape[2] // 2
+            self.cur_slices[i] = int(np.round(prev_fraction * orig.shape[new_axis]))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
+            self.axes[i].set_xlim(0, new_data.shape[1])
+            self.axes[i].set_ylim(new_data.shape[0], 0)
+            self.axes[i].set_aspect('equal')
             self.axes[i].set_title(f"{self.labels[i]} {self.cur_slices[i]}\nShape: {orig.shape}")
+            self._draw_images()
+            self._update_slice_slider()
+            plt.tight_layout()
             self.fig.canvas.draw_idle()
 
     def _update_slice(self, val):
@@ -242,14 +280,6 @@ class SliceViewer:
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
 
-    def _toggle_axis_controls(self, label):
-        self._axis_controls_visible = not self._axis_controls_visible
-        for b in self.axis_buttons:
-            b.ax.set_visible(self._axis_controls_visible)
-        if hasattr(self, 'cb_ax'):
-            self.cb_ax.set_visible(self._axis_controls_visible)
-        self.fig.canvas.draw_idle()
-
     def _create_circle(self, center, radius):
         return plt.Circle(center, radius, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH, fill=CIRCLE_FILL, alpha=CIRCLE_ALPHA)
 
@@ -269,10 +299,9 @@ class SliceViewer:
 
         self._is_moving = False
         self._move_offset = None
-        tooltip_text = TOOLTIP_TEXT
         self.tooltips = [
             ax.annotate(
-                tooltip_text,
+                TOOLTIP_TEXT,
                 xy=(0, 0), xytext=TOOLTIP_OFFSET, textcoords='offset points',
                 ha='left', fontsize=TOOLTIP_FONT_SIZE,
                 bbox=dict(boxstyle='round', fc='w', alpha=TOOLTIP_BOX_ALPHA),
