@@ -52,6 +52,7 @@ import os
 
 
 class SliceViewer:
+    _syncing_limits = False
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
         self.datasets = datasets
@@ -141,6 +142,36 @@ class SliceViewer:
     def _draw_images(self):
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
+
+        def on_xlim_changed(ax):
+            def callback(lim):
+                if self._syncing_limits:
+                    return
+                self._syncing_limits = True
+                try:
+                    for other_ax in self.axes:
+                        if other_ax != ax:
+                            other_ax.set_xlim(ax.get_xlim())
+                finally:
+                    self._syncing_limits = False
+                self.fig.canvas.draw_idle()
+            return callback
+
+        def on_ylim_changed(ax):
+            def callback(lim):
+                if self._syncing_limits:
+                    return
+                self._syncing_limits = True
+                try:
+                    for other_ax in self.axes:
+                        if other_ax != ax:
+                            other_ax.set_ylim(ax.get_ylim())
+                finally:
+                    self._syncing_limits = False
+                self.fig.canvas.draw_idle()
+            return callback
+        self.circles = [None] * self.n_volumes
+        self.text_boxes = [None] * self.n_volumes
         for i, d in enumerate(self.data):
             if len(self.axes) > i and self.axes[i]:
                 self.axes[i].remove()
@@ -158,6 +189,10 @@ class SliceViewer:
             self.axes[i] = ax
             self.caxes[i] = cax
             self.images[i] = img
+
+            # Sync zoom/pan
+            ax.callbacks.connect('xlim_changed', on_xlim_changed(ax))
+            ax.callbacks.connect('ylim_changed', on_ylim_changed(ax))
 
         # Rebuild tooltips to match updated axes
         self.tooltips = [
