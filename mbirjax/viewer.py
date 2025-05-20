@@ -4,7 +4,32 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 
+
 # === CONSTANTS ===
+
+# --- File picker launcher for NiceGUI ---
+def launch_file_picker():
+    from nicegui import ui, app
+    import tempfile
+    import threading
+
+    selected_file = tempfile.NamedTemporaryFile(delete=False).name
+
+    def serve():
+        def handle_upload(e):
+            e.save(selected_file)
+            app.shutdown()
+
+        with ui.row():
+            ui.label('Select a .npy file')
+        ui.upload(label='Upload .npy', auto_upload=True, on_upload=handle_upload).props('accept=.npy,.npz')
+        ui.run(title='Load Numpy File', port=8080, reload=False, show=True)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    return selected_file
+
+
 TOOLTIP_FONT_SIZE = 9
 TOOLTIP_BOX_ALPHA = 0.9
 TOOLTIP_OFFSET = (10, 10)
@@ -29,6 +54,9 @@ def multiline(*lines):
 
 
 import time
+import threading
+import webbrowser
+import os
 
 
 class SliceViewer:
@@ -72,7 +100,7 @@ class SliceViewer:
         self.axes_perms = np.array([self._get_perm_from_slice_ind(s) for s in slice_axes]).astype(int)
 
         if isinstance(self.slice_label, str) or self.slice_label is None:
-            self.labels = [f"Slice {i + 1}" if self.slice_label is None else self.slice_label
+            self.labels = [f"Slice" if self.slice_label is None else self.slice_label
                            for i in range(self.n_volumes)]
         else:
             self.labels = list(self.slice_label)
@@ -129,7 +157,8 @@ class SliceViewer:
             img = ax.imshow(d[:, :, self.cur_slices[i]], cmap=self.cmap,
                             aspect='equal',
                             vmin=self.vmin, vmax=self.vmax)
-            ax.set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}", f"Shape: {self.datasets[i].shape}"))
+            ax.set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}",
+                                   f"Shape: {self.original_data[i].shape}, Axes: {self.axes_perms[i]}"))
             divider = make_axes_locatable(ax)
             cax = divider.append_axes('right', size='5%', pad=0.05)
             self.fig.colorbar(img, cax=cax, orientation='vertical')
@@ -198,7 +227,7 @@ class SliceViewer:
         else:
             for i in range(self.n_volumes):
                 ax = self.fig.add_subplot(self.gs[2, i])
-                ax.set_title("Slice axis", loc='left', fontsize=9)
+                ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
                 btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
                 for lbl in btns.labels: lbl.set_fontsize(8)
                 btns.set_active(int(self.axes_perms[i, -1]))
@@ -236,7 +265,8 @@ class SliceViewer:
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
             self.axes[i].set_aspect('equal')
-            self.axes[i].set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}", f"Shape: {orig.shape}"))
+            self.axes[i].set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}",
+                                             f"Shape: {orig.shape}, Axes: {self.axes_perms[0]}"))  # f"Shape: {orig.shape}"))
             self._draw_images()
             self._update_slice_slider()
             plt.tight_layout()
@@ -250,7 +280,8 @@ class SliceViewer:
             idx = np.clip(idx, 0, d.shape[2] - 1)
             self.cur_slices[i] = idx
             self.images[i].set_data(d[:, :, idx])
-            self.axes[i].set_title(multiline(f"{self.labels[i]} {idx}", f"Shape: {self.original_data[i].shape}"))
+            self.axes[i].set_title(multiline(f"{self.labels[i]} {idx}",
+                                             f"Shape: {self.original_data[i].shape}, Axes: {self.axes_perms[i]}"))  #
         self._display_mean()
         self.fig.canvas.draw_idle()
 
@@ -338,6 +369,7 @@ class SliceViewer:
         def on_press(event):
             if event.button != 1: return
             if event.inaxes not in self.axes: return
+            if hasattr(event, 'menu_option_selected') and event.menu_option_selected: return  # This is set to true when the user selects a menu option.
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
 
             self._resize_index = None
@@ -429,9 +461,7 @@ class SliceViewer:
             if event.key == 'a':
                 toggle_help()
             elif event.key == 'escape':
-                for txt in self._menu_texts:
-                    txt.remove()
-                self._menu_texts.clear()
+                self._remove_menu()
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
@@ -445,9 +475,7 @@ class SliceViewer:
             if event.button == 3 and event.inaxes in self.axes:
                 i = self.axes.index(event.inaxes)
                 # Remove any existing menu items
-                for txt in self._menu_texts:
-                    txt.remove()
-                self._menu_texts.clear()
+                self._remove_menu()
 
                 def make_option(label, y_offset, callback):
                     bounds = self.fig.bbox.bounds
@@ -461,21 +489,54 @@ class SliceViewer:
                     )
                     self._menu_texts.append(txt)
                     txt._viewer_callback = callback
-                    f = self.fig
-                    r = f.canvas.get_renderer()
-                    bb = txt.get_window_extent(renderer=r)
-                    width = bb.width
-                    height = bb.height
 
                 def on_transpose():
                     perm = self.axes_perms[i].copy()
                     perm[0], perm[1] = perm[1], perm[0]
                     self._update_axis(i, perm)
 
-                def on_pass():
+                def on_cancel():
                     pass
 
-                options = [["Transpose image", on_transpose], ["Pass           ", on_pass]]
+                def on_load():
+                    from pathlib import Path
+                    file_path = launch_file_picker()
+                    print("Waiting for user to upload file...")
+                    self._remove_menu()
+
+                    def wait_and_load():
+                        import time
+                        timeout = 30  # seconds
+                        for _ in range(timeout * 10):
+                            time.sleep(0.1)
+                            if Path(file_path).exists() and Path(file_path).stat().st_size > 0:
+                                break
+                        else:
+                            print("Timeout waiting for file.")
+                            return
+                        try:
+                            new_array = np.load(file_path)
+                            if new_array.ndim == 2:
+                                new_array = new_array[..., np.newaxis]
+                            if new_array.ndim != 3:
+                                raise ValueError("Loaded array must be 2D or 3D")
+
+                            self.original_data[i] = new_array
+                            self.axes_perms[i] = self._get_perm_from_slice_ind(self.axes_perms[i][-1])
+                            transposed = np.transpose(new_array, self.axes_perms[i])
+                            self.data[i] = transposed
+                            self.cur_slices[i] = transposed.shape[2] // 2
+                            self._draw_images()
+                            self._update_slice_slider()
+                            self.fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Failed to load array: {e}")
+
+                    threading.Thread(target=wait_and_load).start()
+
+                    _launch()
+
+                options = [["Transpose image", on_transpose], ["Load", on_load], ["Cancel", on_cancel]]
                 y_offset = 0
                 y_skip = 50
                 for option in options:
@@ -490,14 +551,11 @@ class SliceViewer:
             for txt in self._menu_texts:
                 bbox = txt.get_window_extent()
                 if bbox.contains(event.x, event.y):
+                    clicked = True
+                    event.menu_option_selected = True
                     if hasattr(txt, '_viewer_callback'):
                         txt._viewer_callback()
-                    clicked = True
-            if self._menu_texts:
-                for txt in self._menu_texts:
-                    txt.remove()
-                self._menu_texts.clear()
-                self.fig.canvas.draw_idle()
+            self._remove_menu()
             return clicked
 
         self.fig.canvas.mpl_connect('button_press_event', on_context_menu)
@@ -507,6 +565,13 @@ class SliceViewer:
         self.fig.canvas.mpl_connect('motion_notify_event', on_motion)
         self.fig.canvas.mpl_connect('button_release_event', on_release)
         self.fig.canvas.mpl_connect('key_press_event', on_key)
+
+    def _remove_menu(self):
+        if self._menu_texts:
+            for txt in self._menu_texts:
+                txt.remove()
+            self._menu_texts.clear()
+            self.fig.canvas.draw_idle()
 
     def show(self):
         plt.tight_layout()
