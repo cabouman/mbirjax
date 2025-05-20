@@ -7,6 +7,7 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import warnings
 import easygui
+import time
 
 
 # === CONSTANTS ===
@@ -45,14 +46,8 @@ def multiline(*lines):
     return chr(10).join(lines)
 
 
-import time
-import threading
-import webbrowser
-import os
-
-
 class SliceViewer:
-    _syncing_limits = False
+
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
         self.datasets = datasets
@@ -81,6 +76,9 @@ class SliceViewer:
         self._prepare_data()
         self._build_figure()
 
+        self._syncing_limits = True
+        self._syncing_axes = False
+
     @staticmethod
     def _get_perm_from_slice_ind(s):
         return list({0, 1, 2} - {s}) + [s]
@@ -90,6 +88,7 @@ class SliceViewer:
             slice_axes = [2 if self.slice_axis is None else self.slice_axis] * self.n_volumes
         else:
             slice_axes = list(self.slice_axis)
+        self._syncing_axes = all(slice_axis == slice_axes[0] for slice_axis in slice_axes)
         self.axes_perms = np.array([self._get_perm_from_slice_ind(s) for s in slice_axes]).astype(int)
 
         if isinstance(self.slice_label, str) or self.slice_label is None:
@@ -127,7 +126,7 @@ class SliceViewer:
         figwidth = 6 * self.n_volumes
         self.fig = plt.figure(figsize=(figwidth, 8))
         self.fig.suptitle(self.title)
-        self.gs = gridspec.GridSpec(nrows=5, ncols=self.n_volumes, height_ratios=[15, 1, 1, 1, 1])
+        self.gs = gridspec.GridSpec(nrows=4, ncols=self.n_volumes, height_ratios=[15, 1, 1, 1])
 
         self._draw_images()
         self._add_slice_slider()
@@ -145,31 +144,34 @@ class SliceViewer:
 
         def on_xlim_changed(ax):
             def callback(lim):
-                if self._syncing_limits:
+                if not self._syncing_limits:
                     return
-                self._syncing_limits = True
+                self._syncing_limits = False
                 try:
                     for other_ax in self.axes:
                         if other_ax != ax:
                             other_ax.set_xlim(ax.get_xlim())
                 finally:
-                    self._syncing_limits = False
+                    self._syncing_limits = True
                 self.fig.canvas.draw_idle()
+
             return callback
 
         def on_ylim_changed(ax):
             def callback(lim):
-                if self._syncing_limits:
+                if not self._syncing_limits:
                     return
-                self._syncing_limits = True
+                self._syncing_limits = False
                 try:
                     for other_ax in self.axes:
                         if other_ax != ax:
                             other_ax.set_ylim(ax.get_ylim())
                 finally:
-                    self._syncing_limits = False
+                    self._syncing_limits = True
                 self.fig.canvas.draw_idle()
+
             return callback
+
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
         for i, d in enumerate(self.data):
@@ -207,14 +209,14 @@ class SliceViewer:
         ]
 
     def _add_slice_slider(self):
-        ax = self.fig.add_subplot(self.gs[3, :])
+        ax = self.fig.add_subplot(self.gs[2, :])
         self.slice_slider = Slider(ax, label="Slice", valmin=0,
                                    valmax=max(d.shape[2] for d in self.data) - 1,
                                    valinit=self.cur_slices[0], valfmt='%0.0f')
         self.slice_slider.on_changed(self._update_slice)
 
     def _add_intensity_slider(self):
-        ax = self.fig.add_subplot(self.gs[4, :])
+        ax = self.fig.add_subplot(self.gs[3, :])
         log_range = np.log10(self.vmax - self.vmin)
         digits = max(-int(np.round(log_range)) + 2, 0)
         valfmt = '%0.' + str(digits) + 'f'
@@ -230,10 +232,7 @@ class SliceViewer:
         if self.n_volumes == 1:
             self._create_axis_buttons(False)
         else:
-            # self.cb_ax = self.fig.add_axes([0.01, 0.4, 0.2, 0.04])
-            self.cb_ax = self.fig.add_subplot(self.gs[1, 0])
-            self.cb = CheckButtons(self.cb_ax, labels=["Decouple slice axes"], actives=[not all_same])
-            self.cb.on_clicked(self._toggle_decouple)
+
             self._create_axis_buttons(not all_same)
 
     def _create_axis_buttons(self, decoupled):
@@ -242,7 +241,7 @@ class SliceViewer:
         self.axis_buttons.clear()
 
         if not decoupled:
-            ax = self.fig.add_subplot(self.gs[2, 0])
+            ax = self.fig.add_subplot(self.gs[1, 0])
             ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
             btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [SLICE_AXIS_RADIO_SIZE]})
             for lbl in btns.labels: lbl.set_fontsize(SLICE_AXIS_LABEL_FONT_SIZE)
@@ -253,7 +252,7 @@ class SliceViewer:
             self.axis_buttons.append(btns)
         else:
             for i in range(self.n_volumes):
-                ax = self.fig.add_subplot(self.gs[2, i])
+                ax = self.fig.add_subplot(self.gs[1, i])
                 ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
                 btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
                 for lbl in btns.labels: lbl.set_fontsize(8)
@@ -261,9 +260,15 @@ class SliceViewer:
                 btns.on_clicked(lambda label, index=i: self._update_axis(index, int(label)))
                 self.axis_buttons.append(btns)
 
-    def _toggle_decouple(self, label):
-        self._create_axis_buttons(self.cb.get_status()[0])
+    def _toggle_decouple_slice_axes(self):
+        self._syncing_axes = not self._syncing_axes
+        self._create_axis_buttons(self._syncing_axes)
         self._update_slice_slider()
+        self.fig.canvas.draw_idle()
+
+    def _toggle_sync_limits(self):
+        self._syncing_limits = not self._syncing_limits
+        self.fig.canvas.draw_idle()
 
     def _update_slice_slider(self):
         # Update slice slider max if any volume changed depth
@@ -561,7 +566,14 @@ class SliceViewer:
                     except Exception as e:
                         warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-                options = [["Transpose image", on_transpose], [LOAD_LABEL, on_load], ["Cancel", on_cancel]]
+                options = [["Transpose image", on_transpose],
+                           ["{} slice axes".format("Decouple" if all(
+                               ax == self.axes_perms[0, -1] for ax in self.axes_perms[:, -1]) else "Couple"),
+                            self._toggle_decouple_slice_axes],
+                           ["{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
+                            self._toggle_sync_limits],
+                           [LOAD_LABEL, on_load],
+                           ["Cancel", on_cancel]]
                 y_offset = 0
                 y_skip = Y_SKIP
                 for option in options:
