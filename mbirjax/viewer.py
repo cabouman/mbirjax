@@ -25,6 +25,12 @@ SLICE_AXIS_LABEL_FONT_SIZE = 8
 SLICE_AXIS_RADIO_SIZE = 30
 
 
+def multiline(*lines):
+    return chr(10).join(lines)
+
+
+import time
+
 class SliceViewer:
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
@@ -95,6 +101,8 @@ class SliceViewer:
 
     def _build_figure(self):
         self._show_help = False  # Toggleable help overlay
+        self._last_display_time = 0
+        self._meshgrids = {}
         figwidth = 6 * self.n_volumes
         self.fig = plt.figure(figsize=(figwidth, 8))
         self.fig.suptitle(self.title)
@@ -108,7 +116,7 @@ class SliceViewer:
         self._resize_index = None
         self._resize_anchor = None
 
-        self.fig.text(0.01, 0.95, 'Close plot\nto continue')
+        self.fig.text(0.01, 0.95, multiline('Close plot', 'to continue'))
 
     def _draw_images(self):
         self.circles = [None] * self.n_volumes
@@ -121,7 +129,7 @@ class SliceViewer:
             img = ax.imshow(d[:, :, self.cur_slices[i]], cmap=self.cmap,
                             aspect='equal',
                             vmin=self.vmin, vmax=self.vmax)
-            ax.set_title(f"{self.labels[i]} {self.cur_slices[i]}" + chr(10) + f"Shape: {self.datasets[i].shape}")
+            ax.set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}", f"Shape: {self.datasets[i].shape}"))
             divider = make_axes_locatable(ax)
             cax = divider.append_axes('right', size='5%', pad=0.05)
             self.fig.colorbar(img, cax=cax, orientation='vertical')
@@ -223,7 +231,7 @@ class SliceViewer:
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
             self.axes[i].set_aspect('equal')
-            self.axes[i].set_title(f"{self.labels[i]} {self.cur_slices[i]}\nShape: {orig.shape}")
+            self.axes[i].set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}", f"Shape: {orig.shape}"))
             self._draw_images()
             self._update_slice_slider()
             plt.tight_layout()
@@ -237,7 +245,7 @@ class SliceViewer:
             idx = np.clip(idx, 0, d.shape[2] - 1)
             self.cur_slices[i] = idx
             self.images[i].set_data(d[:, :, idx])
-            self.axes[i].set_title(f"{self.labels[i]} {idx}\nShape: {self.original_data[i].shape}")
+            self.axes[i].set_title(multiline(f"{self.labels[i]} {idx}", f"Shape: {self.original_data[i].shape}"))
         self._display_mean()
         self.fig.canvas.draw_idle()
 
@@ -247,13 +255,21 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _get_mask(self, data, x, y, r):
-        ny, nx = data.shape[:2]
-        xv, yv = np.meshgrid(np.arange(nx), np.arange(ny))
+        shape = data.shape
+        if shape not in self._meshgrids:
+            ny, nx = shape[:2]
+            self._meshgrids[shape] = np.meshgrid(np.arange(nx), np.arange(ny))
+        xv, yv = self._meshgrids[shape]
         return (xv - x) ** 2 + (yv - y) ** 2 <= r ** 2
 
     def _display_mean(self):
         if all(c is None for c in self.circles):
             return
+        now = time.time()
+        if now - self._last_display_time < 0.3:
+            return
+        self._last_display_time = now
+
         for i, circle in enumerate(self.circles):
             if circle is None or self._is_drawing or self._is_moving:
                 self.tooltips[i].set_visible(False)
@@ -266,7 +282,7 @@ class SliceViewer:
                 if self.text_boxes[i]:
                     self.text_boxes[i].remove()
                 self.text_boxes[i] = self.axes[i].text(0.05, 0.95,
-                                                       f"Mean: {mean:.3g}\nStd Dev: {std:.3g}",
+                                       multiline(f"Mean: {mean:.3g}", f"Std Dev: {std:.3g}"),
                                                        transform=self.axes[i].transAxes,
                                                        fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
         self.fig.canvas.draw_idle()
@@ -288,7 +304,7 @@ class SliceViewer:
             self._show_help = not self._show_help
             if self._show_help:
                 self.help_overlay = self.fig.text(0.5, 0.5,
-                                                  "Keys:\n[a] Toggle axis controls\n[esc] Remove ROI",
+                                              multiline("Keys:", "[a] Toggle axis controls", "[esc] Remove ROI"),
                                                   ha='center', va='center', fontsize=12,
                                                   bbox=dict(facecolor='white', alpha=0.8), zorder=10)
             else:
