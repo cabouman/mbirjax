@@ -4,15 +4,14 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 
-
 # === CONSTANTS ===
 TOOLTIP_FONT_SIZE = 9
 TOOLTIP_BOX_ALPHA = 0.9
 TOOLTIP_OFFSET = (10, 10)
 TOOLTIP_TEXT = (
-    "Click and drag to move" + chr(10) +
-    "Click edge to resize" + chr(10) +
-    "Press Esc to remove"
+        "Click and drag to move" + chr(10) +
+        "Click edge to resize" + chr(10) +
+        "Press Esc to remove"
 )
 
 CIRCLE_COLOR = 'red'
@@ -30,6 +29,7 @@ def multiline(*lines):
 
 
 import time
+
 
 class SliceViewer:
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
@@ -217,16 +217,21 @@ class SliceViewer:
         self.slice_slider.set_val(self.cur_slices[0])
         self.fig.canvas.draw_idle()
 
-    def _update_axis(self, i, new_axis):
-        if new_axis != self.axes_perms[i, -1]:
+    def _update_axis(self, i, new_perm):
+        if isinstance(new_perm, (list, tuple, np.ndarray)):
+            new_perm = list(new_perm)
+        else:
+            new_perm = self._get_perm_from_slice_ind(new_perm)
+
+        if new_perm != list(self.axes_perms[i]):
             orig = self.original_data[i]
             prev_slice_axis = self.axes_perms[i, -1]
             prev_fraction = self.cur_slices[i] / orig.shape[prev_slice_axis]
-            new_perm = self._get_perm_from_slice_ind(new_axis)
-            self.axes_perms[i] = new_perm
+            new_slice_axis = new_perm[-1]
+            self.axes_perms[i] = np.array(new_perm)
             new_data = np.transpose(orig, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = int(np.round(prev_fraction * orig.shape[new_axis]))
+            self.cur_slices[i] = int(np.round(prev_fraction * orig.shape[new_slice_axis]))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
@@ -282,7 +287,7 @@ class SliceViewer:
                 if self.text_boxes[i]:
                     self.text_boxes[i].remove()
                 self.text_boxes[i] = self.axes[i].text(0.05, 0.95,
-                                       multiline(f"Mean: {mean:.3g}", f"Std Dev: {std:.3g}"),
+                                                       multiline(f"Mean: {mean:.3g}", f"Std Dev: {std:.3g}"),
                                                        transform=self.axes[i].transAxes,
                                                        fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
         self.fig.canvas.draw_idle()
@@ -300,11 +305,13 @@ class SliceViewer:
         return plt.Circle(center, radius, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH, fill=CIRCLE_FILL, alpha=CIRCLE_ALPHA)
 
     def _connect_events(self):
+        self._menu_texts = []
+
         def toggle_help():
             self._show_help = not self._show_help
             if self._show_help:
                 self.help_overlay = self.fig.text(0.5, 0.5,
-                                              multiline("Keys:", "[a] Toggle axis controls", "[esc] Remove ROI"),
+                                                  multiline("Keys:", "[a] Toggle axis controls", "[esc] Remove ROI"),
                                                   ha='center', va='center', fontsize=12,
                                                   bbox=dict(facecolor='white', alpha=0.8), zorder=10)
             else:
@@ -329,11 +336,11 @@ class SliceViewer:
         self._is_drawing = False  # Add a flag to track drawing state
 
         def on_press(event):
+            if event.button != 1: return
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
 
             self._resize_index = None
-            self._resize_anchor = None
 
             for i, circle in enumerate(self.circles):
                 if circle is None: continue
@@ -372,7 +379,7 @@ class SliceViewer:
                 if event.xdata is not None and event.ydata is not None:
                     dx = event.xdata - x
                     dy = event.ydata - y
-                    dist2 = dx**2 + dy**2
+                    dist2 = dx ** 2 + dy ** 2
                     if not (self._is_drawing or self._is_moving or self._resize_index is not None):
                         if dist2 <= (1.1 * r) ** 2:
                             self.tooltips[i].xy = self.circles[i].center
@@ -384,7 +391,7 @@ class SliceViewer:
 
             if self._is_drawing and self._drag_start is not None:
                 x0, y0 = self._drag_start
-                r = np.sqrt((event.xdata - x0)**2 + (event.ydata - y0)**2)
+                r = np.sqrt((event.xdata - x0) ** 2 + (event.ydata - y0) ** 2)
                 for i, ax in enumerate(self.axes):
                     if self.circles[i]:
                         self.circles[i].remove()
@@ -402,7 +409,7 @@ class SliceViewer:
 
             elif self._resize_index is not None and self._resize_anchor is not None:
                 x0, y0 = self._resize_anchor
-                new_radius = np.sqrt((event.xdata - x0)**2 + (event.ydata - y0)**2)
+                new_radius = np.sqrt((event.xdata - x0) ** 2 + (event.ydata - y0) ** 2)
                 for j in range(self.n_volumes):
                     self.circles[j].set_radius(new_radius)
                 self._display_mean()
@@ -422,6 +429,9 @@ class SliceViewer:
             if event.key == 'a':
                 toggle_help()
             elif event.key == 'escape':
+                for txt in self._menu_texts:
+                    txt.remove()
+                self._menu_texts.clear()
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
@@ -430,6 +440,68 @@ class SliceViewer:
                 self.circles = [None] * self.n_volumes
                 self._display_mean()
                 self.fig.canvas.draw_idle()
+
+        def on_context_menu(event):
+            if event.button == 3 and event.inaxes in self.axes:
+                i = self.axes.index(event.inaxes)
+                # Remove any existing menu items
+                for txt in self._menu_texts:
+                    txt.remove()
+                self._menu_texts.clear()
+
+                def make_option(label, y_offset, callback):
+                    bounds = self.fig.bbox.bounds
+                    x_frac = (event.x - bounds[0]) / (bounds[2] - bounds[0])
+                    y_frac = (event.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
+                    txt = self.fig.text(
+                        x_frac, y_frac,
+                        label,
+                        ha='left', va='bottom', fontsize=10, color='white',
+                        bbox=dict(facecolor='black', edgecolor='white')
+                    )
+                    self._menu_texts.append(txt)
+                    txt._viewer_callback = callback
+                    f = self.fig
+                    r = f.canvas.get_renderer()
+                    bb = txt.get_window_extent(renderer=r)
+                    width = bb.width
+                    height = bb.height
+
+                def on_transpose():
+                    perm = self.axes_perms[i].copy()
+                    perm[0], perm[1] = perm[1], perm[0]
+                    self._update_axis(i, perm)
+
+                def on_pass():
+                    pass
+
+                options = [["Transpose image", on_transpose], ["Pass           ", on_pass]]
+                y_offset = 0
+                y_skip = 50
+                for option in options:
+                    make_option(option[0], y_offset, option[1])
+                    y_offset -= y_skip
+                self.fig.canvas.draw_idle()
+
+        def on_context_select(event):
+            if event.button != 1:
+                return
+            clicked = False
+            for txt in self._menu_texts:
+                bbox = txt.get_window_extent()
+                if bbox.contains(event.x, event.y):
+                    if hasattr(txt, '_viewer_callback'):
+                        txt._viewer_callback()
+                    clicked = True
+            if self._menu_texts:
+                for txt in self._menu_texts:
+                    txt.remove()
+                self._menu_texts.clear()
+                self.fig.canvas.draw_idle()
+            return clicked
+
+        self.fig.canvas.mpl_connect('button_press_event', on_context_menu)
+        self.fig.canvas.mpl_connect('button_press_event', on_context_select)
 
         self.fig.canvas.mpl_connect('button_press_event', on_press)
         self.fig.canvas.mpl_connect('motion_notify_event', on_motion)
