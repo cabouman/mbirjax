@@ -1,34 +1,20 @@
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
+import warnings
+import easygui
 
 
 # === CONSTANTS ===
 
-# --- File picker launcher for NiceGUI ---
+# --- File picker launcher for easygui ---
 def launch_file_picker():
-    from nicegui import ui, app
-    import tempfile
-    import threading
-
-    selected_file = tempfile.NamedTemporaryFile(delete=False).name
-
-    def serve():
-        def handle_upload(e):
-            with open(selected_file, 'wb') as f:
-                f.write(e.content.read())
-            app.shutdown()
-
-        with ui.row():
-            ui.label('Select a .npy file')
-        ui.upload(label='Upload .npy', auto_upload=True, on_upload=handle_upload).props('accept=.npy,.npz')
-        ui.run(title='Load Numpy File', port=8080, reload=False, show=True)
-
-    thread = threading.Thread(target=serve)
-    thread.start()
-    return selected_file
+    file_path = easygui.fileopenbox(default='*.npy', filetypes=["*.npy"])
+    return file_path
 
 
 TOOLTIP_FONT_SIZE = 9
@@ -49,6 +35,11 @@ SLICE_AXIS_FONT_SIZE = 9
 SLICE_AXIS_LABEL_FONT_SIZE = 8
 SLICE_AXIS_RADIO_SIZE = 30
 
+Y_SKIP = 28
+LOAD_LABEL = 'Load'
+if matplotlib.get_backend() != 'TkAgg':
+    Y_SKIP = 50
+    LOAD_LABEL = 'Load disabled - requires TkAgg'
 
 def multiline(*lines):
     return chr(10).join(lines)
@@ -370,7 +361,8 @@ class SliceViewer:
         def on_press(event):
             if event.button != 1: return
             if event.inaxes not in self.axes: return
-            if hasattr(event, 'menu_option_selected') and event.menu_option_selected: return  # This is set to true when the user selects a menu option.
+            if hasattr(event,
+                       'menu_option_selected') and event.menu_option_selected: return  # This is set to true when the user selects a menu option.
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
 
             self._resize_index = None
@@ -500,20 +492,15 @@ class SliceViewer:
                     pass
 
                 def on_load():
-                    from pathlib import Path
-                    file_path = launch_file_picker()
-                    print("Waiting for user to upload file...")
+                    if not hasattr(self.fig.canvas.manager, 'window'):
+                        warnings.warn("Load disabled: matplotlib backend is not TkAgg")
+                        return
+
                     self._remove_menu()
 
-                    def wait_and_load():
-                        import time
-                        timeout = 30  # seconds
-                        for _ in range(timeout * 10):
-                            time.sleep(0.1)
-                            if Path(file_path).exists() and Path(file_path).stat().st_size > 0:
-                                break
-                        else:
-                            print("Timeout waiting for file.")
+                    def deferred_load():
+                        file_path = launch_file_picker()
+                        if not file_path:
                             return
                         try:
                             new_array = np.load(file_path)
@@ -533,11 +520,15 @@ class SliceViewer:
                         except Exception as e:
                             print(f"Failed to load array: {e}")
 
-                    threading.Thread(target=wait_and_load).start()
+                    # Use TkAgg-safe scheduling
+                    try:
+                        self.fig.canvas.manager.window.after(10, deferred_load)
+                    except Exception as e:
+                        warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-                options = [["Transpose image", on_transpose], ["Load", on_load], ["Cancel", on_cancel]]
+                options = [["Transpose image", on_transpose], [LOAD_LABEL, on_load], ["Cancel", on_cancel]]
                 y_offset = 0
-                y_skip = 50
+                y_skip = Y_SKIP
                 for option in options:
                     make_option(option[0], y_offset, option[1])
                     y_offset -= y_skip
