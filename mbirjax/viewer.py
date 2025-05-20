@@ -17,7 +17,8 @@ def launch_file_picker():
 
     def serve():
         def handle_upload(e):
-            e.save(selected_file)
+            with open(selected_file, 'wb') as f:
+                f.write(e.content.read())
             app.shutdown()
 
         with ui.row():
@@ -533,8 +534,6 @@ class SliceViewer:
                             print(f"Failed to load array: {e}")
 
                     threading.Thread(target=wait_and_load).start()
-
-                    _launch()
 
                 options = [["Transpose image", on_transpose], ["Load", on_load], ["Cancel", on_cancel]]
                 y_offset = 0
