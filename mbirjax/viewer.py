@@ -80,6 +80,7 @@ class SliceViewer:
 
         self._syncing_limits = True
         self._syncing_axes = False
+        self._tk_button_pressed = False
 
     @staticmethod
     def _get_perm_from_slice_ind(s):
@@ -137,7 +138,8 @@ class SliceViewer:
         self._resize_index = None
         self._resize_anchor = None
 
-        self.fig.text(0.01, 0.25, multiline('Press h', 'for help'))
+        if self.show_instructions:
+            self.fig.text(0.01, 0.25, multiline('Press h', 'for help'), fontdict={'color': 'red'})
 
     def _draw_images(self, image_index=None):
 
@@ -229,29 +231,32 @@ class SliceViewer:
 
         def on_right_click(event):
             if event.button == 3 and event.inaxes == ax:
-                msg = "Adjust intensity slider range"
-                title = "Set Intensity Range"
+                title = "Adjust intensity slider range"
+                msg = "Set Intensity Range"
                 field_names = ["Min", "Max"]
                 field_values = [f"{self.vmin:.3g}", f"{self.vmax:.3g}"]
                 if TKAGG:
-                    inputs = easygui.multenterbox(msg, title + " (Cancel to keep, Reset to defaults)", field_names, field_values)
+                    self._tk_button_pressed = True
+                    inputs = easygui.multenterbox(msg + " (Cancel=previous values; leave blank=determine from data)", title, field_names, field_values)
                 else:
                     warnings.warn("Right-click on intensity slider requires TkAgg: use matplotlib.use('TkAgg')")
                     inputs = None
                 if inputs is None:
                     return
-                if inputs == ["", ""]:
-                    self.vmin = np.min([np.min(d) for d in self.data])
-                    self.vmax = np.max([np.max(d) for d in self.data])
-                    if self.vmin == self.vmax:
-                        eps = 1e-6
-                        scale = np.clip(eps * np.abs(self.vmax), a_min=eps, a_max=None)
-                        self.vmin -= scale
-                        self.vmax += scale
+                self._is_drawing = False
+                if not inputs[0]:
+                    inputs[0] = f"{np.min([np.min(d) for d in self.data]):.3g}"
+                if not inputs[1]:
+                    inputs[1] = f"{np.max([np.max(d) for d in self.data]):.3g}"
                 try:
                     new_min, new_max = map(float, inputs)
-                    if new_min >= new_max:
+                    if new_min > new_max:
                         raise ValueError("Minimum must be less than maximum")
+                    if new_min == new_max:
+                        eps = 1e-6
+                        scale = np.clip(eps * np.abs(new_max), a_min=eps, a_max=None)
+                        new_min -= scale
+                        new_max += scale
                     self.vmin, self.vmax = new_min, new_max
                     self.intensity_slider.valmin = self.vmin
                     self.intensity_slider.valmax = self.vmax
@@ -449,6 +454,10 @@ class SliceViewer:
             if hasattr(event,
                        'menu_option_selected') and event.menu_option_selected: return  # This is set to true when the user selects a menu option.
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
+            if self._tk_button_pressed:
+                if event.button == 1:  # Consume only a left-click
+                    self._tk_button_pressed = False
+                    return
 
             self._resize_index = None
 
@@ -481,6 +490,7 @@ class SliceViewer:
         def on_motion(event):
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
+            if not self._is_drawing: return
 
             for i, circle in enumerate(self.circles):
                 if circle is None: continue
@@ -541,6 +551,7 @@ class SliceViewer:
             elif event.key == 'escape':
                 show_help(False)
                 self._remove_menu()
+                self._is_drawing = False
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
@@ -675,5 +686,8 @@ class SliceViewer:
 
 
 def slice_viewer(*datasets, **kwargs):
+    text = ['Line {}'.format(j) for j in range(100)]
+    text = multiline(*text)
+    easygui.textbox(msg='msg', title='title', text=text, codebox=False, callback=None, run=True)
     viewer = SliceViewer(*datasets, **kwargs)
     viewer.show()
