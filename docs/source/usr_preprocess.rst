@@ -27,7 +27,7 @@ General preprocess functions
 ----------------------------
 
 .. automodule:: mbirjax.preprocess
-   :members: compute_sino_transmission, interpolate_defective_pixels, correct_det_rotation, correct_det_rotation_and_background, estimate_background_offset, downsample_scans, crop_view_data
+   :members: compute_sino_transmission, interpolate_defective_pixels, correct_det_rotation_and_background, estimate_background_offset, downsample_scans, crop_view_data
    :undoc-members:
    :show-inheritance:
 
