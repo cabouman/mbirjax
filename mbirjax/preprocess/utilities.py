@@ -610,3 +610,67 @@ def put_in_slice(array, flat_indices, value):
     array = array.at[:, flat_indices].set(value)
     array = array.reshape(array_shape)
     return array
+
+
+# ####### Generalized Huber Weights method
+def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
+    """
+    Generate generalized Huber weights.
+
+    This function computes generalized Huber weights based on the method described in the referenced notes.
+    It adds robustness by treating any element where |sino_error / weights| > T as an outlier,
+    down-weighting it according to the generalized Huber function.
+
+    The function returns new `ghuber_weights`.
+
+    Typically, to obtain the final robust weights, the `ghuber_weights` should be multiplied by the original `weights`:
+
+        final_weights = weights * ghuber_weights
+
+    Args:
+        weights: jnp.ndarray of shape (views, rows, cols)
+            Initial weights, typically derived from inverse variance estimates.
+        sino_error: jnp.ndarray of shape (views, rows, cols)
+            Sinogram error array representing deviations from the model.
+        T: float, optional (default=1.0)
+            Threshold parameter; values greater than T are treated as outliers.
+        delta: float, optional (default=1.0)
+            Controls the strength of the generalized Huber function (delta=1 corresponds to the conventional Huber).
+        epsilon: float, optional (default=1e-6)
+            Small number to avoid division by zero.
+
+    Returns:
+        huber_weights: jnp.ndarray of shape (views, rows, cols)
+            The computed generalized Huber weights.
+
+    Notes:
+        The generalized Huber function used in this function is based on:
+        Venkatakrishnan, S. V., Drummy, L. F., Jackson, M., De Graef, M., Simmons, J. P., and Bouman, C. A.,
+        "Model-Based Iterative Reconstruction for Bright-Field Electron Tomography,"
+        IEEE Transactions on Computational Imaging, vol. 1, no. 1, pp. 1–15, 2015. DOI: 10.1109/TCI.2014.2371751
+
+    Example:
+        >>> from mbirjax import gen_huber_weights
+        >>> huber_weights = gen_huber_weights(weights, sino_error)
+        >>> final_weights = weights * huber_weights
+    """
+    if not (0.0 <= delta <= 1.0):
+        raise ValueError("delta must be between 0 and 1.")
+
+    weights = jnp.asarray(weights)
+    sino_error = jnp.asarray(sino_error)
+
+    # Compute std and global alpha
+    std = 1.0 / jnp.maximum(jnp.sqrt(weights), epsilon)
+    alpha = jnp.linalg.norm(sino_error) / (jnp.linalg.norm(std) + epsilon)
+    std_norm = alpha * std
+
+    # Compute normalized error
+    normalized_error = sino_error / std_norm
+    abs_norm_error = jnp.abs(normalized_error)
+
+    # Apply generalized Huber function
+    huber_weights = jnp.where(abs_norm_error <= T, 1.0, (delta * T) / (abs_norm_error + epsilon))
+
+    return huber_weights
+
