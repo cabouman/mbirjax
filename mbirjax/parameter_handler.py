@@ -64,7 +64,7 @@ class ParameterHandler():
         # File handler (optional)
         if logfile_path:
             mju.makedirs(logfile_path)
-            file_handler = logging.FileHandler(logfile_path)
+            file_handler = logging.FileHandler(logfile_path, mode='w')
             file_handler.setLevel(level)
             file_formatter = logging.Formatter('%(message)s')
             file_handler.setFormatter(file_formatter)
