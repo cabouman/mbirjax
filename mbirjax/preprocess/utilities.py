@@ -229,9 +229,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan, downsample_factor, defecti
 
     Returns:
         tuple:
-            obj_scan (ndarray): Downsampled object scan. Shape (num_views, num_det_rows, num_det_channels).
-            blank_scan (ndarray): Downsampled blank scan. Shape (num_det_rows, num_det_channels).
-            dark_scan (ndarray): Downsampled dark scan. Shape (num_det_rows, num_det_channels).
+        - **obj_scan** (ndarray): Downsampled object scan. Shape (num_views, num_det_rows, num_det_channels).
+        - **blank_scan** (ndarray): Downsampled blank scan. Shape (num_det_rows, num_det_channels).
+        - **dark_scan** (ndarray): Downsampled dark scan. Shape (num_det_rows, num_det_channels).
     """
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
