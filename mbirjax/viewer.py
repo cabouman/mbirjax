@@ -386,10 +386,12 @@ class SliceViewer:
             values = self.data[i][:, :, self.cur_slices[i]][mask]
             if values.size:
                 mean, std = np.mean(values), np.std(values)
+                cur_min, cur_max = np.min(values), np.max(values)
                 if self.text_boxes[i]:
                     self.text_boxes[i].remove()
                 self.text_boxes[i] = self.axes[i].text(0.05, 0.95,
-                                                       multiline(f"Mean: {mean:.3g}", f"Std Dev: {std:.3g}"),
+                                                       multiline(f"(µ, σ)=({mean:.3g}, {std:.3g})",
+                                                                 f"(min, max)=({cur_min:.3g}, {cur_max:.3g})"),
                                                        transform=self.axes[i].transAxes,
                                                        fontsize=12, va='top', bbox=dict(facecolor='white', alpha=1.0))
         self.fig.canvas.draw_idle()
@@ -411,10 +413,10 @@ class SliceViewer:
 
         def show_help(show):
             if show:
-                help_items = ["Right-click an image for menu", 'Click and drag for ROI',
-                              'Press [esc] to remove ROI/menu/help']
+                help_items = ["Right-click an image for menu", 'Click and drag for ROI']
                 if TKAGG:
                     help_items += ['Right-click intensity slider to adjust range']
+                help_items += ['Press [esc] to remove ROI/menu/help']
                 self.help_overlay = self.fig.text(0.25, 0.5,
                                                   multiline(*help_items),
                                                   ha='left', va='center', fontsize=12,
