@@ -93,11 +93,11 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
-    obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(obj_scan, blank_scan, dark_scan,
-                                                                                   crop_pixels_sides=crop_pixels_sides,
-                                                                                   crop_pixels_top=crop_pixels_top,
-                                                                                   crop_pixels_bottom=crop_pixels_bottom,
-                                                                                   defective_pixel_array=defective_pixel_array)
+    obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_view_data(obj_scan, blank_scan, dark_scan,
+                                                                                       crop_pixels_sides=crop_pixels_sides,
+                                                                                       crop_pixels_top=crop_pixels_top,
+                                                                                       crop_pixels_bottom=crop_pixels_bottom,
+                                                                                       defective_pixel_array=defective_pixel_array)
 
     ### downsample the scans with block-averaging
     if downsample_factor[0]*downsample_factor[1] > 1:

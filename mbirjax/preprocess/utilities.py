@@ -315,9 +315,12 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
 
 
-def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0,
-               defective_pixel_array=()):
-    """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
+
+def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, defective_pixel_array=()):
+    """
+    Crop obj_scan, blank_scan, and dark_scan images by integer number of pixels, and update defective_pixel_array accordingly.
+    Notice that the left and right side pixels are cropped the same amount in order to avoid changing the center of rotation.
+
     Args:
         obj_scan (ndarray): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
         blank_scan (ndarray) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
@@ -325,11 +328,7 @@ def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
         crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
         crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
-
-            The scan images will be cropped using the following algorithm:
-                obj_scan <- obj_scan[:, crop_pixels_top:-crop_pixels_bottom, crop_pixels_sides:-crop_pixels_sides]
-
-        defective_pixel_array (ndarray):
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2)
 
     Returns:
         Cropped scans
@@ -615,10 +614,8 @@ def put_in_slice(array, flat_indices, value):
 # ####### Generalized Huber Weights method
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     """
-    Generate generalized Huber weights.
-
-    This function computes generalized Huber weights based on the method described in the referenced notes.
-    It adds robustness by treating any element where |sino_error / weights| > T as an outlier,
+    This function generates generalized Huber weights based on the method described in the referenced notes.
+    It adds robustness by treating any element where ``|sino_error / weights| > T`` as an outlier,
     down-weighting it according to the generalized Huber function.
 
     The function returns new `ghuber_weights`.

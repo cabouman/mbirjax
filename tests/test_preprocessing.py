@@ -126,11 +126,11 @@ class TestNSIPreprocessing(unittest.TestCase):
 
     def test_preprocessing(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_scans(self.obj_scan, self.blank_scan, self.dark_scan,
-                                                                                       defective_pixel_array=self.defective_pixel_array,
-                                                                                       crop_pixels_sides=self.crop_pixels_sides,
-                                                                                       crop_pixels_top=self.crop_pixels_top,
-                                                                                       crop_pixels_bottom=self.crop_pixels_bottom)
+        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.crop_view_data(self.obj_scan, self.blank_scan, self.dark_scan,
+                                                                                           defective_pixel_array=self.defective_pixel_array,
+                                                                                           crop_pixels_sides=self.crop_pixels_sides,
+                                                                                           crop_pixels_top=self.crop_pixels_top,
+                                                                                           crop_pixels_bottom=self.crop_pixels_bottom)
         sino_computed = preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan,
                                                              defective_pixel_array=defective_pixel_array)
 
@@ -139,10 +139,10 @@ class TestNSIPreprocessing(unittest.TestCase):
         print("background_offset = ", background_offset)
         sino_computed = sino_computed - background_offset
 
-        sino_gt_cropped, _, _, _ = preprocess.crop_scans(self.sino_gt, self.blank_scan, self.dark_scan,
-                                                         crop_pixels_sides=self.crop_pixels_sides,
-                                                         crop_pixels_top=self.crop_pixels_top,
-                                                         crop_pixels_bottom=self.crop_pixels_bottom)
+        sino_gt_cropped, _, _, _ = preprocess.crop_view_data(self.sino_gt, self.blank_scan, self.dark_scan,
+                                                             crop_pixels_sides=self.crop_pixels_sides,
+                                                             crop_pixels_top=self.crop_pixels_top,
+                                                             crop_pixels_bottom=self.crop_pixels_bottom)
         abs_sino_diff = np.abs(sino_computed - sino_gt_cropped)
         max_diff = np.max(np.abs(abs_sino_diff))
         nrmse = np.linalg.norm(abs_sino_diff) / np.linalg.norm(sino_gt_cropped)
