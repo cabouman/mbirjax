@@ -120,7 +120,6 @@ class SliceViewer:
             self.vmax += scale
 
     def _build_figure(self):
-        self._show_help = False  # Toggleable help overlay
         self._last_display_time = 0
         self._meshgrids = {}
         figwidth = 6 * self.n_volumes
@@ -136,11 +135,9 @@ class SliceViewer:
         self._resize_index = None
         self._resize_anchor = None
 
-        self.fig.text(0.01, 0.95, multiline('Close plot', 'to continue'))
+        self.fig.text(0.01, 0.25, multiline('Press h', 'for help'))
 
-    def _draw_images(self):
-        self.circles = [None] * self.n_volumes
-        self.text_boxes = [None] * self.n_volumes
+    def _draw_images(self, image_index=None):
 
         def on_xlim_changed(ax):
             def callback(lim):
@@ -174,7 +171,9 @@ class SliceViewer:
 
         self.circles = [None] * self.n_volumes
         self.text_boxes = [None] * self.n_volumes
-        for i, d in enumerate(self.data):
+        indices = [image_index] if image_index is not None else range(len(self.data))
+        cur_data = [self.data[image_index]] if image_index is not None else self.data
+        for i, d in zip(indices, cur_data):
             if len(self.axes) > i and self.axes[i]:
                 self.axes[i].remove()
                 self.caxes[i].remove()
@@ -213,6 +212,7 @@ class SliceViewer:
         self.slice_slider = Slider(ax, label="Slice", valmin=0,
                                    valmax=max(d.shape[2] for d in self.data) - 1,
                                    valinit=self.cur_slices[0], valfmt='%0.0f')
+
         self.slice_slider.on_changed(self._update_slice)
 
     def _add_intensity_slider(self):
@@ -224,6 +224,39 @@ class SliceViewer:
                                             valmin=self.vmin, valmax=self.vmax,
                                             valinit=(self.vmin, self.vmax), valfmt=valfmt)
         self.intensity_slider.on_changed(self._update_intensity)
+
+        def on_right_click(event):
+            if event.button == 3 and event.inaxes == ax:
+                msg = "Adjust intensity slider range"
+                title = "Set Intensity Range"
+                field_names = ["Min", "Max"]
+                field_values = [f"{self.vmin:.3g}", f"{self.vmax:.3g}"]
+                inputs = easygui.multenterbox(msg, title + " (Cancel to keep, Reset to defaults)", field_names, field_values)
+                if inputs is None:
+                    return
+                if inputs == ["", ""]:
+                    self.vmin = np.min([np.min(d) for d in self.data])
+                    self.vmax = np.max([np.max(d) for d in self.data])
+                    if self.vmin == self.vmax:
+                        eps = 1e-6
+                        scale = np.clip(eps * np.abs(self.vmax), a_min=eps, a_max=None)
+                        self.vmin -= scale
+                        self.vmax += scale
+                try:
+                    new_min, new_max = map(float, inputs)
+                    if new_min >= new_max:
+                        raise ValueError("Minimum must be less than maximum")
+                    self.vmin, self.vmax = new_min, new_max
+                    self.intensity_slider.valmin = self.vmin
+                    self.intensity_slider.valmax = self.vmax
+                    self.intensity_slider.ax.set_xlim(self.vmin, self.vmax)
+                    self.intensity_slider.set_val((self.vmin, self.vmax))
+                    self._update_intensity((self.vmin, self.vmax))
+                    self.fig.canvas.draw_idle()
+                except Exception as e:
+                    easygui.msgbox(str(e), title="Invalid Input")
+
+        self.fig.canvas.mpl_connect('button_press_event', on_right_click)
 
     def _add_axis_controls(self):
         self.axis_buttons = []
@@ -370,13 +403,13 @@ class SliceViewer:
     def _connect_events(self):
         self._menu_texts = []
 
-        def toggle_help():
-            self._show_help = not self._show_help
-            if self._show_help:
+        def show_help(show):
+            if show:
                 self.help_overlay = self.fig.text(0.5, 0.5,
-                                                  multiline("Keys:", "[a] Toggle axis controls", "[esc] Remove ROI"),
+                                                  multiline("Right-click image for menu", 'Click and drag for ROI',
+                                                            'Press [esc] to remove ROI/menu/help'),
                                                   ha='center', va='center', fontsize=12,
-                                                  bbox=dict(facecolor='white', alpha=0.8), zorder=10)
+                                                  bbox=dict(facecolor='white', alpha=0.9), zorder=10)
             else:
                 if hasattr(self, 'help_overlay') and self.help_overlay:
                     self.help_overlay.remove()
@@ -491,9 +524,10 @@ class SliceViewer:
             self._display_mean()
 
         def on_key(event):
-            if event.key == 'a':
-                toggle_help()
+            if event.key == 'h':
+                show_help(True)
             elif event.key == 'escape':
+                show_help(False)
                 self._remove_menu()
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
@@ -527,9 +561,18 @@ class SliceViewer:
                     perm = self.axes_perms[i].copy()
                     perm[0], perm[1] = perm[1], perm[0]
                     self._update_axis(i, perm)
+                    self._remove_menu()
 
                 def on_cancel():
-                    pass
+                    self._remove_menu()
+
+                def on_reset():
+                    self._draw_images(i)
+                    self._update_slice_slider()
+                    plt.tight_layout()
+                    self.fig.canvas.draw_idle()
+
+                    self._remove_menu()
 
                 def on_load():
                     if not hasattr(self.fig.canvas.manager, 'window'):
@@ -566,14 +609,18 @@ class SliceViewer:
                     except Exception as e:
                         warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-                options = [["Transpose image", on_transpose],
-                           ["{} slice axes".format("Decouple" if all(
-                               ax == self.axes_perms[0, -1] for ax in self.axes_perms[:, -1]) else "Couple"),
-                            self._toggle_decouple_slice_axes],
-                           ["{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
-                            self._toggle_sync_limits],
-                           [LOAD_LABEL, on_load],
-                           ["Cancel", on_cancel]]
+                if self.n_volumes > 1:
+                    options = [["{} slice axes".format("Decouple" if all(
+                                   ax == self.axes_perms[0, -1] for ax in self.axes_perms[:, -1]) else "Couple"),
+                                self._toggle_decouple_slice_axes],
+                               ["{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
+                                self._toggle_sync_limits]]
+                else:
+                    options = []
+                options += [["Transpose image", on_transpose],
+                            [LOAD_LABEL, on_load],
+                            ['Reset', on_reset],
+                            ["Cancel", on_cancel]]
                 y_offset = 0
                 y_skip = Y_SKIP
                 for option in options:
