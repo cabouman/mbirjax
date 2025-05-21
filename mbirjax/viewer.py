@@ -84,6 +84,7 @@ class SliceViewer:
         self._syncing_limits = True
         self._syncing_axes = False
         self._tk_button_pressed = False
+        easygui.boxes.global_state.prop_font_line_length = 80
 
     @staticmethod
     def _get_perm_from_slice_ind(s):
