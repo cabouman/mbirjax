@@ -221,8 +221,8 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
     Args:
         obj_scan (ndarray): A stack of sinograms. 3D NumPy array of shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray): A blank scan. 2D NumPy array of shape (num_det_rows, num_det_channels).
-        dark_scan (ndarray): A dark scan. 2D NumPy array of shape (num_det_rows, num_det_channels).
+        blank_scan (ndarray): A blank scan. 3D NumPy array of shape (1, num_det_rows, num_det_channels).
+        dark_scan (ndarray): A dark scan. 3D NumPy array of shape (1, num_det_rows, num_det_channels).
         downsample_factor (tuple of int): Two integers defining the down-sample factor. Default is (1, 1).
         defective_pixel_array (ndarray): An array of shape (num_defective_pixels, 2) indicating defective pixel locations.
         batch_size (int): Number of views to include in one JAX batch.
