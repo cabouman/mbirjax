@@ -36,9 +36,11 @@ SLICE_AXIS_FONT_SIZE = 9
 SLICE_AXIS_LABEL_FONT_SIZE = 8
 SLICE_AXIS_RADIO_SIZE = 30
 
+TKAGG = True
 Y_SKIP = 28
 LOAD_LABEL = 'Load'
 if matplotlib.get_backend() != 'TkAgg':
+    TKAGG = False
     Y_SKIP = 50
     LOAD_LABEL = 'Load disabled - requires TkAgg'
 
@@ -231,7 +233,11 @@ class SliceViewer:
                 title = "Set Intensity Range"
                 field_names = ["Min", "Max"]
                 field_values = [f"{self.vmin:.3g}", f"{self.vmax:.3g}"]
-                inputs = easygui.multenterbox(msg, title + " (Cancel to keep, Reset to defaults)", field_names, field_values)
+                if TKAGG:
+                    inputs = easygui.multenterbox(msg, title + " (Cancel to keep, Reset to defaults)", field_names, field_values)
+                else:
+                    warnings.warn("Right-click on intensity slider requires TkAgg: use matplotlib.use('TkAgg')")
+                    inputs = None
                 if inputs is None:
                     return
                 if inputs == ["", ""]:
@@ -405,10 +411,13 @@ class SliceViewer:
 
         def show_help(show):
             if show:
-                self.help_overlay = self.fig.text(0.5, 0.5,
-                                                  multiline("Right-click image for menu", 'Click and drag for ROI',
-                                                            'Press [esc] to remove ROI/menu/help'),
-                                                  ha='center', va='center', fontsize=12,
+                help_items = ["Right-click an image for menu", 'Click and drag for ROI',
+                              'Press [esc] to remove ROI/menu/help']
+                if TKAGG:
+                    help_items += ['Right-click intensity slider to adjust range']
+                self.help_overlay = self.fig.text(0.25, 0.5,
+                                                  multiline(*help_items),
+                                                  ha='left', va='center', fontsize=12,
                                                   bbox=dict(facecolor='white', alpha=0.9), zorder=10)
             else:
                 if hasattr(self, 'help_overlay') and self.help_overlay:
@@ -432,6 +441,7 @@ class SliceViewer:
         self._is_drawing = False  # Add a flag to track drawing state
 
         def on_press(event):
+            show_help(False)
             if event.button != 1: return
             if event.inaxes not in self.axes: return
             if hasattr(event,
