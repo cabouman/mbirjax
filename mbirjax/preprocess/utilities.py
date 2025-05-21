@@ -14,22 +14,33 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
     """
     Compute sinogram from object, blank, and dark scans.
 
-    This function computes sinogram by taking the negative log of the attenuation estimate.
-    It can also take in a list of defective pixels and correct those pixel values.
-    The invalid sinogram entries are the union of defective pixel entries and sinogram entries with values of inf or Nan.
+    This function computes a sinogram by taking the negative logarithm of the normalized transmission image:
+    `-log((obj - dark) / (blank - dark))`. It supports correction for defective pixels.
+
+    The invalid sinogram entries are defined as:
+    - Any values resulting in `inf` or `NaN`
+    - Any indices listed in the `defective_pixel_array` (if provided)
 
     Args:
-        obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
-        dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
-        defective_pixel_array (optional, ndarray): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-            If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
-        batch_size (int): Size of view batch to use in passing data to gpu.
+        obj_scan (ndarray): 
+            A 3D object scan of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray, optional): 
+            A 3D blank scan of shape (num_blank_scans, num_det_rows, num_det_channels). 
+            If `num_blank_scans > 1`, a pixel-wise mean will be computed.
+        dark_scan (ndarray, optional): 
+            A 3D dark scan of shape (num_dark_scans, num_det_rows, num_det_channels). 
+            If `num_dark_scans > 1`, a pixel-wise mean will be computed.
+        defective_pixel_array (ndarray, optional): 
+            An array of defective pixel indices. Format can be either 
+            (view_idx, row_idx, channel_idx) or (row_idx, channel_idx), if shared across views.
+            If `None`, invalid pixels are inferred from `NaN` or `inf` values.
+        batch_size (int): 
+            Number of views to process in each GPU batch.
 
     Returns:
-        - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-    """
-    # Compute mean for blank and dark scans and move them to GPU if available
+        ndarray: 
+            The computed sinogram, with shape (num_views, num_det_rows, num_det_channels).
+    """    # Compute mean for blank and dark scans and move them to GPU if available
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
