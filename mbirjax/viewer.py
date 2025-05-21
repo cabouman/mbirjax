@@ -580,70 +580,7 @@ class SliceViewer:
                     self._menu_texts.append(txt)
                     txt._viewer_callback = callback
 
-                def on_transpose():
-                    perm = self.axes_perms[i].copy()
-                    perm[0], perm[1] = perm[1], perm[0]
-                    self._update_axis(i, perm)
-                    self._remove_menu()
-
-                def on_cancel():
-                    self._remove_menu()
-
-                def on_reset():
-                    self._draw_images(i)
-                    self._update_slice_slider()
-                    plt.tight_layout()
-                    self.fig.canvas.draw_idle()
-
-                    self._remove_menu()
-
-                def on_load():
-                    if not hasattr(self.fig.canvas.manager, 'window'):
-                        warnings.warn("Load disabled: matplotlib backend is not TkAgg")
-                        return
-
-                    self._remove_menu()
-
-                    def deferred_load():
-                        file_path = launch_file_picker()
-                        if not file_path:
-                            return
-                        try:
-                            new_array = np.load(file_path)
-                            if new_array.ndim == 2:
-                                new_array = new_array[..., np.newaxis]
-                            if new_array.ndim != 3:
-                                raise ValueError("Loaded array must be 2D or 3D")
-
-                            self.original_data[i] = new_array
-                            self.axes_perms[i] = self._get_perm_from_slice_ind(self.axes_perms[i][-1])
-                            transposed = np.transpose(new_array, self.axes_perms[i])
-                            self.data[i] = transposed
-                            self.cur_slices[i] = transposed.shape[2] // 2
-                            self._draw_images()
-                            self._update_slice_slider()
-                            self.fig.canvas.draw_idle()
-                        except Exception as e:
-                            print(f"Failed to load array: {e}")
-
-                    # Use TkAgg-safe scheduling
-                    try:
-                        self.fig.canvas.manager.window.after(10, deferred_load)
-                    except Exception as e:
-                        warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
-
-                if self.n_volumes > 1:
-                    options = [["{} slice axes".format("Decouple" if all(
-                                   ax == self.axes_perms[0, -1] for ax in self.axes_perms[:, -1]) else "Couple"),
-                                self._toggle_decouple_slice_axes],
-                               ["{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
-                                self._toggle_sync_limits]]
-                else:
-                    options = []
-                options += [["Transpose image", on_transpose],
-                            [LOAD_LABEL, on_load],
-                            ['Reset', on_reset],
-                            ["Cancel", on_cancel]]
+                options = self._get_context_menu_options(i)
                 y_offset = 0
                 y_skip = Y_SKIP
                 for option in options:
@@ -673,6 +610,70 @@ class SliceViewer:
         self.fig.canvas.mpl_connect('button_release_event', on_release)
         self.fig.canvas.mpl_connect('key_press_event', on_key)
 
+    def _get_context_menu_options(self, i):
+        options = []
+        if self.n_volumes > 1:
+            options.append([
+                "{} slice axes".format("Decouple" if all(
+                    ax == self.axes_perms[0, -1] for ax in self.axes_perms[:, -1]) else "Couple"),
+                self._toggle_decouple_slice_axes])
+            options.append([
+                "{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
+                self._toggle_sync_limits])
+        options += [["Transpose image", lambda: self._on_transpose(i)],
+                    [LOAD_LABEL, lambda: self._on_load(i)],
+                    ["Reset", lambda: self._on_reset(i)],
+                    ["Cancel", self._remove_menu]]
+        return options
+
+    def _on_transpose(self, i):
+        perm = self.axes_perms[i].copy()
+        perm[0], perm[1] = perm[1], perm[0]
+        self._update_axis(i, perm)
+        self._remove_menu()
+
+    def _on_load(self, i):
+        if not hasattr(self.fig.canvas.manager, 'window'):
+            warnings.warn("Load disabled: matplotlib backend is not TkAgg")
+            return
+
+        self._remove_menu()
+
+        def deferred_load():
+            file_path = launch_file_picker()
+            if not file_path:
+                return
+            try:
+                new_array = np.load(file_path)
+                if new_array.ndim == 2:
+                    new_array = new_array[..., np.newaxis]
+                if new_array.ndim != 3:
+                    raise ValueError("Loaded array must be 2D or 3D")
+
+                self.original_data[i] = new_array
+                self.axes_perms[i] = self._get_perm_from_slice_ind(self.axes_perms[i][-1])
+                transposed = np.transpose(new_array, self.axes_perms[i])
+                self.data[i] = transposed
+                self.cur_slices[i] = transposed.shape[2] // 2
+                self._draw_images()
+                self._update_slice_slider()
+                self.fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"Failed to load array: {e}")
+
+        # Use TkAgg-safe scheduling
+        try:
+            self.fig.canvas.manager.window.after(10, deferred_load)
+        except Exception as e:
+            warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
+
+    def _on_reset(self, i):
+        self._draw_images(i)
+        self._update_slice_slider()
+        plt.tight_layout()
+        self.fig.canvas.draw_idle()
+
+        self._remove_menu()
     def _remove_menu(self):
         if self._menu_texts:
             for txt in self._menu_texts:
