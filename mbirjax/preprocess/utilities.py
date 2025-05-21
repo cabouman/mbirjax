@@ -229,20 +229,27 @@ def estimate_background_offset(sino, edge_width=9):
 def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
     """
     Performs down-sampling of the scan images in the detector plane.
+    This is done for the object, blank_scan, and dark_scan data,
+    and the defective_pixel_array is updated to reflect the new pixel grid.
 
     Args:
         obj_scan (ndarray): A stack of sinograms. 3D NumPy array of shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray): A blank scan. 3D NumPy array of shape (1, num_det_rows, num_det_channels).
-        dark_scan (ndarray): A dark scan. 3D NumPy array of shape (1, num_det_rows, num_det_channels).
-        downsample_factor (tuple of int): Two integers defining the down-sample factor. Default is (1, 1).
-        defective_pixel_array (ndarray): An array of shape (num_defective_pixels, 2) indicating defective pixel locations.
-        batch_size (int): Number of views to include in one JAX batch.
+        blank_scan (ndarray): Blank scan(s). 3D NumPy array of shape (num_blank_views, num_det_rows, num_det_channels).
+        dark_scan (ndarray): Dark scan(s). 3D NumPy array of shape (num_dark_views, num_det_rows, num_det_channels).
+        downsample_factor (tuple of int): Two integers defining the down-sample factor. Must be ≥ 1 in each dimension.
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2) indicating defective pixel coordinates.
+        batch_size (int): Number of views to include in one JAX batch. Controls memory usage.
+
+    Notes:
+        This function supports both singleton blank/dark scans (shape (1, H, W)) and multi-view scans
+        (shape (N, H, W), where N > 1). Downsampling is applied independently to each view.
 
     Returns:
         tuple:
-        - **obj_scan** (ndarray): Downsampled object scan. Shape (num_views, num_det_rows, num_det_channels).
-        - **blank_scan** (ndarray): Downsampled blank scan. Shape (1, num_det_rows, num_det_channels).
-        - **dark_scan** (ndarray): Downsampled dark scan. Shape (1, num_det_rows, num_det_channels).
+        - **obj_scan** (ndarray): Downsampled object scan. Shape (num_views, new_rows, new_cols).
+        - **blank_scan** (ndarray): Downsampled blank scan(s). Shape (num_blank_views, new_rows, new_cols).
+        - **dark_scan** (ndarray): Downsampled dark scan(s). Shape (num_dark_views, new_rows, new_cols).
+        - **defective_pixel_array** (ndarray): Updated defective pixel coordinates. Shape (N_def, 2).
     """
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
@@ -251,8 +258,9 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
     if len(defective_pixel_array) > 0:
         # Set defective pixels to 0
         flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
-        np.put(blank_scan[0], flat_indices, np.nan)
-        np.put(dark_scan[0], flat_indices, np.nan)
+        for i in range(blank_scan.shape[0]):
+            np.put(blank_scan[i], flat_indices, np.nan)
+            np.put(dark_scan[i], flat_indices, np.nan)
     else:
         flat_indices = None
 
@@ -266,11 +274,17 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
     # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
     block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
                    blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
+
     # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
-    blank_scan = blank_scan.reshape((blank_scan.shape[0],) + block_shape)
-    blank_scan = np.nanmean(blank_scan, axis=(2, 4))
-    dark_scan = dark_scan.reshape((dark_scan.shape[0],) + block_shape)
-    dark_scan = np.nanmean(dark_scan, axis=(2, 4))
+    blank_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in blank_scan
+    ], axis=0)
+
+    dark_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in dark_scan
+    ], axis=0)
 
     # For obj_scan, we'll batch over the views.
     num_views = obj_scan.shape[0]  # Total number of views
@@ -294,7 +308,8 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
     obj_scan = np.concatenate(obj_scan_list, axis=0)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    defective_pixel_array = np.argwhere(np.isnan(blank_scan[0]))
+    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
+    defective_pixel_array = np.argwhere(nan_mask)
     if len(defective_pixel_array) == 0:
         defective_pixel_array = ()
 
