@@ -6,15 +6,16 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import warnings
-import easygui
 import time
+import os
+import easygui
 
 
 # === CONSTANTS ===
 
 # --- File picker launcher for easygui ---
 def launch_file_picker():
-    file_path = easygui.fileopenbox(default='*.npy', filetypes=["*.npy"])
+    file_path = easygui.fileopenbox(default='*.h5', filetypes=["*.npy", "*.npz", "*.h5", "*.hdf5"])
     return file_path
 
 
@@ -490,7 +491,6 @@ class SliceViewer:
         def on_motion(event):
             if event.inaxes not in self.axes: return
             if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
-            if not self._is_drawing: return
 
             for i, circle in enumerate(self.circles):
                 if circle is None: continue
@@ -624,22 +624,9 @@ class SliceViewer:
             if not file_path:
                 return
             try:
-                new_array = np.load(file_path)
-                if new_array.ndim == 2:
-                    new_array = new_array[..., np.newaxis]
-                if new_array.ndim != 3:
-                    raise ValueError("Loaded array must be 2D or 3D")
-
-                self.original_data[image_index] = new_array
-                self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
-                transposed = np.transpose(new_array, self.axes_perms[image_index])
-                self.data[image_index] = transposed
-                self.cur_slices[image_index] = transposed.shape[2] // 2
-                self._draw_images()
-                self._update_slice_slider()
-                self.fig.canvas.draw_idle()
+                self._load_file(file_path, image_index)
             except Exception as e:
-                print(f"Failed to load array: {e}")
+                print(f"Failed to load file: {e}")
 
         # Use TkAgg-safe scheduling
         try:
@@ -654,26 +641,58 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
         self._remove_menu()
 
+    def _load_file(self, file_path, image_index):
+
+        ext = os.path.splitext(file_path)[-1].lower()
+        if ext == ".npy":
+            new_array = np.load(file_path)
+        elif ext == ".npz":
+            arrays = np.load(file_path)
+            if len(arrays) > 1:
+                choices = arrays.files + ['Cancel']
+                msg = ['Arrays in {}'.format(os.path.basename(file_path))]
+                for name in arrays.files:
+                    msg += ['{}: shape={}'.format(name, arrays[name].shape)]
+                choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the array to display', choices=choices)
+                if choice == 'Cancel':
+                    return
+            else:
+                choice = arrays.files[0]
+            new_array = arrays[choice]
+        if new_array.ndim == 2:
+            new_array = new_array[..., np.newaxis]
+        if new_array.ndim != 3:
+            raise ValueError("Loaded array must be 2D or 3D")
+
+        self.original_data[image_index] = new_array
+        self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
+        transposed = np.transpose(new_array, self.axes_perms[image_index])
+        self.data[image_index] = transposed
+        self.cur_slices[image_index] = transposed.shape[2] // 2
+        self._draw_images()
+        self._update_slice_slider()
+        self.fig.canvas.draw_idle()
+
+    def _make_option(self, label, position, y_offset, callback):
+        bounds = self.fig.bbox.bounds
+        x_frac = (position.x - bounds[0]) / (bounds[2] - bounds[0])
+        y_frac = (position.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
+        txt = self.fig.text(
+            x_frac, y_frac,
+            label,
+            ha='left', va='bottom', fontsize=10, color='white',
+            bbox=dict(facecolor='black', edgecolor='white')
+        )
+        self._menu_texts.append(txt)
+        txt._viewer_callback = callback
+
     def _render_menu(self, event, image_index):
-
-        def make_option(label, y_offset, callback):
-            bounds = self.fig.bbox.bounds
-            x_frac = (event.x - bounds[0]) / (bounds[2] - bounds[0])
-            y_frac = (event.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
-            txt = self.fig.text(
-                x_frac, y_frac,
-                label,
-                ha='left', va='bottom', fontsize=10, color='white',
-                bbox=dict(facecolor='black', edgecolor='white')
-            )
-            self._menu_texts.append(txt)
-            txt._viewer_callback = callback
-
         options = self._get_context_menu_options(image_index)
+
         y_offset = 0
         y_skip = Y_SKIP
         for option in options:
-            make_option(option[0], y_offset, option[1])
+            self._make_option(option[0], event, y_offset, option[1])
             y_offset -= y_skip
 
         self.fig.canvas.draw_idle()
