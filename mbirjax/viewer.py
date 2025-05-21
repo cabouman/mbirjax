@@ -563,29 +563,10 @@ class SliceViewer:
 
         def on_context_menu(event):
             if event.button == 3 and event.inaxes in self.axes:
-                i = self.axes.index(event.inaxes)
+                image_index = self.axes.index(event.inaxes)
                 # Remove any existing menu items
                 self._remove_menu()
-
-                def make_option(label, y_offset, callback):
-                    bounds = self.fig.bbox.bounds
-                    x_frac = (event.x - bounds[0]) / (bounds[2] - bounds[0])
-                    y_frac = (event.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
-                    txt = self.fig.text(
-                        x_frac, y_frac,
-                        label,
-                        ha='left', va='bottom', fontsize=10, color='white',
-                        bbox=dict(facecolor='black', edgecolor='white')
-                    )
-                    self._menu_texts.append(txt)
-                    txt._viewer_callback = callback
-
-                options = self._get_context_menu_options(i)
-                y_offset = 0
-                y_skip = Y_SKIP
-                for option in options:
-                    make_option(option[0], y_offset, option[1])
-                    y_offset -= y_skip
+                self._create_menu(event, image_index)
                 self.fig.canvas.draw_idle()
 
         def on_context_select(event):
@@ -672,8 +653,30 @@ class SliceViewer:
         self._update_slice_slider()
         plt.tight_layout()
         self.fig.canvas.draw_idle()
-
         self._remove_menu()
+
+    def _create_menu(self, event, image_index):
+
+        def make_option(label, y_offset, callback):
+            bounds = self.fig.bbox.bounds
+            x_frac = (event.x - bounds[0]) / (bounds[2] - bounds[0])
+            y_frac = (event.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
+            txt = self.fig.text(
+                x_frac, y_frac,
+                label,
+                ha='left', va='bottom', fontsize=10, color='white',
+                bbox=dict(facecolor='black', edgecolor='white')
+            )
+            self._menu_texts.append(txt)
+            txt._viewer_callback = callback
+
+        options = self._get_context_menu_options(image_index)
+        y_offset = 0
+        y_skip = Y_SKIP
+        for option in options:
+            make_option(option[0], y_offset, option[1])
+            y_offset -= y_skip
+
     def _remove_menu(self):
         if self._menu_texts:
             for txt in self._menu_texts:
