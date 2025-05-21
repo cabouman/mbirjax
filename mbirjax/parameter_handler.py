@@ -2,8 +2,12 @@ import jax.numpy as jnp
 import numpy as np
 from ruamel.yaml import YAML
 import mbirjax._utils as utils
+import mbirjax.utilities as mju
 import warnings
 import copy
+import logging
+import io
+import os
 
 
 class ParameterHandler():
@@ -12,6 +16,61 @@ class ParameterHandler():
     def __init__(self):
 
         self.params = utils.get_default_params()
+        self.logger = None
+        self.log_buffer = None
+
+    def setup_logger(self, *, logfile_path: str = "./logs/recon.log", print_logs: bool = True):
+        """
+        Initialize self.logger and self.log_buffer.
+
+        Args:
+            logfile_path: Path to the log file. If None or empty, file logging is skipped.
+            verbosity: 0 -> WARNING, 1 -> INFO, 2+ -> DEBUG
+            print_logs: If True, emit logs to console.
+
+        Raises:
+            Exception: If logfile_path directory cannot be created.
+        """
+        # Map verbosity to logging level
+        verbose = self.get_params('verbose')
+        if verbose < 1:
+            level = logging.WARNING
+        elif verbose < 2:
+            level = logging.INFO
+        else:
+            level = logging.DEBUG
+
+        # Configure logger
+        logger = logging.getLogger(self.__class__.__name__)
+        logger.setLevel(level)
+        logger.handlers.clear()
+
+        # In-memory buffer handler (always enabled)
+        self.log_buffer = io.StringIO()
+        buffer_handler = logging.StreamHandler(self.log_buffer)
+        buffer_handler.setLevel(level)
+        buffer_formatter = logging.Formatter('%(message)s')
+        buffer_handler.setFormatter(buffer_formatter)
+        logger.addHandler(buffer_handler)
+
+        # Console handler
+        if print_logs:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(level)
+            console_formatter = logging.Formatter('%(message)s')
+            console_handler.setFormatter(console_formatter)
+            logger.addHandler(console_handler)
+
+        # File handler (optional)
+        if logfile_path:
+            mju.makedirs(logfile_path)
+            file_handler = logging.FileHandler(logfile_path)
+            file_handler.setLevel(level)
+            file_formatter = logging.Formatter('%(message)s')
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+
+        self.logger = logger
 
     def print_params(self):
         """
@@ -85,31 +144,41 @@ class ParameterHandler():
 
         return cur_params
 
-    def save_params(self, filename):
+    def save_params(self, filename=None):
         """
-        Save parameters to yaml file.
+        Serialize parameters to YAML. If filename is provided, write to file; otherwise return YAML text.
 
         Args:
-            filename (str): Path to file to store the parameter dictionary.  Must end in .yml or .yaml
+            filename (str or None): Path to save YAML file (must end in .yml/.yaml). If None, return YAML string.
 
         Returns:
-            Nothing but creates or overwrites the specified file.
-        """
-        output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
-        # Convert any lists to tuples for consistency with load
-        for key in output_params.keys():
-            if isinstance(output_params[key]['val'], list):
-                output_params[key]['val'] = tuple(output_params[key]['val'])
+            None if filename was provided; otherwise, YAML-formatted string of parameters.
 
-        # Determine file type
-        if filename.endswith(('.yml', '.yaml')):
-            # Save the full parameter dictionary
+        Raises:
+            ValueError: If filename is invalid.
+        """
+        # Prepare parameter dict
+        output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
+        for key in output_params:
+            val = output_params[key]['val']
+            if isinstance(val, list):
+                output_params[key]['val'] = tuple(val)
+
+        yaml = YAML()
+        yaml.default_flow_style = False
+
+        if filename:
+            if not filename.lower().endswith(('.yml', '.yaml')):
+                raise ValueError(f"Filename must end in .yaml or .yml: {filename}")
+            # Ensure output directory exists
+            mju.makedirs(filename)
             with open(filename, 'w') as file:
-                yaml = YAML()
-                yaml.default_flow_style = False
                 yaml.dump(output_params, file)
+            return None
         else:
-            raise ValueError(f'Filename must end in .yaml or .yml: {filename}')
+            stream = io.StringIO()
+            yaml.dump(output_params, stream)
+            return stream.getvalue()
 
     @staticmethod
     def load_param_dict(filename, required_param_names=None, values_only=True):
