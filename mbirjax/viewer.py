@@ -566,8 +566,7 @@ class SliceViewer:
                 image_index = self.axes.index(event.inaxes)
                 # Remove any existing menu items
                 self._remove_menu()
-                self._create_menu(event, image_index)
-                self.fig.canvas.draw_idle()
+                self._render_menu(event, image_index)
 
         def on_context_select(event):
             if event.button != 1:
@@ -591,7 +590,7 @@ class SliceViewer:
         self.fig.canvas.mpl_connect('button_release_event', on_release)
         self.fig.canvas.mpl_connect('key_press_event', on_key)
 
-    def _get_context_menu_options(self, i):
+    def _get_context_menu_options(self, image_index):
         options = []
         if self.n_volumes > 1:
             options.append([
@@ -601,19 +600,19 @@ class SliceViewer:
             options.append([
                 "{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
                 self._toggle_sync_limits])
-        options += [["Transpose image", lambda: self._on_transpose(i)],
-                    [LOAD_LABEL, lambda: self._on_load(i)],
-                    ["Reset", lambda: self._on_reset(i)],
+        options += [["Transpose image", lambda: self._on_transpose(image_index)],
+                    [LOAD_LABEL, lambda: self._on_load(image_index)],
+                    ["Reset", lambda: self._on_reset(image_index)],
                     ["Cancel", self._remove_menu]]
         return options
 
-    def _on_transpose(self, i):
-        perm = self.axes_perms[i].copy()
+    def _on_transpose(self, image_index):
+        perm = self.axes_perms[image_index].copy()
         perm[0], perm[1] = perm[1], perm[0]
-        self._update_axis(i, perm)
+        self._update_axis(image_index, perm)
         self._remove_menu()
 
-    def _on_load(self, i):
+    def _on_load(self, image_index):
         if not hasattr(self.fig.canvas.manager, 'window'):
             warnings.warn("Load disabled: matplotlib backend is not TkAgg")
             return
@@ -631,11 +630,11 @@ class SliceViewer:
                 if new_array.ndim != 3:
                     raise ValueError("Loaded array must be 2D or 3D")
 
-                self.original_data[i] = new_array
-                self.axes_perms[i] = self._get_perm_from_slice_ind(self.axes_perms[i][-1])
-                transposed = np.transpose(new_array, self.axes_perms[i])
-                self.data[i] = transposed
-                self.cur_slices[i] = transposed.shape[2] // 2
+                self.original_data[image_index] = new_array
+                self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
+                transposed = np.transpose(new_array, self.axes_perms[image_index])
+                self.data[image_index] = transposed
+                self.cur_slices[image_index] = transposed.shape[2] // 2
                 self._draw_images()
                 self._update_slice_slider()
                 self.fig.canvas.draw_idle()
@@ -648,14 +647,14 @@ class SliceViewer:
         except Exception as e:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-    def _on_reset(self, i):
-        self._draw_images(i)
+    def _on_reset(self, image_index):
+        self._draw_images(image_index)
         self._update_slice_slider()
         plt.tight_layout()
         self.fig.canvas.draw_idle()
         self._remove_menu()
 
-    def _create_menu(self, event, image_index):
+    def _render_menu(self, event, image_index):
 
         def make_option(label, y_offset, callback):
             bounds = self.fig.bbox.bounds
@@ -676,6 +675,8 @@ class SliceViewer:
         for option in options:
             make_option(option[0], y_offset, option[1])
             y_offset -= y_skip
+
+        self.fig.canvas.draw_idle()
 
     def _remove_menu(self):
         if self._menu_texts:
