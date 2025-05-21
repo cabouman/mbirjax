@@ -29,10 +29,12 @@ Reconstruction and Projection
 
 .. automethod:: mbirjax.TomographyModel.back_project
 
+Weights and Metal Artifact Reduction
+------------------------------------
+
 .. automethod:: mbirjax.TomographyModel.gen_weights
 
 .. automethod:: mbirjax.TomographyModel.gen_weights_mar
-
 
 Saving and Loading
 ------------------
