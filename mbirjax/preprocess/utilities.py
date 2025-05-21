@@ -215,25 +215,24 @@ def estimate_background_offset(sino, edge_width=9):
 
 
 # ####### subroutines for image cropping and down-sampling
-def downsample_scans(obj_scan, blank_scan, dark_scan,
-                     downsample_factor, defective_pixel_array=(), batch_size=90):
-    """Performs Down-sampling to the scan images in the detector plane.
+def downsample_scans(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
+    """
+    Performs down-sampling of the scan images in the detector plane.
 
     Args:
-        obj_scan (numpy array of floats): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (numpy array of floats): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
-        dark_scan (numpy array of floats): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
-        downsample_factor ([int, int]): Default=[1,1]] Two numbers to define down-sample factor.
-        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2)
-        batch_size (int): Number of views to include in one jax batch.
+        obj_scan (ndarray): A stack of sinograms. 3D NumPy array of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray): A blank scan. 2D NumPy array of shape (num_det_rows, num_det_channels).
+        dark_scan (ndarray): A dark scan. 2D NumPy array of shape (num_det_rows, num_det_channels).
+        downsample_factor (tuple of int): Two integers defining the down-sample factor. Default is (1, 1).
+        defective_pixel_array (ndarray): An array of shape (num_defective_pixels, 2) indicating defective pixel locations.
+        batch_size (int): Number of views to include in one JAX batch.
 
     Returns:
-        Downsampled scans
-        - **obj_scan** (*ndarray, float*): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        - **blank_scan** (*ndarray, float*): A blank scan. 3D numpy array, (num_det_rows, num_det_channels).
-        - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
+        tuple:
+            obj_scan (ndarray): Downsampled object scan. Shape (num_views, num_det_rows, num_det_channels).
+            blank_scan (ndarray): Downsampled blank scan. Shape (num_det_rows, num_det_channels).
+            dark_scan (ndarray): Downsampled dark scan. Shape (num_det_rows, num_det_channels).
     """
-
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
