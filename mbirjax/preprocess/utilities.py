@@ -304,23 +304,27 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
 def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, defective_pixel_array=()):
     """
-    Crop obj_scan, blank_scan, and dark_scan images by integer number of pixels, and update defective_pixel_array accordingly.
-    Notice that the left and right side pixels are cropped the same amount in order to avoid changing the center of rotation.
+    Crop obj_scan, blank_scan, and dark_scan images by an integer number of pixels, and update defective_pixel_array accordingly.
+    The left and right side pixels are cropped the same amount in order to preserve the center of rotation.
 
     Args:
-        obj_scan (ndarray): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        dark_scan (ndarray): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
-        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
-        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
-        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2)
+        obj_scan (ndarray): Sinogram. 3D numpy array of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray): Blank scan(s). 3D numpy array of shape (num_blank_views, num_det_rows, num_det_channels).
+        dark_scan (ndarray): Dark scan(s). 3D numpy array of shape (num_dark_views, num_det_rows, num_det_channels).
+        crop_pixels_sides (int, optional): Number of pixels to crop from each side of the sinogram. Defaults to 0.
+        crop_pixels_top (int, optional): Number of pixels to crop from the top of the sinogram. Defaults to 0.
+        crop_pixels_bottom (int, optional): Number of pixels to crop from the bottom of the sinogram. Defaults to 0.
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2) containing (row, col) coordinates.
+
+    Notes:
+        This function supports both singleton blank/dark scans (with shape (1, H, W)) and multi-view scans
+        (with shape (N, H, W), where N > 1). Cropping is applied consistently across all views.
 
     Returns:
         tuple:
-        - **obj_scan** (*ndarray, float*): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        - **blank_scan** (*ndarray, float*): A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
+        - **obj_scan** (*ndarray, float*): Cropped stack of sinograms. 3D numpy array of shape (num_views, new_rows, new_cols).
+        - **blank_scan** (*ndarray, float*): Cropped blank scan(s). 3D numpy array of shape (num_blank_views, new_rows, new_cols).
+        - **dark_scan** (*ndarray, float*): Cropped dark scan(s). 3D numpy array of shape (num_dark_views, new_rows, new_cols).
     """
     assert (0 <= crop_pixels_sides < obj_scan.shape[2] // 2 and
             0 <= crop_pixels_top and 0 <= crop_pixels_bottom and crop_pixels_top + crop_pixels_bottom < obj_scan.shape[1]), \
