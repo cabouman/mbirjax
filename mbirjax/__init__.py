@@ -7,4 +7,5 @@ from .cone_beam import *
 from .vcd_utils import *
 from .memory_stats import *
 from .utilities import *
+from .viewer import *
 from . import preprocess
