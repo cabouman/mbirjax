@@ -147,30 +147,6 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
     return sino
 
 
-def correct_det_rotation(sino, weights=None, det_rotation=0.0):
-    """
-    Correct sinogram data and weights to account for detector rotation.
-
-    This function can be used to rotate sinogram views when the axis of rotation is not exactly aligned with the detector columns.
-
-    Args:
-        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        weights (float, ndarray): Sinogram weights, with the same array shape as ``sino``.
-        det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in unit of radians.
-
-    Returns:
-        - A numpy array containing the corrected sinogram data if weights is None.
-        - A tuple (sino, weights) if weights is not None
-    """
-    sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    # weights not provided
-    if weights is None:
-        return sino
-    # weights provided
-    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
-    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    return sino, weights
-
 
 def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=0.0, batch_size=30):
     """

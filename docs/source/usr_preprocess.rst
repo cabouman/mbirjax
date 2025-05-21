@@ -37,7 +37,6 @@ General preprocess functions
 
       compute_sino_transmission
       interpolate_defective_pixels
-      correct_det_rotation
       correct_det_rotation_and_background
       estimate_background_offset
       downsample_scans
