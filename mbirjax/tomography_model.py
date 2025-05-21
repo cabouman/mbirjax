@@ -1,8 +1,12 @@
+import io
 import types
 import numpy as np
 import warnings
 import time  # Used for debugging/performance tuning
 import os
+import h5py
+import numpy as np
+from h5py import string_dtype
 
 from jaxlib.xla_extension import XlaRuntimeError
 
@@ -11,6 +15,7 @@ os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num
 import jax
 import jax.numpy as jnp
 import mbirjax
+import mbirjax.utilities as mju
 from mbirjax import ParameterHandler
 from collections import namedtuple
 import subprocess
@@ -18,6 +23,10 @@ import re
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
+
+recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
+                     'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
+ReconParams = namedtuple('ReconParams', recon_param_names)
 
 
 class TomographyModel(ParameterHandler):
@@ -262,12 +271,65 @@ class TomographyModel(ParameterHandler):
         Save parameters to yaml file.
 
         Args:
-            filename (str): Path to file to store the parameter dictionary.  Must end in .yml or .yaml
+            filename (str or None): Path to file to store the parameter dictionary.  Must end in .yml or .yaml if a string.
+            If None, then the YAML text is returned.
 
         Returns:
-            Nothing but creates or overwrites the specified file.
+            A string if filename=None; None if the filename is given and also creates or overwrites the specified file.
         """
-        self.save_params(filename)
+        return self.save_params(filename)
+
+    def save_recon_to_hdf5(self, filepath, recon, recon_params, save_model=True):
+        """
+        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
+
+        Args:
+            filepath (str or Path): Path to the output .h5 file.
+            recon (array-like): Reconstruction data (NumPy or JAX array).
+            recon_params (ReconParams): Reconstruction parameters namedtuple.
+            save_model (bool): If True, save model YAML as a string dataset.
+        Raises:
+            Exception: If directory creation fails or save operation errors.
+        """
+        # Ensure output directory exists
+        mju.makedirs(filepath)
+
+        # Open HDF5 file for writing
+        with h5py.File(filepath, 'w') as f:
+            # Save reconstruction array
+            arr = np.array(recon)
+            f.create_dataset('recon', data=arr)
+
+            # Save reconstruction parameters in a group
+            params_grp = f.create_group('recon_params')
+            for key, val in recon_params._asdict().items():
+                # Store simple types as attributes
+                if isinstance(val, (int, float, str, bool)):
+                    params_grp.attrs[key] = val
+                else:
+                    # Fallback: store as string representation
+                    params_grp.attrs[key] = str(val)
+
+            # Optionally save model YAML
+            if save_model:
+                try:
+                    # Assume to_file(None) returns YAML text
+                    yaml_text = self.to_file(None)
+                except TypeError:
+                    # Fallback: write to temp YAML then read
+                    tmp_yaml = filepath + '.yaml'
+                    self.to_file(tmp_yaml)
+                    with open(tmp_yaml, 'r') as yf:
+                        yaml_text = yf.read()
+                    os.remove(tmp_yaml)
+
+                # Store YAML as a string dataset
+                dt = string_dtype(encoding='utf-8')
+                f.create_dataset('model_yaml', data=yaml_text, dtype=dt)
+
+        # Log the save
+        if self.logger:
+            self.logger.info(f"Saved reconstruction and params to '{filepath}'")
 
     def create_projectors(self):
         """
@@ -753,7 +815,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros(recon_shape, device=self.main_device)
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
-              compute_prior_loss=False, num_iterations=None):
+              compute_prior_loss=False, num_iterations=None, logfile_path='./logs/recon.log', print_logs=True):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -776,13 +838,16 @@ class TomographyModel(ParameterHandler):
             recon_params (namedtuple): max_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
         """
         if num_iterations is not None:
-            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\nIn the current run, the value of num_iterations will be used to set max_iterations.')
+            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\n'
+                          'In the current run, the value of num_iterations will be used to set max_iterations.')
             max_iterations = num_iterations
 
-        if self.get_params('verbose') >= 1:
-            print('GPU used for: {}'.format(self.use_gpu))
-            print('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
-            print('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
+        # Initialize logging for this run
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        self.logger.info('GPU used for: {}'.format(self.use_gpu))
+        self.logger.info('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
+        self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
 
         try:
 
@@ -798,7 +863,7 @@ class TomographyModel(ParameterHandler):
             if compute_prior_loss:
                 msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
                 msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
-                warnings.warn(msg)
+                self.logger.warning(msg)
 
             regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
@@ -819,9 +884,6 @@ class TomographyModel(ParameterHandler):
                                                  stop_threshold_change_pct=stop_threshold_change_pct)
 
             # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
-            recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                                 'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
-            ReconParams = namedtuple('ReconParams', recon_param_names)
             partition_sequence = [int(val) for val in partition_sequence]
             fm_rmse = [float(val) for val in loss_vectors[0]]
             if compute_prior_loss:
@@ -836,23 +898,26 @@ class TomographyModel(ParameterHandler):
             recon_params = ReconParams(*tuple(recon_param_values))
 
         except MemoryError as e:
-            print('Insufficient CPU memory')
+            self.logger.error('Insufficient CPU memory')
             raise e
         except XlaRuntimeError as e:
-            print(e)
+            self.logger.error(e)
             if self.gpu_memory > 0:
                 if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
-                    print('Insufficient memory for jax (likely insufficient CPU memory)')
+                    self.logger.error('Insufficient memory for jax (likely insufficient CPU memory)')
                 else:
-                    print('Insufficient memory for jax (likely insufficient GPU memory)')
+                    self.logger.error('Insufficient memory for jax (likely insufficient GPU memory)')
                     if self.use_gpu == 'full':
-                        print(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
+                        self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
                     elif self.use_gpu == 'sinograms':
-                        print(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
+                        self.logger.error(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
             else:
-                print('Insufficient memory for jax (insufficient CPU memory)')
+                self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
 
             raise e
+
+        if logfile_path:
+            self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
 
         return recon, recon_params
 
@@ -893,7 +958,7 @@ class TomographyModel(ParameterHandler):
 
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
-            print('Starting direct recon for initial reconstruction')
+            self.logger.info('Starting direct recon for initial reconstruction')
             with jax.default_device(self.sinogram_device):
                 init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int) and init_recon == 0:
@@ -904,11 +969,12 @@ class TomographyModel(ParameterHandler):
             error_message = "init_recon does not have the correct shape. \n"
             error_message += "Expected {}, but got shape {} for init_recon shape.".format(recon_shape,
                                                                                           init_recon.shape)
+            self.logger.error(error_message)
             raise ValueError(error_message)
 
         # Initialize VCD recon and error sinogram using the init_recon
         # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
-        print('Initializing error sinogram')
+        self.logger.info('Initializing error sinogram')
         error_sinogram = self.forward_project(init_recon)
         if not constant_weights:
             weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
@@ -934,6 +1000,7 @@ class TomographyModel(ParameterHandler):
                 error_message = "prox_input does not have the correct size. \n"
                 error_message += "Expected {}, but got shape {} for prox_input shape.".format(recon.shape,
                                                                                               prox_input.shape)
+                self.logger.error(error_message)
                 raise ValueError(error_message)
 
             with jax.default_device(self.main_device):
@@ -947,8 +1014,7 @@ class TomographyModel(ParameterHandler):
         if constant_weights:
             weights = jnp.ones_like(sinogram)
 
-        if verbose >= 1:
-            print('Computing Hessian diagonal')
+        self.logger.info('Computing Hessian diagonal')
         fm_hessian = self.compute_hessian_diagonal(weights=weights, output_device=self.main_device)
         fm_hessian = fm_hessian.reshape((-1, num_recon_slices))
         if constant_weights:
@@ -963,11 +1029,12 @@ class TomographyModel(ParameterHandler):
         # Create the finer grained recon update operators
         vcd_subset_updater = self.create_vcd_subset_updater(fm_hessian, weights=weights, prox_input=prox_input)
 
-        if verbose >= 1:
-            print('Starting VCD iterations')
-            if verbose >= 2:
-                mbirjax.get_memory_stats()
-                print('--------')
+        self.logger.info('Starting VCD iterations')
+        if verbose >= 2:
+            output = io.StringIO()
+            mbirjax.get_memory_stats(file=output)
+            self.logger.debug(output.getvalue())
+            self.logger.debug('--------')
 
         # Do the iterations
         max_iters = partition_sequence.size
@@ -1009,15 +1076,17 @@ class TomographyModel(ParameterHandler):
                                   (0.5 * (sinogram.size + flat_recon.size)))
                     iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
 
-                print(iter_output)
-                print(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
-                print('Number subsets = {}'.format(partition.shape[0]))
+                self.logger.info(iter_output)
+                self.logger.info(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
+                self.logger.info('Number subsets = {}'.format(partition.shape[0]))
                 if verbose >= 2:
-                    mbirjax.get_memory_stats()
-                    print('--------')
+                    output = io.StringIO()
+                    mbirjax.get_memory_stats(file=output)
+                    self.logger.debug(output.getvalue())
+                    self.logger.debug('--------')
             num_iters += 1
             if nmae_update[i] < stop_threshold_change_pct / 100:
-                print('Change threshold stopping condition reached')
+                self.logger.warning('Change threshold stopping condition reached')
                 break
 
         return self.reshape_recon(flat_recon), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
