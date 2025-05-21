@@ -101,9 +101,9 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     ### downsample the scans with block-averaging
     if downsample_factor[0]*downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.downsample_scans(obj_scan, blank_scan, dark_scan,
-                                                                                             downsample_factor=downsample_factor,
-                                                                                             defective_pixel_array=defective_pixel_array)
+        obj_scan, blank_scan, dark_scan, defective_pixel_array = preprocess.downsample_view_data(obj_scan, blank_scan, dark_scan,
+                                                                                                 downsample_factor=downsample_factor,
+                                                                                                 defective_pixel_array=defective_pixel_array)
 
     print("\n\n########## Computing sinogram from object, blank, and dark scans")
     sino = preprocess.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)

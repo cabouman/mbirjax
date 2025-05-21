@@ -215,7 +215,7 @@ def estimate_background_offset(sino, edge_width=9):
 
 
 # ####### subroutines for image cropping and down-sampling
-def downsample_scans(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
+def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
     """
     Performs down-sampling of the scan images in the detector plane.
 
