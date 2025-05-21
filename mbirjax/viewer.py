@@ -8,6 +8,7 @@ from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import warnings
 import time
 import os
+import h5py
 import easygui
 
 
@@ -65,6 +66,7 @@ class SliceViewer:
 
         self.original_data = []
         self.data = []
+        self.data_attributes = [()] * self.n_volumes
         self.axes_perms = np.zeros(0).astype(int)
         self.labels = []
         self.cur_slices = []
@@ -174,8 +176,7 @@ class SliceViewer:
 
             return callback
 
-        self.circles = [None] * self.n_volumes
-        self.text_boxes = [None] * self.n_volumes
+        self._remove_graphics()
         indices = [image_index] if image_index is not None else range(len(self.data))
         cur_data = [self.data[image_index]] if image_index is not None else self.data
         for i, d in zip(indices, cur_data):
@@ -422,7 +423,7 @@ class SliceViewer:
                 help_items = ["Right-click an image for menu", 'Click and drag for ROI']
                 if TKAGG:
                     help_items += ['Right-click intensity slider to adjust range']
-                help_items += ['Press [esc] to remove ROI/menu/help']
+                help_items += ['Press [esc] to remove ROI/menu/help', 'Close image to quit']
                 self.help_overlay = self.fig.text(0.25, 0.5,
                                                   multiline(*help_items),
                                                   ha='left', va='center', fontsize=12,
@@ -600,11 +601,32 @@ class SliceViewer:
             options.append([
                 "{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
                 self._toggle_sync_limits])
+        if TKAGG:
+            options += [["Show attributes", lambda: self._on_show_attributes(image_index)]]
         options += [["Transpose image", lambda: self._on_transpose(image_index)],
                     [LOAD_LABEL, lambda: self._on_load(image_index)],
                     ["Reset", lambda: self._on_reset(image_index)],
                     ["Cancel", self._remove_menu]]
         return options
+
+    def _on_show_attributes(self, image_index):
+        attributes = self.data_attributes[image_index]
+        if not attributes:
+            easygui.textbox(msg='No attributes available', title='No attributes', text='Load an h5 file with attributes to get attributes', codebox=False, callback=None, run=True)
+            return
+        names = [attribute[0] for attribute in attributes]
+        if len(attributes) > 1:
+            choices = names + ['Cancel']
+            msg = ['Choose an attributes to display:', ' ']
+            msg += names
+            choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the attribute to display', choices=choices)
+            if choice == 'Cancel':
+                return
+        else:
+            choice = names[0]
+        index = names.index(choice)
+        attribute = attributes[index][1]
+        easygui.textbox(msg='Attribute = {}'.format(choice), title=choice, text=attribute, codebox=False, callback=None, run=True)
 
     def _on_transpose(self, image_index):
         perm = self.axes_perms[image_index].copy()
@@ -644,27 +666,37 @@ class SliceViewer:
     def _load_file(self, file_path, image_index):
 
         ext = os.path.splitext(file_path)[-1].lower()
+        attributes = ()
+
         if ext == ".npy":
             new_array = np.load(file_path)
+
         elif ext == ".npz":
-            arrays = np.load(file_path)
-            if len(arrays) > 1:
-                choices = arrays.files + ['Cancel']
-                msg = ['Arrays in {}'.format(os.path.basename(file_path))]
-                for name in arrays.files:
-                    msg += ['{}: shape={}'.format(name, arrays[name].shape)]
-                choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the array to display', choices=choices)
-                if choice == 'Cancel':
+            array_dict = np.load(file_path)
+            array_names = array_dict.files
+            shapes = [array_dict[name].shape for name in array_names]
+            choice = _choose_array_name(array_names, shapes, file_path)
+            if choice is None:
+                return
+            new_array = array_dict[choice]
+
+        elif ext in {'.h5', '.hdf5'}:
+            with h5py.File(file_path, "r") as f:
+                array_names = [key for key in f.keys()]
+                shapes = [f[name].shape for name in array_names]
+                choice = _choose_array_name(array_names, shapes, file_path)
+                if choice is None:
                     return
-            else:
-                choice = arrays.files[0]
-            new_array = arrays[choice]
+                new_array = f[choice][()]
+                attributes = [[name, f[choice].attrs[name]] for name in f[choice].attrs.keys()]
+
         if new_array.ndim == 2:
             new_array = new_array[..., np.newaxis]
         if new_array.ndim != 3:
             raise ValueError("Loaded array must be 2D or 3D")
 
         self.original_data[image_index] = new_array
+        self.data_attributes[image_index] = attributes
         self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
         transposed = np.transpose(new_array, self.axes_perms[image_index])
         self.data[image_index] = transposed
@@ -709,9 +741,20 @@ class SliceViewer:
         plt.show()
 
 
+def _choose_array_name(array_names, shapes, file_path):
+    if len(array_names) > 1:
+        choices = array_names + ['Cancel']
+        msg = ['Arrays in {}'.format(os.path.basename(file_path))]
+        for name, shape in zip(array_names, shapes):
+            msg += ['{}: shape={}'.format(name, shape)]
+        choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the array to display', choices=choices)
+        if choice == 'Cancel':
+            choice = None
+    else:
+        choice = array_names[0]
+    return choice
+
+
 def slice_viewer(*datasets, **kwargs):
-    text = ['Line {}'.format(j) for j in range(100)]
-    text = multiline(*text)
-    easygui.textbox(msg='msg', title='title', text=text, codebox=False, callback=None, run=True)
     viewer = SliceViewer(*datasets, **kwargs)
     viewer.show()

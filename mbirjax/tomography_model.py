@@ -1,5 +1,6 @@
 import io
 import types
+from ruamel.yaml import YAML
 import numpy as np
 import warnings
 import time  # Used for debugging/performance tuning
@@ -279,15 +280,17 @@ class TomographyModel(ParameterHandler):
         """
         return self.save_params(filename)
 
-    def save_recon_to_hdf5(self, filepath, recon, recon_params, save_model=True):
+    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, save_log=True, save_model=True):
         """
         Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
 
         Args:
             filepath (str or Path): Path to the output .h5 file.
             recon (array-like): Reconstruction data (NumPy or JAX array).
-            recon_params (ReconParams): Reconstruction parameters namedtuple.
-            save_model (bool): If True, save model YAML as a string dataset.
+            recon_params (ReconParams, optional): Reconstruction parameters namedtuple. Defaults to None.
+            save_log (bool, optional): If True, save the current log file if available. Defaults to True.
+            save_model (bool, optional): If True, save model YAML as a string dataset. Defaults to True.
+
         Raises:
             Exception: If directory creation fails or save operation errors.
         """
@@ -298,34 +301,40 @@ class TomographyModel(ParameterHandler):
         with h5py.File(filepath, 'w') as f:
             # Save reconstruction array
             arr = np.array(recon)
-            f.create_dataset('recon', data=arr)
+            recon_data = f.create_dataset('recon', data=arr)
 
-            # Save reconstruction parameters in a group
-            params_grp = f.create_group('recon_params')
-            for key, val in recon_params._asdict().items():
-                # Store simple types as attributes
-                if isinstance(val, (int, float, str, bool)):
-                    params_grp.attrs[key] = val
-                else:
-                    # Fallback: store as string representation
-                    params_grp.attrs[key] = str(val)
+            # Save reconstruction parameters as attributes
+            yaml = YAML()
+            if recon_params is None:
+                recon_params_string = "# Recon params not saved."
+            else:
+                yaml.default_flow_style = False
+                recon_params_string = io.StringIO()
+                yaml.dump(recon_params._asdict(), recon_params_string)
+            recon_data.attrs['recon_params'] = recon_params_string.getvalue()
+
+            log_text = "# Log info not saved."
+            if save_log and self.log_buffer is not None:
+                log_text = self.log_buffer.getvalue()
+            recon_data.attrs['Recon log text'] = log_text
 
             # Optionally save model YAML
             if save_model:
                 try:
-                    # Assume to_file(None) returns YAML text
-                    yaml_text = self.to_file(None)
+                    # to_file(None) should return YAML text
+                    model_yaml = self.to_file(None)
                 except TypeError:
                     # Fallback: write to temp YAML then read
                     tmp_yaml = filepath + '.yaml'
                     self.to_file(tmp_yaml)
                     with open(tmp_yaml, 'r') as yf:
-                        yaml_text = yf.read()
+                        model_yaml = yf.read()
                     os.remove(tmp_yaml)
+            else:
+                model_yaml = '# Model not saved'
 
-                # Store YAML as a string dataset
-                dt = string_dtype(encoding='utf-8')
-                f.create_dataset('model_yaml', data=yaml_text, dtype=dt)
+            # Store YAML as a string dataset
+            recon_data.attrs['model_params'] = model_yaml
 
         # Log the save
         if self.logger:
