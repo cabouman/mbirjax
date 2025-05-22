@@ -1,6 +1,6 @@
-===================
+==============
 Display and IO
-===================
+==============
 
 MBIRJAX includes some utilities to view 3D data slice-by-slice and to save and load `.tar` files.
 Saving and loading models and reconstructions is handled through :ref:`TomographyModelDocs`.
