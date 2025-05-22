@@ -1,6 +1,6 @@
-===============
-Plotting and IO
-===============
+==============
+Display and IO
+==============
 
 MBIRJAX includes some utilities to view 3D data slice-by-slice and to save and load tar files.
 Saving and loading models and recons is done through :ref:`TomographyModelDocs`.
@@ -12,6 +12,9 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 
 Display Functions
 -----------------
+
+.. autofunction::
+   mbirjax.viewer.slice_viewer
 
 .. automethod::
    mbirjax.viewer.SliceViewer
