@@ -327,13 +327,14 @@ class TomographyModel(ParameterHandler):
 
             # Save reconstruction parameters as attributes
             yaml = YAML()
+            yaml.default_flow_style = False
             if recon_params is None:
                 recon_params_string = "# Recon params not saved."
             else:
-                yaml.default_flow_style = False
-                recon_params_string = io.StringIO()
-                yaml.dump(recon_params._asdict(), recon_params_string)
-            recon_data.attrs['recon_params'] = recon_params_string.getvalue()
+                buf = io.StringIO()
+                yaml.dump(recon_params._asdict(), buf)
+                recon_params_string = buf.getvalue()
+            recon_data.attrs['recon_params'] = recon_params_string
 
             log_text = "# Log info not saved."
             if save_log and self.log_buffer is not None:
