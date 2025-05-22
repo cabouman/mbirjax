@@ -13,13 +13,6 @@ import easygui
 
 
 # === CONSTANTS ===
-
-# --- File picker launcher for easygui ---
-def launch_file_picker():
-    file_path = easygui.fileopenbox(default='*.h5', filetypes=["*.npy", "*.npz", "*.h5", "*.hdf5"])
-    return file_path
-
-
 TOOLTIP_FONT_SIZE = 9
 TOOLTIP_BOX_ALPHA = 0.9
 TOOLTIP_OFFSET = (10, 10)
@@ -51,7 +44,15 @@ def multiline(*lines):
 
 
 class SliceViewer:
+    """Interactive matplotlib-based viewer for inspecting one or more 3D image arrays.
 
+    Features:
+    - Slice navigation along arbitrary axes
+    - ROI-based mean and standard deviation measurement
+    - Interactive zoom, pan, and synchronized navigation across multiple images
+    - Support for file loading, axis transposition, and user-defined intensity scaling
+    - Right-click menu with modular and backend-adaptive behavior
+    """
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
         self.datasets = datasets
@@ -91,6 +92,7 @@ class SliceViewer:
         return list({0, 1, 2} - {s}) + [s]
 
     def _normalize_inputs(self):
+        # Set up the slice axes and labels
         if isinstance(self.slice_axis, int) or self.slice_axis is None:
             slice_axes = [2 if self.slice_axis is None else self.slice_axis] * self.n_volumes
         else:
@@ -105,8 +107,12 @@ class SliceViewer:
             self.labels = list(self.slice_label)
 
     def _prepare_data(self):
+        # Promote arrays to 3D if needed and find max and min
         self.original_data = list(self.datasets)
         for i, data in enumerate(self.datasets):
+            if data is None:
+                data = np.zeros((20, 20, 20))
+                self.original_data[i] = data
             if data.ndim == 2:
                 data = data[..., np.newaxis]
                 self.original_data[i] = data
@@ -127,6 +133,7 @@ class SliceViewer:
             self.vmax += scale
 
     def _build_figure(self):
+        # Construct the figure to display the images and tools
         self._last_display_time = 0
         self._meshgrids = {}
         figwidth = 6 * self.n_volumes
@@ -146,6 +153,7 @@ class SliceViewer:
             self.fig.text(0.01, 0.25, multiline('Press h', 'for help'), fontdict={'color': 'red'})
 
     def _draw_images(self, image_index=None):
+        # Set up the components to display and some of the functionality
 
         def on_xlim_changed(ax):
             def callback(lim):
@@ -180,6 +188,8 @@ class SliceViewer:
         self._remove_graphics()
         indices = [image_index] if image_index is not None else range(len(self.data))
         cur_data = [self.data[image_index]] if image_index is not None else self.data
+
+        # Draw the images, titles, colorbars
         for i, d in zip(indices, cur_data):
             if len(self.axes) > i and self.axes[i]:
                 self.axes[i].remove()
@@ -233,13 +243,15 @@ class SliceViewer:
         self.intensity_slider.on_changed(self._update_intensity)
 
         def on_right_click(event):
+            # Handle a right-click on the intensity slider to change the upper and lower bounds.
+            # This is enabled only when TkAgg is available.
             if event.button == 3 and event.inaxes == ax:
                 title = "Adjust intensity slider range"
                 msg = "Set Intensity Range"
                 field_names = ["Min", "Max"]
                 field_values = [f"{self.vmin:.3g}", f"{self.vmax:.3g}"]
                 if TKAGG:
-                    self._tk_button_pressed = True
+                    self._tk_button_pressed = True  # This is designed to avoid interpreting closing this window for starting a new ROI
                     inputs = easygui.multenterbox(msg + " (Cancel=previous values; leave blank=determine from data)", title, field_names, field_values)
                 else:
                     warnings.warn("Right-click on intensity slider requires TkAgg: use matplotlib.use('TkAgg')")
@@ -247,11 +259,13 @@ class SliceViewer:
                 if inputs is None:
                     return
                 self._is_drawing = False
+                # If the inputs are blank, then determine the min and max from data.
                 if not inputs[0]:
                     inputs[0] = f"{np.min([np.min(d) for d in self.data]):.3g}"
                 if not inputs[1]:
                     inputs[1] = f"{np.max([np.max(d) for d in self.data]):.3g}"
                 try:
+                    # Set the new min and max from inputs
                     new_min, new_max = map(float, inputs)
                     if new_min > new_max:
                         raise ValueError("Minimum must be less than maximum")
@@ -273,6 +287,7 @@ class SliceViewer:
         self.fig.canvas.mpl_connect('button_press_event', on_right_click)
 
     def _add_axis_controls(self):
+        # This is the radio button control to select the slice axis
         self.axis_buttons = []
         all_same = all(ax_ind == self.axes_perms[0, -1] for ax_ind in self.axes_perms[:, -1])
 
@@ -283,6 +298,7 @@ class SliceViewer:
             self._create_axis_buttons(not all_same)
 
     def _create_axis_buttons(self, decoupled):
+        # If the image axes are coupled, then we have only one radio button, otherwise one for each.
         for b in self.axis_buttons:
             b.ax.remove()
         self.axis_buttons.clear()
@@ -291,7 +307,8 @@ class SliceViewer:
             ax = self.fig.add_subplot(self.gs[1, 0])
             ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
             btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [SLICE_AXIS_RADIO_SIZE]})
-            for lbl in btns.labels: lbl.set_fontsize(SLICE_AXIS_LABEL_FONT_SIZE)
+            for lbl in btns.labels:
+                lbl.set_fontsize(SLICE_AXIS_LABEL_FONT_SIZE)
             btns.set_active(int(self.axes_perms[0, -1]))
             for i in range(self.n_volumes):
                 self._update_axis(i, int(self.axes_perms[0, -1]))
@@ -302,7 +319,8 @@ class SliceViewer:
                 ax = self.fig.add_subplot(self.gs[1, i])
                 ax.set_title("Slice axis", loc='left', fontsize=SLICE_AXIS_FONT_SIZE)
                 btns = RadioButtons(ax, labels=["0", "1", "2"], radio_props={'s': [30]})
-                for lbl in btns.labels: lbl.set_fontsize(8)
+                for lbl in btns.labels:
+                    lbl.set_fontsize(8)
                 btns.set_active(int(self.axes_perms[i, -1]))
                 btns.on_clicked(lambda label, index=i: self._update_axis(index, int(label)))
                 self.axis_buttons.append(btns)
@@ -326,6 +344,7 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _update_axis(self, i, new_perm):
+        # If the order of axes changed for this image, then update the data and redraw.
         if isinstance(new_perm, (list, tuple, np.ndarray)):
             new_perm = list(new_perm)
         else:
@@ -348,10 +367,12 @@ class SliceViewer:
                                              f"Shape: {orig.shape}, Axes: {self.axes_perms[0]}"))  # f"Shape: {orig.shape}"))
             self._draw_images()
             self._update_slice_slider()
+            self._update_intensity(self.intensity_slider.val)
             plt.tight_layout()
             self.fig.canvas.draw_idle()
 
     def _update_slice(self, val):
+        # Update the image to display the chosen slice.
         new_slice = int(round(val))
         for i, d in enumerate(self.data):
             frac = new_slice / d.shape[2]
@@ -365,11 +386,13 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _update_intensity(self, val):
+        # Update the intensity range.
         for img in self.images:
             img.set_clim(val[0], val[1])
         self.fig.canvas.draw_idle()
 
     def _get_mask(self, data, x, y, r):
+        # Get a mask for the ROI
         shape = data.shape
         if shape not in self._meshgrids:
             ny, nx = shape[:2]
@@ -378,13 +401,15 @@ class SliceViewer:
         return (xv - x) ** 2 + (yv - y) ** 2 <= r ** 2
 
     def _display_mean(self):
+        # Show the stats associated with an ROI
         if all(c is None for c in self.circles):
             return
         now = time.time()
-        if now - self._last_display_time < 0.3:
+        if now - self._last_display_time < 0.3:  # Delay each update to avoid lag for large volumes
             return
         self._last_display_time = now
 
+        # Get the stats for the circle in each image.
         for i, circle in enumerate(self.circles):
             if circle is None or self._is_drawing or self._is_moving:
                 self.tooltips[i].set_visible(False)
@@ -405,6 +430,7 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _remove_graphics(self):
+        # Remove the ROI, tooltips, etc.
         for item in self.circles + self.text_boxes:
             if item is not None:
                 item.remove()
@@ -417,7 +443,22 @@ class SliceViewer:
         return plt.Circle(center, radius, color=CIRCLE_COLOR, lw=CIRCLE_LINEWIDTH, fill=CIRCLE_FILL, alpha=CIRCLE_ALPHA)
 
     def _connect_events(self):
+        # Set up the main event handling routines.
         self._menu_texts = []
+        self._is_moving = False
+        self._move_offset = None
+        self.tooltips = [
+            ax.annotate(
+                TOOLTIP_TEXT,
+                xy=(0, 0), xytext=TOOLTIP_OFFSET, textcoords='offset points',
+                ha='left', fontsize=TOOLTIP_FONT_SIZE,
+                bbox=dict(boxstyle='round', fc='w', alpha=TOOLTIP_BOX_ALPHA),
+                arrowprops=dict(arrowstyle='->'),
+                visible=False
+            ) for ax in self.axes
+        ]
+        self._drag_start = None
+        self._is_drawing = False  # Add a flag to track drawing state
 
         def show_help(show):
             if show:
@@ -435,37 +476,27 @@ class SliceViewer:
                     self.help_overlay = None
             self.fig.canvas.draw_idle()
 
-        self._is_moving = False
-        self._move_offset = None
-        self.tooltips = [
-            ax.annotate(
-                TOOLTIP_TEXT,
-                xy=(0, 0), xytext=TOOLTIP_OFFSET, textcoords='offset points',
-                ha='left', fontsize=TOOLTIP_FONT_SIZE,
-                bbox=dict(boxstyle='round', fc='w', alpha=TOOLTIP_BOX_ALPHA),
-                arrowprops=dict(arrowstyle='->'),
-                visible=False
-            ) for ax in self.axes
-        ]
-        self._drag_start = None
-        self._is_drawing = False  # Add a flag to track drawing state
-
         def on_press(event):
             show_help(False)
-            if event.button != 1: return
-            if event.inaxes not in self.axes: return
-            if hasattr(event,
-                       'menu_option_selected') and event.menu_option_selected: return  # This is set to true when the user selects a menu option.
-            if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
-            if self._tk_button_pressed:
+            if event.button != 1:
+                return
+            if event.inaxes not in self.axes:
+                return
+            if hasattr(event,'menu_option_selected') and event.menu_option_selected:
+                return  # This is set to true when the user selects a menu option.
+            if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''):
+                return
+            if self._tk_button_pressed:  # Skip a press if the user just chose a menu item
                 if event.button == 1:  # Consume only a left-click
                     self._tk_button_pressed = False
                     return
 
             self._resize_index = None
 
+            # Handle the case of resizing or moving an ROI circle
             for i, circle in enumerate(self.circles):
-                if circle is None: continue
+                if circle is None:
+                    continue
                 x, y = circle.center
                 r = circle.get_radius()
                 if event.xdata is not None and event.ydata is not None:
@@ -481,6 +512,7 @@ class SliceViewer:
                         self._move_offset = (dx, dy)
                         return
 
+            # Otherwise start drawing an ROI circle
             self._remove_graphics()
             self._is_drawing = True
             self._drag_start = (event.xdata, event.ydata)
@@ -491,11 +523,15 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
         def on_motion(event):
-            if event.inaxes not in self.axes: return
-            if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''): return
+            if event.inaxes not in self.axes:
+                return
+            if hasattr(self.fig.canvas, 'toolbar') and getattr(self.fig.canvas.toolbar, 'mode', ''):
+                return
 
+            # Check for motion in or out of an ROI and display a tooltip as needed.
             for i, circle in enumerate(self.circles):
-                if circle is None: continue
+                if circle is None:
+                    continue
                 x, y = circle.center
                 r = circle.get_radius()
                 if event.xdata is not None and event.ydata is not None:
@@ -511,6 +547,7 @@ class SliceViewer:
                     else:
                         self.tooltips[i].set_visible(False)
 
+            # Update the ROI circle and stats if needed.
             if self._is_drawing and self._drag_start is not None:
                 x0, y0 = self._drag_start
                 r = np.sqrt((event.xdata - x0) ** 2 + (event.ydata - y0) ** 2)
@@ -539,6 +576,7 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
         def on_release(event):
+            # Reset any items from a mouse drag
             self._is_moving = False
             self._move_offset = None
             self._resize_index = None
@@ -548,9 +586,11 @@ class SliceViewer:
             self._display_mean()
 
         def on_key(event):
+            # Handle any key press
             if event.key == 'h':
                 show_help(True)
             elif event.key == 'escape':
+                # Remove and reset as needed
                 show_help(False)
                 self._remove_menu()
                 self._is_drawing = False
@@ -564,6 +604,7 @@ class SliceViewer:
                 self.fig.canvas.draw_idle()
 
         def on_context_menu(event):
+            # Start the menu for an image
             if event.button == 3 and event.inaxes in self.axes:
                 image_index = self.axes.index(event.inaxes)
                 # Remove any existing menu items
@@ -571,6 +612,7 @@ class SliceViewer:
                 self._render_menu(event, image_index)
 
         def on_context_select(event):
+            # Handle the image menu selection
             if event.button != 1:
                 return
             clicked = False
@@ -593,6 +635,7 @@ class SliceViewer:
         self.fig.canvas.mpl_connect('key_press_event', on_key)
 
     def _get_context_menu_options(self, image_index):
+        # Define the image menu options, taking care that some are available only with TkAgg
         options = []
         if self.n_volumes > 1:
             options.append([
@@ -611,6 +654,7 @@ class SliceViewer:
         return options
 
     def _on_show_attributes(self, image_index):
+        # Handle the display of image attributes, including asking the user which to display
         attributes = self.data_attributes[image_index]
         if not attributes:
             easygui.textbox(msg='No attributes available', title='No attributes', text='Load an h5 file with attributes to get attributes', codebox=False, callback=None, run=True)
@@ -630,12 +674,15 @@ class SliceViewer:
         easygui.textbox(msg='Attribute = {}'.format(choice), title=choice, text=attribute, codebox=False, callback=None, run=True)
 
     def _on_transpose(self, image_index):
+        # Transpose the image
         perm = self.axes_perms[image_index].copy()
         perm[0], perm[1] = perm[1], perm[0]
         self._update_axis(image_index, perm)
+        self._update_intensity(self.intensity_slider.val)
         self._remove_menu()
 
     def _on_load(self, image_index):
+        # Handle loading a file.  The uses a delay in launching the gui to avoid oddities with tk.
         if not hasattr(self.fig.canvas.manager, 'window'):
             warnings.warn("Load disabled: matplotlib backend is not TkAgg")
             return
@@ -643,7 +690,7 @@ class SliceViewer:
         self._remove_menu()
 
         def deferred_load():
-            file_path = launch_file_picker()
+            file_path = easygui.fileopenbox(default='*.h5', filetypes=["*.npy", "*.npz", "*.h5", "*.hdf5"])
             if not file_path:
                 return
             try:
@@ -651,13 +698,14 @@ class SliceViewer:
             except Exception as e:
                 print(f"Failed to load file: {e}")
 
-        # Use TkAgg-safe scheduling
+        # Use TkAgg-safe scheduling to delay the gui launch.
         try:
             self.fig.canvas.manager.window.after(10, deferred_load)
         except Exception as e:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
     def _on_reset(self, image_index):
+        # Do a hard reset
         self._draw_images(image_index)
         self._update_slice_slider()
         plt.tight_layout()
@@ -665,7 +713,7 @@ class SliceViewer:
         self._remove_menu()
 
     def _load_file(self, file_path, image_index):
-
+        # Do the actual file load, with different behavior for npy, npz, and h5/hdf5.
         ext = os.path.splitext(file_path)[-1].lower()
         attributes = ()
 
@@ -673,6 +721,7 @@ class SliceViewer:
             new_array = np.load(file_path)
 
         elif ext == ".npz":
+            # Check the available arrays and have the user choose.
             array_dict = np.load(file_path)
             array_names = array_dict.files
             shapes = [array_dict[name].shape for name in array_names]
@@ -682,6 +731,7 @@ class SliceViewer:
             new_array = array_dict[choice]
 
         elif ext in {'.h5', '.hdf5'}:
+            # Check the available arrays and have the user choose.
             with h5py.File(file_path, "r") as f:
                 array_names = [key for key in f.keys()]
                 shapes = [f[name].shape for name in array_names]
@@ -707,6 +757,7 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
 
     def _make_option(self, label, position, y_offset, callback):
+        # Build a matplotlib menu one option at a time.  This is to allow for cross platform display.
         bounds = self.fig.bbox.bounds
         x_frac = (position.x - bounds[0]) / (bounds[2] - bounds[0])
         y_frac = (position.y + y_offset - bounds[1]) / (bounds[3] - bounds[1])
@@ -720,6 +771,7 @@ class SliceViewer:
         txt._viewer_callback = callback
 
     def _render_menu(self, event, image_index):
+        # Get the menu options, set them up, and display.
         options = self._get_context_menu_options(image_index)
 
         y_offset = 0
@@ -738,11 +790,13 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
     def show(self):
+        """Display the viewer window and block execution until the window is closed."""
         plt.tight_layout()
         plt.show()
 
 
 def _choose_array_name(array_names, shapes, file_path):
+    # Display a dialog for the user to choose an array from a list - for use with _load_file
     if len(array_names) > 1:
         choices = array_names + ['Cancel']
         msg = ['Arrays in {}'.format(os.path.basename(file_path))]
@@ -757,5 +811,20 @@ def _choose_array_name(array_names, shapes, file_path):
 
 
 def slice_viewer(*datasets, **kwargs):
+    """Convenience function to launch an interactive slice viewer of 3D arrays.
+
+    Parameters:
+        *datasets: One or more 2D or 3D numpy arrays or None.  Any None element is replaced with a small 3D array of
+        zeros. 2D arrays are promoted to 3D by adding a singleton axis.
+        **kwargs: Additional keyword arguments passed to the SliceViewer constructor. These may include:
+            - title (str): Title for the viewer window.
+            - vmin, vmax (float): Initial intensity range.
+            - slice_label (str or list of str): Label(s) for the slice axis.
+            - slice_axis (int or list of int): Slice axis for each volume.
+            - cmap (str): Matplotlib colormap name.
+            - show_instructions (bool): Whether to display initial usage instructions.
+
+    This function blocks until the matplotlib window is closed.
+    """
     viewer = SliceViewer(*datasets, **kwargs)
     viewer.show()
