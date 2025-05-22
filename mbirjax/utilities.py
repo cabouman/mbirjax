@@ -11,6 +11,7 @@ from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 # === Project-specific imports ===
 import mbirjax as mj
 
+
 def debug_plot_partitions(partitions, recon_shape):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
@@ -159,6 +160,7 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
     os.makedirs(figure_folder_name, exist_ok=True)
     fig.savefig(os.path.join(figure_folder_name, fig_title + '_plots.png'), bbox_inches='tight')
 
+
 def make_figure_folder(fig_folder_name=None):
     if fig_folder_name is None:
         fig_folder_name = 'figs'
@@ -173,91 +175,3 @@ def makedirs(filepath):
             os.makedirs(save_dir, exist_ok=True)
         except Exception as e:
             raise Exception(f"Could not create save directory '{save_dir}': {e}")
-
-
-def export_recon_to_hdf5(filename, recon, recon_description="", delta_pixel_image=1.0, alu_description="", data_dict=None):
-    """
-    Writes a reconstructed image and its metadata to an HDF5 file. Allows for parameterized inputs or a single data dictionary.
-
-    Args:
-        filename (str): Path to save the HDF5 file.
-        recon (ndarray): 3D reconstructed image data.
-        recon_description (str, optional): Description of the CT reconstruction. Ignored if data_dict is provided.
-        delta_pixel_image (float, optional): Pixel spacing in arbitrary length units. Ignored if data_dict is provided.
-        alu_description (str, optional): Description of the arbitrary length units. Ignored if data_dict is provided.
-        data_dict (dict, optional): Dictionary containing all data fields. Overrides individual parameters if provided. Expected keys:
-            - 'recon' (ndarray): 3D reconstructed image data.
-            - 'recon_description' (str): Description of the CT reconstruction.
-            - 'delta_pixel_image' (float): Pixel spacing in arbitrary length units.
-            - 'alu_description' (str): Description of the arbitrary length units.
-
-    Example usage:
-        >>> # Using individual parameters
-        >>> export_recon_to_hdf5('recon.h5', recon=my_recon_array, recon_description="CT Scan 001")
-
-        >>> # Using a data dictionary
-        >>> data = {
-        ...     'recon': my_recon_array,
-        ...     'recon_description': "CT Scan 001",
-        ...     'delta_pixel_image': 0.5,
-        ...     'alu_description': "1 ALU = 0.5 mm"
-        ... }
-        >>> export_recon_to_hdf5('recon.h5', data_dict=data)
-    """
-    if data_dict:
-        recon = data_dict.get('recon', recon)
-        recon_description = data_dict.get('recon_description', recon_description)
-        delta_pixel_image = data_dict.get('delta_pixel_image', delta_pixel_image)
-        alu_description = data_dict.get('alu_description', alu_description)
-
-    with h5py.File(filename, "w") as f:
-        # Write data
-        f.create_dataset("recon", data=recon)
-
-        # Write attributes
-        f.attrs["recon_description"] = recon_description
-        f.attrs["delta_pixel_image"] = delta_pixel_image
-        f.attrs["alu_description"] = alu_description
-
-    print("Export complete: {}".format(filename))
-
-
-def import_recon_from_hdf5(filename):
-    """
-    Reads a reconstructed image and its metadata from an HDF5 file created by export_recon_to_hdf5().
-
-    Args:
-        filename (string): Fully specified path to the HDF5 file.
-
-    Returns:
-        dict: A dictionary containing the reconstruction data and its metadata with the following keys:
-            - 'recon' (ndarray): 3D reconstructed image.
-            - 'recon_description' (string): Description of the CT reconstruction.
-            - 'delta_pixel_image' (float): Image pixel spacing in arbitrary length units.
-            - 'alu_description' (string): Description of the arbitrary length units for pixel spacing.
-
-    Example usage:
-        >>> # Assuming 'recon.h5' was created using export_recon_to_hdf5()
-        >>> data = import_recon_from_hdf5('recon.h5')
-        >>> print(data['recon'].shape)
-        >>> print(data['recon_description'])
-        >>> print(data['delta_pixel_image'])
-        >>> print(data['alu_description'])
-    """
-    with h5py.File(filename, "r") as f:
-        # Extract the reconstruction dataset
-        recon = np.array(f["recon"])
-
-        # Extract metadata attributes
-        recon_description = f.attrs.get("recon_description", "")
-        alu_description = f.attrs.get("alu_description", "")
-        delta_pixel_image = f.attrs.get("delta_pixel_image", 1.0)
-
-    # Return as a dictionary to allow for future extension
-    return {
-        'recon': recon,
-        'recon_description': recon_description,
-        'delta_pixel_image': delta_pixel_image,
-        'alu_description': alu_description
-    }
-
