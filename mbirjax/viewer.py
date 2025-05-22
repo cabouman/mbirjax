@@ -1,17 +1,23 @@
 import os
+import warnings
 import matplotlib
 
+# Set backend
 if os.environ.get("READTHEDOCS") == "True":
-    matplotlib.use('Agg')  # Headless-safe backend for RTD
+    matplotlib.use('Agg')
 else:
-    matplotlib.use('TkAgg')  # Preferred backend for local GUI use
+    try:
+        matplotlib.use('TkAgg')
+    except ImportError:
+        matplotlib.use('Agg')  # Fallback
+        warnings.warn("TkAgg not available. Falling back to Agg.")
 
+# Now it's safe to import pyplot
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
-import warnings
 import time
 import h5py
 import easygui
