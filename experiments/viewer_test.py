@@ -17,6 +17,6 @@ if __name__ == "__main__":
 
     phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
     sinogram = ct_model_for_generation.forward_project(phantom)
-    recon, recon_params = ct_model_for_generation.recon(sinogram, num_iterations=2)
-    ct_model_for_generation.save_recon_to_hdf5('./test.h5', recon, recon_params)
-    mj.slice_viewer(None, None, slice_axis=(0, 2))
+    # recon, recon_params = ct_model_for_generation.recon(sinogram, num_iterations=2)
+    # ct_model_for_generation.save_recon_to_hdf5('./test.h5', recon, recon_params)
+    mj.slice_viewer(phantom, phantom + 0.1*np.random.rand(*phantom.shape)-0.05, slice_axis=(0, 0))
