@@ -13,12 +13,6 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 Display Functions
 -----------------
 
-.. automodule:: mbirjax.viewer
-   :members: slice_viewer, SliceViewer
-   :undoc-members:
-   :no-index:
-   :show-inheritance:
-
 .. autofunction:: mbirjax.viewer.slice_viewer
 .. automethod:: mbirjax.viewer.SliceViewer
 
