@@ -23,5 +23,5 @@ if __name__ == "__main__":
     ct_model_for_generation.save_recon_to_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
 
     # Test viewer
-    mj.slice_viewer(phantom, phantom + 0.1*np.random.rand(*phantom.shape)-0.05, slice_axis=(0, 0))
+    mj.slice_viewer(phantom, phantom + 0.1 * np.random.rand(*phantom.shape) - 0.05, slice_axis=(0, 0))
     mj.slice_viewer(None, None, vmin=0.0, vmax=1.0, slice_axis=(2, 2))
