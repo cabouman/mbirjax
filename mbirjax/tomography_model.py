@@ -1,13 +1,11 @@
 import io
 import types
 from ruamel.yaml import YAML
-import numpy as np
 import warnings
 import time  # Used for debugging/performance tuning
 import os
 import h5py
 import numpy as np
-from h5py import string_dtype
 
 from jaxlib.xla_extension import XlaRuntimeError
 
@@ -15,8 +13,7 @@ num_cpus = 3 * os.cpu_count() // 4
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
-import mbirjax
-import mbirjax.utilities as mju
+import mbirjax as mj
 from mbirjax import ParameterHandler
 from collections import namedtuple
 import subprocess
@@ -132,7 +129,7 @@ class TomographyModel(ParameterHandler):
             pass
 
         if cpu_memory == 0:
-            cpu_memory_stats = mbirjax.get_memory_stats(print_results=False)[-1]
+            cpu_memory_stats = mj.get_memory_stats(print_results=False)[-1]
             cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
             cpu_memory /= gb
         self.cpu_memory = cpu_memory
@@ -280,14 +277,39 @@ class TomographyModel(ParameterHandler):
         """
         return self.save_params(filename)
 
-    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, save_log=True, save_model=True):
+    @staticmethod
+    def load_recon_from_hdf5(file_path):
         """
-        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
+        Load the information from an h5 file created with save_recon_to_hdf5
+
+        Args:
+            file_path (string or Path): path to the file to open
+
+        Returns:
+            dict: with entries as in save_recon_to_hdf5
+        """
+        with h5py.File(file_path, "r") as f:
+            array_names = [key for key in f.keys()]
+            if len(array_names) > 1:
+                raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
+            name = array_names[0]
+            recon_dict = dict()
+            recon_dict['recon'] = f[name][()]
+            for name in f[name].attrs.keys():
+                recon_dict[name] = f[name].attrs[name]
+
+            return recon_dict
+
+    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
+        """
+        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.  The h5 file
+        has a single dataset named 'recon', with attributes 'recon_params', 'recon_log', and 'notes'.
 
         Args:
             filepath (str or Path): Path to the output .h5 file.
             recon (array-like): Reconstruction data (NumPy or JAX array).
             recon_params (ReconParams, optional): Reconstruction parameters namedtuple. Defaults to None.
+            notes (string, optional): User-supplied notes to accompany a reconstruction.
             save_log (bool, optional): If True, save the current log file if available. Defaults to True.
             save_model (bool, optional): If True, save model YAML as a string dataset. Defaults to True.
 
@@ -295,7 +317,7 @@ class TomographyModel(ParameterHandler):
             Exception: If directory creation fails or save operation errors.
         """
         # Ensure output directory exists
-        mju.makedirs(filepath)
+        mj.makedirs(filepath)
 
         # Open HDF5 file for writing
         with h5py.File(filepath, 'w') as f:
@@ -316,7 +338,11 @@ class TomographyModel(ParameterHandler):
             log_text = "# Log info not saved."
             if save_log and self.log_buffer is not None:
                 log_text = self.log_buffer.getvalue()
-            recon_data.attrs['Recon log text'] = log_text
+            recon_data.attrs['recon_log'] = log_text
+
+            if notes is None:
+                notes = '# No notes saved'
+            recon_data.attrs['notes'] = notes
 
             # Optionally save model YAML
             if save_model:
@@ -349,7 +375,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but creates jit-compiled functions.
         """
-        self.projector_functions = mbirjax.Projectors(self)
+        self.projector_functions = mj.Projectors(self)
 
     @staticmethod
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
@@ -411,7 +437,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mbirjax.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         output_device = self.main_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
@@ -433,7 +459,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mbirjax.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
@@ -878,12 +904,12 @@ class TomographyModel(ParameterHandler):
 
             # Generate set of voxel partitions
             recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-            partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
+            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
             partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
             # Generate sequence of partitions to use
             partition_sequence = self.get_params('partition_sequence')
-            partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
+            partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
             partition_sequence = partition_sequence[first_iteration:]
 
             # Compute reconstruction
@@ -1041,7 +1067,7 @@ class TomographyModel(ParameterHandler):
         self.logger.info('Starting VCD iterations')
         if verbose >= 2:
             output = io.StringIO()
-            mbirjax.get_memory_stats(file=output)
+            mj.get_memory_stats(file=output)
             self.logger.debug(output.getvalue())
             self.logger.debug('--------')
 
@@ -1074,9 +1100,9 @@ class TomographyModel(ParameterHandler):
                                                                                                   fm_rmse[i])
                 if compute_prior_loss:
                     qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
-                    b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
+                    b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
                     qggmrf_params = (b, sigma_x, p, q, T)
-                    pm_loss[i] = mbirjax.qggmrf_loss(flat_recon.reshape(recon.shape), qggmrf_params)
+                    pm_loss[i] = mj.qggmrf_loss(flat_recon.reshape(recon.shape), qggmrf_params)
                     pm_loss[i] /= flat_recon.size
                     # Each loss is scaled by the number of elements, but the optimization uses unscaled values.
                     # To provide an accurate, yet properly scaled total loss, first remove the scaling and add,
@@ -1090,7 +1116,7 @@ class TomographyModel(ParameterHandler):
                 self.logger.info('Number subsets = {}'.format(partition.shape[0]))
                 if verbose >= 2:
                     output = io.StringIO()
-                    mbirjax.get_memory_stats(file=output)
+                    mj.get_memory_stats(file=output)
                     self.logger.debug(output.getvalue())
                     self.logger.debug('--------')
             num_iters += 1
@@ -1170,7 +1196,7 @@ class TomographyModel(ParameterHandler):
         positivity_flag = self.get_params('positivity_flag')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
         qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
-        b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
+        b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')
@@ -1226,16 +1252,16 @@ class TomographyModel(ParameterHandler):
                 with jax.default_device(self.main_device):
                     if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
                         prior_grad, prior_hess = (
-                            mbirjax.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
+                            mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
                                                                            qggmrf_params, self.main_device, self.worker))
                     else:
                         prior_grad, prior_hess = (
-                            mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                            mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
                                                                            qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = sigma_prox ** 2
-                prior_grad = mbirjax.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+                prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
             # prior_grad = prior_grad.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -1325,7 +1351,7 @@ class TomographyModel(ParameterHandler):
             # delta = jnp.zeros_like(flat_recon)
             # delta = delta.at[pixel_indices].set(delta_recon_at_indices)
             # delta = delta.reshape(recon_shape)
-            # _, grad_at_delta = mbirjax.compute_surrogate_and_grad(delta, x_prime, qggmrf_params)
+            # _, grad_at_delta = mj.compute_surrogate_and_grad(delta, x_prime, qggmrf_params)
             # grad_at_delta = grad_at_delta.reshape(flat_recon.shape)[pixel_indices]
             # prior_quadratic = jnp.sum(delta_recon_at_indices * grad_at_delta)
             # alpha_denominator_exact = forward_quadratic + prior_quadratic
@@ -1520,11 +1546,11 @@ class TomographyModel(ParameterHandler):
         # TODO:  Refactor to operate on a subset of pixels and to use previous state
         # Generate set of voxel partitions
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mbirjax.gen_set_of_pixel_partitions(recon_shape, granularity)
+        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
-        partition_sequence = mbirjax.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
+        partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
         partition_sequence = partition_sequence[first_iteration:]
 
         # Compute reconstruction
@@ -1559,7 +1585,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
         """
-        return mbirjax.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
+        return mj.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
                                        beta=beta, gamma=gamma)
 
     def gen_weights(self, sinogram, weight_type):
@@ -1609,7 +1635,7 @@ class TomographyModel(ParameterHandler):
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
         recon_shape = self.get_params('recon_shape')
-        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
         return phantom
 
     def reshape_recon(self, recon):
