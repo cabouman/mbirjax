@@ -95,7 +95,7 @@ The remaining functions can be used for multiple types of scan data.
 
    preprocess.compute_sino_transmission
    preprocess.interpolate_defective_pixels
-   preprocess.correct_det_rotation
+   preprocess.correct_det_rotation_and_background
    preprocess.estimate_background_offset
 
 

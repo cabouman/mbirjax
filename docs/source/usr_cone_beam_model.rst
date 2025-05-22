@@ -4,11 +4,12 @@
 ConeBeamModel
 =============
 
-The ``ConeBeamModel`` extends the functionalities provided by :ref:`TomographyModelDocs`.
-This class inherits all behaviors and attributes of the TomographyModel and implements projectors specific
-to cone beam CT.
+The ``ConeBeamModel`` class implements a geometry and reconstruction model for cone beam computed tomography.
+This class inherits all behaviors and attributes of the :ref:`TomographyModelDocs`.
+It also implements some cone-beam specific functions such as FDK (Feldkamp-Davis-Kress) reconstruction.
 
-In addition, ``ConeBeamModel`` includes FDK reconstruction as indicated below.
+See the API docs for the :class:`~mbirjax.TomographyModel` class for details on a wide range
+of functions that can be implemented using the ``ConeBeamModel``.
 
 Constructor
 -----------
@@ -20,8 +21,3 @@ FDK Reconstruction
 ------------------
 
 .. automethod:: mbirjax.ConeBeamModel.fdk_recon
-
-Parent Class
-------------
-:ref:`TomographyModelDocs`
-
