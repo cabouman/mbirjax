@@ -71,17 +71,6 @@ class SliceViewer:
         - Right-click an image to access a context menu with options such as axis transposition and file loading.
         - Right-click the intensity slider (if using TkAgg backend) to manually set display range bounds.
         - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
-
-    Attributes:
-        fig (matplotlib.figure.Figure): The main matplotlib figure.
-        data (list of ndarray): The current transposed and normalized data arrays.
-        original_data (list of ndarray): The original, unmodified arrays before permutation.
-        cur_slices (list of int): The current slice index for each dataset.
-        axes_perms (ndarray): Axis permutation arrays used for each volume.
-        labels (list of str): Slice labels for each volume.
-        images (list of AxesImage): The displayed image handles.
-        circles (list of Circle or None): Active ROI circles for each image.
-        text_boxes (list of Text or None): ROI measurement readouts per image.
     """
 
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
@@ -915,20 +904,40 @@ def _choose_array_name(array_names, shapes, file_path):
 
 
 def slice_viewer(*datasets, **kwargs):
-    """Convenience function to launch an interactive slice viewer of 3D arrays.
+    """
+    Launch an interactive viewer for inspecting one or more 2D or 3D image arrays.
 
-    Parameters:
-        *datasets: One or more 2D or 3D numpy arrays or None.  Any None element is replaced with a small 3D array of zeros. 2D arrays are promoted to 3D by adding a singleton axis.
-        **kwargs: Additional keyword arguments passed to the SliceViewer constructor. These may include:
+    This is a convenience wrapper around the `SliceViewer` class. It supports real-time
+    browsing of volumetric data along arbitrary slice axes, synchronized views, interactive
+    region-of-interest (ROI) statistics, and customizable display settings.
+
+    Args:
+        *datasets (ndarray or None): One or more 2D or 3D NumPy arrays or `None`.
+
+            - 2D arrays are promoted to 3D by adding a singleton axis.
+
+            - `None` entries are replaced with a dummy 3D array of zeros.
+
+        **kwargs: Additional keyword arguments passed to `SliceViewer`. These may include:
 
             - title (str): Title for the viewer window.
-            - vmin, vmax (float): Initial intensity range.
-            - slice_label (str or list of str): Label(s) for the slice axis.
-            - slice_axis (int or list of int): Slice axis for each volume.
-            - cmap (str): Matplotlib colormap name.
-            - show_instructions (bool): Whether to display initial usage instructions.
 
-    This function blocks until the matplotlib window is closed.
+            - vmin (float): Minimum intensity value to display.
+
+            - vmax (float): Maximum intensity value to display.
+
+            - slice_label (str or list of str): Label(s) for the displayed slice.
+
+            - slice_axis (int or list of int): Axis to slice along (0, 1, or 2).
+
+            - cmap (str): Colormap to use (e.g., 'gray', 'viridis').
+
+            - show_instructions (bool): Whether to display help text inside the viewer.
+
+    Notes:
+        - This function blocks execution until the viewer window is closed.
+        - Right-click an image or intensity slider (if using the TkAgg backend) to access advanced options.
+
     """
     viewer = SliceViewer(*datasets, **kwargs)
     viewer.show()
