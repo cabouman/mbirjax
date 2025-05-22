@@ -814,9 +814,9 @@ def slice_viewer(*datasets, **kwargs):
     """Convenience function to launch an interactive slice viewer of 3D arrays.
 
     Parameters:
-        *datasets: One or more 2D or 3D numpy arrays or None.  Any None element is replaced with a small 3D array of
-        zeros. 2D arrays are promoted to 3D by adding a singleton axis.
+        *datasets: One or more 2D or 3D numpy arrays or None.  Any None element is replaced with a small 3D array of zeros. 2D arrays are promoted to 3D by adding a singleton axis.
         **kwargs: Additional keyword arguments passed to the SliceViewer constructor. These may include:
+
             - title (str): Title for the viewer window.
             - vmin, vmax (float): Initial intensity range.
             - slice_label (str or list of str): Label(s) for the slice axis.

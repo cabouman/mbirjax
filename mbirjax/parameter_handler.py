@@ -2,12 +2,11 @@ import jax.numpy as jnp
 import numpy as np
 from ruamel.yaml import YAML
 import mbirjax._utils as utils
-import mbirjax.utilities as mju
+import mbirjax as mj
 import warnings
 import copy
 import logging
 import io
-import os
 
 
 class ParameterHandler():
@@ -63,7 +62,7 @@ class ParameterHandler():
 
         # File handler (optional)
         if logfile_path:
-            mju.makedirs(logfile_path)
+            mj.makedirs(logfile_path)
             file_handler = logging.FileHandler(logfile_path, mode='w')
             file_handler.setLevel(level)
             file_formatter = logging.Formatter('%(message)s')
@@ -171,7 +170,7 @@ class ParameterHandler():
             if not filename.lower().endswith(('.yml', '.yaml')):
                 raise ValueError(f"Filename must end in .yaml or .yml: {filename}")
             # Ensure output directory exists
-            mju.makedirs(filename)
+            mj.makedirs(filename)
             with open(filename, 'w') as file:
                 yaml.dump(output_params, file)
             return None
