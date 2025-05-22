@@ -1,6 +1,11 @@
+import os
 import matplotlib
 
-matplotlib.use('TkAgg')
+if os.environ.get("READTHEDOCS") == "True":
+    matplotlib.use('Agg')  # Headless-safe backend for RTD
+else:
+    matplotlib.use('TkAgg')  # Preferred backend for local GUI use
+
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -8,7 +13,6 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import warnings
 import time
-import os
 import h5py
 import easygui
 
