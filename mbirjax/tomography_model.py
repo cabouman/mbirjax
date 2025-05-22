@@ -867,6 +867,8 @@ class TomographyModel(ParameterHandler):
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
             num_iterations (int, optional): This option is deprecated and will be used to set max_iterations if this is not None.  Defaults to None.
+            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
         Returns:
             [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
@@ -1526,7 +1528,8 @@ class TomographyModel(ParameterHandler):
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, stop_threshold_change_pct=0.2, max_iterations=3, first_iteration=0):
+    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, stop_threshold_change_pct=0.2,
+                 max_iterations=3, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -1539,6 +1542,8 @@ class TomographyModel(ParameterHandler):
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
+            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
         Returns:
             [recon, fm_rmse]: reconstruction and array of loss for each iteration.
@@ -1552,7 +1557,9 @@ class TomographyModel(ParameterHandler):
         partition_sequence = self.get_params('partition_sequence')
         partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
         partition_sequence = partition_sequence[first_iteration:]
-
+        # Initialize logging for this run
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
         # Compute reconstruction
         recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, stop_threshold_change_pct,
                                              weights=weights, init_recon=init_recon, prox_input=prox_input,
