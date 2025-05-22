@@ -41,6 +41,10 @@ Saving and Loading
 
 .. automethod:: mbirjax.TomographyModel.from_file
 
+.. automethod:: mbirjax.TomographyModel.save_recon_to_hdf5
+
+.. automethod:: mbirjax.TomographyModel.load_recon_from_hdf5
+
 Parameter Handling
 ------------------
 
