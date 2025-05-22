@@ -13,8 +13,8 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 Display Functions
 -----------------
 
-.. autofunction::
-   mbirjax.viewer.slice_viewer
+.. automethod::
+   mbirjax.viewer.SliceViewer
 
 IO Functions
 ------------

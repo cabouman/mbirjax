@@ -44,14 +44,43 @@ def multiline(*lines):
 
 
 class SliceViewer:
-    """Interactive matplotlib-based viewer for inspecting one or more 3D image arrays.
+    """
+    Interactive multi-volume slice viewer for 2D and 3D NumPy arrays using matplotlib.
 
-    Features:
-    - Slice navigation along arbitrary axes
-    - ROI-based mean and standard deviation measurement
-    - Interactive zoom, pan, and synchronized navigation across multiple images
-    - Support for file loading, axis transposition, and user-defined intensity scaling
-    - Right-click menu with modular and backend-adaptive behavior
+    This class provides a graphical interface for exploring one or more 3D volumes or 2D slices.
+    Features include synchronized slice navigation, ROI statistics, axis transposition, file loading,
+    dynamic intensity range adjustment, and interactive GUI tools for zooming and panning.
+
+    Designed primarily for inspecting CT or other volumetric reconstructions in research workflows.
+
+    Args:
+        *datasets (ndarray or None): One or more 2D or 3D NumPy arrays to display.
+            - 2D arrays are automatically promoted to 3D via a singleton axis.
+            - `None` values are replaced with placeholder zero arrays.
+
+        title (str, optional): Window title. Defaults to an empty string.
+        vmin (float, optional): Minimum intensity value for display. Defaults to the global minimum across all datasets.
+        vmax (float, optional): Maximum intensity value for display. Defaults to the global maximum across all datasets.
+        slice_label (str or list of str, optional): Label(s) for the current slice. Defaults to "Slice".
+        slice_axis (int or list of int, optional): Axis along which to slice (0, 1, or 2). Defaults to the last axis (2).
+        cmap (str, optional): Colormap to use. Defaults to "gray".
+        show_instructions (bool, optional): Whether to display usage instructions in the figure. Defaults to True.
+
+    Notes:
+        - Right-click an image to access a context menu with options such as axis transposition and file loading.
+        - Right-click the intensity slider (if using TkAgg backend) to manually set display range bounds.
+        - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
+
+    Attributes:
+        fig (matplotlib.figure.Figure): The main matplotlib figure.
+        data (list of ndarray): The current transposed and normalized data arrays.
+        original_data (list of ndarray): The original, unmodified arrays before permutation.
+        cur_slices (list of int): The current slice index for each dataset.
+        axes_perms (ndarray): Axis permutation arrays used for each volume.
+        labels (list of str): Slice labels for each volume.
+        images (list of AxesImage): The displayed image handles.
+        circles (list of Circle or None): Active ROI circles for each image.
+        text_boxes (list of Text or None): ROI measurement readouts per image.
     """
     def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
