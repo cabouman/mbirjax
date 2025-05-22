@@ -13,16 +13,10 @@ Display Functions
 -----------------
 
 .. autofunction::
-   mbirjax.utilities.slice_viewer
+   mbirjax.viewer.slice_viewer
 
 IO Functions
 ------------
-
-.. autofunction::
-   mbirjax.utilities.export_recon_to_hdf5
-
-.. autofunction::
-   mbirjax.utilities.import_recon_from_hdf5
 
 .. autofunction::
    mbirjax.utilities.download_and_extract_tar
