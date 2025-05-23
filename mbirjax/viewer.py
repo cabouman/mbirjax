@@ -234,7 +234,8 @@ class SliceViewer:
             divider = make_axes_locatable(ax)
             cax = divider.append_axes('right', size='5%', pad=0.05)
             self.fig.colorbar(img, cax=cax, orientation='vertical')
-
+            ax.zorder = 5
+            cax.zorder = 1
             self.axes[i] = ax
             self.caxes[i] = cax
             self.images[i] = img
@@ -278,13 +279,14 @@ class SliceViewer:
             # This is enabled only when TkAgg is available.
             if event.button == 3 and event.inaxes == ax:
                 title = "Adjust intensity slider range"
-                msg = "Set Intensity Range"
+                msg = "Set intensity range:"
                 field_names = ["Min", "Max"]
                 field_values = [f"{self.vmin:.3g}", f"{self.vmax:.3g}"]
                 if TKAGG:
                     self._tk_button_pressed = True  # This is designed to avoid interpreting closing this window for starting a new ROI
-                    inputs = easygui.multenterbox(msg + " (Cancel=previous values; leave blank=determine from data)",
-                                                  title, field_names, field_values)
+                    inputs = easygui.multenterbox(
+                        multiline(msg, "  Cancel=use previous values", "  Leave blank=determine from data"),
+                        title, field_names, field_values)
                 else:
                     warnings.warn("Right-click on intensity slider requires TkAgg: use matplotlib.use('TkAgg')")
                     inputs = None
@@ -383,20 +385,21 @@ class SliceViewer:
             new_perm = self._get_perm_from_slice_ind(new_perm)
 
         if new_perm != list(self.axes_perms[i]):
-            orig = self.original_data[i]
-            prev_slice_axis = self.axes_perms[i, -1]
-            prev_fraction = self.cur_slices[i] / orig.shape[prev_slice_axis]
+            new_data = self.data[i]
+            prev_fraction = self.cur_slices[i] / new_data.shape[-1]
             new_slice_axis = new_perm[-1]
+            inverse_perm = np.argsort(self.axes_perms[i])
+            new_data = np.transpose(new_data, inverse_perm)
             self.axes_perms[i] = np.array(new_perm)
-            new_data = np.transpose(orig, new_perm)
+            new_data = np.transpose(new_data, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = int(np.round(prev_fraction * orig.shape[new_slice_axis]))
+            self.cur_slices[i] = int(np.round(prev_fraction * new_data.shape[new_slice_axis]))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
             self.axes[i].set_aspect('equal')
             self.axes[i].set_title(multiline(f"{self.labels[i]} {self.cur_slices[i]}",
-                                             f"Shape: {orig.shape}, Axes: {self.axes_perms[0]}"))  # f"Shape: {orig.shape}"))
+                                             f"Shape: {new_data.shape}, Axes: {self.axes_perms[0]}"))  # f"Shape: {orig.shape}"))
             self._draw_images()
             self._update_slice_slider()
             self._update_intensity(self.intensity_slider.val)
@@ -626,6 +629,9 @@ class SliceViewer:
                 self.fig.canvas.draw_idle()
 
         def on_context_menu(event):
+            if self._difference_image_dict is not None and \
+                    self._difference_image_dict['selecting_image']:
+                return
             # Start the menu for an image
             if event.button == 3 and event.inaxes in self.axes:
                 image_index = self.axes.index(event.inaxes)
@@ -755,9 +761,12 @@ class SliceViewer:
             # Check the shape and axes perm of the two images
             baseline_index = self._difference_image_dict['baseline_index']
             comparison_index = image_index
-            if any(a != b for a, b in zip(self.original_data[baseline_index].shape, self.original_data[comparison_index].shape)) or \
+            if any(a != b for a, b in
+                   zip(self.original_data[baseline_index].shape, self.original_data[comparison_index].shape)) or \
                     any(a != b for a, b in zip(self.axes_perms[baseline_index], self.axes_perms[comparison_index])) or \
                     baseline_index == comparison_index:
+                # Show instructions
+                self._show_help(True, help_type='difference')
                 return
             self._show_help(False)
             self._difference_image_dict['selecting_image'] = False
@@ -788,8 +797,13 @@ class SliceViewer:
 
     def _on_reset(self, image_index):
         # Do a hard reset
-        self._draw_images(image_index)
+        if self._syncing_limits:
+            for i in range(self.n_volumes):
+                self._draw_images(i)
+        else:
+            self._draw_images(image_index)
         self._update_slice_slider()
+        self._update_intensity(self.intensity_slider.val)
         plt.tight_layout()
         self.fig.canvas.draw_idle()
         self._remove_menu()
@@ -800,13 +814,13 @@ class SliceViewer:
             self.help_overlay = None
         if show:
             if help_type == 'main':
-                help_items = ["Right-click an image for menu", 'Click and drag for ROI']
+                help_items = ['Left-click and drag for ROI', 'Right-click an image for menu']
                 if TKAGG:
                     help_items += ['Right-click intensity slider to adjust range']
                 help_items += ['Press [esc] to remove ROI/menu/help', 'Close image to quit']
 
             elif help_type == 'difference':
-                help_items = ['Select another image of the same shape and axes permutation',  'or press [esc] to exit']
+                help_items = ['Select another image of the same shape and axes permutation', 'or press [esc] to exit']
 
             self.help_overlay = self.fig.text(0.25, 0.5,
                                               multiline(*help_items),
@@ -894,8 +908,12 @@ class SliceViewer:
 
     def show(self):
         """Display the viewer window and block execution until the window is closed."""
+        fignum = self.fig.number
         plt.tight_layout()
         plt.show()
+        # Open and close the figure to make sure it closes properly.
+        plt.figure(fignum)
+        plt.close(fignum)
 
 
 def _choose_array_name(array_names, shapes, file_path):
