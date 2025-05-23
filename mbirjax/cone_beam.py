@@ -776,14 +776,9 @@ class ConeBeamModel(mbirjax.TomographyModel):
     def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
-        Perform FDK reconstruction on the given sinogram.
-
-        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
-        perform the backprojection.  This is different from many implementations, in which the backprojection is not
-        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
-        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+        Perform FDK filtering on the given sinogram.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -791,9 +786,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction.
+            filtered_sinogram (jax array): The sinogram after FDK filtering.
         """
-
         # Get parameters
         num_views, num_rows, num_channels = sinogram.shape
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
@@ -848,9 +842,30 @@ class ConeBeamModel(mbirjax.TomographyModel):
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
+        filtered_sinogram *= jnp.pi / num_views
+        return filtered_sinogram
+
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        """
+        Perform FDK reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            recon (jax array): The reconstructed volume after FDK reconstruction.
+        """
+
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name="ramp", view_batch_size=None)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
-        recon *= jnp.pi / num_views
 
         return recon

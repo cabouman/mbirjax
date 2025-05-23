@@ -305,14 +305,9 @@ class ParallelBeamModel(TomographyModel):
     def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
-        Perform filtered back-projection (FBP) reconstruction on the given sinogram.
-
-        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
-        perform the backprojection.  This is different from many implementations, in which the backprojection is not
-        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
-        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+        Perform FBP filtering on the given sinogram.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -320,9 +315,8 @@ class ParallelBeamModel(TomographyModel):
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
-            recon (jax array): The reconstructed volume after FBP reconstruction.
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
-
         num_views, _, num_channels = sinogram.shape
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
@@ -355,10 +349,31 @@ class ParallelBeamModel(TomographyModel):
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
+        filtered_sinogram *= jnp.pi / num_views  # scaling term
+        return filtered_sinogram
+
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        """
+        Perform filtered back-projection (FBP) reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            recon (jax array): The reconstructed volume after FBP reconstruction.
+        """
+
+        filtered_sinogram = self.fbp_filter(sinogram, filter_name="ramp", view_batch_size=None)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
-        recon *= jnp.pi / num_views  # scaling term
 
         return recon
 
