@@ -19,10 +19,4 @@ Display Functions
 IO Functions
 ------------
 
-.. automodule:: mbirjax.utilities
-   :members: download_and_extract_tar
-   :undoc-members:
-   :no-index:
-   :show-inheritance:
-
 .. autofunction:: mbirjax.utilities.download_and_extract_tar
