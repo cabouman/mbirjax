@@ -234,7 +234,7 @@ class SliceViewer:
             divider = make_axes_locatable(ax)
             cax = divider.append_axes('right', size='5%', pad=0.05)
             self.fig.colorbar(img, cax=cax, orientation='vertical')
-            ax.zorder = 5
+            ax.zorder = 2
             cax.zorder = 1
             self.axes[i] = ax
             self.caxes[i] = cax
@@ -496,7 +496,6 @@ class SliceViewer:
         self._is_drawing = False  # Add a flag to track drawing state
 
         def on_press(event):
-            # self._show_help(False)
             if event.button != 1:
                 return
             if event.inaxes not in self.axes:
@@ -611,10 +610,10 @@ class SliceViewer:
         def on_key(event):
             # Handle any key press
             if event.key == 'h':
-                self._show_help(True)
+                self._show_message(True, message_type='help')
             elif event.key == 'escape':
                 # Remove and reset as needed
-                self._show_help(False)
+                self._show_message(False)
                 self._remove_menu()
                 self._is_drawing = False
                 if self._difference_image_dict is not None and self._difference_image_dict['selecting_image']:
@@ -734,7 +733,7 @@ class SliceViewer:
             try:
                 self._load_file(file_path, image_index)
             except Exception as e:
-                print(f"Failed to load file: {e}")
+                self._show_message(True, message=f"Failed to load file: {e}. Press Esc to exit.")
 
         # Use TkAgg-safe scheduling to delay the gui launch.
         try:
@@ -750,7 +749,7 @@ class SliceViewer:
             self._difference_image_dict = {'selecting_image': True, 'baseline_index': image_index, 'use_abs': use_abs}
             if self.n_volumes > 2:
                 # Show instructions
-                self._show_help(True, help_type='difference')
+                self._show_message(True, message_type='difference')
                 # Return to await selection or Esc
                 return
             else:
@@ -766,9 +765,9 @@ class SliceViewer:
                     any(a != b for a, b in zip(self.axes_perms[baseline_index], self.axes_perms[comparison_index])) or \
                     baseline_index == comparison_index:
                 # Show instructions
-                self._show_help(True, help_type='difference')
+                self._show_message(True, message_type='difference')
                 return
-            self._show_help(False)
+            self._show_message(False)
             self._difference_image_dict['selecting_image'] = False
             self._difference_image_dict['comparison_index'] = comparison_index
             # Set up the difference image
@@ -808,24 +807,29 @@ class SliceViewer:
         self.fig.canvas.draw_idle()
         self._remove_menu()
 
-    def _show_help(self, show, help_type='main'):
+    def _show_message(self, show, message_type=None, message=None):
+        # Clear any existing message
         if hasattr(self, 'help_overlay') and self.help_overlay:
             self.help_overlay.remove()
             self.help_overlay = None
         if show:
-            if help_type == 'main':
-                help_items = ['Left-click and drag for ROI', 'Right-click an image for menu']
+            if message_type == 'help':
+                message = ['Left-click and drag for ROI', 'Right-click an image for menu']
                 if TKAGG:
-                    help_items += ['Right-click intensity slider to adjust range']
-                help_items += ['Press [esc] to remove ROI/menu/help', 'Close image to quit']
+                    message += ['Right-click intensity slider to adjust range']
+                message += ['Press [esc] to remove ROI/menu/help', 'Close image to quit']
+                message = multiline(*message)
 
-            elif help_type == 'difference':
-                help_items = ['Select another image of the same shape and axes permutation', 'or press [esc] to exit']
+            elif message_type == 'difference':
+                message = ['Select another image of the same shape and axes permutation', 'or press [esc] to exit']
+                message = multiline(*message)
 
-            self.help_overlay = self.fig.text(0.25, 0.5,
-                                              multiline(*help_items),
+            if message is None:
+                return
+
+            self.help_overlay = self.fig.text(0.25, 0.5, message,
                                               ha='left', va='center', fontsize=12,
-                                              bbox=dict(facecolor='white', alpha=0.9), zorder=10)
+                                              bbox=dict(facecolor='white', alpha=0.9))
 
         self.fig.canvas.draw_idle()
 
