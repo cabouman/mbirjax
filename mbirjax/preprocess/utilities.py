@@ -1,11 +1,9 @@
 import numpy as np
 import warnings
-import math
 import scipy
 import tifffile
 import glob
 import os
-import h5py
 import jax.numpy as jnp
 import jax
 import dm_pix
@@ -16,22 +14,33 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
     """
     Compute sinogram from object, blank, and dark scans.
 
-    This function computes sinogram by taking the negative log of the attenuation estimate.
-    It can also take in a list of defective pixels and correct those pixel values.
-    The invalid sinogram entries are the union of defective pixel entries and sinogram entries with values of inf or Nan.
+    This function computes a sinogram by taking the negative logarithm of the normalized transmission image:
+    `-log((obj - dark) / (blank - dark))`. It supports correction for defective pixels.
+
+    The invalid sinogram entries are defined as:
+    - Any values resulting in `inf` or `NaN`
+    - Any indices listed in the `defective_pixel_array` (if provided)
 
     Args:
-        obj_scan (ndarray, float): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray, float): [Default=None] 3D blank scan with shape (num_blank_scans, num_det_rows, num_det_channels). When num_blank_scans>1, the pixel-wise mean will be used as the blank scan.
-        dark_scan (ndarray, float): [Default=None] 3D dark scan with shape (num_dark_scans, num_det_rows, num_det_channels). When num_dark_scans>1, the pixel-wise mean will be used as the dark scan.
-        defective_pixel_array (optional, ndarray): A list of tuples containing indices of invalid sinogram pixels, with the format (view_idx, row_idx, channel_idx) or (detector_row_idx, detector_channel_idx).
-            If None, then the invalid pixels will be identified as sino entries with inf or Nan values.
-        batch_size (int): Size of view batch to use in passing data to gpu.
+        obj_scan (ndarray): 
+            A 3D object scan of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray, optional): 
+            A 3D blank scan of shape (num_blank_scans, num_det_rows, num_det_channels). 
+            If `num_blank_scans > 1`, a pixel-wise mean will be computed.
+        dark_scan (ndarray, optional): 
+            A 3D dark scan of shape (num_dark_scans, num_det_rows, num_det_channels). 
+            If `num_dark_scans > 1`, a pixel-wise mean will be computed.
+        defective_pixel_array (ndarray, optional): 
+            An array of defective pixel indices. Format can be either 
+            (view_idx, row_idx, channel_idx) or (row_idx, channel_idx), if shared across views.
+            If `None`, invalid pixels are inferred from `NaN` or `inf` values.
+        batch_size (int): 
+            Number of views to process in each GPU batch.
 
     Returns:
-        - **sino** (*ndarray, float*): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-    """
-    # Compute mean for blank and dark scans and move them to GPU if available
+        ndarray: 
+            The computed sinogram, with shape (num_views, num_det_rows, num_det_channels).
+    """    # Compute mean for blank and dark scans and move them to GPU if available
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
@@ -149,30 +158,6 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
     return sino
 
 
-def correct_det_rotation(sino, weights=None, det_rotation=0.0):
-    """
-    Correct sinogram data and weights to account for detector rotation.
-
-    This function can be used to rotate sinogram views when the axis of rotation is not exactly aligned with the detector columns.
-
-    Args:
-        sino (float, ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        weights (float, ndarray): Sinogram weights, with the same array shape as ``sino``.
-        det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in unit of radians.
-
-    Returns:
-        - A numpy array containing the corrected sinogram data if weights is None.
-        - A tuple (sino, weights) if weights is not None
-    """
-    sino = scipy.ndimage.rotate(sino, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    # weights not provided
-    if weights is None:
-        return sino
-    # weights provided
-    print("correct_det_rotation: weights provided by the user. Please note that zero weight entries might become non-zero after tilt angle correction.")
-    weights = scipy.ndimage.rotate(weights, np.rad2deg(det_rotation), axes=(1,2), reshape=False, order=3)
-    return sino, weights
-
 
 def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=0.0, batch_size=30):
     """
@@ -241,25 +226,31 @@ def estimate_background_offset(sino, edge_width=9):
 
 
 # ####### subroutines for image cropping and down-sampling
-def downsample_scans(obj_scan, blank_scan, dark_scan,
-                     downsample_factor, defective_pixel_array=(), batch_size=90):
-    """Performs Down-sampling to the scan images in the detector plane.
+def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
+    """
+    Performs down-sampling of the scan images in the detector plane.
+    This is done for the object, blank_scan, and dark_scan data,
+    and the defective_pixel_array is updated to reflect the new pixel grid.
 
     Args:
-        obj_scan (numpy array of floats): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (numpy array of floats): A blank scan. 2D numpy array, (num_det_rows, num_det_channels).
-        dark_scan (numpy array of floats): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
-        downsample_factor ([int, int]): Default=[1,1]] Two numbers to define down-sample factor.
-        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2)
-        batch_size (int): Number of views to include in one jax batch.
+        obj_scan (ndarray): A stack of sinograms. 3D NumPy array of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray): Blank scan(s). 3D NumPy array of shape (num_blank_views, num_det_rows, num_det_channels).
+        dark_scan (ndarray): Dark scan(s). 3D NumPy array of shape (num_dark_views, num_det_rows, num_det_channels).
+        downsample_factor (tuple of int): Two integers defining the down-sample factor. Must be ≥ 1 in each dimension.
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2) indicating defective pixel coordinates.
+        batch_size (int): Number of views to include in one JAX batch. Controls memory usage.
+
+    Notes:
+        This function supports both singleton blank/dark scans (shape (1, H, W)) and multi-view scans
+        (shape (N, H, W), where N > 1). Downsampling is applied independently to each view.
 
     Returns:
-        Downsampled scans
-        - **obj_scan** (*ndarray, float*): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        - **blank_scan** (*ndarray, float*): A blank scan. 3D numpy array, (num_det_rows, num_det_channels).
-        - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (num_det_rows, num_det_channels).
+        tuple:
+        - **obj_scan** (ndarray): Downsampled object scan. Shape (num_views, new_rows, new_cols).
+        - **blank_scan** (ndarray): Downsampled blank scan(s). Shape (num_blank_views, new_rows, new_cols).
+        - **dark_scan** (ndarray): Downsampled dark scan(s). Shape (num_dark_views, new_rows, new_cols).
+        - **defective_pixel_array** (ndarray): Updated defective pixel coordinates. Shape (N_def, 2).
     """
-
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
@@ -267,8 +258,9 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     if len(defective_pixel_array) > 0:
         # Set defective pixels to 0
         flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
-        np.put(blank_scan[0], flat_indices, np.nan)
-        np.put(dark_scan[0], flat_indices, np.nan)
+        for i in range(blank_scan.shape[0]):
+            np.put(blank_scan[i], flat_indices, np.nan)
+            np.put(dark_scan[i], flat_indices, np.nan)
     else:
         flat_indices = None
 
@@ -282,11 +274,17 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
     block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
                    blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
+
     # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
-    blank_scan = blank_scan.reshape((blank_scan.shape[0],) + block_shape)
-    blank_scan = np.nanmean(blank_scan, axis=(2, 4))
-    dark_scan = dark_scan.reshape((dark_scan.shape[0],) + block_shape)
-    dark_scan = np.nanmean(dark_scan, axis=(2, 4))
+    blank_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in blank_scan
+    ], axis=0)
+
+    dark_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in dark_scan
+    ], axis=0)
 
     # For obj_scan, we'll batch over the views.
     num_views = obj_scan.shape[0]  # Total number of views
@@ -310,36 +308,39 @@ def downsample_scans(obj_scan, blank_scan, dark_scan,
     obj_scan = np.concatenate(obj_scan_list, axis=0)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    defective_pixel_array = np.argwhere(np.isnan(blank_scan[0]))
+    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
+    defective_pixel_array = np.argwhere(nan_mask)
     if len(defective_pixel_array) == 0:
         defective_pixel_array = ()
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
 
 
-def crop_scans(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0,
-               defective_pixel_array=()):
-    """Crop obj_scan, blank_scan, and dark_scan images by decimal factors, and update defective_pixel_list accordingly.
+
+def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, defective_pixel_array=()):
+    """
+    Crop obj_scan, blank_scan, and dark_scan images by an integer number of pixels, and update defective_pixel_array accordingly.
+    The left and right side pixels are cropped the same amount in order to preserve the center of rotation.
+
     Args:
-        obj_scan (ndarray): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray) : A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        dark_scan (ndarray): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
-        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
-        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
+        obj_scan (ndarray): Sinogram. 3D numpy array of shape (num_views, num_det_rows, num_det_channels).
+        blank_scan (ndarray): Blank scan(s). 3D numpy array of shape (num_blank_views, num_det_rows, num_det_channels).
+        dark_scan (ndarray): Dark scan(s). 3D numpy array of shape (num_dark_views, num_det_rows, num_det_channels).
+        crop_pixels_sides (int, optional): Number of pixels to crop from each side of the sinogram. Defaults to 0.
+        crop_pixels_top (int, optional): Number of pixels to crop from the top of the sinogram. Defaults to 0.
+        crop_pixels_bottom (int, optional): Number of pixels to crop from the bottom of the sinogram. Defaults to 0.
+        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2) containing (row, col) coordinates.
 
-            The scan images will be cropped using the following algorithm:
-                obj_scan <- obj_scan[:, crop_pixels_top:-crop_pixels_bottom, crop_pixels_sides:-crop_pixels_sides]
-
-        defective_pixel_array (ndarray):
+    Notes:
+        This function supports both singleton blank/dark scans (with shape (1, H, W)) and multi-view scans
+        (with shape (N, H, W), where N > 1). Cropping is applied consistently across all views.
 
     Returns:
-        Cropped scans
-        - **obj_scan** (*ndarray, float*): A stack of sinograms. 3D numpy array, (num_views, num_det_rows, num_det_channels).
-        - **blank_scan** (*ndarray, float*): A blank scan. 3D numpy array, (1, num_det_rows, num_det_channels).
-        - **dark_scan** (*ndarray, float*): A dark scan. 3D numpy array, (1, num_det_rows, num_det_channels).
+        tuple:
+        - **obj_scan** (*ndarray, float*): Cropped stack of sinograms. 3D numpy array of shape (num_views, new_rows, new_cols).
+        - **blank_scan** (*ndarray, float*): Cropped blank scan(s). 3D numpy array of shape (num_blank_views, new_rows, new_cols).
+        - **dark_scan** (*ndarray, float*): Cropped dark scan(s). 3D numpy array of shape (num_dark_views, new_rows, new_cols).
     """
-
     assert (0 <= crop_pixels_sides < obj_scan.shape[2] // 2 and
             0 <= crop_pixels_top and 0 <= crop_pixels_bottom and crop_pixels_top + crop_pixels_bottom < obj_scan.shape[1]), \
         ('crop_pixels should be nonnegative integers so that crop_pixels_top + crop_pixels_bottom < view height and'
@@ -590,34 +591,6 @@ def _compute_within_class_variance(hist, thresholds):
 # ####### END Multi-threshold Otsu's method
 
 
-def export_recon_to_hdf5(recon, filename, recon_description="", delta_pixel_image=1.0, alu_description =""):
-    """
-    This function writes a reconstructed image to an HDF5 file.
-
-    Optimal parameters can be used to store a description of the reconstruction and the pixels spacing.
-
-    Args:
-        recon (float, ndarray): 3D reconstructed reconstruction to be saved.
-        filename (string): Fully specified path to save the HDF5 file.
-        recon_description (string, optional) [Default=""]: Description of CT reconstruction.
-        delta_pixel_image (float, optional) [Default=1.0]:  Image pixel spacing in arbitrary length units.
-        alu_description (string, optional) [Default=""]: Description of the arbitrary length units for pixel spacing. Example: "1 ALU = 5 mm".
-    """
-    f = h5py.File(filename, "w")
-    # voxel values
-    f.create_dataset("recon", data=recon)
-    # recon shape
-    f.attrs["recon_description"] = recon_description
-    f.attrs["alu_description"] = alu_description
-    f.attrs["delta_pixel_image"] = delta_pixel_image
-
-    print("Attributes of HDF5 file: ")
-    for k in f.attrs.keys():
-        print(f"{k}: ", f.attrs[k])
-
-    return
-
-
 # Normally, this function would be too simple to jit.  However, by using jit, we may be able to
 # prevent jax from some extra memory use due to assignemt and/or reshaping.
 @jax.jit
@@ -640,3 +613,65 @@ def put_in_slice(array, flat_indices, value):
     array = array.at[:, flat_indices].set(value)
     array = array.reshape(array_shape)
     return array
+
+
+# ####### Generalized Huber Weights method
+def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
+    """
+    This function generates generalized Huber weights based on the method described in the referenced notes.
+    It adds robustness by treating any element where ``|sino_error / weights| > T`` as an outlier,
+    down-weighting it according to the generalized Huber function.
+
+    The function returns new `ghuber_weights`.
+
+    Typically, to obtain the final robust weights, the `ghuber_weights` should be multiplied by the original `weights`:
+
+        final_weights = weights * ghuber_weights
+
+    Args:
+        weights: jnp.ndarray of shape (views, rows, cols)
+            Initial weights, typically derived from inverse variance estimates.
+        sino_error: jnp.ndarray of shape (views, rows, cols)
+            Sinogram error array representing deviations from the model.
+        T: float, optional (default=1.0)
+            Threshold parameter; values greater than T are treated as outliers.
+        delta: float, optional (default=1.0)
+            Controls the strength of the generalized Huber function (delta=1 corresponds to the conventional Huber).
+        epsilon: float, optional (default=1e-6)
+            Small number to avoid division by zero.
+
+    Returns:
+        huber_weights: jnp.ndarray of shape (views, rows, cols)
+            The computed generalized Huber weights.
+
+    Notes:
+        The generalized Huber function used in this function is based on:
+        Venkatakrishnan, S. V., Drummy, L. F., Jackson, M., De Graef, M., Simmons, J. P., and Bouman, C. A.,
+        "Model-Based Iterative Reconstruction for Bright-Field Electron Tomography,"
+        IEEE Transactions on Computational Imaging, vol. 1, no. 1, pp. 1–15, 2015. DOI: 10.1109/TCI.2014.2371751
+
+    Example:
+        >>> from mbirjax import gen_huber_weights
+        >>> huber_weights = gen_huber_weights(weights, sino_error)
+        >>> final_weights = weights * huber_weights
+    """
+    if not (0.0 <= delta <= 1.0):
+        raise ValueError("delta must be between 0 and 1.")
+
+    weights = jnp.asarray(weights)
+    sino_error = jnp.asarray(sino_error)
+
+    # Compute std and global alpha
+    std = 1.0 / jnp.maximum(jnp.sqrt(weights), epsilon)
+    alpha = jnp.linalg.norm(sino_error) / (jnp.linalg.norm(std) + epsilon)
+    std_norm = alpha * std
+
+    # Compute normalized error
+    normalized_error = sino_error / std_norm
+    abs_norm_error = jnp.abs(normalized_error)
+
+    # Apply generalized Huber function
+    huber_weights = jnp.where(abs_norm_error <= T, 1.0, (delta * T) / (abs_norm_error + epsilon))
+
+    return huber_weights
+

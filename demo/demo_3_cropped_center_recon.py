@@ -30,7 +30,7 @@ import numpy as np
 import pprint
 import time
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
@@ -55,7 +55,7 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
 
 # Generate large 3D Shepp Logan phantom
 print('Creating phantom')
@@ -68,7 +68,7 @@ sinogram = np.asarray(sinogram)
 
 # View sinogram
 title='Original sinogram\nVery few rows to allow for fast execution'
-mbirjax.slice_viewer(sinogram, title=title, slice_axis=0, slice_label='View')
+mj.slice_viewer(sinogram, title=title, slice_axis=0, slice_label='View')
 
 """**Do a cropped center reconstruction**
 
@@ -79,7 +79,7 @@ As in demo_2_large_object, this will yield artifacts because some of the informa
 
 # Initialize model for reconstruction.
 weights = None
-ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
 
 # Print model parameters
 ct_model_for_recon.print_params()
@@ -111,6 +111,6 @@ recon_radius = [length // 2 for length in recon_shape]
 start_inds = [phantom.shape[j] // 2 - recon_radius[j] for j in range(2)]
 end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]
 cropped_phantom = phantom[start_inds[0]:end_inds[0], start_inds[1]:end_inds[1]]
-mbirjax.slice_viewer(cropped_phantom, recon, title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(cropped_phantom, recon, title=title, vmin=0.0, vmax=2.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

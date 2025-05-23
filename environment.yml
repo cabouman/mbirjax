@@ -22,3 +22,4 @@ dependencies:
   - pip  # Add any additional packages here and in pyproject.toml
   - pip:
       - -e .
+      - easygui

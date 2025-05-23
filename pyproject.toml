@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.2"
+version = "0.6.3"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -30,7 +30,8 @@ dependencies = [
     "tifffile",
     "h5py",
     "dm-pix",
-    "tqdm"
+    "tqdm",
+    "easygui"
 ]
 
 [project.optional-dependencies]

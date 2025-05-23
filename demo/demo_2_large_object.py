@@ -24,7 +24,7 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
@@ -55,7 +55,7 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
 
 # Generate large 3D Shepp Logan phantom
 print('Creating phantom that projects partially outside the detector')
@@ -65,7 +65,7 @@ phantom_rows = int(num_det_channels * phantom_row_scale)
 phantom_cols = int(num_det_channels * phantom_col_scale)
 phantom_slices = num_det_rows
 phantom_shape = (phantom_rows, phantom_cols, phantom_slices)
-phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
 # Generate synthetic sinogram data
 print('Creating sinogram')
@@ -74,7 +74,7 @@ sinogram = ct_model_for_generation.forward_project(phantom)
 sinogram = np.asarray(sinogram)
 
 # View sinogram
-mbirjax.slice_viewer(sinogram, title='Original sinogram\nChange view to see projections in and outside detector',
+mj.slice_viewer(sinogram, title='Original sinogram\nChange view to see projections in and outside detector',
                  slice_axis=0, slice_label='View')
 
 """**Do a baseline reconstruction**
@@ -84,7 +84,7 @@ First we do a reconstruction with the default settings.  This will have signific
 
 # Initialize model for default reconstruction.
 weights = None
-ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
 
 # Print model parameters
 ct_model_for_recon.print_params()
@@ -105,7 +105,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 title = 'Default recon: Phantom (left) vs VCD Recon (right)'
 title += '\nAdjust intensity range to [0, 1] to see internal artifacts from projection outside detector.'
 title += '\nAdjust intensity range to [1.5, 2] to see outer ring from projection outside detector.'
-mbirjax.slice_viewer(phantom, recon, title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon, title=title, vmin=0.0, vmax=2.0)
 
 """**Decrease sharpness to reduce artifacts.**
 
@@ -128,7 +128,7 @@ pprint.pprint(recon_params_smooth._asdict(), compact=True)
 title = 'Recon with sharpness = {:.1f}: Phantom (left) vs VCD Recon (right)'.format(sharpness)
 title += '\nAdjust intensity range to [0, 1] to see reduced internal artifacts from projection outside detector.'
 title += '\nOuter ring is still evident in intensity range [1, 2], and edges are blurry.'
-mbirjax.slice_viewer(phantom, recon_smooth, title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon_smooth, title=title, vmin=0.0, vmax=2.0)
 
 """**Padded recon VCD reconstruction**
 
@@ -159,6 +159,6 @@ pprint.pprint(recon_params_enlarged._asdict(), compact=True)
 title = 'Padded recon with sharpness = {:.1f}: Phantom (left) vs VCD Recon (right)'.format(sharpness)
 title += '\nPadding the recon reduces the internal artifacts even with default sharpness.'
 title += '\nEdges are sharp, outer ring is mostly gone, and the partially projected pixels are partially recovered.'
-mbirjax.slice_viewer(phantom, recon_enlarged, title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon_enlarged, title=title, vmin=0.0, vmax=2.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

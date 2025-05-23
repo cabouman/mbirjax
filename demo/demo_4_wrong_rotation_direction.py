@@ -28,7 +28,7 @@ import numpy as np
 import pprint
 import time
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
@@ -61,7 +61,7 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
-ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles,
+ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles,
                                                 source_detector_dist, source_iso_dist)
 
 # Generate 3D Shepp Logan phantom
@@ -75,7 +75,7 @@ sinogram = np.asarray(sinogram)
 
 # View sinogram
 title='Original sinogram'
-mbirjax.slice_viewer(sinogram, title=title, slice_axis=0, slice_label='View')
+mj.slice_viewer(sinogram, title=title, slice_axis=0, slice_label='View')
 
 """**Do a baseline reconstruction**
 
@@ -83,7 +83,7 @@ Here we do a standard reconstruction with the correct specification of angles.
 """
 
 print('\nStarting recon with correct rotation\n')
-ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                             source_iso_dist=source_iso_dist)
 ct_model_for_recon.set_params(sharpness=sharpness)
 
@@ -95,7 +95,7 @@ pprint.pprint(recon_params_correct._asdict(), compact=True)
 
 print('\nStarting recon with incorrect rotation\n')
 angles_reversed = angles[::-1]
-ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles_reversed, source_detector_dist=source_detector_dist,
+ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles_reversed, source_detector_dist=source_detector_dist,
                                             source_iso_dist=source_iso_dist)
 recon_incorrect, recon_params_incorrect = ct_model_for_recon.recon(sinogram)
 
@@ -105,6 +105,6 @@ pprint.pprint(recon_params_incorrect._asdict(), compact=True)
 
 title = 'Correct rotation recon (left) vs incorrect rotation recon (right)'
 title += '\nThe incorrect angle specification leads to shape distortion and top/bottom reflection.'
-mbirjax.slice_viewer(recon_correct, recon_incorrect, title=title, vmin=0.0, vmax=1.0)
+mj.slice_viewer(recon_correct, recon_incorrect, title=title, vmin=0.0, vmax=1.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

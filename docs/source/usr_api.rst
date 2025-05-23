@@ -74,7 +74,7 @@ Parameter handling uses the following primary methods.
    usr_parameters
    usr_parallel_beam_model
    usr_cone_beam_model
-   usr_plot_utils
+   usr_utilities
    usr_preprocess
 
 Preprocessing
@@ -95,7 +95,7 @@ The remaining functions can be used for multiple types of scan data.
 
    preprocess.compute_sino_transmission
    preprocess.interpolate_defective_pixels
-   preprocess.correct_det_rotation
+   preprocess.correct_det_rotation_and_background
    preprocess.estimate_background_offset
 
 
