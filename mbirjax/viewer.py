@@ -117,6 +117,7 @@ class SliceViewer:
         self._tk_button_pressed = False
         self._difference_image_dict = None  # Entries:  baseline_index, comparison_index, use_abs, selecting_image
         easygui.boxes.global_state.prop_font_line_length = 80
+        self.show()
 
     @staticmethod
     def _get_perm_from_slice_ind(s):
@@ -386,14 +387,14 @@ class SliceViewer:
 
         if new_perm != list(self.axes_perms[i]):
             new_data = self.data[i]
-            prev_fraction = self.cur_slices[i] / new_data.shape[-1]
+            prev_fraction = self.slice_slider.val / self.slice_slider.valmax
             new_slice_axis = new_perm[-1]
             inverse_perm = np.argsort(self.axes_perms[i])
             new_data = np.transpose(new_data, inverse_perm)
             self.axes_perms[i] = np.array(new_perm)
             new_data = np.transpose(new_data, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = int(np.round(prev_fraction * new_data.shape[new_slice_axis]))
+            self.cur_slices[i] = int(np.round(prev_fraction * (new_data.shape[-1] - 1)))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
@@ -864,10 +865,20 @@ class SliceViewer:
 
         if new_array.ndim == 2:
             new_array = new_array[..., np.newaxis]
-        if new_array.ndim != 3:
-            raise ValueError("Loaded array must be 2D or 3D")
+            self.original_data[image_index] = new_array
+        elif new_array.ndim == 3:
+            self.original_data[image_index] = new_array
+        elif new_array.ndim == 4:
+            num_volumes_to_load = min(new_array.shape[-1], self.n_volumes)
+            self._show_message(True, message='Loading first {} volumes in 4D array. Press Esc to exit'.format(num_volumes_to_load))
+            for j in range(num_volumes_to_load):
+                self.original_data[j] = new_array[..., j]
+                self.data[j] = np.transpose(self.original_data[j], self.axes_perms[j])
+            image_index = min(image_index, num_volumes_to_load - 1)
+            new_array = new_array[..., image_index]
+        else:
+            raise ValueError("Loaded array must be 2D, 3D, or 4D")
 
-        self.original_data[image_index] = new_array
         self.data_attributes[image_index] = attributes
         self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
         transposed = np.transpose(new_array, self.axes_perms[image_index])
@@ -913,7 +924,6 @@ class SliceViewer:
     def show(self):
         """Display the viewer window and block execution until the window is closed."""
         fignum = self.fig.number
-        plt.tight_layout()
         plt.show()
         # Open and close the figure to make sure it closes properly.
         plt.figure(fignum)
@@ -972,4 +982,3 @@ def slice_viewer(*datasets, **kwargs):
 
     """
     viewer = SliceViewer(*datasets, **kwargs)
-    viewer.show()
