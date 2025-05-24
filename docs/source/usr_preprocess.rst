@@ -46,7 +46,7 @@ MAR preprocess functions
 ------------------------
 
 .. automodule:: mbirjax.preprocess
-   :members: multi_threshold_otsu, gen_huber_weights
+   :members: multi_threshold_otsu, gen_huber_weights, beam_hardening_correction
    :no-index:
    :undoc-members:
    :show-inheritance:
@@ -58,3 +58,6 @@ MAR preprocess functions
 
 .. autofunction::
    mbirjax.preprocess.gen_huber_weights
+
+.. autofunction::
+   mbirjax.preprocess.beam_hardening_correction
