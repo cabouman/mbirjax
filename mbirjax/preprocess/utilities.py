@@ -433,19 +433,20 @@ def project_vector_to_vector(u1, u2):
 # ####### Multi-threshold Otsu's method
 def multi_threshold_otsu(image, classes=2):
     """
-    Segments an image into several different classes using Otsu's method.
+    Segment an image into multiple classes using Otsu's method.
 
-    Parameters
-    ----------
-    image : ndarray
-        Input image in ndarray of float type.
-    classes : int, optional
-        Number of classes to threshold (i.e., number of resulting regions). Default is 2.
+    Args:
+        image (np.ndarray):
+            Input image array of floats.
+        classes (int, optional):
+            Number of classes to segment into. Defaults to 2.
 
-    Returns
-    -------
-    list
-        List of threshold values that divide the image into the specified number of classes.
+    Returns:
+        thresholds (list of float):
+            Threshold values dividing the image into the specified number of classes.
+
+    Example:
+        >>> thresholds = multi_threshold_otsu(image, classes=3)
     """
     if classes < 2:
         raise ValueError("Number of classes must be at least 2")
@@ -689,7 +690,7 @@ def beam_hardening_correction(sino, alpha, batch_size=64):
 
     It processes the sinogram in batches of views for memory efficiency.
 
-    Args:d
+    Args:
         sino (jnp.ndarray or np.ndarray of shape (views, rows, cols)):
             Input sinogram to correct.
         alpha (list or array of floats):
