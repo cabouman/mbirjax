@@ -4,7 +4,6 @@ import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
 import mbirjax
-from mbirjax import tomography_utils
 
 
 class TranslationModel(mbirjax.TomographyModel):
@@ -98,7 +97,7 @@ class TranslationModel(mbirjax.TomographyModel):
         # First get the parameters managed by ParameterHandler
         geometry_param_names = \
             ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
-             'source_detector_dist', 'source_iso_dist', 'delta_voxel']
+             'source_detector_dist', 'source_iso_dist', 'delta_voxel', 'delta_voxel_yxz']
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -119,8 +118,8 @@ class TranslationModel(mbirjax.TomographyModel):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
         """
-        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
-            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
+        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel, delta_voxel_yxz = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_voxel_yxz'])
         magnification = self.get_magnification()
 
         # Compute minimum detector pitch
@@ -135,20 +134,20 @@ class TranslationModel(mbirjax.TomographyModel):
             # iso is at the center of the recon volume, so we move half the length to get max/min distances.
             # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
             # for rotation, but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel_yxz[1]
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel_yxz[1]
             min_magnification = source_detector_dist / source_to_farthest_pixel
 
         if max_magnification < 0:
             raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
+        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel_yxz[1] * max_magnification / delta_det)) / 2))
         # Then repeat for the back projection from detector elements to voxels.
         # The voxels closest to the detector will be covered the most by a given detector element.
         # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
-        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
+        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel_yxz[1])
         self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
         if psf_radius > 1:
             warnings.warn('A single voxel may project onto several detector elements, which may lead to artifacts. Consider using smaller voxels.')
@@ -189,8 +188,7 @@ class TranslationModel(mbirjax.TomographyModel):
         translation_vectors = self.get_params('view_params_array')
         max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
         min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
-        scale_detector_to_recon = (
-                                              source_iso_dist + self.recon_width / 2) / source_detector_dist  # Scale to recon side closest to detector
+        scale_detector_to_recon = (source_iso_dist + self.recon_width / 2) / source_detector_dist  # Scale to recon side closest to detector
         recon_left = u_left * scale_detector_to_recon - max_translation[0]
         recon_right = u_right * scale_detector_to_recon - min_translation[0]
         recon_top = v_top * scale_detector_to_recon + min_translation[1]
@@ -202,8 +200,9 @@ class TranslationModel(mbirjax.TomographyModel):
         num_recon_slices = int(jnp.round((recon_bottom - recon_top) / delta_voxel_z))
 
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        delta_voxel = (delta_voxel_y, delta_voxel_x, delta_voxel_z)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
+        delta_voxel_yxz = (delta_voxel_y, delta_voxel_x, delta_voxel_z)
+        delta_voxel = delta_voxel_x
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, delta_voxel_yxz=delta_voxel_yxz)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -215,7 +214,7 @@ class TranslationModel(mbirjax.TomographyModel):
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            translation_vector (jax array of floats):  2D translation vector in ALU units for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -248,7 +247,7 @@ class TranslationModel(mbirjax.TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
-            translation_vector (jax array of floats):  2D translation vector in ALU units for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -261,8 +260,7 @@ class TranslationModel(mbirjax.TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector,
-                                                       projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -273,7 +271,7 @@ class TranslationModel(mbirjax.TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
-            translation_vector (jax array of floats):  2D translation vector in ALU units for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -314,7 +312,7 @@ class TranslationModel(mbirjax.TomographyModel):
             voxel_cylinder (jax array):  1D array of shape (num_recon_slices, ) of voxel values, where
                 voxel_cylinder[j] is the value of the voxel in slice j at the location determined by pixel_index.
             pixel_index (int):  Index into the flattened array of size num_rows x num_cols.
-            translation_vector (jax array of floats):  2D translation vector in ALU units for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -330,6 +328,7 @@ class TranslationModel(mbirjax.TomographyModel):
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
         num_slices = voxel_cylinder.shape[0]
 
         # From pixel index, compute y and pixel_mag
@@ -341,7 +340,7 @@ class TranslationModel(mbirjax.TomographyModel):
         # For computational efficiency, we use that to scale the voxel_cylinder values.
         ### possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
         k = jnp.arange(len(voxel_cylinder))
-        z = gp.delta_voxel * k + translation_vector[2]# recon_ijk_to_xyz
+        z = gp.delta_voxel_yxz[2] * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2] # recon_ijk_to_xyz
         v = pixel_mag * z  # geometry_xyz_to_uv_mag
         # Compute vertical cone angle of voxels
         phi_p = jnp.arctan2(v, gp.source_detector_dist)  # compute_vertical_data_single_pixel
@@ -351,7 +350,7 @@ class TranslationModel(mbirjax.TomographyModel):
 
         # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
         # This is also the slope of the map from voxel index to detector index
-        W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
+        W_p_r = (pixel_mag * gp.delta_voxel_yxz[1]) / gp.delta_det_row
         slope_k_to_m = W_p_r
         L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
@@ -373,7 +372,7 @@ class TranslationModel(mbirjax.TomographyModel):
             v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
             z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
             # Convert to voxel fractional index and find the center of each voxel
-            k_m = (z_m + translation_vector[2]) / gp.delta_voxel
+            k_m = (z_m + translation_vector[2]) / gp.delta_voxel_yxz[2] + (num_slices - 1) / 2.0
             k_m_center = jnp.round(k_m).astype(int)  # Center of the voxel hit by the center of the detector
             # Then map the center of the voxels back to the detector.
             m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
@@ -439,7 +438,7 @@ class TranslationModel(mbirjax.TomographyModel):
             sinogram_view (2D jax array): one view of the sinogram to be back projected.
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
-            angle (float): The projection angle in radians for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -509,7 +508,7 @@ class TranslationModel(mbirjax.TomographyModel):
             detector_column_values (1D jax array): 1D array of shape (num_det_rows,) of voxel values, where
                 detector_column_values[i, j] is the value of the voxel in row j at the location determined by indices[i].
             pixel_index (int):  Index into flattened array of size num_rows x num_cols.
-            angle (float): The projection angle in radians for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -568,7 +567,7 @@ class TranslationModel(mbirjax.TomographyModel):
         Args:
             pixel_index (int):  Index into flattened array of size num_rows x num_cols.
             slice_indices (array of int): Indices into the recon slices.
-            angle (float): The projection angle in radians for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
@@ -586,7 +585,7 @@ class TranslationModel(mbirjax.TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         # slice_indices = jnp.arange(num_recon_slices)
 
-        x_p, y_p, z_p = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel, translation_vector)
+        x_p, y_p, z_p = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, recon_shape, gp.delta_voxel_yxz, translation_vector)
 
         # Convert from xyz to coordinates on detector
         u_p, v_p, pixel_mag = TranslationModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification)
@@ -605,7 +604,7 @@ class TranslationModel(mbirjax.TomographyModel):
         # cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
 
         # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_p_r = pixel_mag * (gp.delta_voxel / gp.delta_det_row)  # * cos_alpha_p_z / cos_phi_p
+        W_p_r = pixel_mag * (gp.delta_voxel_yxz[1] / gp.delta_det_row)  # * cos_alpha_p_z / cos_phi_p
 
         vertical_data = (m_p, m_p_center, W_p_r, cos_phi_p)  # cos_alpha_p_z)
 
@@ -618,11 +617,11 @@ class TranslationModel(mbirjax.TomographyModel):
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
-            angle (float): The projection angle in radians for this view.
+            translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+            n_p, n_p_center, W_p_c, cos_theta_p
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -636,7 +635,7 @@ class TranslationModel(mbirjax.TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
         slice_index = jnp.arange(1)
 
-        x_p, y_p, _ = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel, translation_vector)
+        x_p, y_p, _ = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_index, recon_shape, gp.delta_voxel_yxz, translation_vector)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
@@ -656,22 +655,23 @@ class TranslationModel(mbirjax.TomographyModel):
         cos_theta_p = jnp.cos(theta_p)
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel)
+        W_p_c = pixel_mag * (gp.delta_voxel_yxz[1] / gp.delta_det_channel)
 
         horizontal_data = (n_p, n_p_center, W_p_c, cos_theta_p)
 
         return horizontal_data
 
     @staticmethod
-    def recon_ijk_to_xyz(i, j, k, delta_voxel, translation_vector):
+    def recon_ijk_to_xyz(i, j, k, recon_shape, delta_voxel_yxz, translation_vector):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
-        delta_voxel_y, delta_voxel_x, delta_voxel_z = delta_voxel
+        delta_voxel_y, delta_voxel_x, delta_voxel_z = delta_voxel_yxz
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        y = delta_voxel_y * i - translation_vector[1]
-        x = delta_voxel_x * j - translation_vector[0]
-        z = delta_voxel_z * k - translation_vector[2]
+        y = delta_voxel_y * (i - (num_recon_rows - 1) / 2.0) - translation_vector[1]
+        x = delta_voxel_x * (j - (num_recon_cols - 1) / 2.0) - translation_vector[0]
+        z = delta_voxel_z * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2]
         return x, y, z
 
     @staticmethod
@@ -715,9 +715,10 @@ class TranslationModel(mbirjax.TomographyModel):
 
         gp = projector_params.geometry_params
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        delta_voxel_y, delta_voxel_x, delta_voxel_z = gp.delta_voxel
-        y = delta_voxel_y * row_index - translation_vector[1]
+        delta_voxel_y, delta_voxel_x, delta_voxel_z = gp.delta_voxel_yxz
+        y = delta_voxel_y * (row_index - (num_recon_cols - 1) / 2.0) - translation_vector[1]
 
         # Convert from xyz to coordinates on detector
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
