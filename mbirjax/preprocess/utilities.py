@@ -430,29 +430,39 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-# ####### Multi-threshold Otsu's method
-def multi_threshold_otsu(image, classes=2):
+def multi_threshold_otsu(image, classes=2, num_bins=256):
     """
-    Segment an image into multiple classes using Otsu's method.
+    Segment an image into multiple intensity classes using Otsu's method.
+
+    This function computes optimal threshold values that divide an image into the specified
+    number of classes by minimizing the intra-class variance. It returns `classes - 1` thresholds
+    that can be used to partition the image intensity range into `classes` distinct segments.
 
     Args:
         image (np.ndarray):
-            Input image array of floats.
+            Input image as a NumPy array of floating-point values.
         classes (int, optional):
-            Number of classes to segment into. Defaults to 2.
+            Number of classes to divide the image into. Must be ≥ 2. Defaults to 2.
+        num_bins (int, optional):
+            Number of bins to use when constructing the image histogram. Defaults to 256.
 
     Returns:
-        thresholds (list of float):
-            Threshold values dividing the image into the specified number of classes.
+        list of float:
+            A list of `classes - 1` threshold values, given in increasing order. These thresholds
+            can be used to separate the image into `classes` distinct intensity regions.
 
     Example:
-        >>> thresholds = multi_threshold_otsu(image, classes=3)
+        >>> thresholds = multi_threshold_otsu(image, classes=4)
+        >>> # Resulting thresholds will split image into 4 intensity regions
     """
     if classes < 2:
         raise ValueError("Number of classes must be at least 2")
 
+    if num_bins < classes:
+        raise ValueError("Number of bins must be at least equal to number of classes")
+
     # Compute the histogram of the image
-    hist, bin_edges = np.histogram(image, bins=256, range=(np.min(image), np.max(image)))
+    hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
