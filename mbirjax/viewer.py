@@ -391,10 +391,11 @@ class SliceViewer:
             new_slice_axis = new_perm[-1]
             inverse_perm = np.argsort(self.axes_perms[i])
             new_data = np.transpose(new_data, inverse_perm)
+            new_num_slices = new_data.shape[new_slice_axis]
             self.axes_perms[i] = np.array(new_perm)
             new_data = np.transpose(new_data, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = int(np.round(prev_fraction * (new_data.shape[-1] - 1)))
+            self.cur_slices[i] = int(np.round(prev_fraction * (new_num_slices - 1)))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
