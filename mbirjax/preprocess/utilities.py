@@ -430,28 +430,39 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-# ####### Multi-threshold Otsu's method
-def multi_threshold_otsu(image, classes=2):
+def multi_threshold_otsu(image, classes=2, num_bins=256):
     """
-    Segments an image into several different classes using Otsu's method.
+    Segment an image into multiple intensity classes using Otsu's method.
 
-    Parameters
-    ----------
-    image : ndarray
-        Input image in ndarray of float type.
-    classes : int, optional
-        Number of classes to threshold (i.e., number of resulting regions). Default is 2.
+    This function computes optimal threshold values that divide an image into the specified
+    number of classes by minimizing the intra-class variance. It returns `classes - 1` thresholds
+    that can be used to partition the image intensity range into `classes` distinct segments.
 
-    Returns
-    -------
-    list
-        List of threshold values that divide the image into the specified number of classes.
+    Args:
+        image (np.ndarray):
+            Input image as a NumPy array of floating-point values.
+        classes (int, optional):
+            Number of classes to divide the image into. Must be ≥ 2. Defaults to 2.
+        num_bins (int, optional):
+            Number of bins to use when constructing the image histogram. Defaults to 256.
+
+    Returns:
+        list of float:
+            A list of `classes - 1` threshold values, given in increasing order. These thresholds
+            can be used to separate the image into `classes` distinct intensity regions.
+
+    Example:
+        >>> thresholds = multi_threshold_otsu(image, classes=4)
+        >>> # Resulting thresholds will split image into 4 intensity regions
     """
     if classes < 2:
         raise ValueError("Number of classes must be at least 2")
 
+    if num_bins < classes:
+        raise ValueError("Number of bins must be at least equal to number of classes")
+
     # Compute the histogram of the image
-    hist, bin_edges = np.histogram(image, bins=256, range=(np.min(image), np.max(image)))
+    hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
@@ -629,15 +640,15 @@ def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
         final_weights = weights * ghuber_weights
 
     Args:
-        weights: jnp.ndarray of shape (views, rows, cols)
+        weights: jnp.ndarray of shape (views, rows, cols):
             Initial weights, typically derived from inverse variance estimates.
-        sino_error: jnp.ndarray of shape (views, rows, cols)
+        sino_error: jnp.ndarray of shape (views, rows, cols):
             Sinogram error array representing deviations from the model.
-        T: float, optional (default=1.0)
+        T: float, optional (default=1.0):
             Threshold parameter; values greater than T are treated as outliers.
-        delta: float, optional (default=1.0)
+        delta: float, optional (default=1.0):
             Controls the strength of the generalized Huber function (delta=1 corresponds to the conventional Huber).
-        epsilon: float, optional (default=1e-6)
+        epsilon: float, optional (default=1e-6):
             Small number to avoid division by zero.
 
     Returns:
@@ -675,3 +686,56 @@ def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
 
     return huber_weights
 
+def BH_correction(sino, alpha, batch_size=64):
+    """
+    Apply a polynomial beam hardening correction to a sinogram.
+
+    This function applies a polynomial correction to each view of the sinogram
+    by evaluating powers of the sinogram values and weighting them by the coefficients in `alpha`,
+    while also including the original linear term (the sinogram itself).
+
+    The corrected sinogram is computed as:
+
+        corrected_sino = sino + alpha[0] * sino**2 + alpha[1] * sino**3 + ...
+
+    It processes the sinogram in batches of views for memory efficiency.
+
+    Args:
+        sino (jnp.ndarray or np.ndarray of shape (views, rows, cols)):
+            Input sinogram to correct.
+        alpha (list or array of floats):
+            Coefficients for the polynomial correction. The k-th term corresponds to sino^(k+1).
+        batch_size (int, optional, default=16):
+            Number of views to process in a single batch.
+
+    Returns:
+        corrected_sino: jnp.ndarray of shape (views, rows, cols)
+            Beam hardening corrected sinogram.
+
+    Example:
+        >>> from mbirjax.preprocess import BH_correction
+        >>> alpha = [1.0, 0.2, 0.1]  # Correction: sino + 0.2 * sino^2 + 0.1 * sino^3
+        >>> corrected_sino = BH_correction(sino, alpha)
+    """
+    # Ensure inputs are JAX arrays
+    sino = jnp.asarray(sino)
+    alpha = jnp.asarray(alpha)
+
+    views, rows, cols = sino.shape
+    corrected = []
+
+    for i in range(0, views, batch_size):
+        sino_batch = sino[i:i+batch_size]
+
+        # Initialize corrected batch to the linear term (sino_batch)
+        corrected_batch = jnp.array(sino_batch)
+
+        # Apply polynomial terms
+        for k in range(len(alpha)):
+            corrected_batch += alpha[k] * jnp.power(sino_batch, k + 1)
+
+        corrected.append(corrected_batch)
+
+    corrected_sino = jnp.concatenate(corrected, axis=0)
+
+    return corrected_sino
