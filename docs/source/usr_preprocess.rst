@@ -46,7 +46,7 @@ MAR preprocess functions
 ------------------------
 
 .. automodule:: mbirjax.preprocess
-   :members: multi_threshold_otsu, gen_huber_weights, BH_correction
+   :members: multi_threshold_otsu, gen_huber_weights, BH_correction, segment_plastic_metal
    :no-index:
    :undoc-members:
    :show-inheritance:
@@ -61,3 +61,7 @@ MAR preprocess functions
 
 .. autofunction::
    mbirjax.preprocess.BH_correction
+
+.. autofunction::
+   mbirjax.preprocess.segment_plastic_metal
+

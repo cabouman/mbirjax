@@ -739,3 +739,45 @@ def BH_correction(sino, alpha, batch_size=64):
     corrected_sino = jnp.concatenate(corrected, axis=0)
 
     return corrected_sino
+
+
+def segment_plastic_metal(recon):
+    """
+    Segment a reconstruction into plastic and metal masks using multi-threshold Otsu.
+
+    This function uses multi-threshold Otsu segmentation to classify the input 
+    reconstruction into several classes and returns binary masks for the plastic 
+    and metal components. It also returns scaling factor representing the average value of the recon in the segmented region.
+    
+    Args:
+        recon (jnp.ndarray): Reconstructed volume array.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, float, float]: A tuple containing:
+            - plastic_mask (jnp.ndarray): Binary mask for plastic regions.
+            - metal_mask (jnp.ndarray): Binary mask for metal regions.
+            - plastic_scale (float): Scaling factor for the plastic mask.
+            - metal_scale (float): Scaling factor for the metal mask.
+
+    Example:
+        >>> import mbirjax as mj
+        >>> import mbirjax.preprocess as mjp
+        >>> plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
+        >>> mj.slice_viewer(plastic_mask, metal_mask, vmin=0, vmax=1.0, 
+        ...                 slice_label=['Plastic', 'Metal'], 
+        ...                 title='Plastic and Metal Masks')
+    """
+    # Determine class thresholds based on the 3-classes
+    thresholds = mj.multi_threshold_otsu(recon, classes=3)
+    plastic_low_threshold = thresholds[0]
+    plastic_metal_threshold = thresholds[1]
+
+    # Create masks
+    plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
+    metal_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
+
+    # Scale factors that match the unitary masks to the reconstruction
+    plastic_scale = _compute_scaling_factor(recon, plastic_mask)
+    metal_scale = _compute_scaling_factor(recon, metal_mask)
+
+    return plastic_mask, metal_mask, plastic_scale, metal_scale
