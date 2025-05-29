@@ -686,7 +686,7 @@ def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
 
     return huber_weights
 
-def beam_hardening_correction(sino, alpha, batch_size=64):
+def BH_correction(sino, alpha, batch_size=64):
     """
     Apply a polynomial beam hardening correction to a sinogram.
 
@@ -713,9 +713,9 @@ def beam_hardening_correction(sino, alpha, batch_size=64):
             Beam hardening corrected sinogram.
 
     Example:
-        >>> from mbirjax.preprocess import beam_hardening_correction
+        >>> from mbirjax.preprocess import BH_correction
         >>> alpha = [1.0, 0.2, 0.1]  # Correction: sino + 0.2 * sino^2 + 0.1 * sino^3
-        >>> corrected_sino = beam_hardening_correction(sino, alpha)
+        >>> corrected_sino = BH_correction(sino, alpha)
     """
     # Ensure inputs are JAX arrays
     sino = jnp.asarray(sino)
