@@ -10,6 +10,35 @@ import dm_pix
 import tqdm
 
 
+@jax.jit
+def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
+
+    Args:
+        v (jnp.ndarray):
+            Target reconstruction array of shape (N,) or higher-dimensional.
+        u (jnp.ndarray):
+            Mask array of same shape as `v`, indicating component presence.
+
+    Returns:
+        jnp.ndarray:
+            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
+
+    Example:
+        >>> v = jnp.array([1.0, 2.0, 3.0])
+        >>> u = jnp.array([0.5, 1.0, 1.5])
+        >>> alpha = _compute_scaling_factor(v, u)
+    """
+    v = jnp.asarray(v)
+    u = jnp.asarray(u)
+
+    numerator = jnp.sum(u * v)
+    denominator = jnp.sum(u * u)
+    return jnp.where(denominator == 0, 0.0, numerator / denominator)
+
+
+
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
@@ -768,7 +797,7 @@ def segment_plastic_metal(recon):
         ...                 title='Plastic and Metal Masks')
     """
     # Determine class thresholds based on the 3-classes
-    thresholds = mj.multi_threshold_otsu(recon, classes=3)
+    thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
