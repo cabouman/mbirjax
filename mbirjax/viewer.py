@@ -41,6 +41,8 @@ SLICE_AXIS_FONT_SIZE = 9
 SLICE_AXIS_LABEL_FONT_SIZE = 8
 SLICE_AXIS_RADIO_SIZE = 30
 
+VALMAX_EPS = 1e-6
+
 TKAGG = True
 Y_SKIP = 28
 LOAD_LABEL = 'Load'
@@ -259,8 +261,10 @@ class SliceViewer:
 
     def _add_slice_slider(self):
         ax = self.fig.add_subplot(self.gs[2, :])
+        valmax = max(d.shape[2] for d in self.data) - 1
+        valmax = max(valmax, VALMAX_EPS)
         self.slice_slider = Slider(ax, label="Slice", valmin=0,
-                                   valmax=max(d.shape[2] for d in self.data) - 1,
+                                   valmax=valmax,
                                    valinit=self.cur_slices[0], valfmt='%0.0f')
 
         self.slice_slider.on_changed(self._update_slice)
@@ -373,6 +377,7 @@ class SliceViewer:
     def _update_slice_slider(self):
         # Update slice slider max if any volume changed depth
         new_max = max(d.shape[2] for d in self.data) - 1
+        new_max = max(new_max, VALMAX_EPS)
         self.slice_slider.valmax = new_max
         self.slice_slider.ax.set_xlim(self.slice_slider.valmin, new_max)
         self.slice_slider.set_val(self.cur_slices[0])
@@ -387,7 +392,7 @@ class SliceViewer:
 
         if new_perm != list(self.axes_perms[i]):
             new_data = self.data[i]
-            prev_fraction = self.slice_slider.val / self.slice_slider.valmax
+            prev_fraction = self.slice_slider.val / (self.slice_slider.valmax + VALMAX_EPS)
             new_slice_axis = new_perm[-1]
             inverse_perm = np.argsort(self.axes_perms[i])
             new_data = np.transpose(new_data, inverse_perm)
