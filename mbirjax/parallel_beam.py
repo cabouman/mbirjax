@@ -5,7 +5,6 @@ from collections import namedtuple
 from mbirjax import TomographyModel, ParameterHandler, tomography_utils
 
 
-
 class ParallelBeamModel(TomographyModel):
     """
     A class designed for handling forward and backward projections in a parallel beam geometry, extending the
@@ -38,6 +37,8 @@ class ParallelBeamModel(TomographyModel):
     --------
     TomographyModel : The base class from which this class inherits.
     """
+
+    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles):
         # Convert the view-dependent vectors to an array
@@ -302,10 +303,24 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
+        """
+        return self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=100):
         """
         Perform FBP filtering on the given sinogram.
 
@@ -352,7 +367,7 @@ class ParallelBeamModel(TomographyModel):
         filtered_sinogram *= jnp.pi / num_views  # scaling term
         return filtered_sinogram
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -370,7 +385,7 @@ class ParallelBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
-        filtered_sinogram = self.fbp_filter(sinogram, filter_name="ramp", view_batch_size=None)
+        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)

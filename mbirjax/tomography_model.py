@@ -44,6 +44,8 @@ class TomographyModel(ParameterHandler):
     Sets up the reconstruction size and parameters.
     """
 
+    DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
+
     def __init__(self, sinogram_shape, **kwargs):
 
         super().__init__()
@@ -833,7 +835,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
         Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
         implementation details are geometry specific, and direct_recon may not be available for all geometries.
@@ -849,6 +851,21 @@ class TomographyModel(ParameterHandler):
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
+
+    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
+        """
+        warnings.warn('direct_filter not implemented for TomographyModel.')
+        return jnp.zeros_like(sinogram, device=self.sinogram_device)
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, num_iterations=None, logfile_path='./logs/recon.log', print_logs=True):

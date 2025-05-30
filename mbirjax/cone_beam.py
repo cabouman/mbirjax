@@ -4,7 +4,7 @@ from functools import partial
 from collections import namedtuple
 import warnings
 import mbirjax
-from mbirjax import tomography_utils
+from mbirjax import tomography_utils, TomographyModel
 
 
 class ConeBeamModel(mbirjax.TomographyModel):
@@ -35,6 +35,8 @@ class ConeBeamModel(mbirjax.TomographyModel):
         **recon_slice_offset** (float, default=0) -
         Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
     """
+
+    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist):
         # Convert the view-dependent vectors to an array
@@ -773,10 +775,24 @@ class ConeBeamModel(mbirjax.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
+        """
+        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
         Perform FDK filtering on the given sinogram.
 
@@ -845,7 +861,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
         filtered_sinogram *= jnp.pi / num_views
         return filtered_sinogram
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -863,7 +879,7 @@ class ConeBeamModel(mbirjax.TomographyModel):
             recon (jax array): The reconstructed volume after FDK reconstruction.
         """
 
-        filtered_sinogram = self.fdk_filter(sinogram, filter_name="ramp", view_batch_size=None)
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
