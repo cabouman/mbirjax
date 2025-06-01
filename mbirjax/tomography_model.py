@@ -255,16 +255,22 @@ class TomographyModel(ParameterHandler):
     @classmethod
     def from_file(cls, filename):
         """
-        Construct a TomographyModel (or a subclass) from parameters saved using to_file()
+        Construct a ParallelBeamModel from parameters saved using save_params()
 
         Args:
             filename (str): Name of the file containing parameters to load.
 
         Returns:
-            ConeBeamModel with the specified parameters.
+            ParallelBeamModel with the specified parameters.
         """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
-        raise ValueError('from_file is not implemented for base TomographyModel')
+        # Load the parameters and separate into required and optional
+        required_param_names = cls.get_required_param_names()
+        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
+
+        # Get an instance with the required parameters, then set any optional parameters
+        new_model = cls(**required_params)
+        new_model.set_params(**params)
+        return new_model
 
     def to_file(self, filename):
         """

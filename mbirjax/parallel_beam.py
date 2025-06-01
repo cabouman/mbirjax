@@ -41,41 +41,12 @@ class ParallelBeamModel(TomographyModel):
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles):
-        # Convert the view-dependent vectors to an array
-        # This is more complicated than needed with only a single view-dependent vector but is included to
-        # illustrate the process as shown in TemplateModel
-        view_dependent_vecs = [vec.flatten() for vec in [angles]]
-        try:
-            view_params_array = jnp.stack(view_dependent_vecs, axis=1)
-        except ValueError as e:
-            raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
-                             "same length.")
-        super().__init__(sinogram_shape, view_params_array=view_params_array)
+
+        super().__init__(sinogram_shape, angles=angles, view_params_name='angles')
 
     @classmethod
-    def from_file(cls, filename):
-        """
-        Construct a ConeBeamModel from parameters saved using save_params()
-
-        Args:
-            filename (str): Name of the file containing parameters to load.
-
-        Returns:
-            ConeBeamModel with the specified parameters.
-        """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
-        required_param_names = ['sinogram_shape']
-        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
-
-        # Collect the required parameters into a separate dictionary and remove them from the loaded dict.
-        angles = params['view_params_array']
-        del params['view_params_array']
-        required_params['angles'] = angles
-
-        # Get an instance with the required parameters, then set any optional parameters
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
-        return new_model
+    def get_required_param_names(cls):
+        return ['sinogram_shape', 'angles']
 
     def get_magnification(self):
         """
@@ -97,12 +68,12 @@ class ParallelBeamModel(TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
+        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
 
-        if view_params_array.shape[0] != sinogram_shape[0]:
+        if angles.shape[0] != sinogram_shape[0]:
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
-            error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
+            error_message += "{} for number of views.".format(angles.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
         recon_shape = self.get_params('recon_shape')

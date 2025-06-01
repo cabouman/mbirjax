@@ -75,10 +75,10 @@ class ParameterHandler():
         """
         Prints out the parameters of the model.
         """
-        verbose = self.get_params('verbose')
+        verbose, view_params_name = self.get_params(['verbose', 'view_params_name'])
         print("----")
         for key, entry in self.params.items():
-            if verbose < 3 and key == 'view_params_array':
+            if verbose < 3 and key == view_params_name:
                 continue
             param_val = entry.get('val')
             if verbose < 3:
