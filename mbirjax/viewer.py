@@ -117,9 +117,14 @@ class SliceViewer:
         self._syncing_limits = True
         self._syncing_axes = False
         self._tk_button_pressed = False
-        self._difference_image_dict = None  # Entries:  baseline_index, comparison_index, use_abs, selecting_image
+        self._image_selection_dict = {}
+        self._clear_image_selection()
+        self._difference_image_dicts = [None] * self.n_volumes  # Entries:  comparison_index, use_abs, prev_label
         easygui.boxes.global_state.prop_font_line_length = 80
         self.show()
+
+    def _clear_image_selection(self):
+        self._image_selection_dict = {'selecting_image': False, 'baseline_index': -1}
 
     @staticmethod
     def _get_perm_from_slice_ind(s):
@@ -515,7 +520,7 @@ class SliceViewer:
                 if event.button == 1:  # Consume only a left-click
                     self._tk_button_pressed = False
                     return
-            if self._difference_image_dict is not None and self._difference_image_dict['selecting_image']:
+            if self._image_selection_dict['selecting_image']:
                 image_index = self.axes.index(event.inaxes)
                 self._on_difference(image_index)
                 return
@@ -623,8 +628,10 @@ class SliceViewer:
                 self._show_message(False)
                 self._remove_menu()
                 self._is_drawing = False
-                if self._difference_image_dict is not None and self._difference_image_dict['selecting_image']:
-                    self._difference_image_dict = None
+                if self._image_selection_dict['selecting_image']:
+                    image_index = self._image_selection_dict['baseline_index']
+                    self._difference_image_dicts[image_index] = None
+                    self._clear_image_selection()
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
@@ -635,8 +642,7 @@ class SliceViewer:
                 self.fig.canvas.draw_idle()
 
         def on_context_menu(event):
-            if self._difference_image_dict is not None and \
-                    self._difference_image_dict['selecting_image']:
+            if self._image_selection_dict['selecting_image']:
                 return
             # Start the menu for an image
             if event.button == 3 and event.inaxes in self.axes:
@@ -679,13 +685,11 @@ class SliceViewer:
             options.append([
                 "{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
                 self._toggle_sync_limits])
-            if self._difference_image_dict is None:
+            if self._difference_image_dicts[image_index] is None:
                 options.append(["Replace with difference image", lambda: self._on_difference(image_index)])
                 options.append(["Replace with error image", lambda: self._on_difference(image_index, use_abs=True)])
             else:
-                baseline_index = self._difference_image_dict['baseline_index']
-                if baseline_index == image_index:
-                    options.append(['Restore original image', lambda: self._on_difference(image_index)])
+                options.append(['Restore original image', lambda: self._on_restore(image_index)])
         if TKAGG:
             options += [["Show attributes", lambda: self._on_show_attributes(image_index)]]
         options += [["Transpose image", lambda: self._on_transpose(image_index)],
@@ -705,9 +709,9 @@ class SliceViewer:
         names = [attribute[0] for attribute in attributes]
         if len(attributes) > 1:
             choices = names + ['Cancel']
-            msg = ['Choose an attributes to display:', ' ']
+            msg = ['Choose an attribute to display:', ' ']
             msg += names
-            choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the attribute to display', choices=choices)
+            choice = easygui.buttonbox(msg=multiline(*msg), title='Choose an attribute to display', choices=choices)
             if choice == 'Cancel':
                 return
         else:
@@ -748,24 +752,26 @@ class SliceViewer:
         except Exception as e:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-    def _on_difference(self, image_index, use_abs=False):
+    def _on_difference(self, image_index: int, use_abs: bool = False):
 
         self._remove_menu()
         # Start the selection process for this baseline
-        if self._difference_image_dict is None:
-            self._difference_image_dict = {'selecting_image': True, 'baseline_index': image_index, 'use_abs': use_abs}
+        if not self._image_selection_dict['selecting_image']:
+            self._image_selection_dict['selecting_image'] = True
+            self._image_selection_dict['baseline_index'] = image_index
+            self._difference_image_dicts[image_index] = {'use_abs': use_abs}
             if self.n_volumes > 2:
                 # Show instructions
                 self._show_message(True, message_type='difference')
                 # Return to await selection or Esc
                 return
             else:
-                image_index = 1 - image_index  # There are only 2 images, show choose the other, then continue below with setting the data
+                image_index = 1 - image_index  # There are only 2 images, so choose the other, then continue below with setting the data
 
         # Save this index as the comparison and set up the plot
-        if self._difference_image_dict['selecting_image']:
+        if self._image_selection_dict['selecting_image']:
             # Check the shape and axes perm of the two images
-            baseline_index = self._difference_image_dict['baseline_index']
+            baseline_index = self._image_selection_dict['baseline_index']
             comparison_index = image_index
             if any(a != b for a, b in
                    zip(self.original_data[baseline_index].shape, self.original_data[comparison_index].shape)) or \
@@ -773,33 +779,39 @@ class SliceViewer:
                     baseline_index == comparison_index:
                 # Show instructions
                 self._show_message(True, message_type='difference')
-                return
+                return  # The difference is not valid, so exit
+
+            # Otherwise exit the selection process and set the current index as the comparison
             self._show_message(False)
-            self._difference_image_dict['selecting_image'] = False
-            self._difference_image_dict['comparison_index'] = comparison_index
+            self._clear_image_selection()
+            self._difference_image_dicts[baseline_index]['comparison_index'] = comparison_index
+
             # Set up the difference image
             difference = self.data[comparison_index] - self.data[baseline_index]
-            if self._difference_image_dict['use_abs']:
+            if self._difference_image_dicts[baseline_index]['use_abs']:
                 difference = np.abs(difference)
             self.data[baseline_index] = difference
             self.images[baseline_index].set_data(difference[:, :, self.cur_slices[baseline_index]])
-            self._difference_image_dict['prev_label'] = self.labels[baseline_index]
-            label_prepend = 'Image {} minus current: '.format(comparison_index) if not use_abs \
-                else 'abs(Image {} minus current): '.format(comparison_index)
+
+            # Adjust the labels and refresh the display
+            self._difference_image_dicts[baseline_index]['prev_label'] = self.labels[baseline_index]
+            if self._difference_image_dicts[baseline_index]['use_abs']:
+                label_prepend = 'abs(Image {} minus current): '.format(comparison_index)
+            else:
+                label_prepend = 'Image {} minus current: '.format(comparison_index)
             self.labels[baseline_index] = label_prepend + self.labels[baseline_index]
             self._update_slice_slider()
             self.fig.canvas.draw_idle()
 
+    def _on_restore(self, image_index):
         # Restore the original image
-        else:
-            baseline_index = self._difference_image_dict['baseline_index']
-            baseline_data = self.original_data[baseline_index]
-            self.data[baseline_index] = np.transpose(baseline_data, self.axes_perms[baseline_index])
-            self.images[baseline_index].set_data(self.data[baseline_index][:, :, self.cur_slices[image_index]])
-            self.labels[baseline_index] = self._difference_image_dict['prev_label']
-            self._difference_image_dict = None
-            self._update_slice_slider()
-            self.fig.canvas.draw_idle()
+        original_data = self.original_data[image_index]
+        self.data[image_index] = np.transpose(original_data, self.axes_perms[image_index])
+        self.images[image_index].set_data(self.data[image_index][:, :, self.cur_slices[image_index]])
+        self.labels[image_index] = self._difference_image_dicts[image_index]['prev_label']
+        self._difference_image_dicts[image_index] = None
+        self._update_slice_slider()
+        self.fig.canvas.draw_idle()
 
     def _on_reset(self, image_index):
         # Do a hard reset
@@ -812,6 +824,8 @@ class SliceViewer:
         self._update_intensity(self.intensity_slider.val)
         plt.tight_layout()
         self.fig.canvas.draw_idle()
+        self._clear_image_selection()
+        self._show_message(False)
         self._remove_menu()
 
     def _show_message(self, show, message_type=None, message=None):
@@ -876,7 +890,8 @@ class SliceViewer:
             self.original_data[image_index] = new_array
         elif new_array.ndim == 4:
             num_volumes_to_load = min(new_array.shape[-1], self.n_volumes)
-            self._show_message(True, message='Loading first {} volumes in 4D array. Press Esc to exit'.format(num_volumes_to_load))
+            self._show_message(True, message='Loading first {} volumes in 4D array. Press Esc to exit'.format(
+                num_volumes_to_load))
             for j in range(num_volumes_to_load):
                 self.original_data[j] = new_array[..., j]
                 self.data[j] = np.transpose(self.original_data[j], self.axes_perms[j])
