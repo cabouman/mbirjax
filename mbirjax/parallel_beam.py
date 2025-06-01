@@ -42,11 +42,8 @@ class ParallelBeamModel(TomographyModel):
 
     def __init__(self, sinogram_shape, angles):
 
+        angles = jnp.asarray(angles)
         super().__init__(sinogram_shape, angles=angles, view_params_name='angles')
-
-    @classmethod
-    def get_required_param_names(cls):
-        return ['sinogram_shape', 'angles']
 
     def get_magnification(self):
         """

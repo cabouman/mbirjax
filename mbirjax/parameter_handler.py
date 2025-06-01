@@ -198,26 +198,31 @@ class ParameterHandler():
             # Save the full parameter dictionary
             with open(filename, 'r') as file:
                 yaml = YAML(typ="safe")
-                params = yaml.load(file)
-                params = ParameterHandler.convert_strings_to_arrays(params)
+                param_dict = yaml.load(file)
+                param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
 
         # Convert any lists to tuples for consistency with save
-        for key in params.keys():
-            if isinstance(params[key]['val'], list):
-                params[key]['val'] = tuple(params[key]['val'])
+        for key in param_dict.keys():
+            if isinstance(param_dict[key]['val'], list):
+                param_dict[key]['val'] = tuple(param_dict[key]['val'])
+        return ParameterHandler.get_required_params_from_dict(param_dict, required_param_names=required_param_names,
+                                                              values_only=values_only)
 
+    @staticmethod
+    def get_required_params_from_dict(param_dict, required_param_names=None, values_only=True):
         # Separate the required parameters into a new dict and delete those entries from the original
         required_params = dict()
+        param_dict = param_dict.copy()
         for name in required_param_names:
-            required_params[name] = params[name]
-            del params[name]
+            required_params[name] = param_dict[name]
+            del param_dict[name]
 
         if values_only:
             for key in required_params.keys():
                 required_params[key] = required_params[key]['val']
-            for key in params.keys():
-                params[key] = params[key]['val']
-        return required_params, params
+            for key in param_dict.keys():
+                param_dict[key] = param_dict[key]['val']
+        return required_params, param_dict
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """

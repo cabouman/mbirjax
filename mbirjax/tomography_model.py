@@ -1,9 +1,11 @@
 import io
 import types
-from ruamel.yaml import YAML
 import warnings
+import inspect
 import time  # Used for debugging/performance tuning
 import os
+
+from ruamel.yaml import YAML
 import h5py
 import numpy as np
 
@@ -77,6 +79,35 @@ class TomographyModel(ParameterHandler):
         self.use_gpu = 'none'  # This is set in set_devices_and_batch_sizes based on memory and get_params('use_gpu')
         self.set_devices_and_batch_sizes()
         self.create_projectors()
+
+    @classmethod
+    def get_required_param_names(cls):
+        """
+        Return a list with the names of the required parameters of cls.__init__.
+
+        Args:
+            cls : type
+                The class whose __init__ we want to inspect.
+
+        Returns:
+            list[str]
+                A list of parameter names, in the order they appear in the signature.
+        """
+        sig = inspect.signature(cls.__init__)
+        params = sig.parameters.values()
+
+        # Filter out *args and **kwargs to get simple names
+        names = [
+            p.name
+            for p in params
+            if p.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                              inspect.Parameter.VAR_KEYWORD)
+        ]
+
+        if names[0] == "self":
+            names = names[1:]
+
+        return names
 
     def set_devices_and_batch_sizes(self):
         """
