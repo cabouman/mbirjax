@@ -44,9 +44,10 @@ class ConeBeamModel(mbirjax.TomographyModel):
         self.entries_per_cylinder_batch = 128
         self.slice_range_length = 0
         angles = jnp.asarray(angles)
+        view_params_name = 'angles'
 
         super().__init__(sinogram_shape, angles=angles, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name='angles', recon_slice_offset=0.0)
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, recon_slice_offset=0.0)
 
     def get_magnification(self):
         """
