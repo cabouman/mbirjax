@@ -557,14 +557,16 @@ class TomographyModel(ParameterHandler):
 
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
-        Back project the given sinogram to the voxels given by the indices.
+        Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
+        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.
+        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
+        be the indices into the sinogram that is passed in here.
 
         Args:
-            sinogram (jnp array): 3D jax array containing sinogram.
+            sinogram (jnp array): 3D jax array containing the full sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project
+            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
             coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
             output_device (jax device, optional): Device on which to put the output
 
@@ -579,8 +581,6 @@ class TomographyModel(ParameterHandler):
             view_indices = jnp.arange(num_views)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
-        view_batch_boundaries = [view_indices_batched[j][0] for j in range(len(view_indices_batched))]
-        view_batch_boundaries = np.append(np.array(view_batch_boundaries), num_views)
 
         pixel_indices = jax.device_put(pixel_indices, self.worker)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
@@ -592,9 +592,8 @@ class TomographyModel(ParameterHandler):
 
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
-            view_index_end = view_batch_boundaries[j + 1]
-            view_batch = sinogram[view_index_start:view_index_end]
+        for view_indices_batch in view_indices_batched:
+            view_batch = sinogram[view_indices_batch]
             view_batch = jax.device_put(view_batch, self.worker)
 
             # Loop over pixel batches
@@ -602,7 +601,7 @@ class TomographyModel(ParameterHandler):
             for pixel_index_batch in pixel_indices_batched:
                 # Back project a batch
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batched[j],
+                                                                           view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
                 voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
