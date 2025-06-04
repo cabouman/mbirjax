@@ -44,7 +44,7 @@ class TranslationModel(mbirjax.TomographyModel):
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
                              "same length.")
 
-        super().__init__(sinogram_shape, view_params_array=view_params_array,
+        super().__init__(sinogram_shape, view_params_array=view_params_array, recon_width=recon_width,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     @classmethod
@@ -65,8 +65,11 @@ class TranslationModel(mbirjax.TomographyModel):
 
         # Collect the required parameters into a separate dictionary and remove them from the loaded dict.
         translation_vectors = params['view_params_array']
+        recon_width = params['recon_width']
         del params['view_params_array']
+        del params['recon_width']
         required_params['translation_vectors'] = translation_vectors
+        required_params['recon_width'] = recon_width
 
         # Get an instance with the required parameters, then set any optional parameters
         new_model = cls(**required_params)
@@ -191,8 +194,8 @@ class TranslationModel(mbirjax.TomographyModel):
         scale_detector_to_recon = (source_iso_dist + self.recon_width / 2) / source_detector_dist  # Scale to recon side closest to detector
         recon_left = u_left * scale_detector_to_recon - max_translation[0]
         recon_right = u_right * scale_detector_to_recon - min_translation[0]
-        recon_top = v_top * scale_detector_to_recon + min_translation[1]
-        recon_bottom = v_bottom * scale_detector_to_recon + max_translation[1]
+        recon_top = v_top * scale_detector_to_recon + min_translation[2]
+        recon_bottom = v_bottom * scale_detector_to_recon + max_translation[2]
 
         # Set the recon shape
         num_recon_rows = int(jnp.round(self.recon_width / delta_voxel_y))
@@ -525,7 +528,7 @@ class TranslationModel(mbirjax.TomographyModel):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
         # Set up slice indices array (0, slices_per_batch, 2*slices_per_batch, ..., num_slice_batches*slices_per_batch)
-        num_slices = detector_column_values.shape[0]
+        num_slices = num_recon_slices
         slices_per_batch = gp.entries_per_cylinder_batch
         slices_per_batch = min(slices_per_batch, num_slices)
         num_slice_batches = (num_slices + slices_per_batch - 1) // slices_per_batch
