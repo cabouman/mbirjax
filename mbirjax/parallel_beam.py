@@ -150,7 +150,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
+        L_max = jnp.minimum(1.0, W_p_c)
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
@@ -159,7 +159,7 @@ class ParallelBeamModel(TomographyModel):
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
@@ -192,16 +192,16 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
+        L_max = jnp.minimum(1.0, W_p_c)
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
-
+        # jax.debug.breakpoint(num_frames=1)
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
