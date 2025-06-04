@@ -2,6 +2,10 @@ import numpy as np
 import os
 import jax
 import jax.numpy as jnp
+import sys
+source_path = "/home/yang1581/Github/mbirjax"
+if source_path not in sys.path:
+    sys.path.insert(0, source_path)
 import mbirjax
 import unittest
 
@@ -35,6 +39,8 @@ class TestProjectors(unittest.TestCase):
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.translation_vectors = None
+        self.recon_width = None
 
     def tearDown(self):
         """Clean up after each test method."""
@@ -49,6 +55,23 @@ class TestProjectors(unittest.TestCase):
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
+    def set_translation_vectors(self, geometry_type):
+        if geometry_type == 'translation':
+            np.random.seed(42)
+            self.translation_vectors = np.zeros((self.num_views, 3))
+            self.translation_vectors[:, 0] = np.random.uniform(-0.5, 0.5, self.num_views)
+            self.translation_vectors[:, 1] = 0.0
+            self.translation_vectors[:, 2] = np.random.uniform(-0.5, 0.5, self.num_views)
+            self.translation_vectors = jnp.array(self.translation_vectors)
+        else:
+            self.translation_vectors = None
+
+    def set_recon_width(self, geometry_type):
+        if geometry_type == 'translation':
+            self.recon_width = 5
+        else:
+            self.recon_width = None
+
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
             ct_model = mbirjax.ConeBeamModel(self.sinogram_shape, self.angles,
@@ -56,6 +79,11 @@ class TestProjectors(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'translation':
+            ct_model = mbirjax.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                                source_detector_dist=self.source_detector_dist,
+                                                source_iso_dist=self.source_iso_dist,
+                                                recon_width=self.recon_width)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -85,6 +113,8 @@ class TestProjectors(unittest.TestCase):
         Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
+        self.set_recon_width(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Generate phantom
@@ -142,6 +172,8 @@ class TestProjectors(unittest.TestCase):
         Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
+        self.set_recon_width(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Initialize a random key
@@ -203,6 +235,8 @@ class TestProjectors(unittest.TestCase):
         Choose a random pixel, set it to epsilon, apply A^T A and compare to the value from compute_hessian_diagaonal.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
+        self.set_recon_width(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # ## Test the hessian against a finite difference approximation ## #
