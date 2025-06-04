@@ -9,7 +9,7 @@ from ruamel.yaml import YAML
 import h5py
 import numpy as np
 
-from jaxlib.xla_extension import XlaRuntimeError
+from jax.errors import JaxRuntimeError
 
 num_cpus = 3 * os.cpu_count() // 4
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
@@ -991,7 +991,7 @@ class TomographyModel(ParameterHandler):
         except MemoryError as e:
             self.logger.error('Insufficient CPU memory')
             raise e
-        except XlaRuntimeError as e:
+        except JaxRuntimeError as e:
             self.logger.error(e)
             if self.gpu_memory > 0:
                 if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
