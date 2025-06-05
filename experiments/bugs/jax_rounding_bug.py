@@ -25,6 +25,8 @@ if __name__ == "__main__":
     One hacky fix to reduce the likelihood of this happening is to add a small value to the index before rounding.
     This would need to be done in parallel_beam.py, compute_proj_data and 
     cone_beam.py, compute_vertical_data_single_pixel and compute_horizontal_data.  
+    
+    See also tests/test_projectors.py: verify_view_batching
     """
 
     # Set parameters
