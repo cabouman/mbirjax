@@ -27,6 +27,9 @@ if __name__ == "__main__":
     cone_beam.py, compute_vertical_data_single_pixel and compute_horizontal_data.  
     
     See also tests/test_projectors.py: verify_view_batching
+    
+    Replace the default version of parallel_beam.py with the version in the folder bugs/jax rounding bug to
+    see the effect of inconsistent rounding.  
     """
 
     # Set parameters
