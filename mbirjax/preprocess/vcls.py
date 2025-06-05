@@ -105,7 +105,7 @@ def max_abs_neighbor_diff(arr):
 
 
 
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.001, r_2=0.1, verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.001, r_2=0.5, verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper: ???
