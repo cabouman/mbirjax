@@ -46,7 +46,7 @@ MAR preprocess functions
 ------------------------
 
 .. automodule:: mbirjax.preprocess
-   :members: multi_threshold_otsu, gen_huber_weights, BH_correction, segment_plastic_metal
+   :members: multi_threshold_otsu, gen_huber_weights, BH_correction, segment_plastic_metal, get_opt_views, copy_ct_model
    :no-index:
    :undoc-members:
    :show-inheritance:
@@ -64,4 +64,14 @@ MAR preprocess functions
 
 .. autofunction::
    mbirjax.preprocess.segment_plastic_metal
+
+View selection (VCLS) preprocess functions
+------------------------------------------
+
+.. autofunction::
+   mbirjax.preprocess.get_opt_views
+
+.. autofunction::
+   mbirjax.preprocess.copy_ct_model
+
 
