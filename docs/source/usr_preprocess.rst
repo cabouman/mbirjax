@@ -65,8 +65,8 @@ MAR preprocess functions
 .. autofunction::
    mbirjax.preprocess.segment_plastic_metal
 
-View selection (VCLS) preprocess functions
-------------------------------------------
+View selection (VCLS) functions
+-------------------------------
 
 .. autofunction::
    mbirjax.preprocess.get_opt_views
