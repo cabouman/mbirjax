@@ -110,7 +110,7 @@ def main():
 
     # Get the baseline
     compute_baseline = False
-    output_dir = 'convergence_output'
+    output_dir = '../convergence_output'
     os.makedirs(output_dir, exist_ok=True)
 
     max_iterations = 1000

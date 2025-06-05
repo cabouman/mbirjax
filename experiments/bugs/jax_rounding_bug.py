@@ -1,7 +1,9 @@
 import numpy as np
 import jax.numpy as jnp
 import mbirjax.parallel_beam
+import jax
 
+jax.config.update("jax_default_matmul_precision", "highest")
 if __name__ == "__main__":
     """
     This is a script to demonstrate that rounding errors in jax can cause very odd bugs. 
