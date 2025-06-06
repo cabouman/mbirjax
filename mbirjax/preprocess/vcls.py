@@ -142,7 +142,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         gamma = compute_view_basis_functions(ct_model, reference_object, r_1=r_1, data_store_dir=data_store_dir, seed=seed)
 
         # Compute inner product between recon bases
-        R = compute_cov_matrix(num_views, data_store_dir)
+        R = compute_cov_matrix_batched(num_views, data_store_dir)
 
     if verbose > 0:
         # plot the the covariance matrix and gamma
@@ -187,9 +187,10 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     eps = 1e-12
 
     # Forward project the reference object
-    print('Creating sinogram')
+    print('Creating sinogram for reference object of shape {}'.format(ref_object.shape))
     ref_sino = ct_model.forward_project(ref_object)
     ref_sino = np.asarray(ref_sino)
+    print('Done')
 
     # Create ROI mask and subsample the indices
     mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
@@ -292,6 +293,64 @@ def compute_cov_matrix(num_views, data_store_dir):
     #         i, row = result.get()
     #         cov_matrix[i, i:] = row[i:]
     #         cov_matrix[i:, i] = row[i:]
+
+    return cov_matrix
+
+
+def compute_cov_matrix_batched(num_views, data_store_dir, batch_size=100):
+    """
+    Compute the covariance matrix of view basis functions in parallel.
+
+    This function utilizes multiprocessing to efficiently compute the symmetric covariance matrix
+    by loading precomputed basis functions stored as `.npy` files.
+
+    Args:
+        num_views (int): Total number of view basis functions.
+        data_store_dir (str): Directory containing the stored `.npy` files for each view basis function.
+        batch_size (int, optional): The number of views to use for computing the symmetric covariance matrix.  Defaults to 100.
+
+    Returns:
+        ndarray: A symmetric covariance matrix of shape `(num_views, num_views)`.
+
+    Example:
+        >>> cov_matrix = compute_cov_matrix(180, "/tmp/recons")
+        >>> print(cov_matrix.shape)
+        (180, 180)
+    """
+
+    cov_matrix = np.zeros((num_views, num_views))
+    num_batches = int(np.ceil(num_views / batch_size))
+    batches = np.array_split(np.arange(num_views), num_batches)
+    recon0 = np.load(os.path.join(data_store_dir, f'view_basis_function{0}.npy'))
+    recon_size = recon0.size
+
+    for batch_index, batch in enumerate(tqdm.tqdm(batches, desc='Computing covariance matrix')):
+        recons_batch = np.zeros((len(batch), recon_size))
+        # Load the recons for the current batch
+        for i in batch:
+            recons_batch[i - batch[0]] = np.load(os.path.join(data_store_dir, f'view_basis_function{i}.npy')).flatten()
+        # Find the inner products for the block diagonal for this batch
+        recons_batch = jnp.array(recons_batch)
+        batch_start, batch_stop = batch[0], batch[0] + len(batch)
+        dot_products = recons_batch @ recons_batch.T
+        cov_matrix[batch_start:batch_stop, batch_start:batch_stop] = dot_products
+
+        # Loop over the higher index batches
+        for batch2_index, batch2 in enumerate(batches[batch_index+1:]):
+            # Load a batch
+            recons_batch2 = np.zeros((len(batch2), recon_size))
+            for j in batch2:
+                recons_batch2[j - batch2[0]] = np.load(
+                    os.path.join(data_store_dir, f'view_basis_function{j}.npy')).flatten()
+            # Compute the inner product with the outer loop batch
+            recons_batch2 = jnp.array(recons_batch2)
+            batch2_start, batch2_stop = batch2[0], batch2[0] + len(batch2)
+            dot_products = recons_batch @ recons_batch2.T
+
+            # Store the inner product in the two symmetric blocks
+            cov_matrix[batch_start:batch_stop, batch2_start:batch2_stop] = dot_products
+            cov_matrix[batch2_start:batch2_stop, batch_start:batch_stop] = dot_products.T
+
 
     return cov_matrix
 
