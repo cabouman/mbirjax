@@ -210,7 +210,8 @@ def download_and_extract_tar(download_url, save_dir):
     tarball_path = os.path.join(save_dir, tarball_name)
 
     if os.path.exists(tarball_path):
-        is_download = query_yes_no(f"\nData named {tarball_path} already exists.\nDo you still want to download/copy and overwrite the file?")
+        is_download = False
+        # is_download = query_yes_no(f"\nData named {tarball_path} already exists.\nDo you still want to download/copy and overwrite the file?")
 
     if is_download:
         os.makedirs(os.path.dirname(tarball_path), exist_ok=True)
@@ -248,7 +249,7 @@ def download_and_extract_tar(download_url, save_dir):
     return extracted_file_name
 
 
-def get_top_level_tar_dir(tar_path, max_entries=10):
+def get_top_level_tar_dir(tar_path, max_entries=1):
     """
     Determine the top-level directory inside a tarball file by sampling up to max_entries members.
 
