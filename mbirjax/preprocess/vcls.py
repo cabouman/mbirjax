@@ -142,7 +142,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         gamma = compute_view_basis_functions(ct_model, reference_object, r_1=r_1, data_store_dir=data_store_dir, seed=seed)
 
         # Compute inner product between recon bases
-        R = compute_cov_matrix_batched(num_views, data_store_dir)
+        R = compute_cov_matrix(num_views, data_store_dir)
 
     if verbose > 0:
         # plot the the covariance matrix and gamma
@@ -189,115 +189,43 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     # Forward project the reference object
     print('Creating sinogram for reference object of shape {}'.format(ref_object.shape))
     ref_sino = ct_model.forward_project(ref_object)
-    ref_sino = np.asarray(ref_sino)
     print('Done')
 
     # Create ROI mask and subsample the indices
     mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
     sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
     ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
-    sparse_ref_object = ref_object_flat[sparse_indices, :].flatten()
-    norm_x = np.linalg.norm(sparse_ref_object)
+    sparse_ref_object = jnp.asarray(ref_object_flat[sparse_indices, :])
+    norm_sparse_ref = jnp.linalg.norm(sparse_ref_object)
+    sparse_ref_object /= (norm_sparse_ref + eps)
 
     # Get number of views and angles
     num_views = ct_model.get_params('sinogram_shape')[0]
-    candidate_angles = np.asarray(ct_model.get_params('angles'))
 
     print('Creating recon bases')
 
     # Filter the sinogram in a single call
     filtered_sinogram = ct_model.direct_filter(ref_sino, view_batch_size=None)
+    del ref_sino  # Free up space in case the sino is large
 
     # Compute recon bases individually for each view
     gamma = np.zeros((num_views, 1))
     for i in tqdm.trange(num_views, desc='Computing and storing view basis functions'):
         view_sino = filtered_sinogram[i:i + 1]
         recon_i = ct_model.sparse_back_project(view_sino, sparse_indices, view_indices=jnp.array([i]))
-        recon_i_flat = np.asarray(recon_i).reshape(-1)
 
-        norm_i = np.linalg.norm(recon_i_flat) + eps
-        recon_i_normalized = recon_i_flat / norm_i
+        norm_i = jnp.linalg.norm(recon_i) + eps
+        recon_i /= (norm_i + eps)
 
         # Save view basis function
         with open(os.path.join(data_store_dir, f'view_basis_function{i}.npy'), 'wb') as f:
-            np.save(f, recon_i_normalized)
+            np.save(f, recon_i)
 
-        gamma[i, 0] = np.dot(recon_i_normalized, sparse_ref_object) / (norm_x + eps)
+        gamma[i, 0] = jnp.tensordot(recon_i, sparse_ref_object)
     return gamma
 
 
-def compute_cov_matrix_row(i, num_views, data_store_dir):
-    """
-    Compute a single row of the covariance matrix between view basis functions.
-
-    Args:
-        i (int): The index of the row to be computed.
-        num_views (int): The total number of view basis functions.
-        data_store_dir (str): Directory path containing the stored `.npy` files for each view basis function.
-
-    Returns:
-        Tuple[int, ndarray]: A tuple containing:
-            - `i` (int): The row index for this portion of the covariance matrix.
-            - `row` (ndarray): 1D NumPy array of length `num_views.
-
-    Example:
-        >>> i, row = compute_cov_matrix_row(3, 180, "/tmp/recons")
-        >>> print(i, row.shape)
-        3 (180,)
-    """
-    row = np.zeros(num_views)
-    recon_i = np.load(os.path.join(data_store_dir, f'view_basis_function{i}.npy'))
-    for j in range(i, num_views):
-        recon_j = np.load(os.path.join(data_store_dir, f'view_basis_function{j}.npy'))
-        row[j] = np.dot(recon_i, recon_j)
-
-    return i, row
-
-
-def compute_cov_matrix(num_views, data_store_dir):
-    """
-    Compute the covariance matrix of view basis functions in parallel.
-
-    This function utilizes multiprocessing to efficiently compute the symmetric covariance matrix
-    by loading precomputed basis functions stored as `.npy` files.
-
-    Args:
-        num_views (int): Total number of view basis functions.
-        data_store_dir (str): Directory containing the stored `.npy` files for each view basis function.
-
-    Returns:
-        ndarray: A symmetric covariance matrix of shape `(num_views, num_views)`.
-
-    Example:
-        >>> cov_matrix = compute_cov_matrix(180, "/tmp/recons")
-        >>> print(cov_matrix.shape)
-        (180, 180)
-    """
-    # Set number of processors
-    # num_cpus = mp.cpu_count()
-    # print('Number of CPUs: ', num_cpus)
-
-    cov_matrix = np.zeros((num_views, num_views))
-
-    # Create a pool of workers
-    for i in tqdm.trange(num_views, desc='Computing covariance matrix'):
-        _, row = compute_cov_matrix_row(i, num_views, data_store_dir)
-        cov_matrix[i, i:] = row[i:]
-        cov_matrix[i:, i] = row[i:]
-
-    # with mp.Pool(processes=num_cpus) as pool:
-    #     results = [pool.apply_async(compute_cov_matrix_row, args=(i, num_views, data_store_dir)) for i in
-    #                range(num_views)]
-    #
-    #     for result in results:
-    #         i, row = result.get()
-    #         cov_matrix[i, i:] = row[i:]
-    #         cov_matrix[i:, i] = row[i:]
-
-    return cov_matrix
-
-
-def compute_cov_matrix_batched(num_views, data_store_dir, batch_size=100):
+def compute_cov_matrix(num_views, data_store_dir, batch_size=100):
     """
     Compute the covariance matrix of view basis functions in parallel.
 
