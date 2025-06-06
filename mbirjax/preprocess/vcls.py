@@ -108,7 +108,10 @@ def max_abs_neighbor_diff(arr):
 def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
-    The VCL is defined in the following paper: ???
+    The VCL is defined in the following paper:
+    
+    J. Lin, A. Ziabari, S. V. Venkatakrishnan, O. Rahman, G. T. Buzzard, C. A.Bouman, "Tomographic Sparse View Selection
+    using the View Covariance Loss", to appear in the IEEE Transactions on Pattern Analysis and Machine Intelligence, 2025.
 
     Args:
         ct_model (TomographyModel): A CT model instance (e.g., ParallelBeamModel or ConeBeamModel) containing the system geometry and angles.
