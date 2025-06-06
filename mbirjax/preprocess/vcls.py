@@ -1,5 +1,4 @@
 import os
-import multiprocessing as mp
 import random
 import tempfile
 import warnings
@@ -274,20 +273,25 @@ def compute_cov_matrix(num_views, data_store_dir):
         (180, 180)
     """
     # Set number of processors
-    num_cpus = mp.cpu_count()
-    print('Number of CPUs: ', num_cpus)
+    # num_cpus = mp.cpu_count()
+    # print('Number of CPUs: ', num_cpus)
 
     cov_matrix = np.zeros((num_views, num_views))
 
     # Create a pool of workers
-    with mp.Pool(processes=num_cpus) as pool:
-        results = [pool.apply_async(compute_cov_matrix_row, args=(i, num_views, data_store_dir)) for i in
-                   range(num_views)]
+    for i in tqdm.trange(num_views, desc='Computing covariance matrix'):
+        _, row = compute_cov_matrix_row(i, num_views, data_store_dir)
+        cov_matrix[i, i:] = row[i:]
+        cov_matrix[i:, i] = row[i:]
 
-        for result in results:
-            i, row = result.get()
-            cov_matrix[i, i:] = row[i:]
-            cov_matrix[i:, i] = row[i:]
+    # with mp.Pool(processes=num_cpus) as pool:
+    #     results = [pool.apply_async(compute_cov_matrix_row, args=(i, num_views, data_store_dir)) for i in
+    #                range(num_views)]
+    #
+    #     for result in results:
+    #         i, row = result.get()
+    #         cov_matrix[i, i:] = row[i:]
+    #         cov_matrix[i:, i] = row[i:]
 
     return cov_matrix
 
