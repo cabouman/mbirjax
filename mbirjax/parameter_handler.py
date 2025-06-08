@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 from ruamel.yaml import YAML
 import mbirjax._utils as utils
+from mbirjax._utils import Param
 import mbirjax as mj
 import warnings
 import copy
@@ -80,11 +81,11 @@ class ParameterHandler():
         for key, entry in self.params.items():
             if verbose < 3 and key == view_params_name:
                 continue
-            param_val = entry.get('val')
+            param_val = entry.val
             if verbose < 3:
                 print("{} = {}".format(key, param_val))
             else:
-                recompile_flag = entry.get('recompile_flag')
+                recompile_flag = entry.recompile_flag
                 print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
 
@@ -99,20 +100,19 @@ class ParameterHandler():
             dict: The same dictionary with arrays replaced by strings.
         """
         for key, entry in cur_params.items():
-            param_val = entry.get('val')
+            param_val = entry.val
             if isinstance(param_val, (jnp.ndarray, np.ndarray)):
                 # Get the array values, then flatten them and put them in a string.
                 cur_array = np.array(param_val)
                 formatted_string = " ".join(f"{x:.7f}" for x in cur_array.flatten())
                 # Include a prefix for identification upon reading
                 new_val = ParameterHandler.array_prefix + formatted_string
-                cur_params[key]['val'] = new_val
-                cur_params[key]['shape'] = param_val.shape
+                cur_params[key].val = new_val
+                cur_params[key].shape = param_val.shape
 
             # Also convert np.floats to native python floats
             if isinstance(param_val, np.floating):
-                new_val = param_val.item()
-                cur_params[key]['val'] = new_val
+                cur_params[key].val = param_val.item()
 
         return cur_params
 
@@ -128,7 +128,7 @@ class ParameterHandler():
         """
         array_prefix = ParameterHandler.array_prefix
         for key, entry in cur_params.items():
-            param_val = entry.get('val')
+            param_val = entry.val
             # CHeck for a string with the array marker as prefix.
             if type(param_val) is str and param_val[0:len(array_prefix)] == array_prefix:
                 # Strip the prefix, then remove the delimiters
@@ -136,10 +136,10 @@ class ParameterHandler():
                 clean_str = param_str.replace('[', '').replace(']', '').strip()
                 # Read to a flat array, then reshape
                 new_val = jnp.array(np.fromstring(clean_str + ' ', sep=' '))
-                new_shape = cur_params[key]['shape']
+                new_shape = cur_params[key].shape
                 # Save the value and remove the 'shape' key, which is needed only for the yaml file.
-                cur_params[key]['val'] = new_val.reshape(new_shape)
-                del cur_params[key]['shape']
+                cur_params[key].val = new_val.reshape(new_shape)
+                del cur_params[key].shape
 
         return cur_params
 
@@ -159,9 +159,9 @@ class ParameterHandler():
         # Prepare parameter dict
         output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
         for key in output_params:
-            val = output_params[key]['val']
+            val = output_params[key].val
             if isinstance(val, list):
-                output_params[key]['val'] = tuple(val)
+                output_params[key].val = tuple(val)
 
         yaml = YAML()
         yaml.default_flow_style = False
@@ -203,8 +203,8 @@ class ParameterHandler():
 
         # Convert any lists to tuples for consistency with save
         for key in param_dict.keys():
-            if isinstance(param_dict[key]['val'], list):
-                param_dict[key]['val'] = tuple(param_dict[key]['val'])
+            if isinstance(param_dict[key].val, list):
+                param_dict[key].val = tuple(param_dict[key].val)
         return ParameterHandler.get_required_params_from_dict(param_dict, required_param_names=required_param_names,
                                                               values_only=values_only)
 
@@ -219,9 +219,9 @@ class ParameterHandler():
 
         if values_only:
             for key in required_params.keys():
-                required_params[key] = required_params[key]['val']
+                required_params[key] = required_params[key].val
             for key in param_dict.keys():
-                param_dict[key] = param_dict[key]['val']
+                param_dict[key] = param_dict[key].val
         return required_params, param_dict
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
@@ -245,7 +245,7 @@ class ParameterHandler():
             recompile_flag = True
 
             if key in self.params.keys():
-                recompile_flag = self.params[key]['recompile_flag']
+                recompile_flag = self.params[key].recompile_flag
             elif not no_warning:  # Check if this is a valid parameter.  This is disabled for initialization.
                 error_message = '{} is not a recognized parameter'.format(key)
                 error_message += '\nValid parameters are: \n'
@@ -253,7 +253,7 @@ class ParameterHandler():
                     error_message += '   {}\n'.format(valid_key)
                 raise ValueError(error_message)
 
-            new_entry = {'val': val, 'recompile_flag': recompile_flag}
+            new_entry = Param(val, recompile_flag)
             self.params[key] = new_entry
 
             # Handle special cases
@@ -305,14 +305,14 @@ class ParameterHandler():
         """
         if isinstance(parameter_names, str):
             if parameter_names in param_dict.keys():
-                value = param_dict[parameter_names]['val']
+                value = param_dict[parameter_names].val
             else:
                 raise NameError('"{}" is not a recognized argument'.format(parameter_names))
             return value
         values = []
         for name in parameter_names:
             if name in param_dict.keys():
-                values.append(param_dict[name]['val'])
+                values.append(param_dict[name].val)
             else:
                 raise NameError('"{}" is not a recognized argument'.format(name))
         return values
