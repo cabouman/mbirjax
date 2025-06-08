@@ -45,4 +45,4 @@ View selection (VCLS) functions
 
 .. autofunction:: get_opt_views
 .. autofunction:: copy_ct_model
-.. autofunction:: show_image_with_angles
+.. autofunction:: show_image_with_projection_rays
