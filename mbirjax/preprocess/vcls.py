@@ -457,24 +457,27 @@ def get_2d_subsampling_indices(mask, r_1, seed=None, blue_noise=False):
     return random_indices_2d, (row_inds, col_inds)
 
 
-
-def show_image_with_angles(
+def show_image_with_projection_rays(
     image: np.ndarray,
     *,
-    angles_deg: np.ndarray = None,
-    angles_rad: np.ndarray = None,
+    rotation_angles_deg: np.ndarray = None,
+    rotation_angles_rad: np.ndarray = None,
     title: str = None
 ) -> None:
     """
-    Display an image and overlay arrows pointing in direction of specified angles.
+    Display an image and overlay arrows pointing along the projection from source to detector for the given 
+    rotation angles.  The angles are rotation angles using the convention of mbirjax objects:  
+    Looking down at the object with the detector at the top of the FoV, 0 degrees points from bottom to top of the 
+    object.  As the rotation angle increases, the object rotates clockwise, which means that if the object is kept 
+    in a fixed view, then the projection angle rotates counterclockwise.
 
-    Exactly one of `angles_deg` or `angles_rad` must be provided (not both).
+    Exactly one of `rotation_angles_deg` or `rotation_angles_rad` must be provided (not both).
 
     Args:
         image (np.ndarray): A 2D NumPy array representing the image.
-        angles_deg (np.ndarray, optional): A 1D array of angles in degrees. Each angle is visualized
+        rotation_angles_deg (np.ndarray, optional): A 1D array of angles in degrees. Each angle is visualized
             as an arrow through the image center.
-        angles_rad (np.ndarray, optional): A 1D array of angles in radians. Each angle is visualized
+        rotation_angles_rad (np.ndarray, optional): A 1D array of angles in radians. Each angle is visualized
             as an arrow through the image center.
         title (str, optional): Optional title to display above the plot.
 
@@ -483,11 +486,14 @@ def show_image_with_angles(
     """
     if image.ndim != 2:
         raise ValueError("Image must be a 2D array")
-    if (angles_deg is None and angles_rad is None) or (angles_deg is not None and angles_rad is not None):
-        raise ValueError("Exactly one of angles_deg or angles_rad must be None, and the other must be an array of floats")
+    if (rotation_angles_deg is None and rotation_angles_rad is None) or (rotation_angles_deg is not None and rotation_angles_rad is not None):
+        raise ValueError("Exactly one of rotation_angles_deg or rotation_angles_rad must be None, and the other must be an array of floats")
 
-    if angles_rad is None:
-        angles_rad = np.deg2rad(angles_deg)
+    if rotation_angles_rad is None:
+        rotation_angles_rad = np.deg2rad(rotation_angles_deg)
+
+    # Convert from projection angles to angles in the standard representation
+    rotation_angles_rad = np.pi / 2 + rotation_angles_rad
 
     rows, cols = image.shape
     center_x, center_y = cols / 2, rows / 2
@@ -498,11 +504,11 @@ def show_image_with_angles(
     plt.gca().set_aspect('equal')
 
     # Overlay arrows for each angle
-    colors = plt.cm.tab10(np.arange(len(angles_rad)) % 10)
+    colors = plt.cm.tab10(np.arange(len(rotation_angles_rad)) % 10)
 
-    for i, theta in enumerate(angles_rad):
+    for i, theta in enumerate(rotation_angles_rad):
         dx = 0.95*radius * np.cos(theta)
-        dy = 0.95*radius * np.sin(theta)
+        dy = -0.95*radius * np.sin(theta)
 
         plt.arrow(center_x, center_y, dx, dy, color=colors[i], linewidth=1.75,
                   head_width=min(rows, cols) * 0.02, length_includes_head=True)
