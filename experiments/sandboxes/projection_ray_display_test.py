@@ -30,7 +30,7 @@ if __name__ == '__main__':
     col_quarter = reference_object.shape[1] // 4
     reference_object[row_quarter:-row_quarter, col_quarter] = 1
     reference_object[row_quarter, col_quarter:2*col_quarter] = 1
-    mjp.show_image_with_projection_angles(reference_object[:, :, 0], projection_angles_rad=angle_candidates, title='Reference Object with Selected Projection Angles')
+    mjp.show_image_with_projection_rays(reference_object[:, :, 0], rotation_angles_rad=angle_candidates, title='Reference Object with Selected Projection Angles')
 
     # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
     # channels, then the generated phantom may not have an interior.
