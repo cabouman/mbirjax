@@ -1,13 +1,15 @@
-import jax.numpy as jnp
-import numpy as np
-from ruamel.yaml import YAML
-import mbirjax._utils as utils
-from mbirjax._utils import Param
-import mbirjax as mj
 import warnings
 import copy
 import logging
 import io
+from collections.abc import Iterable, Sized
+
+import jax.numpy as jnp
+import numpy as np
+from ruamel.yaml import YAML
+from mbirjax._utils import Param
+import mbirjax as mj
+
 
 
 class ParameterHandler():
@@ -15,7 +17,7 @@ class ParameterHandler():
 
     def __init__(self):
 
-        self.params = utils.get_default_params()
+        self.params = mj._utils.get_default_params()
         self.logger = None
         self.log_buffer = None
 
@@ -110,9 +112,7 @@ class ParameterHandler():
                 cur_params[key].val = new_val
                 cur_params[key].shape = param_val.shape
 
-            # Also convert np.floats to native python floats
-            if isinstance(param_val, np.floating):
-                cur_params[key].val = param_val.item()
+            cur_params[key].val = ParameterHandler.normalize_scalar(param_val)
 
         return cur_params
 
@@ -143,6 +143,152 @@ class ParameterHandler():
 
         return cur_params
 
+    @staticmethod
+    def normalize_scalar(val):
+        """
+        Convert numpy/jax scalar types to Python native types.
+        Also recursively normalize lists or tuples of scalars.
+        Leave strings, bools, None, and arrays untouched.
+
+        Args:
+            val: Any parameter value.
+
+        Returns:
+            Cleaned version suitable for serialization and comparison.
+        """
+        if isinstance(val, (np.generic, jnp.generic)):
+            return val.item()
+        elif isinstance(val, (list, tuple)):
+            return type(val)(ParameterHandler.normalize_scalar(v) for v in val)
+        return val
+
+    @staticmethod
+    def serialize_parameter(param_obj):
+        """
+        Convert a Param object to a YAML-safe dictionary by serializing arrays and normalizing scalars.
+
+        Args:
+            param_obj (Param): A parameter object with fields `val` and `recompile_flag`.
+
+        Returns:
+            dict: A dictionary with serialized and normalized data safe for YAML dumping.
+        """
+        val = param_obj.val
+
+        if isinstance(val, (jnp.ndarray, np.ndarray)):
+            cur_array = np.array(val)
+            formatted_string = " ".join(f"{x:.7f}" for x in cur_array.flatten())
+            serialized_val = ParameterHandler.array_prefix + formatted_string
+            return {
+                'val': serialized_val,
+                'shape': cur_array.shape,
+                'recompile_flag': param_obj.recompile_flag
+            }
+
+        val = ParameterHandler.normalize_scalar(val)
+
+        # Convert lists to tuples for consistency
+        if isinstance(val, list):
+            val = tuple(val)
+
+        return {
+            'val': val,
+            'recompile_flag': param_obj.recompile_flag
+        }
+
+    @staticmethod
+    def deserialize_parameter(entry):
+        """
+        Convert a dictionary loaded from YAML into a Param object.
+
+        Args:
+            entry (dict): A dictionary with 'val' and 'recompile_flag' (and optionally 'shape').
+
+        Returns:
+            Param: A reconstructed Param object with normalized and typed values.
+        """
+        val = entry['val']
+        if isinstance(val, str) and val.startswith(ParameterHandler.array_prefix):
+            # Keep val as-is for convert_strings_to_arrays
+            param = Param(val=val, recompile_flag=entry.get('recompile_flag', True))
+            if 'shape' in entry:
+                param.shape = tuple(entry['shape'])
+            return param
+        else:
+            val = ParameterHandler.normalize_scalar(val)
+            if isinstance(val, list):
+                val = tuple(val)
+            return Param(val=val, recompile_flag=entry.get('recompile_flag', True))
+
+    @staticmethod
+    def compare_flat_iterables(v1, v2, atol=1e-6):
+        """
+        Verify that 2 iterables (tuples or lists, etc) have the same length and entries, up to atol.
+        Args:
+            v1 (Sized Iterable):  First iterable
+            v2 (Sized Iterable):  Second iterable
+            atol (float, optional): Absolute floating point tolerance for equality.  Defaults to 1e-6.
+
+        Returns:
+
+        """
+        if len(v1) != len(v2):
+            return False
+        for a, b in zip(v1, v2):
+            if (isinstance(a, (int, float, np.generic, jnp.generic)) and
+                    isinstance(b, (int, float, np.generic, jnp.generic))):
+                if not abs(float(a) - float(b)) <= atol:
+                    return False
+            else:
+                if a != b:
+                    return False
+        return True
+
+    @staticmethod
+    def compare_parameter_handlers(ph1, ph2, atol=1e-6, verbose=False):
+        """
+        Compare the parameters of two ParameterHandler instances for equality.
+
+        Args:
+            ph1 (ParameterHandler): First instance.
+            ph2 (ParameterHandler): Second instance.
+            atol (float): Absolute tolerance for float/array comparison.
+            verbose (bool): If True, print mismatch details.
+
+        Returns:
+            bool: True if all parameters match within tolerances, False otherwise.
+        """
+        keys1 = set(ph1.params.keys())
+        keys2 = set(ph2.params.keys())
+        if keys1 != keys2:
+            if verbose:
+                print("Parameter key mismatch:")
+                print("Only in ph1:", keys1 - keys2)
+                print("Only in ph2:", keys2 - keys1)
+            return False
+
+        for key in keys1:
+            val1 = ph1.params[key].val
+            val2 = ph2.params[key].val
+
+            if isinstance(val1, (np.ndarray, jnp.ndarray)) and isinstance(val2, (np.ndarray, jnp.ndarray)):
+                equal = np.allclose(np.array(val1), np.array(val2), atol=atol)
+            elif (isinstance(val1, (int, float, np.generic, jnp.generic)) and
+                  isinstance(val2, (int, float, np.generic, jnp.generic))):
+                equal = abs(float(val1) - float(val2)) <= atol
+            elif (isinstance(val1, Iterable) and isinstance(val1, Sized) and
+                  isinstance(val2, Iterable) and isinstance(val2, Sized) and not isinstance(val1, (str, bytes))):
+                equal = ParameterHandler.compare_flat_iterables(val1, val2, atol)
+            else:
+                equal = val1 == val2
+
+            if not equal:
+                if verbose:
+                    print(f"Mismatch in key '{key}': {val1} != {val2}")
+                return False
+
+        return True
+
     def save_params(self, filename=None):
         """
         Serialize parameters to YAML. If filename is provided, write to file; otherwise return YAML text.
@@ -157,11 +303,9 @@ class ParameterHandler():
             ValueError: If filename is invalid.
         """
         # Prepare parameter dict
-        output_params = ParameterHandler.convert_arrays_to_strings(copy.deepcopy(self.params))
+        output_params = copy.deepcopy(self.params)
         for key in output_params:
-            val = output_params[key].val
-            if isinstance(val, list):
-                output_params[key].val = tuple(val)
+            output_params[key] = ParameterHandler.serialize_parameter(output_params[key])
 
         yaml = YAML()
         yaml.default_flow_style = False
@@ -199,12 +343,15 @@ class ParameterHandler():
             with open(filename, 'r') as file:
                 yaml = YAML(typ="safe")
                 param_dict = yaml.load(file)
+                param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
                 param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
 
         # Convert any lists to tuples for consistency with save
         for key in param_dict.keys():
             if isinstance(param_dict[key].val, list):
                 param_dict[key].val = tuple(param_dict[key].val)
+        for key in param_dict:
+            param_dict[key].val = ParameterHandler.normalize_scalar(param_dict[key].val)
         return ParameterHandler.get_required_params_from_dict(param_dict, required_param_names=required_param_names,
                                                               values_only=values_only)
 
@@ -253,7 +400,8 @@ class ParameterHandler():
                     error_message += '   {}\n'.format(valid_key)
                 raise ValueError(error_message)
 
-            new_entry = Param(val, recompile_flag)
+            clean_val = ParameterHandler.normalize_scalar(val)
+            new_entry = Param(clean_val, recompile_flag)
             self.params[key] = new_entry
 
             # Handle special cases

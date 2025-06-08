@@ -119,14 +119,8 @@ class TestProjectors(unittest.TestCase):
             os.remove(filename)
 
         # Compare parameters
-        for key, entry in ct_model.params.items():
-            if isinstance(entry['val'], list):
-                entry['val'] = tuple(entry['val'])
-            loaded_entry = new_model.params[key]
-            if isinstance(entry['val'], type(jnp.zeros(1))):
-                assert(jnp.allclose(entry['val'], loaded_entry['val']))
-            else:
-                assert(entry == loaded_entry)
+        same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
+        assert(same_params)
 
         # Do a forward and back projection with loaded model
         Ax_new = new_model.sparse_forward_project(voxel_values, indices)
