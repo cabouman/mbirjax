@@ -18,6 +18,9 @@ class Param:
     val: Any
     recompile_flag: bool = True
 
+    def __repr__(self):
+        return f"Param(val={self.val}, recompile_flag={self.recompile_flag})"
+
 
 # The order and content of these dictionaries must match the headings and list of dicts below
 _forward_model_defaults_dict = {

@@ -104,7 +104,7 @@ class ParameterHandler():
             param_val = entry.val
             if isinstance(param_val, (jnp.ndarray, np.ndarray)):
                 # Get the array values, then flatten them and put them in a string.
-                cur_array = np.array(param_val)
+                cur_array = np.asarray(param_val)
                 formatted_string = " ".join(f"{x:.7f}" for x in cur_array.flatten())
                 # Include a prefix for identification upon reading
                 new_val = ParameterHandler.array_prefix + formatted_string
@@ -175,7 +175,7 @@ class ParameterHandler():
         val = param_obj.val
 
         if isinstance(val, (jnp.ndarray, np.ndarray)):
-            cur_array = np.array(val)
+            cur_array = np.asarray(val)
             formatted_string = " ".join(f"{x:.7f}" for x in cur_array.flatten())
             serialized_val = ParameterHandler.array_prefix + formatted_string
             return {
@@ -218,6 +218,10 @@ class ParameterHandler():
             if isinstance(val, list):
                 val = tuple(val)
             return Param(val=val, recompile_flag=entry.get('recompile_flag', True))
+
+    @staticmethod
+    def is_flat_iterable(x):
+        return isinstance(x, Iterable) and isinstance(x, Sized) and not isinstance(x, (str, bytes))
 
     @staticmethod
     def compare_flat_iterables(v1, v2, atol=1e-6):
@@ -271,12 +275,11 @@ class ParameterHandler():
             val2 = ph2.params[key].val
 
             if isinstance(val1, (np.ndarray, jnp.ndarray)) and isinstance(val2, (np.ndarray, jnp.ndarray)):
-                equal = np.allclose(np.array(val1), np.array(val2), atol=atol)
+                equal = np.allclose(np.asarray(val1), np.asarray(val2), atol=atol)
             elif (isinstance(val1, (int, float, np.generic, jnp.generic)) and
                   isinstance(val2, (int, float, np.generic, jnp.generic))):
                 equal = abs(float(val1) - float(val2)) <= atol
-            elif (isinstance(val1, Iterable) and isinstance(val1, Sized) and
-                  isinstance(val2, Iterable) and isinstance(val2, Sized) and not isinstance(val1, (str, bytes))):
+            elif ParameterHandler.is_flat_iterable(val1) and ParameterHandler.is_flat_iterable(val2):
                 equal = ParameterHandler.compare_flat_iterables(val1, val2, atol)
             else:
                 equal = val1 == val2
@@ -337,13 +340,15 @@ class ParameterHandler():
             params (dict): Dictionary of all other parameters.
         """
         # Determine file type
-        if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
-            # Save the full parameter dictionary
-            with open(filename, 'r') as file:
-                yaml_reader = YAML(typ="safe")
-                param_dict = yaml_reader.load(file)
-                param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
-                param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
+        if not filename.lower().endswith(('.yml', '.yaml')):
+            raise ValueError("Filename must end in .yml or .yaml")
+
+        # Save the full parameter dictionary
+        with open(filename, 'r') as file:
+            yaml_reader = YAML(typ="safe")
+            param_dict = yaml_reader.load(file)
+            param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
+            param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
 
         # Convert any lists to tuples for consistency with save
         for key in param_dict.keys():
