@@ -10,34 +10,6 @@ import dm_pix
 import tqdm
 
 
-@jax.jit
-def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-    """
-    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
-
-    Args:
-        v (jnp.ndarray):
-            Target reconstruction array of shape (N,) or higher-dimensional.
-        u (jnp.ndarray):
-            Mask array of same shape as `v`, indicating component presence.
-
-    Returns:
-        jnp.ndarray:
-            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
-
-    Example:
-        >>> v = jnp.array([1.0, 2.0, 3.0])
-        >>> u = jnp.array([0.5, 1.0, 1.5])
-        >>> alpha = _compute_scaling_factor(v, u)
-    """
-    v = jnp.asarray(v)
-    u = jnp.asarray(u)
-
-    numerator = jnp.sum(u * v)
-    denominator = jnp.sum(u * u)
-    return jnp.where(denominator == 0, 0.0, numerator / denominator)
-
-
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
@@ -446,6 +418,58 @@ def read_scan_dir(scan_dir, view_ids=None):
 # ####### END subroutines for loading scan images
 
 
+@jax.jit
+def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
+
+    Args:
+        v (jnp.ndarray):
+            Target reconstruction array of shape (N,) or higher-dimensional.
+        u (jnp.ndarray):
+            Mask array of same shape as `v`, indicating component presence.
+
+    Returns:
+        jnp.ndarray:
+            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
+
+    Example:
+        >>> v = jnp.array([1.0, 2.0, 3.0])
+        >>> u = jnp.array([0.5, 1.0, 1.5])
+        >>> alpha = _compute_scaling_factor(v, u)
+    """
+    v = jnp.asarray(v)
+    u = jnp.asarray(u)
+
+    numerator = jnp.sum(u * v)
+    denominator = jnp.sum(u * u)
+    return jnp.where(denominator == 0, 0.0, numerator / denominator)
+
+
+# Normally, this function would be too simple to jit.  However, by using jit, we may be able to
+# prevent jax from some extra memory use due to assignemt and/or reshaping.
+@jax.jit
+def put_in_slice(array, flat_indices, value):
+    """
+    Similar to numpy.put(array, flat_indices, value), which would produce array.flat[flat_indices] = value.
+    However, this function requires that array have an extra leading dimension, and that the value for a given
+    index is copied across that dimension.  Roughly, array[:, flat_indices] = value
+
+    Args:
+        array (jax array): Numpy array of dimension n+1
+        flat_indices (jax array of int): Indices obtained using ravel_multi_index using array.shape[1:]
+        value (float or jax array): Values to be copied in.  Must be able to broadcast to array.shape[1:]
+
+    Returns:
+        ndarray
+    """
+    array_shape = array.shape
+    array = array.reshape(array_shape[0], -1)
+    array = array.at[:, flat_indices].set(value)
+    array = array.reshape(array_shape)
+    return array
+
+
 def unit_vector(v):
     """ Normalize v. Returns v/||v|| """
     return v / np.linalg.norm(v)
@@ -630,29 +654,6 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 # ####### END Multi-threshold Otsu's method
 
-
-# Normally, this function would be too simple to jit.  However, by using jit, we may be able to
-# prevent jax from some extra memory use due to assignemt and/or reshaping.
-@jax.jit
-def put_in_slice(array, flat_indices, value):
-    """
-    Similar to numpy.put(array, flat_indices, value), which would produce array.flat[flat_indices] = value.
-    However, this function requires that array have an extra leading dimension, and that the value for a given
-    index is copied across that dimension.  Roughly, array[:, flat_indices] = value
-
-    Args:
-        array (jax array): Numpy array of dimension n+1
-        flat_indices (jax array of int): Indices obtained using ravel_multi_index using array.shape[1:]
-        value (float or jax array): Values to be copied in.  Must be able to broadcast to array.shape[1:]
-
-    Returns:
-        ndarray
-    """
-    array_shape = array.shape
-    array = array.reshape(array_shape[0], -1)
-    array = array.at[:, flat_indices].set(value)
-    array = array.reshape(array_shape)
-    return array
 
 
 # ####### Generalized Huber Weights method
