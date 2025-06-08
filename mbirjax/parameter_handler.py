@@ -11,7 +11,6 @@ from mbirjax._utils import Param
 import mbirjax as mj
 
 
-
 class ParameterHandler():
     array_prefix = ':ARRAY:'
 
@@ -307,8 +306,8 @@ class ParameterHandler():
         for key in output_params:
             output_params[key] = ParameterHandler.serialize_parameter(output_params[key])
 
-        yaml = YAML()
-        yaml.default_flow_style = False
+        yaml_writer = YAML()
+        yaml_writer.default_flow_style = False
 
         if filename:
             if not filename.lower().endswith(('.yml', '.yaml')):
@@ -316,11 +315,11 @@ class ParameterHandler():
             # Ensure output directory exists
             mj.makedirs(filename)
             with open(filename, 'w') as file:
-                yaml.dump(output_params, file)
+                yaml_writer.dump(output_params, file)
             return None
         else:
             stream = io.StringIO()
-            yaml.dump(output_params, stream)
+            yaml_writer.dump(output_params, stream)
             return stream.getvalue()
 
     @staticmethod
@@ -341,8 +340,8 @@ class ParameterHandler():
         if filename[-4:] == '.yml' or filename[-5:] == '.yaml':
             # Save the full parameter dictionary
             with open(filename, 'r') as file:
-                yaml = YAML(typ="safe")
-                param_dict = yaml.load(file)
+                yaml_reader = YAML(typ="safe")
+                param_dict = yaml_reader.load(file)
                 param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
                 param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
 
