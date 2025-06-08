@@ -357,7 +357,7 @@ class TomographyModel(ParameterHandler):
         has a single dataset named 'recon', with attributes 'recon_params', 'recon_log', and 'notes'.
 
         Args:
-            filepath (str or Path): Path to the output .h5 file.
+            filepath (str or Path): Path to the output hdf5 file. (Typically should end in .h5 extension.)
             recon (array-like): Reconstruction data (NumPy or JAX array).
             recon_params (ReconParams, optional): Reconstruction parameters namedtuple. Defaults to None.
             notes (string, optional): User-supplied notes to accompany a reconstruction.
