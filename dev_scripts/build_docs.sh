@@ -3,6 +3,7 @@
 
 cd ../docs
 /bin/rm -r build
+/bin/rm -r source/generated
 
 make clean html
 
