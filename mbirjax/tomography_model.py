@@ -328,7 +328,7 @@ class TomographyModel(ParameterHandler):
             file_path (str): Path to the HDF5 file containing the reconstructed volume.
 
         Returns:
-            jax.numpy.ndarray: Reconstructed volume as a JAX array with shape (Nz, Ny, Nx).
+            numpy.ndarray: Reconstructed volume as a NumPy array with shape (num_rows, num_cols, num_slices).
 
         Raises:
             FileNotFoundError: If the file does not exist.
