@@ -11,68 +11,38 @@ See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi
 NorthStar Instrument (NSI) functions
 ------------------------------------
 
-.. automodule:: mbirjax.preprocess.nsi
-   :members: compute_sino_and_params, load_scans_and_params
-   :undoc-members:
-   :show-inheritance:
+.. currentmodule:: mbirjax.preprocess.nsi
 
-   .. rubric:: **Functions:**
-
-   .. autosummary::
-
-      compute_sino_and_params
-      load_scans_and_params
+.. autofunction:: compute_sino_and_params
+.. autofunction:: load_scans_and_params
 
 General preprocess functions
 ----------------------------
 
-.. automodule:: mbirjax.preprocess
-   :members: compute_sino_transmission, interpolate_defective_pixels, correct_det_rotation_and_background, estimate_background_offset, downsample_view_data, crop_view_data
-   :undoc-members:
-   :show-inheritance:
+.. currentmodule:: mbirjax.preprocess
 
-   .. rubric:: **Functions:**
-
-   .. autosummary::
-
-      compute_sino_transmission
-      interpolate_defective_pixels
-      correct_det_rotation_and_background
-      estimate_background_offset
-      downsample_view_data
-      crop_view_data
+.. autofunction:: compute_sino_transmission
+.. autofunction:: interpolate_defective_pixels
+.. autofunction:: correct_det_rotation_and_background
+.. autofunction:: estimate_background_offset
+.. autofunction:: downsample_view_data
+.. autofunction:: crop_view_data
 
 MAR preprocess functions
 ------------------------
 
-.. automodule:: mbirjax.preprocess
-   :members: multi_threshold_otsu, gen_huber_weights, BH_correction, segment_plastic_metal, get_opt_views, copy_ct_model, show_image_with_angles
-   :no-index:
-   :undoc-members:
-   :show-inheritance:
+.. currentmodule:: mbirjax.preprocess
 
-   .. rubric:: **Functions:**
-
-.. autofunction::
-   mbirjax.preprocess.multi_threshold_otsu
-
-.. autofunction::
-   mbirjax.preprocess.gen_huber_weights
-
-.. autofunction::
-   mbirjax.preprocess.BH_correction
-
-.. autofunction::
-   mbirjax.preprocess.segment_plastic_metal
+.. autofunction:: multi_threshold_otsu
+.. autofunction:: gen_huber_weights
+.. autofunction:: BH_correction
+.. autofunction:: segment_plastic_metal
 
 View selection (VCLS) functions
 -------------------------------
 
-.. autofunction::
-   mbirjax.preprocess.get_opt_views
+.. currentmodule:: mbirjax.preprocess
 
-.. autofunction::
-   mbirjax.preprocess.copy_ct_model
-
-.. autofunction::
-   mbirjax.preprocess.show_image_with_angles
+.. autofunction:: get_opt_views
+.. autofunction:: copy_ct_model
+.. autofunction:: show_image_with_angles
