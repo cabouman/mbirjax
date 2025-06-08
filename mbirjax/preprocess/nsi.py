@@ -12,62 +12,52 @@ pp = pprint.PrettyPrinter(indent=4)
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
                             crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None):
     """
-    Load NSI sinogram data and prepare all needed arrays and parameters for a ConeBeamModel reconstruction.
+    Load NSI sinogram data and prepare arrays and parameters for ConeBeamModel reconstruction.
 
-    This function computes the sinogram and geometry parameters from an NSI scan directory containing scan data and parameters.
-    More specifically, the function performs the following operations in a single easy-to-use manner:
+    This function computes the sinogram and geometry parameters from an NSI scan directory. It performs the following:
 
-    1. Loads the object, blank, and dark scans, as well as the geometry parameters from an NSI dataset directory.
-
-    2. Computes the sinogram from object, blank, and dark scans.
-
+    1. Loads object, blank, and dark scans, and geometry parameters from the dataset.
+    2. Computes the sinogram from the scan images.
     3. Replaces defective pixels with interpolated values.
-
-    4. Performs background offset correction to the sinogram from the edge pixels.
-
-    5. Corrects sinogram data to account for detector rotation.
+    4. Applies background offset correction.
+    5. Corrects for detector rotation.
 
     Args:
-        dataset_dir (string): Path to an NSI scan directory. The directory is assumed to have the following structure:
-
+        dataset_dir (str): Path to the NSI scan directory. Expected structure:
             - ``*.nsipro`` (NSI config file)
             - ``Geometry*.rtf`` (geometry report)
-            - ``Radiographs*/`` (directory containing all radiograph images)
-            - ``**/gain0.tif`` (blank scan image)
-            - ``**/offset.tif`` (dark scan image)
-            - ``**/*.defect`` (defective pixel information)
-
-        downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
-            If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
-        subsample_view_factor (int, optional): View subsample factor. By default no view subsampling will be performed.
-        crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to None, in which case the NSI config file is used.
-        crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to None, in which case the NSI config file is used.
-        crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to None, in which case the NSI config file is used.
+            - ``Radiographs*/`` (radiograph images)
+            - ``**/gain0.tif`` (blank scan)
+            - ``**/offset.tif`` (dark scan)
+            - ``**/*.defect`` (defective pixel info)
+        downsample_factor (Tuple[int, int], optional): Downsample factors for detector rows and channels. Defaults to (1, 1).
+        subsample_view_factor (int, optional): Factor by which to subsample views. Defaults to 1.
+        crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. If None, uses NSI config file.
+        crop_pixels_top (int, optional): Pixels to crop from the top. If None, uses NSI config file.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom. If None, uses NSI config file.
 
     Returns:
-        tuple: [sinogram, cone_beam_params, optional_params]
-
-            sino (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
-            optional_params (dict): Additional ConeBeamModel parameters to be set using set_params().
+        tuple: (sino, cone_beam_params, optional_params)
+            - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_det_channels).
+            - ``cone_beam_params`` (dict): Parameters for initializing ConeBeamModel.
+            - ``optional_params`` (dict): Parameters to be passed via ``set_params()``.
 
     Example:
         .. code-block:: python
 
-            # Get data and recon parameters
-            sino, cone_beam_params, optional_params = mbirjax.preprocess.NSI.compute_sino_and_params(dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
+            # Get data and reconstruction parameters
+            sino, cone_beam_params, optional_params = mbirjax.preprocess.NSI.compute_sino_and_params(
+                dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
 
-            # Create the model and set the parameters
+            # Create the model and set parameters
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
             ct_model.set_params(**optional_params)
             ct_model.set_params(sharpness=sharpness, verbose=1)
 
-            # Compute sinogram weights and do the reconstruction
+            # Generate weights and run reconstruction
             weights = ct_model.gen_weights(sino, weight_type='transmission_root')
             recon, recon_params = ct_model.recon(sino, weights=weights)
-
     """
-
     print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
