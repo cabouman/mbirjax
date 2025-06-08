@@ -319,13 +319,25 @@ class TomographyModel(ParameterHandler):
     @staticmethod
     def load_recon_from_hdf5(file_path):
         """
-        Load the information from an h5 file created with save_recon_to_hdf5
+        Load a reconstructed image from an HDF5 file.
+
+        This function loads a reconstruction volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
+        It assumes that the reconstruction data is stored under the key 'recon' in the root group.
 
         Args:
-            file_path (string or Path): path to the file to open
+            file_path (str): Path to the HDF5 file containing the reconstructed volume.
 
         Returns:
-            dict: with entries as in save_recon_to_hdf5
+            jax.numpy.ndarray: Reconstructed volume as a JAX array with shape (Nz, Ny, Nx).
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            KeyError: If the expected 'recon' dataset is not found in the file.
+
+        Example:
+            >>> recon = load_recon_from_hdf5("output/recon_volume.h5")
+            >>> recon.shape
+            (64, 256, 256)
         """
         with h5py.File(file_path, "r") as f:
             array_names = [key for key in f.keys()]
