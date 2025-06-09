@@ -137,6 +137,10 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
     """
     num_views = ct_model.get_params('sinogram_shape')[0]
     angle_candidates = np.asarray(ct_model.get_params('angles'))
+    recon_shape = ct_model.get_params('recon_shape')
+    if recon_shape != reference_object.shape:
+        raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))
+
     with tempfile.TemporaryDirectory() as data_store_dir:
         # Compute recon bases
         gamma = compute_view_basis_functions(ct_model, reference_object, r_1=r_1, data_store_dir=data_store_dir, seed=seed)
