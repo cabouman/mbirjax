@@ -46,10 +46,12 @@ VALMAX_EPS = 1e-6
 TKAGG = True
 Y_SKIP = 28
 LOAD_LABEL = 'Load'
+SAVE_LABEL = 'Save data to h5'
 if matplotlib.get_backend() != 'TkAgg':
     TKAGG = False
     Y_SKIP = 50
     LOAD_LABEL = 'Load disabled - requires TkAgg'
+    SAVE_LABEL = 'Save disabled - requires TkAgg'
 
 
 def multiline(*lines):
@@ -692,34 +694,53 @@ class SliceViewer:
                 options.append(['Restore original image', lambda: self._on_restore(image_index)])
         if TKAGG:
             options += [["Show attributes", lambda: self._on_show_attributes(image_index)]]
-        options += [["Transpose image", lambda: self._on_transpose(image_index)],
-                    [LOAD_LABEL, lambda: self._on_load(image_index)],
-                    ["Reset", lambda: self._on_reset(image_index)],
-                    ["Cancel", self._remove_menu]]
+        options += [
+            ["Transpose image", lambda: self._on_transpose(image_index)],
+            [LOAD_LABEL, lambda: self._on_load(image_index)],
+            [SAVE_LABEL, lambda: self._on_save(image_index)],
+            ["Reset", lambda: self._on_reset(image_index)],
+            ["Cancel", self._remove_menu]
+        ]
         return options
 
     def _on_show_attributes(self, image_index):
-        # Handle the display of image attributes, including asking the user which to display
+        # Handle the display of image attributes
         attributes = self.data_attributes[image_index]
         if not attributes:
-            easygui.textbox(msg='No attributes available', title='No attributes',
-                            text='Load an h5 file with attributes to get attributes', codebox=False, callback=None,
-                            run=True)
+            easygui.textbox(
+                msg='No attributes available',
+                title='No attributes',
+                text='Load an h5 file with attributes to get attributes',
+                codebox=False,
+                callback=None,
+                run=True
+            )
             return
+
         names = [attribute[0] for attribute in attributes]
         if len(attributes) > 1:
             choices = names + ['Cancel']
-            msg = ['Choose an attribute to display:', ' ']
-            msg += names
-            choice = easygui.buttonbox(msg=multiline(*msg), title='Choose an attribute to display', choices=choices)
+            msg = ['Choose an attribute to display:', ' '] + names
+            choice = easygui.buttonbox(
+                msg=multiline(*msg),
+                title='Choose an attribute to display',
+                choices=choices
+            )
             if choice == 'Cancel':
                 return
         else:
             choice = names[0]
+
         index = names.index(choice)
         attribute = attributes[index][1]
-        easygui.textbox(msg='Attribute = {}'.format(choice), title=choice, text=attribute, codebox=False, callback=None,
-                        run=True)
+        easygui.textbox(
+            msg=f'Attribute = {choice}',
+            title=choice,
+            text=attribute,
+            codebox=False,
+            callback=None,
+            run=True
+        )
 
     def _on_transpose(self, image_index):
         # Transpose the image
@@ -751,6 +772,60 @@ class SliceViewer:
             self.fig.canvas.manager.window.after(10, deferred_load)
         except Exception as e:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
+
+    def _on_save(self, image_index):
+        # Handle saving the full 3D volume and optional attributes
+        if not hasattr(self.fig.canvas.manager, 'window'):
+            warnings.warn("Save disabled: matplotlib backend is not TkAgg")
+            return
+
+        self._remove_menu()
+
+        def deferred_save():
+            # Prompt for filename
+            file_path = easygui.filesavebox(
+                msg="Choose filename (must end in .h5)",
+                default="volume",
+                # filetypes=["*.h5"]
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".h5"):
+                file_path += ".h5"
+
+            # Gather allowable attributes with multi-line textboxes and prepopulate existing values
+            attrs = {}
+            # Existing attributes loaded earlier (if any)
+            existing = {}
+            if hasattr(self, 'data_attributes') and len(self.data_attributes) > image_index:
+                existing = dict(self.data_attributes[image_index])
+            for name in ["model_params", "notes", "recon_log", "recon_params"]:
+                default_val = existing.get(name, "")
+                val = easygui.textbox(
+                    msg=f"Enter value for {name} (leave blank for none):",
+                    title=name,
+                    text=default_val
+                )
+                # If user cancelled, keep existing text; if cleared, treat as empty
+                if val is None:
+                    val = default_val
+                attrs[name] = val
+
+            # Save full 3D volume
+            data = self.original_data[image_index]
+            with h5py.File(file_path, "w") as f:
+                dset = f.create_dataset("volume", data=data)
+                for key, val in attrs.items():
+                    if val:
+                        dset.attrs[key] = val
+
+            easygui.msgbox(f"Saved to {file_path}", title="Save complete")
+
+        # Schedule the save dialog after a short delay (TkAgg-safe)
+        try:
+            self.fig.canvas.manager.window.after(10, deferred_save)
+        except Exception:
+            warnings.warn("Unable to schedule save dialog. Requires TkAgg backend.")
 
     def _on_difference(self, image_index: int, use_abs: bool = False):
 
