@@ -377,13 +377,25 @@ class ParameterHandler():
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
-        Updates parameters using keyword arguments.
-        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
+        Update parameters using keyword arguments.
+
+        This method updates internal model parameters. If any key geometry-related parameters
+        are modified, it triggers recompilation of the projector system unless suppressed
+        via the `no_compile` flag.
 
         Args:
-            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
-            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+            no_warning (bool, optional): If True, disables validity checking and warning messages. Defaults to False.
+            no_compile (bool, optional): If True, suppresses projector recompilation after updates. Defaults to False.
+            **kwargs: Arbitrary keyword arguments specifying parameter names and values to update.
+
+        Returns:
+            bool: True if projector recompilation is required and not suppressed by `no_compile`,
+            otherwise False.
+
+        Example:
+            >>> import mbirjax as mj
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> ct_model.set_params(recon_shape=(128, 128, 128), sharpness=0.7)
         """
         # Get initial geometry parameters
         recompile = False
