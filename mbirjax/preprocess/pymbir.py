@@ -2,7 +2,6 @@ import warnings
 import numpy as np
 import jax.numpy as jnp
 import h5py
-import mbirjax as mj
 
 
 def compute_sino_and_params(filename, bh_correction=True):
@@ -26,13 +25,13 @@ def compute_sino_and_params(filename, bh_correction=True):
             sino (numpy.ndarray):
                 sinogram data of shape (num_views, num_det_rows, num_det_channels).
             cone_beam_params (dict):
-                Dictionary of mandatory parameters for `mbirjax.ConeBeamModel`, including:
+                Dictionary of mandatory parameters for mbirjax.ConeBeamModel, including:
                   - "sinogram_shape"
                   - "angles"
                   - "source_detector_dist"
                   - "source_iso_dist"
             optional_params (dict):
-                Additional model settings for `set_params()`, including:
+                Additional model settings for set_params(), including:
                   - "delta_det_channel"
                   - "delta_det_row"
                   - "delta_voxel"
@@ -40,13 +39,14 @@ def compute_sino_and_params(filename, bh_correction=True):
                   - "det_row_offset"
 
     Example:
-        ```python
-        sino, cone_beam_params, optional_params = compute_sino_and_params("scan.h5", bh_correction=True)
-        ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
-        ct_model.set_params(**optional_params)
-        recon, recon_params = ct_model.recon(sino, weights=weights)
-        ```
+        .. code-block:: python
+
+            sino, cone_beam_params, optional_params = compute_sino_and_params("scan.h5", bh_correction=True)
+            ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
+            ct_model.set_params(**optional_params)
+            recon, recon_params = ct_model.recon(sino, weights=weights)
     """
+    import mbirjax.preprocess as mjp
     with h5py.File(filename, 'r') as h5_file:
         cone_beam_params, optional_params, det_rotation = create_proj_params_dict_ornl(h5_file)
 
@@ -57,7 +57,7 @@ def compute_sino_and_params(filename, bh_correction=True):
 
         if np.abs(det_rotation) > 1e-6:
             # Correct the sinogram for detector rotation
-            sinogram = mj.preprocess.correct_det_rotation_and_background(sinogram, det_rotation=det_rotation)
+            sinogram = mjp.correct_det_rotation_and_background(sinogram, det_rotation=det_rotation)
             warnings.warn('TODO: Verify the direction of sinogram rotation.')
 
     return sinogram, cone_beam_params, optional_params

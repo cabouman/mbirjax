@@ -1,11 +1,6 @@
 import numpy as np
 from jax import numpy as jnp
 
-import mbirjax
-import mbirjax as mj
-from mbirjax import preprocess as mjp
-from mbirjax.preprocess.utilities import _compute_scaling_factor
-
 
 def multi_threshold_otsu(image, classes=2, num_bins=256):
     """
@@ -204,6 +199,7 @@ def segment_plastic_metal(recon):
         ...                 slice_label=['Plastic', 'Metal'],
         ...                 title='Plastic and Metal Masks')
     """
+    from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
     thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]

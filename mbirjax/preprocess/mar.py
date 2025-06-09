@@ -1,7 +1,5 @@
 from jax import numpy as jnp
 
-import mbirjax
-
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     """

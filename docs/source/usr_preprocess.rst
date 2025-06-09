@@ -16,6 +16,13 @@ NorthStar Instrument (NSI) functions
 .. autofunction:: compute_sino_and_params
 .. autofunction:: load_scans_and_params
 
+PYMBIR functions
+----------------
+
+.. currentmodule:: mbirjax.preprocess.pymbir
+
+.. autofunction:: compute_sino_and_params
+
 General preprocess functions
 ----------------------------
 
@@ -33,9 +40,15 @@ MAR preprocess functions
 
 .. currentmodule:: mbirjax.preprocess
 
-.. autofunction:: multi_threshold_otsu
 .. autofunction:: gen_huber_weights
 .. autofunction:: BH_correction
+
+Segmentation functions
+----------------------
+
+.. currentmodule:: mbirjax.preprocess
+
+.. autofunction:: multi_threshold_otsu
 .. autofunction:: segment_plastic_metal
 
 View selection (VCLS) functions
