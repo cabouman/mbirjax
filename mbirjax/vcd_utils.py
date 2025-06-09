@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
 import warnings
-from mbirjax.preprocess.utilities import multi_threshold_otsu
+from mbirjax import multi_threshold_otsu
 
 
 def stitch_arrays(array_list, overlap_length, axis=2):
