@@ -75,7 +75,16 @@ class ParameterHandler():
 
     def print_params(self):
         """
-        Prints out the parameters of the model.
+        Print the current parameter values in the model.
+
+        This method prints all parameters stored in the model's internal dictionary. If the model's
+        verbosity level is less than 3, it prints only the parameter names and values. If verbosity
+        is 3 or higher, it also includes the `recompile_flag` status for each parameter.
+
+        Example:
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> ct_model.set_params(sharpness=0.7, recon_shape=(128, 128, 128))
+            >>> ct_model.print_params()
         """
         verbose, view_params_name = self.get_params(['verbose', 'view_params_name'])
         print("----")
@@ -483,14 +492,22 @@ class ParameterHandler():
 
     def get_params(self, parameter_names):
         """
-        Get the values of the listed parameter names from the internal parameter dict.
-        Raises an exception if a parameter name is not defined in parameters.
+        Get the values of the listed parameter names from the internal parameter dictionary.
+
+        This method retrieves the current values of one or more parameters managed by the model.
 
         Args:
-            parameter_names (str or list of str): String or list of strings
+            parameter_names (str or list of str): Name of a parameter, or a list of parameter names.
 
         Returns:
-            Single value or list of values
+            Any or list: Single parameter value if a string is passed, or a list of values if a list is passed.
+
+        Raises:
+            NameError: If any of the provided parameter names are not recognized.
+
+        Example:
+            >>> sharpness = model.get_params('sharpness')
+            >>> recon_shape, sharpness = model.get_params(['recon_shape', 'sharpness'])
         """
         param_values = ParameterHandler.get_params_from_dict(self.params, parameter_names)
         return param_values

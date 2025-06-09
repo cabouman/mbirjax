@@ -353,19 +353,25 @@ class TomographyModel(ParameterHandler):
 
     def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
         """
-        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.  The h5 file
-        has a single dataset named 'recon', with attributes 'recon_params', 'recon_log', and 'notes'.
+        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
+
+        The file will contain a single dataset named 'recon', with metadata stored as HDF5 attributes:
+        'recon_params', 'recon_log', 'notes', and optionally 'model_params'.
 
         Args:
-            filepath (str or Path): Path to the output hdf5 file. (Typically should end in .h5 extension.)
-            recon (array-like): Reconstruction data (NumPy or JAX array).
-            recon_params (ReconParams, optional): Reconstruction parameters namedtuple. Defaults to None.
-            notes (string, optional): User-supplied notes to accompany a reconstruction.
-            save_log (bool, optional): If True, save the current log file if available. Defaults to True.
-            save_model (bool, optional): If True, save model YAML as a string dataset. Defaults to True.
+            filepath (str or Path): Path to the output HDF5 file. Should typically end with a .h5 extension.
+            recon (array-like): The reconstruction volume as a NumPy or JAX array.
+            recon_params (ReconParams, optional): Named tuple of reconstruction parameters. Defaults to None.
+            notes (str, optional): User-supplied notes to attach to the dataset. Defaults to None.
+            save_log (bool, optional): If True, saves the internal log buffer (if available). Defaults to True.
+            save_model (bool, optional): If True, saves the model parameters as a YAML string. Defaults to True.
 
         Raises:
-            Exception: If directory creation fails or save operation errors.
+            Exception: If saving the file or directory creation fails.
+
+        Example:
+            >>> recon, recon_params = ct_model.recon(sinogram)
+            >>> ct_model.save_recon_to_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
         """
         # Ensure output directory exists
         mj.makedirs(filepath)
@@ -670,16 +676,25 @@ class TomographyModel(ParameterHandler):
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
-        Updates parameters using keyword arguments.
-        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
+        Update parameters using keyword arguments.
+
+        This method updates internal model parameters. If any key geometry-related parameters
+        are modified, it triggers recompilation of the projector system unless suppressed
+        via the `no_compile` flag.
 
         Args:
-            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
-            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+            no_warning (bool, optional): If True, disables validity checking and warning messages. Defaults to False.
+            no_compile (bool, optional): If True, suppresses projector recompilation after updates. Defaults to False.
+            **kwargs: Arbitrary keyword arguments specifying parameter names and values to update.
 
-        Raises:
-            NameError: If any key provided in kwargs is not a recognized parameter.
+        Returns:
+            bool: True if projector recompilation is required and not suppressed by `no_compile`,
+            otherwise False.
+
+        Example:
+            >>> import mbirjax as mj
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> ct_model.set_params(recon_shape=(128, 128, 128), sharpness=0.7)
         """
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
