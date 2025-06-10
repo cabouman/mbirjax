@@ -10,7 +10,7 @@ import numpy
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils
 
-ConeBeamParamName = mj.ParamName | Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
+ConeBeamParamNames = mj.ParamNames | Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
 
 class ConeBeamModel(TomographyModel):
@@ -56,7 +56,7 @@ class ConeBeamModel(TomographyModel):
                          source_iso_dist=source_iso_dist, view_params_name=view_params_name, recon_slice_offset=0.0)
 
     @overload
-    def get_params(self, parameter_names: Union[ConeBeamParamName, list[ConeBeamParamName]]) -> Any: ...
+    def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
 
     def get_params(self, parameter_names) -> Any:
         return super().get_params(parameter_names)

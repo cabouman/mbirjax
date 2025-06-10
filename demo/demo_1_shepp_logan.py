@@ -117,7 +117,7 @@ recon.block_until_ready()
 elapsed = time.time() - time0
 # ##########################
 notes = 'Recon from demo 1.  Include other notes to describe the experiment as desired.'
-ct_model_for_recon.save_recon_to_hdf5('logs/recon.h5', recon, recon_params, notes=notes)
+ct_model_for_recon.save_recon_dict_to_hdf5('logs/recon.h5', recon, recon_params, notes=notes)
 
 # Print parameters used in recon
 pprint.pprint(recon_params._asdict(), compact=True)

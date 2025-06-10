@@ -6,7 +6,7 @@ import os
 from collections import namedtuple
 import subprocess
 import re
-from typing import Literal, Union, overload
+from typing import Literal, Union, overload, TypedDict
 import time  # Used for debugging/performance tuning
 
 from ruamel.yaml import YAML
@@ -29,7 +29,7 @@ recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
 ReconParams = namedtuple('ReconParams', recon_param_names)
 
-TomographyParamName = mj.ParamName | Literal['view_params_name']
+TomographyParamNames = mj.ParamNames | Literal['view_params_name']
 
 
 class TomographyModel(ParameterHandler):
@@ -113,7 +113,7 @@ class TomographyModel(ParameterHandler):
         return names
 
     @overload
-    def get_params(self, parameter_names: Union[TomographyParamName, list[TomographyParamName]]): ...
+    def get_params(self, parameter_names: Union[TomographyParamNames, list[TomographyParamNames]]): ...
 
     def get_params(self, parameter_names):
         return super().get_params(parameter_names)
@@ -324,7 +324,7 @@ class TomographyModel(ParameterHandler):
         """
         return self.save_params(filename)
 
-    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
+    def save_recon_dict_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
         """
         Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
 
@@ -344,7 +344,7 @@ class TomographyModel(ParameterHandler):
 
         Example:
             >>> recon, recon_params = ct_model.recon(sinogram)
-            >>> ct_model.save_recon_to_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
+            >>> ct_model.save_recon_dict_to_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
         """
 
         arr = np.array(recon)
@@ -369,7 +369,7 @@ class TomographyModel(ParameterHandler):
             notes = '# No notes saved'
         recon_attrs['notes'] = notes
 
-        # Optionally save model YAML
+        # Optionally save model parameters to YAML
         if save_model:
             try:
                 # to_file(None) should return YAML text
@@ -387,7 +387,7 @@ class TomographyModel(ParameterHandler):
         # Store YAML as a string dataset
         recon_attrs['model_params'] = model_yaml
 
-        mj.save_volume_to_hdf5(filepath, arr, 'recon', recon_attrs)
+        mj.save_array_and_attributes_to_hdf5(filepath, arr, 'recon', recon_attrs)
 
         # Log the save
         if self.logger:

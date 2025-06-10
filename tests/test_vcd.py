@@ -1,8 +1,10 @@
+import tempfile
+import unittest
 import numpy as np
 import jax
 import jax.numpy as jnp
+from ruamel.yaml import YAML
 import mbirjax
-import unittest
 
 
 class TestVCD(unittest.TestCase):
@@ -103,6 +105,20 @@ class TestVCD(unittest.TestCase):
         self.assertTrue(max_diff < tolerances['max_diff'] and
                         nrmse < tolerances['nrmse'] and
                         pct_95 < tolerances['pct_95'])
+
+        print('  Testing hdf5 save and load')
+        notes = "Testing save/load"
+        with tempfile.NamedTemporaryFile('w') as file:
+            filepath = file.name
+            ct_model.save_recon_dict_to_hdf5(filepath, recon, recon_params, notes, save_model=False)
+            recon_dict = mbirjax.load_data_dict_from_hdf5(str(filepath))
+            loaded_recon = recon_dict['recon']
+            yaml_reader = YAML(typ="safe")
+            loaded_recon_params_dict = yaml_reader.load(recon_dict['recon_params'])
+            loaded_notes = recon_dict['notes']
+            assert np.allclose(recon, loaded_recon)
+            assert set(recon_params._fields) == set(loaded_recon_params_dict.keys())
+            assert notes == loaded_notes
 
 
 if __name__ == '__main__':

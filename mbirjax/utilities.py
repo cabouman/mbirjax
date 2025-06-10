@@ -14,7 +14,7 @@ import h5py
 from ruamel.yaml import YAML
 
 
-def load_volume_from_hdf5(file_path, volume_name='volume'):
+def load_data_dict_from_hdf5(file_path):
     """
     Load a volume (tensor) from an HDF5 file.
 
@@ -23,17 +23,16 @@ def load_volume_from_hdf5(file_path, volume_name='volume'):
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstructed volume.
-        volume_name (str): Name of the volume in the returned dict
 
     Returns:
-        dict: A dictionary volume_dict with the loaded array as volume_dict[volume_name].
+        dict: A dictionary data_dict with the loaded array as data_dict[volume_name].
 
     Raises:
         FileNotFoundError: If the file does not exist.
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon = load_volume_from_hdf5("output/recon_volume.h5")
+        >>> recon = load_data_dict_from_hdf5("output/recon_volume.h5")
         >>> recon.shape
         (64, 256, 256)
     """
@@ -41,23 +40,23 @@ def load_volume_from_hdf5(file_path, volume_name='volume'):
         array_names = [key for key in f.keys()]
         if len(array_names) > 1:
             raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
-        name = array_names[0]
-        volume_dict = dict()
-        volume_dict[volume_name] = f[name][()]
-        for name in f[name].attrs.keys():
-            volume_dict[name] = f[name].attrs[name]
+        data_name = array_names[0]
+        data_dict = dict()
+        data_dict[data_name] = f[data_name][()]
+        for name in f[data_name].attrs.keys():
+            data_dict[name] = f[data_name].attrs[name]
 
-        return volume_dict
+        return data_dict
 
 
-def save_volume_to_hdf5(file_path, volume, volume_name='volume', attributes_dict=None):
+def save_array_and_attributes_to_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a numpy array to an hdf5 file, using the string entries in attributes_dict as metadata.
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstructed volume.
-        volume (ndarray or jax array): Volume to save
-        volume_name (str): Name of the volume in the hdf5 file
+        array (ndarray or jax array): Volume to save
+        array_name (str): Name of the volume in the hdf5 file
         attributes_dict (dict): Dictionary with values of string metadata
 
     Returns:
@@ -69,12 +68,13 @@ def save_volume_to_hdf5(file_path, volume, volume_name='volume', attributes_dict
     # Open HDF5 file for writing
     with h5py.File(file_path, 'w') as f:
         # Save reconstruction array
-        arr = np.array(volume)
-        volume_data = f.create_dataset(volume_name, data=arr)
+        arr = np.array(array)
+        volume_data = f.create_dataset(array_name, data=arr)
 
         # Save reconstruction parameters as attributes
-        for key, value in attributes_dict.items():
-            volume_data.attrs[key] = value
+        if attributes_dict is not None:
+            for key, value in attributes_dict.items():
+                volume_data.attrs[key] = value
 
 
 def debug_plot_partitions(partitions, recon_shape):

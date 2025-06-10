@@ -18,12 +18,12 @@ class TestUtilities(unittest.TestCase):
         """Clean up after each test method."""
         pass
 
-    def test_paramter_names(self):
+    def test_parameter_names(self):
 
         print('Testing consistency of parameter names in ParameterHandler')
         consistent = mbirjax._utils.update_param_literal(verify_match_and_exit=True)
         if not consistent:
-            warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamName in ParameterHandler')
+            warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamNames in ParameterHandler')
         assert consistent
 
     def test_concatenate_function_in_batches(self):
