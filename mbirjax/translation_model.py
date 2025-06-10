@@ -65,7 +65,7 @@ class TranslationModel(mbirjax.TomographyModel):
         # First get the parameters managed by ParameterHandler
         geometry_param_names = \
             ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
-             'source_detector_dist', 'source_iso_dist', 'delta_voxel', 'delta_recon_row']
+             'source_detector_dist', 'delta_voxel', 'delta_recon_row']
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -127,7 +127,7 @@ class TranslationModel(mbirjax.TomographyModel):
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         magnification = self.get_magnification()
-        delta_voxel = 1.0 / magnification
+        delta_voxel = self.get_params('delta_voxel')
         num_views, num_det_rows, num_det_channels = sinogram_shape
         translation_vectors = self.get_params('translation_vectors')
 
@@ -147,7 +147,7 @@ class TranslationModel(mbirjax.TomographyModel):
         num_recon_rows = int(num_recon_rows)
         num_recon_slices = int(num_recon_slices)
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel,
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape,
                         delta_recon_row=delta_recon_row)
 
 
