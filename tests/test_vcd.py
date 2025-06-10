@@ -7,12 +7,7 @@ import unittest
 
 class TestVCD(unittest.TestCase):
     """
-    Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
-    This means if x is an image, and y is a sinogram, then <y, Ax> = <Aty, x>.
-    The code below verifies this for the full forward and back projectors and the versions that specify a
-    subset of voxels in x.
-    This code also verifies that first applying the full back projector and selecting the voxels to get (Aty)[ss]
-    is the same as using the subset back projector with the specified set of voxels.
+    Unit tests for verifying the reconstruction accuracy of the VCD algorithm in MBIRJAX.
     """
 
     def setUp(self):
