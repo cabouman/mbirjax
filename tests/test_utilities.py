@@ -1,5 +1,5 @@
+import warnings
 import numpy as np
-import jax
 import jax.numpy as jnp
 import mbirjax
 import unittest
@@ -17,6 +17,14 @@ class TestUtilities(unittest.TestCase):
     def tearDown(self):
         """Clean up after each test method."""
         pass
+
+    def test_paramter_names(self):
+
+        print('Testing consistency of parameter names in ParameterHandler')
+        consistent = mbirjax._utils.update_param_literal(verify_match_and_exit=True)
+        if not consistent:
+            warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamName in ParameterHandler')
+        assert consistent
 
     def test_concatenate_function_in_batches(self):
 
@@ -43,7 +51,7 @@ class TestUtilities(unittest.TestCase):
         target = data_to_batch
         for batch_size in [batch_size_even, batch_size_odd]:
             output = mbirjax.concatenate_function_in_batches(identity, data_to_batch, batch_size)
-            assert(jnp.allclose(output, target))
+            assert (jnp.allclose(output, target))
 
         # Single input, multiple outputs
         target = data_to_batch, 2 * data_to_batch

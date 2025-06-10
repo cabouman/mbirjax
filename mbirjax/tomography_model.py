@@ -2,24 +2,25 @@ import io
 import types
 import warnings
 import inspect
-import time  # Used for debugging/performance tuning
 import os
+from collections import namedtuple
+import subprocess
+import re
+from typing import Literal, Union, overload
+import time  # Used for debugging/performance tuning
 
 from ruamel.yaml import YAML
 import h5py
 import numpy as np
-
 from jax.errors import JaxRuntimeError
 
-num_cpus = 3 * os.cpu_count() // 4
-os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
+# num_cpus = 3 * os.cpu_count() // 4
+# os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
-from collections import namedtuple
-import subprocess
-import re
+
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
@@ -27,6 +28,8 @@ os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
 ReconParams = namedtuple('ReconParams', recon_param_names)
+
+TomographyParamName = mj.ParamName | Literal['view_params_name']
 
 
 class TomographyModel(ParameterHandler):
@@ -109,6 +112,12 @@ class TomographyModel(ParameterHandler):
 
         return names
 
+    @overload
+    def get_params(self, parameter_names: Union[TomographyParamName, list[TomographyParamName]]): ...
+
+    def get_params(self, parameter_names):
+        return super().get_params(parameter_names)
+
     def set_devices_and_batch_sizes(self):
         """
         Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
@@ -121,7 +130,6 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
-
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
@@ -316,41 +324,6 @@ class TomographyModel(ParameterHandler):
         """
         return self.save_params(filename)
 
-    @staticmethod
-    def load_recon_from_hdf5(file_path):
-        """
-        Load a reconstructed image from an HDF5 file.
-
-        This function loads a reconstruction volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
-        It assumes that the reconstruction data is stored under the key 'recon' in the root group.
-
-        Args:
-            file_path (str): Path to the HDF5 file containing the reconstructed volume.
-
-        Returns:
-            numpy.ndarray: Reconstructed volume as a NumPy array with shape (num_rows, num_cols, num_slices).
-
-        Raises:
-            FileNotFoundError: If the file does not exist.
-            KeyError: If the expected 'recon' dataset is not found in the file.
-
-        Example:
-            >>> recon = load_recon_from_hdf5("output/recon_volume.h5")
-            >>> recon.shape
-            (64, 256, 256)
-        """
-        with h5py.File(file_path, "r") as f:
-            array_names = [key for key in f.keys()]
-            if len(array_names) > 1:
-                raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
-            name = array_names[0]
-            recon_dict = dict()
-            recon_dict['recon'] = f[name][()]
-            for name in f[name].attrs.keys():
-                recon_dict[name] = f[name].attrs[name]
-
-            return recon_dict
-
     def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
         """
         Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
@@ -373,52 +346,48 @@ class TomographyModel(ParameterHandler):
             >>> recon, recon_params = ct_model.recon(sinogram)
             >>> ct_model.save_recon_to_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
         """
-        # Ensure output directory exists
-        mj.makedirs(filepath)
 
-        # Open HDF5 file for writing
-        with h5py.File(filepath, 'w') as f:
-            # Save reconstruction array
-            arr = np.array(recon)
-            recon_data = f.create_dataset('recon', data=arr)
+        arr = np.array(recon)
 
-            # Save reconstruction parameters as attributes
-            yaml = YAML()
-            yaml.default_flow_style = False
-            if recon_params is None:
-                recon_params_string = "# Recon params not saved."
-            else:
-                buf = io.StringIO()
-                yaml.dump(recon_params._asdict(), buf)
-                recon_params_string = buf.getvalue()
-            recon_data.attrs['recon_params'] = recon_params_string
+        # Create the attribute dictionary
+        yaml_writer = YAML()
+        recon_attrs = dict()
+        if recon_params is None:
+            recon_params_string = "# Recon params not saved."
+        else:
+            buf = io.StringIO()
+            yaml_writer.dump(recon_params._asdict(), buf)
+            recon_params_string = buf.getvalue()
+        recon_attrs['recon_params'] = recon_params_string
 
-            log_text = "# Log info not saved."
-            if save_log and self.log_buffer is not None:
-                log_text = self.log_buffer.getvalue()
-            recon_data.attrs['recon_log'] = log_text
+        log_text = "# Log info not saved."
+        if save_log and self.log_buffer is not None:
+            log_text = self.log_buffer.getvalue()
+        recon_attrs['recon_log'] = log_text
 
-            if notes is None:
-                notes = '# No notes saved'
-            recon_data.attrs['notes'] = notes
+        if notes is None:
+            notes = '# No notes saved'
+        recon_attrs['notes'] = notes
 
-            # Optionally save model YAML
-            if save_model:
-                try:
-                    # to_file(None) should return YAML text
-                    model_yaml = self.to_file(None)
-                except TypeError:
-                    # Fallback: write to temp YAML then read
-                    tmp_yaml = filepath + '.yaml'
-                    self.to_file(tmp_yaml)
-                    with open(tmp_yaml, 'r') as yf:
-                        model_yaml = yf.read()
-                    os.remove(tmp_yaml)
-            else:
-                model_yaml = '# Model not saved'
+        # Optionally save model YAML
+        if save_model:
+            try:
+                # to_file(None) should return YAML text
+                model_yaml = self.to_file(None)
+            except TypeError:
+                # Fallback: write to temp YAML then read
+                tmp_yaml = filepath + '.yaml'
+                self.to_file(tmp_yaml)
+                with open(tmp_yaml, 'r') as yf:
+                    model_yaml = yf.read()
+                os.remove(tmp_yaml)
+        else:
+            model_yaml = '# Model not saved'
 
-            # Store YAML as a string dataset
-            recon_data.attrs['model_params'] = model_yaml
+        # Store YAML as a string dataset
+        recon_attrs['model_params'] = model_yaml
+
+        mj.save_volume_to_hdf5(filepath, arr, 'recon', recon_attrs)
 
         # Log the save
         if self.logger:

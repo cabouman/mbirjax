@@ -2,7 +2,11 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
-from mbirjax import TomographyModel, ParameterHandler, tomography_utils
+from typing import Literal, Union, overload, Any
+import mbirjax as mj
+from mbirjax import TomographyModel, tomography_utils
+
+ParallelBeamParamName = mj.ParamName | Literal['angles']
 
 
 class ParallelBeamModel(TomographyModel):
@@ -45,6 +49,12 @@ class ParallelBeamModel(TomographyModel):
         angles = jnp.asarray(angles)
         view_params_name = 'angles'
         super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
+
+    @overload
+    def get_params(self, parameter_names: Union[ParallelBeamParamName, list[ParallelBeamParamName]]) -> Any: ...
+
+    def get_params(self, parameter_names) -> Any:
+        return super().get_params(parameter_names)
 
     def get_magnification(self):
         """

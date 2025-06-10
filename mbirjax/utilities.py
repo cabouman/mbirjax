@@ -10,6 +10,72 @@ import urllib.request
 import tarfile
 from urllib.parse import urlparse
 import shutil
+import h5py
+from ruamel.yaml import YAML
+
+
+def load_volume_from_hdf5(file_path, volume_name='volume'):
+    """
+    Load a volume (tensor) from an HDF5 file.
+
+    This function loads a volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
+    It also loads any associated attributes.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstructed volume.
+        volume_name (str): Name of the volume in the returned dict
+
+    Returns:
+        dict: A dictionary volume_dict with the loaded array as volume_dict[volume_name].
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If more than one dataset is not found in the file.
+
+    Example:
+        >>> recon = load_volume_from_hdf5("output/recon_volume.h5")
+        >>> recon.shape
+        (64, 256, 256)
+    """
+    with h5py.File(file_path, "r") as f:
+        array_names = [key for key in f.keys()]
+        if len(array_names) > 1:
+            raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
+        name = array_names[0]
+        volume_dict = dict()
+        volume_dict[volume_name] = f[name][()]
+        for name in f[name].attrs.keys():
+            volume_dict[name] = f[name].attrs[name]
+
+        return volume_dict
+
+
+def save_volume_to_hdf5(file_path, volume, volume_name='volume', attributes_dict=None):
+    """
+    Save a numpy array to an hdf5 file, using the string entries in attributes_dict as metadata.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstructed volume.
+        volume (ndarray or jax array): Volume to save
+        volume_name (str): Name of the volume in the hdf5 file
+        attributes_dict (dict): Dictionary with values of string metadata
+
+    Returns:
+        Nothing
+    """
+    # Ensure output directory exists
+    mj.makedirs(file_path)
+
+    # Open HDF5 file for writing
+    with h5py.File(file_path, 'w') as f:
+        # Save reconstruction array
+        arr = np.array(volume)
+        volume_data = f.create_dataset(volume_name, data=arr)
+
+        # Save reconstruction parameters as attributes
+        for key, value in attributes_dict.items():
+            volume_data.attrs[key] = value
+
 
 def debug_plot_partitions(partitions, recon_shape):
     """
@@ -103,7 +169,8 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     plt.show()
 
 
-def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None, loss_ylim=None,
+def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None,
+                              loss_ylim=None,
                               fig_title='granularity'):
     """
     Plots multiple granularity and loss data sets on a single figure.
@@ -122,7 +189,8 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
     if num_plots == 1:
         axes = [axes]  # Make it iterable for a single subplot scenario
 
-    for ax, granularity_sequence, fm_loss, prior_loss, label in zip(axes, granularity_sequences, fm_losses, prior_losses, labels):
+    for ax, granularity_sequence, fm_loss, prior_loss, label in zip(axes, granularity_sequences, fm_losses,
+                                                                    prior_losses, labels):
         index = list(1 + np.arange(len(granularity_sequence)))
 
         # Plot granularity sequence on the first y-axis

@@ -2,6 +2,8 @@ import os
 import warnings
 import matplotlib
 
+import mbirjax
+
 # Set backend
 if os.environ.get("READTHEDOCS") == "True":
     matplotlib.use('Agg')
@@ -813,11 +815,7 @@ class SliceViewer:
 
             # Save full 3D volume
             data = self.original_data[image_index]
-            with h5py.File(file_path, "w") as f:
-                dset = f.create_dataset("volume", data=data)
-                for key, val in attrs.items():
-                    if val:
-                        dset.attrs[key] = val
+            mbirjax.save_volume_to_hdf5(file_path, data, 'volume', attrs)
 
             easygui.msgbox(f"Saved to {file_path}", title="Save complete")
 
@@ -883,7 +881,8 @@ class SliceViewer:
         original_data = self.original_data[image_index]
         self.data[image_index] = np.transpose(original_data, self.axes_perms[image_index])
         self.images[image_index].set_data(self.data[image_index][:, :, self.cur_slices[image_index]])
-        self.labels[image_index] = self._difference_image_dicts[image_index]['prev_label']
+        if self._difference_image_dicts[image_index] is not None:
+            self.labels[image_index] = self._difference_image_dicts[image_index]['prev_label']
         self._difference_image_dicts[image_index] = None
         self._update_slice_slider()
         self.fig.canvas.draw_idle()
@@ -981,8 +980,7 @@ class SliceViewer:
         self.data[image_index] = transposed
         self.cur_slices[image_index] = transposed.shape[2] // 2
         self._draw_images()
-        self._update_slice_slider()
-        self.fig.canvas.draw_idle()
+        self._on_restore(image_index)
 
     def _make_option(self, label, position, y_offset, callback):
         # Build a matplotlib menu one option at a time.  This is to allow for cross platform display.

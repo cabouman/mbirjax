@@ -3,12 +3,23 @@ import copy
 import logging
 import io
 from collections.abc import Iterable, Sized
+from typing import Literal, Union, Any
 
 import jax.numpy as jnp
 import numpy as np
 from ruamel.yaml import YAML
 from mbirjax._utils import Param
 import mbirjax as mj
+
+
+ParamName = Literal[
+    'geometry_type', 'file_format', 'sinogram_shape', 'delta_det_channel',
+    'delta_det_row', 'det_row_offset', 'det_channel_offset', 'sigma_y',
+    'recon_shape', 'delta_voxel', 'sigma_x', 'sigma_prox',
+    'p', 'q', 'T', 'qggmrf_nbr_wts',
+    'auto_regularize_flag', 'positivity_flag', 'snr_db', 'sharpness',
+    'granularity', 'partition_sequence', 'verbose', 'use_gpu',
+]
 
 
 class ParameterHandler():
@@ -464,7 +475,7 @@ class ParameterHandler():
         return recompile_flag
 
     @staticmethod
-    def get_params_from_dict(param_dict, parameter_names):
+    def get_params_from_dict(param_dict, parameter_names: Union[str, list[str]]):
         """
         Get the values of the listed parameter names from the supplied dict.
         Raises an exception if a parameter name is not defined in parameters.
@@ -490,7 +501,7 @@ class ParameterHandler():
                 raise NameError('"{}" is not a recognized argument'.format(name))
         return values
 
-    def get_params(self, parameter_names):
+    def get_params(self, parameter_names: Union[ParamName, list[ParamName]]) -> Any:
         """
         Get the values of the listed parameter names from the internal parameter dictionary.
 
