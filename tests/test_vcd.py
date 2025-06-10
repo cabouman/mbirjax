@@ -110,8 +110,8 @@ class TestVCD(unittest.TestCase):
         notes = "Testing save/load"
         with tempfile.NamedTemporaryFile('w') as file:
             filepath = file.name
-            ct_model.save_recon_dict_to_hdf5(filepath, recon, recon_params, notes, save_model=False)
-            recon_dict = mbirjax.load_data_dict_from_hdf5(str(filepath))
+            ct_model.save_recon_hdf5(filepath, recon, recon_params, notes, save_model=False)
+            recon_dict = mbirjax.load_data_hdf5(str(filepath))
             loaded_recon = recon_dict['recon']
             yaml_reader = YAML(typ="safe")
             loaded_recon_params_dict = yaml_reader.load(recon_dict['recon_params'])

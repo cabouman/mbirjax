@@ -815,7 +815,7 @@ class SliceViewer:
 
             # Save full 3D volume
             data = self.original_data[image_index]
-            mbirjax.save_array_and_attributes_to_hdf5(file_path, data, 'volume', attrs)
+            mbirjax.save_data_hdf5(file_path, data, 'volume', attrs)
 
             easygui.msgbox(f"Saved to {file_path}", title="Save complete")
 

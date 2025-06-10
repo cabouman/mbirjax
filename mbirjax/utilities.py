@@ -14,7 +14,7 @@ import h5py
 from ruamel.yaml import YAML
 
 
-def load_data_dict_from_hdf5(file_path):
+def load_data_hdf5(file_path):
     """
     Load a volume (tensor) from an HDF5 file.
 
@@ -32,7 +32,7 @@ def load_data_dict_from_hdf5(file_path):
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon_dict = load_data_dict_from_hdf5("output/recon_volume.h5", array_name='recon')
+        >>> recon_dict = load_data_hdf5("output/recon_volume.h5", array_name='recon')
         >>> recon = recon_dict['recon']
         >>> recon.shape
         (64, 256, 256)
@@ -50,7 +50,7 @@ def load_data_dict_from_hdf5(file_path):
         return data_dict
 
 
-def save_array_and_attributes_to_hdf5(file_path, array, array_name='array', attributes_dict=None):
+def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a numpy array to an hdf5 file, using the string entries in attributes_dict as metadata.
 

@@ -21,8 +21,8 @@ if __name__ == "__main__":
     sinogram = ct_model_for_generation.forward_project(phantom)
     recon_fbp = ct_model_for_generation.direct_recon(sinogram)
     recon, recon_params = ct_model_for_generation.recon(sinogram)
-    ct_model_for_generation.save_recon_dict_to_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
-    ct_model_for_generation.save_recon_dict_to_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
+    ct_model_for_generation.save_recon_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
+    ct_model_for_generation.save_recon_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
 
     # Test viewer
 
