@@ -32,7 +32,8 @@ def load_data_dict_from_hdf5(file_path):
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon = load_data_dict_from_hdf5("output/recon_volume.h5")
+        >>> recon_dict = load_data_dict_from_hdf5("output/recon_volume.h5", array_name='recon')
+        >>> recon = recon_dict['recon']
         >>> recon.shape
         (64, 256, 256)
     """
