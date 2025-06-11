@@ -332,9 +332,6 @@ class TomographyModel(ParameterHandler):
         dataset named 'recon', with metadata stored as HDF5 attributes: 'recon_params', 'recon_log', 'notes',
         and optionally 'model_params'.
 
-        The file will contain a single dataset named 'recon', with metadata stored as HDF5 attributes:
-        'recon_params', 'recon_log', 'notes', and optionally 'model_params'.
-
         Args:
             filepath (str or Path): Path to the output HDF5 file. Should typically end with a .h5 extension.
             recon (array-like): The reconstruction volume as a NumPy or JAX array.
