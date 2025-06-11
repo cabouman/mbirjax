@@ -91,7 +91,7 @@ elapsed = time.time() - time0
 
 # ##########################
 # Test HDF5 import/export functions
-mju.export_recon_to_hdf5(filename='./data/recon.h5', recon=recon, recon_description="Test FDK reconstruction")
+mju.export_recon_to_hdf5(filename='../data/recon.h5', recon=recon, recon_description="Test FDK reconstruction")
 data = mju.import_recon_from_hdf5('./data/recon.h5')
 recon2 = data['recon']
 print(data['recon'].shape)

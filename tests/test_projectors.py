@@ -1,9 +1,9 @@
+import tempfile
+import unittest
 import numpy as np
-import os
 import jax
 import jax.numpy as jnp
 import mbirjax
-import unittest
 
 
 class TestProjectors(unittest.TestCase):
@@ -106,27 +106,20 @@ class TestProjectors(unittest.TestCase):
         Aty = ct_model.reshape_recon(Aty)
 
         # Save the model
-        filename = 'saved_model_test.yaml'
-        ct_model.to_file(filename)
+        with tempfile.NamedTemporaryFile('w', suffix='.yaml') as file:
+            filename = file.name
+            ct_model.to_file(filename)
 
-        # Load the model
-        new_model = self.get_model(geometry_type)
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            new_model = new_model.from_file(filename)
-        if os.path.exists(filename):
-            os.remove(filename)
+            # Load the model
+            new_model = self.get_model(geometry_type)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                new_model = new_model.from_file(filename)
 
         # Compare parameters
-        for key, entry in ct_model.params.items():
-            if isinstance(entry['val'], list):
-                entry['val'] = tuple(entry['val'])
-            loaded_entry = new_model.params[key]
-            if isinstance(entry['val'], type(jnp.zeros(1))):
-                assert(jnp.allclose(entry['val'], loaded_entry['val']))
-            else:
-                assert(entry == loaded_entry)
+        same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
+        assert same_params
 
         # Do a forward and back projection with loaded model
         Ax_new = new_model.sparse_forward_project(voxel_values, indices)
@@ -135,6 +128,59 @@ class TestProjectors(unittest.TestCase):
 
         # Compare to original
         assert(np.allclose(Aty, Aty_new, atol=1e-4))
+
+    def test_view_batching(self):
+        for geometry_type in self.geometry_types:
+            with self.subTest(geometry_type=geometry_type):
+                print("Testing view batching with", geometry_type)
+                self.verify_view_batching(geometry_type)
+
+    def verify_view_batching(self, geometry_type):
+        self.set_angles(geometry_type)
+        ct_model = self.get_model(geometry_type)
+
+        # Generate phantom
+        recon_shape = ct_model.get_params('recon_shape')
+        phantom = mbirjax.gen_cube_phantom(recon_shape)
+
+        # Generate indices of pixels and get the voxel cylinders
+        full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)[0]
+        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
+
+        # Compute forward projection with all the views at once
+        sinogram = ct_model.sparse_forward_project(voxel_values, full_indices)
+
+        # Then compute the sinogram over multiple batches and reassemble them
+        num_views = sinogram.shape[0]
+        num_subsets = np.random.randint(2, 8)
+        view_subsets = [jnp.arange(j, num_views, num_subsets) for j in range(num_subsets)]  # We don't use array_split because we want the entries to be interleaved for testing.
+        sinogram_batched = [ct_model.sparse_forward_project(voxel_values, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
+        sinogram_stitched = np.zeros_like(sinogram)
+        for j in range(sinogram.shape[0]):
+            sinogram_stitched[j] = sinogram_batched[j % num_subsets][j // num_subsets]
+
+        forward_view_batch_test_result = np.allclose(sinogram, sinogram_stitched)
+        self.assertTrue(forward_view_batch_test_result)
+
+        # Then repeat for back projection
+        back_projection = ct_model.sparse_back_project(sinogram, full_indices)
+        back_projection_batched = [ct_model.sparse_back_project(sinogram, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
+        back_projection_batched = np.stack(back_projection_batched, axis=0)
+        back_projection_stitched = np.sum(back_projection_batched, axis=0)
+        proj_diff = np.abs(back_projection_stitched - back_projection)
+        # # The following is designed to highlight the bug associated with rounding in jax.
+        # if np.sum(proj_diff > 1e-4) > 10:
+        #     print('Num above threshold = {}, max diff = {}'.format(np.sum(proj_diff > 1e-4), np.amax(proj_diff)))
+        #     row_index0, col_index0 = jnp.unravel_index(full_indices, recon_shape[:2])
+        #     recon0 = jnp.zeros(recon_shape)
+        #     recon0 = recon0.at[row_index0, col_index0].set(back_projection)
+        #     recon1 = jnp.zeros(recon_shape)
+        #     recon1 = recon1.at[row_index0, col_index0].set(back_projection_stitched)
+        #     title = 'Standard backprojection (left) and \nabs diff with back projection via multiple view subsets (right)'
+        #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs'
+        #     mbirjax.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
+        back_view_batch_test_result = np.sum(proj_diff > 1e-4) < 1000 and np.amax(proj_diff) < 0.2
+        self.assertTrue(back_view_batch_test_result)
 
     def verify_adjoint(self, geometry_type):
         """

@@ -1,13 +1,8 @@
-from functools import partial
-from collections import namedtuple
-from typing import Literal, Union, overload, Any
-
 import jax
 import jax.numpy as jnp
-import mbirjax as mj
-from mbirjax import TomographyModel, tomography_utils
-
-ParallelBeamParamNames = mj.ParamNames | Literal['angles']
+from functools import partial
+from collections import namedtuple
+from mbirjax import TomographyModel, ParameterHandler, tomography_utils
 
 
 class ParallelBeamModel(TomographyModel):
@@ -50,12 +45,6 @@ class ParallelBeamModel(TomographyModel):
         angles = jnp.asarray(angles)
         view_params_name = 'angles'
         super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
-
-    @overload
-    def get_params(self, parameter_names: Union[ParallelBeamParamNames, list[ParallelBeamParamNames]]) -> Any: ...
-
-    def get_params(self, parameter_names) -> Any:
-        return super().get_params(parameter_names)
 
     def get_magnification(self):
         """
@@ -118,7 +107,7 @@ class ParallelBeamModel(TomographyModel):
         delta_det_channel, delta_voxel = self.get_params(['delta_det_channel', 'delta_voxel'])
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel/delta_det_channel)/2))
+        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel / delta_det_channel) / 2))
 
         return psf_radius
 
@@ -160,20 +149,21 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle,
+                                                                                     projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
         # Do the projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
         return sinogram_view
 
@@ -202,20 +192,35 @@ class ParallelBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle,
+                                                                                     projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
+
+        jax.debug.print('\nn_p  {}', n_p, ordered=True)
+        jax.debug.print('n_p_center {}', n_p_center, ordered=True)
+
         # jax.debug.breakpoint(num_frames=1)
         # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=0):  # gp.psf_radius + 1):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
+            jax.debug.print('\nabs_delta_p_c_n  {}', abs_delta_p_c_n, ordered=True)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
+            jax.debug.print('A_chan_n  {}', A_chan_n, ordered=True)
+            jax.debug.print('n {}', n, ordered=True)
+            jax.debug.print('n {}', n[0:8], ordered=True)
+            jax.debug.print('n {}', n[0:9], ordered=True)
+            jax.debug.print('n {}', n[0:8], ordered=True)
+            jax.debug.print('n {}', n[0:9], ordered=True)
+            jax.debug.print('n {}', n[0:8], ordered=True)
+            jax.debug.print('sino {}', sinogram_view[:, n].T, ordered=True)
+            jax.debug.print('cyl {}', A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T, ordered=True)
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
 
         return det_voxel_cylinder
@@ -323,7 +328,7 @@ class ParallelBeamModel(TomographyModel):
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        scaling_factor = 1 / (delta_voxel**2)
+        scaling_factor = 1 / (delta_voxel ** 2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
 

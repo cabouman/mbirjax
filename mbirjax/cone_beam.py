@@ -3,11 +3,17 @@ import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
 import warnings
-import mbirjax
-from mbirjax import tomography_utils
+from typing import Literal, Union, overload, Any
+
+import numpy
+
+import mbirjax as mj
+from mbirjax import TomographyModel, tomography_utils
+
+ConeBeamParamNames = mj.ParamNames | Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
 
-class ConeBeamModel(mbirjax.TomographyModel):
+class ConeBeamModel(TomographyModel):
     """
     A class designed for handling forward and backward projections in a cone beam geometry, extending the
     :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for cone beam setups.
@@ -36,48 +42,24 @@ class ConeBeamModel(mbirjax.TomographyModel):
         Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
     """
 
+    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
+
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist):
-        # Convert the view-dependent vectors to an array
-        # This is more complicated than needed with only a single view-dependent vector but is included to
-        # illustrate the process as shown in TemplateModel
-        view_dependent_vecs = [vec.flatten() for vec in [angles]]
+
         self.bp_psf_radius = 1
         self.entries_per_cylinder_batch = 128
         self.slice_range_length = 0
-        try:
-            view_params_array = jnp.stack(view_dependent_vecs, axis=1)
-        except ValueError as e:
-            raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
-                             "same length.")
+        angles = jnp.asarray(angles)
+        view_params_name = 'angles'
 
-        super().__init__(sinogram_shape, view_params_array=view_params_array,
-                         source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         recon_slice_offset=0.0)
+        super().__init__(sinogram_shape, angles=angles, source_detector_dist=source_detector_dist,
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, recon_slice_offset=0.0)
 
-    @classmethod
-    def from_file(cls, filename):
-        """
-        Construct a ConeBeamModel from parameters saved using save_params()
+    @overload
+    def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
 
-        Args:
-            filename (str): Name of the file containing parameters to load.
-
-        Returns:
-            ConeBeamModel with the specified parameters.
-        """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
-        required_param_names = ['sinogram_shape', 'source_detector_dist', 'source_iso_dist']
-        required_params, params = mbirjax.ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
-
-        # Collect the required parameters into a separate dictionary and remove them from the loaded dict.
-        angles = params['view_params_array']
-        del params['view_params_array']
-        required_params['angles'] = angles
-
-        # Get an instance with the required parameters, then set any optional parameters
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
-        return new_model
+    def get_params(self, parameter_names) -> Any:
+        return super().get_params(parameter_names)
 
     def get_magnification(self):
         """
@@ -101,12 +83,12 @@ class ConeBeamModel(mbirjax.TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
+        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
 
-        if view_params_array.shape[0] != sinogram_shape[0]:
+        if angles.shape[0] != sinogram_shape[0]:
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
-            error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
+            error_message += "{} for number of views.".format(angles.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
         # Check for cone angle > 45 degrees
@@ -773,17 +755,12 @@ class ConeBeamModel(mbirjax.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
-        Perform FDK reconstruction on the given sinogram.
-
-        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
-        perform the backprojection.  This is different from many implementations, in which the backprojection is not
-        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
-        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -791,9 +768,22 @@ class ConeBeamModel(mbirjax.TomographyModel):
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction.
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
+        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
+    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform FDK filtering on the given sinogram.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FDK filtering.
+        """
         # Get parameters
         num_views, num_rows, num_channels = sinogram.shape
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
@@ -848,9 +838,30 @@ class ConeBeamModel(mbirjax.TomographyModel):
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
+        filtered_sinogram *= jnp.pi / num_views
+        return filtered_sinogram
+
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform FDK reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            recon (jax array): The reconstructed volume after FDK reconstruction.
+        """
+
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
-        recon *= jnp.pi / num_views
 
         return recon

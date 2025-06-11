@@ -2,6 +2,8 @@ import os
 import warnings
 import matplotlib
 
+import mbirjax
+
 # Set backend
 if os.environ.get("READTHEDOCS") == "True":
     matplotlib.use('Agg')
@@ -41,13 +43,17 @@ SLICE_AXIS_FONT_SIZE = 9
 SLICE_AXIS_LABEL_FONT_SIZE = 8
 SLICE_AXIS_RADIO_SIZE = 30
 
+VALMAX_EPS = 1e-6
+
 TKAGG = True
 Y_SKIP = 28
 LOAD_LABEL = 'Load'
+SAVE_LABEL = 'Save data to h5'
 if matplotlib.get_backend() != 'TkAgg':
     TKAGG = False
     Y_SKIP = 50
     LOAD_LABEL = 'Load disabled - requires TkAgg'
+    SAVE_LABEL = 'Save disabled - requires TkAgg'
 
 
 def multiline(*lines):
@@ -115,8 +121,14 @@ class SliceViewer:
         self._syncing_limits = True
         self._syncing_axes = False
         self._tk_button_pressed = False
-        self._difference_image_dict = None  # Entries:  baseline_index, comparison_index, use_abs, selecting_image
+        self._image_selection_dict = {}
+        self._clear_image_selection()
+        self._difference_image_dicts = [None] * self.n_volumes  # Entries:  comparison_index, use_abs, prev_label
         easygui.boxes.global_state.prop_font_line_length = 80
+        self.show()
+
+    def _clear_image_selection(self):
+        self._image_selection_dict = {'selecting_image': False, 'baseline_index': -1}
 
     @staticmethod
     def _get_perm_from_slice_ind(s):
@@ -258,8 +270,10 @@ class SliceViewer:
 
     def _add_slice_slider(self):
         ax = self.fig.add_subplot(self.gs[2, :])
+        valmax = max(d.shape[2] for d in self.data) - 1
+        valmax = max(valmax, VALMAX_EPS)
         self.slice_slider = Slider(ax, label="Slice", valmin=0,
-                                   valmax=max(d.shape[2] for d in self.data) - 1,
+                                   valmax=valmax,
                                    valinit=self.cur_slices[0], valfmt='%0.0f')
 
         self.slice_slider.on_changed(self._update_slice)
@@ -372,6 +386,7 @@ class SliceViewer:
     def _update_slice_slider(self):
         # Update slice slider max if any volume changed depth
         new_max = max(d.shape[2] for d in self.data) - 1
+        new_max = max(new_max, VALMAX_EPS)
         self.slice_slider.valmax = new_max
         self.slice_slider.ax.set_xlim(self.slice_slider.valmin, new_max)
         self.slice_slider.set_val(self.cur_slices[0])
@@ -386,14 +401,15 @@ class SliceViewer:
 
         if new_perm != list(self.axes_perms[i]):
             new_data = self.data[i]
-            prev_fraction = self.cur_slices[i] / new_data.shape[-1]
+            prev_fraction = self.slice_slider.val / (self.slice_slider.valmax + VALMAX_EPS)
             new_slice_axis = new_perm[-1]
             inverse_perm = np.argsort(self.axes_perms[i])
             new_data = np.transpose(new_data, inverse_perm)
+            new_num_slices = new_data.shape[new_slice_axis]
             self.axes_perms[i] = np.array(new_perm)
             new_data = np.transpose(new_data, new_perm)
             self.data[i] = new_data
-            self.cur_slices[i] = int(np.round(prev_fraction * new_data.shape[new_slice_axis]))
+            self.cur_slices[i] = int(np.round(prev_fraction * (new_num_slices - 1)))
             self.images[i].set_data(new_data[:, :, self.cur_slices[i]])
             self.axes[i].set_xlim(0, new_data.shape[1])
             self.axes[i].set_ylim(new_data.shape[0], 0)
@@ -508,7 +524,7 @@ class SliceViewer:
                 if event.button == 1:  # Consume only a left-click
                     self._tk_button_pressed = False
                     return
-            if self._difference_image_dict is not None and self._difference_image_dict['selecting_image']:
+            if self._image_selection_dict['selecting_image']:
                 image_index = self.axes.index(event.inaxes)
                 self._on_difference(image_index)
                 return
@@ -616,8 +632,10 @@ class SliceViewer:
                 self._show_message(False)
                 self._remove_menu()
                 self._is_drawing = False
-                if self._difference_image_dict is not None and self._difference_image_dict['selecting_image']:
-                    self._difference_image_dict = None
+                if self._image_selection_dict['selecting_image']:
+                    image_index = self._image_selection_dict['baseline_index']
+                    self._difference_image_dicts[image_index] = None
+                    self._clear_image_selection()
                 for i in range(self.n_volumes):
                     if self.text_boxes[i] is not None:
                         self.text_boxes[i].remove()
@@ -628,8 +646,7 @@ class SliceViewer:
                 self.fig.canvas.draw_idle()
 
         def on_context_menu(event):
-            if self._difference_image_dict is not None and \
-                    self._difference_image_dict['selecting_image']:
+            if self._image_selection_dict['selecting_image']:
                 return
             # Start the menu for an image
             if event.button == 3 and event.inaxes in self.axes:
@@ -672,43 +689,60 @@ class SliceViewer:
             options.append([
                 "{} pan/zoom".format("Decouple" if self._syncing_limits else "Couple"),
                 self._toggle_sync_limits])
-            if self._difference_image_dict is None:
+            if self._difference_image_dicts[image_index] is None:
                 options.append(["Replace with difference image", lambda: self._on_difference(image_index)])
                 options.append(["Replace with error image", lambda: self._on_difference(image_index, use_abs=True)])
             else:
-                baseline_index = self._difference_image_dict['baseline_index']
-                if baseline_index == image_index:
-                    options.append(['Restore original image', lambda: self._on_difference(image_index)])
+                options.append(['Restore original image', lambda: self._on_restore(image_index)])
         if TKAGG:
             options += [["Show attributes", lambda: self._on_show_attributes(image_index)]]
-        options += [["Transpose image", lambda: self._on_transpose(image_index)],
-                    [LOAD_LABEL, lambda: self._on_load(image_index)],
-                    ["Reset", lambda: self._on_reset(image_index)],
-                    ["Cancel", self._remove_menu]]
+        options += [
+            ["Transpose image", lambda: self._on_transpose(image_index)],
+            [LOAD_LABEL, lambda: self._on_load(image_index)],
+            [SAVE_LABEL, lambda: self._on_save(image_index)],
+            ["Reset", lambda: self._on_reset(image_index)],
+            ["Cancel", self._remove_menu]
+        ]
         return options
 
     def _on_show_attributes(self, image_index):
-        # Handle the display of image attributes, including asking the user which to display
+        # Handle the display of image attributes
         attributes = self.data_attributes[image_index]
         if not attributes:
-            easygui.textbox(msg='No attributes available', title='No attributes',
-                            text='Load an h5 file with attributes to get attributes', codebox=False, callback=None,
-                            run=True)
+            easygui.textbox(
+                msg='No attributes available',
+                title='No attributes',
+                text='Load an h5 file with attributes to get attributes',
+                codebox=False,
+                callback=None,
+                run=True
+            )
             return
+
         names = [attribute[0] for attribute in attributes]
         if len(attributes) > 1:
             choices = names + ['Cancel']
-            msg = ['Choose an attributes to display:', ' ']
-            msg += names
-            choice = easygui.buttonbox(msg=multiline(*msg), title='Choose the attribute to display', choices=choices)
+            msg = ['Choose an attribute to display:', ' '] + names
+            choice = easygui.buttonbox(
+                msg=multiline(*msg),
+                title='Choose an attribute to display',
+                choices=choices
+            )
             if choice == 'Cancel':
                 return
         else:
             choice = names[0]
+
         index = names.index(choice)
         attribute = attributes[index][1]
-        easygui.textbox(msg='Attribute = {}'.format(choice), title=choice, text=attribute, codebox=False, callback=None,
-                        run=True)
+        easygui.textbox(
+            msg=f'Attribute = {choice}',
+            title=choice,
+            text=attribute,
+            codebox=False,
+            callback=None,
+            run=True
+        )
 
     def _on_transpose(self, image_index):
         # Transpose the image
@@ -741,24 +775,76 @@ class SliceViewer:
         except Exception as e:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
-    def _on_difference(self, image_index, use_abs=False):
+    def _on_save(self, image_index):
+        # Handle saving the full 3D volume and optional attributes
+        if not hasattr(self.fig.canvas.manager, 'window'):
+            warnings.warn("Save disabled: matplotlib backend is not TkAgg")
+            return
+
+        self._remove_menu()
+
+        def deferred_save():
+            # Prompt for filename
+            file_path = easygui.filesavebox(
+                msg="Choose filename (must end in .h5)",
+                default="volume",
+                # filetypes=["*.h5"]
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".h5"):
+                file_path += ".h5"
+
+            # Gather allowable attributes with multi-line textboxes and prepopulate existing values
+            attrs = {}
+            # Existing attributes loaded earlier (if any)
+            existing = {}
+            if hasattr(self, 'data_attributes') and len(self.data_attributes) > image_index:
+                existing = dict(self.data_attributes[image_index])
+            for name in ["model_params", "notes", "recon_log", "recon_params"]:
+                default_val = existing.get(name, "")
+                val = easygui.textbox(
+                    msg=f"Enter value for {name} (leave blank for none):",
+                    title=name,
+                    text=default_val
+                )
+                # If user cancelled, keep existing text; if cleared, treat as empty
+                if val is None:
+                    val = default_val
+                attrs[name] = val
+
+            # Save full 3D volume
+            data = self.original_data[image_index]
+            mbirjax.save_data_hdf5(file_path, data, 'volume', attrs)
+
+            easygui.msgbox(f"Saved to {file_path}", title="Save complete")
+
+        # Schedule the save dialog after a short delay (TkAgg-safe)
+        try:
+            self.fig.canvas.manager.window.after(10, deferred_save)
+        except Exception:
+            warnings.warn("Unable to schedule save dialog. Requires TkAgg backend.")
+
+    def _on_difference(self, image_index: int, use_abs: bool = False):
 
         self._remove_menu()
         # Start the selection process for this baseline
-        if self._difference_image_dict is None:
-            self._difference_image_dict = {'selecting_image': True, 'baseline_index': image_index, 'use_abs': use_abs}
+        if not self._image_selection_dict['selecting_image']:
+            self._image_selection_dict['selecting_image'] = True
+            self._image_selection_dict['baseline_index'] = image_index
+            self._difference_image_dicts[image_index] = {'use_abs': use_abs}
             if self.n_volumes > 2:
                 # Show instructions
                 self._show_message(True, message_type='difference')
                 # Return to await selection or Esc
                 return
             else:
-                image_index = 1 - image_index  # There are only 2 images, show choose the other, then continue below with setting the data
+                image_index = 1 - image_index  # There are only 2 images, so choose the other, then continue below with setting the data
 
         # Save this index as the comparison and set up the plot
-        if self._difference_image_dict['selecting_image']:
+        if self._image_selection_dict['selecting_image']:
             # Check the shape and axes perm of the two images
-            baseline_index = self._difference_image_dict['baseline_index']
+            baseline_index = self._image_selection_dict['baseline_index']
             comparison_index = image_index
             if any(a != b for a, b in
                    zip(self.original_data[baseline_index].shape, self.original_data[comparison_index].shape)) or \
@@ -766,33 +852,40 @@ class SliceViewer:
                     baseline_index == comparison_index:
                 # Show instructions
                 self._show_message(True, message_type='difference')
-                return
+                return  # The difference is not valid, so exit
+
+            # Otherwise exit the selection process and set the current index as the comparison
             self._show_message(False)
-            self._difference_image_dict['selecting_image'] = False
-            self._difference_image_dict['comparison_index'] = comparison_index
+            self._clear_image_selection()
+            self._difference_image_dicts[baseline_index]['comparison_index'] = comparison_index
+
             # Set up the difference image
             difference = self.data[comparison_index] - self.data[baseline_index]
-            if self._difference_image_dict['use_abs']:
+            if self._difference_image_dicts[baseline_index]['use_abs']:
                 difference = np.abs(difference)
             self.data[baseline_index] = difference
             self.images[baseline_index].set_data(difference[:, :, self.cur_slices[baseline_index]])
-            self._difference_image_dict['prev_label'] = self.labels[baseline_index]
-            label_prepend = 'Image {} minus current: '.format(comparison_index) if not use_abs \
-                else 'abs(Image {} minus current): '.format(comparison_index)
+
+            # Adjust the labels and refresh the display
+            self._difference_image_dicts[baseline_index]['prev_label'] = self.labels[baseline_index]
+            if self._difference_image_dicts[baseline_index]['use_abs']:
+                label_prepend = 'abs(Image {} minus current): '.format(comparison_index)
+            else:
+                label_prepend = 'Image {} minus current: '.format(comparison_index)
             self.labels[baseline_index] = label_prepend + self.labels[baseline_index]
             self._update_slice_slider()
             self.fig.canvas.draw_idle()
 
+    def _on_restore(self, image_index):
         # Restore the original image
-        else:
-            baseline_index = self._difference_image_dict['baseline_index']
-            baseline_data = self.original_data[baseline_index]
-            self.data[baseline_index] = np.transpose(baseline_data, self.axes_perms[baseline_index])
-            self.images[baseline_index].set_data(self.data[baseline_index][:, :, self.cur_slices[image_index]])
-            self.labels[baseline_index] = self._difference_image_dict['prev_label']
-            self._difference_image_dict = None
-            self._update_slice_slider()
-            self.fig.canvas.draw_idle()
+        original_data = self.original_data[image_index]
+        self.data[image_index] = np.transpose(original_data, self.axes_perms[image_index])
+        self.images[image_index].set_data(self.data[image_index][:, :, self.cur_slices[image_index]])
+        if self._difference_image_dicts[image_index] is not None:
+            self.labels[image_index] = self._difference_image_dicts[image_index]['prev_label']
+        self._difference_image_dicts[image_index] = None
+        self._update_slice_slider()
+        self.fig.canvas.draw_idle()
 
     def _on_reset(self, image_index):
         # Do a hard reset
@@ -805,6 +898,8 @@ class SliceViewer:
         self._update_intensity(self.intensity_slider.val)
         plt.tight_layout()
         self.fig.canvas.draw_idle()
+        self._clear_image_selection()
+        self._show_message(False)
         self._remove_menu()
 
     def _show_message(self, show, message_type=None, message=None):
@@ -864,18 +959,28 @@ class SliceViewer:
 
         if new_array.ndim == 2:
             new_array = new_array[..., np.newaxis]
-        if new_array.ndim != 3:
-            raise ValueError("Loaded array must be 2D or 3D")
+            self.original_data[image_index] = new_array
+        elif new_array.ndim == 3:
+            self.original_data[image_index] = new_array
+        elif new_array.ndim == 4:
+            num_volumes_to_load = min(new_array.shape[-1], self.n_volumes)
+            self._show_message(True, message='Loading first {} volumes in 4D array. Press Esc to exit'.format(
+                num_volumes_to_load))
+            for j in range(num_volumes_to_load):
+                self.original_data[j] = new_array[..., j]
+                self.data[j] = np.transpose(self.original_data[j], self.axes_perms[j])
+            image_index = min(image_index, num_volumes_to_load - 1)
+            new_array = new_array[..., image_index]
+        else:
+            raise ValueError("Loaded array must be 2D, 3D, or 4D")
 
-        self.original_data[image_index] = new_array
         self.data_attributes[image_index] = attributes
         self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
         transposed = np.transpose(new_array, self.axes_perms[image_index])
         self.data[image_index] = transposed
         self.cur_slices[image_index] = transposed.shape[2] // 2
         self._draw_images()
-        self._update_slice_slider()
-        self.fig.canvas.draw_idle()
+        self._on_restore(image_index)
 
     def _make_option(self, label, position, y_offset, callback):
         # Build a matplotlib menu one option at a time.  This is to allow for cross platform display.
@@ -913,7 +1018,6 @@ class SliceViewer:
     def show(self):
         """Display the viewer window and block execution until the window is closed."""
         fignum = self.fig.number
-        plt.tight_layout()
         plt.show()
         # Open and close the figure to make sure it closes properly.
         plt.figure(fignum)
@@ -972,4 +1076,3 @@ def slice_viewer(*datasets, **kwargs):
 
     """
     viewer = SliceViewer(*datasets, **kwargs)
-    viewer.show()

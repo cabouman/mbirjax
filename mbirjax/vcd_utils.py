@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
 import warnings
-from mbirjax.preprocess.utilities import multi_threshold_otsu
+import mbirjax.preprocess as mjp
 
 
 def stitch_arrays(array_list, overlap_length, axis=2):
@@ -503,7 +503,7 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     if init_recon is None:
         print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
         # assuming three categories: metal, non_metal, and background.
-        [bk_thresh_sino, metal_thresh_sino] = multi_threshold_otsu(sinogram, classes=3)
+        [bk_thresh_sino, metal_thresh_sino] = mjp.multi_threshold_otsu(sinogram, classes=3)
         print("Distorted sinogram threshold = ", metal_thresh_sino)
         delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
 
@@ -512,7 +512,7 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
         if metal_threshold is None:
             print("Metal_threshold calculated with Otsu's method.")
             # assuming three categories: metal, non_metal, and background.
-            [bk_threshold, metal_threshold] = multi_threshold_otsu(init_recon, classes=3)
+            [bk_threshold, metal_threshold] = mjp.multi_threshold_otsu(init_recon, classes=3)
 
         print("metal_threshold = ", metal_threshold)
         # Identify metal voxels

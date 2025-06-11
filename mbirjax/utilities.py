@@ -10,6 +10,80 @@ import urllib.request
 import tarfile
 from urllib.parse import urlparse
 import shutil
+import h5py
+from ruamel.yaml import YAML
+
+
+def load_data_hdf5(file_path):
+    """
+    Load a volume (tensor) from an HDF5 file.
+
+    This function loads a volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
+    It also loads any associated attributes.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstructed volume.
+
+    Returns:
+        dict: A dictionary data_dict with the loaded array as data_dict[volume_name].
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If more than one dataset is not found in the file.
+
+    Example:
+        >>> recon_dict = load_data_hdf5("output/recon.h5", array_name='recon')
+        >>> recon = recon_dict['recon']
+        >>> recon.shape
+        (64, 256, 256)
+    """
+    with h5py.File(file_path, "r") as f:
+        array_names = [key for key in f.keys()]
+        if len(array_names) > 1:
+            raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
+        data_name = array_names[0]
+        data_dict = dict()
+        data_dict[data_name] = f[data_name][()]
+        for name in f[data_name].attrs.keys():
+            data_dict[name] = f[data_name].attrs[name]
+
+        return data_dict
+
+
+def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
+    """
+    Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
+
+    Args:
+        file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
+        array (ndarray or jax.Array): The volume data to save.
+        array_name (str): Name of the dataset within the HDF5 file. Defaults to 'array'.
+        attributes_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+            Keys must be strings, and values should be serializable as HDF5 attributes.
+
+    Returns:
+        None
+
+    Example:
+        >>> import numpy as np
+        >>> volume = np.random.rand(64, 64, 64)
+        >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
+        >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
+    """
+    # Ensure output directory exists
+    mj.makedirs(file_path)
+
+    # Open HDF5 file for writing
+    with h5py.File(file_path, 'w') as f:
+        # Save reconstruction array
+        arr = np.array(array)
+        volume_data = f.create_dataset(array_name, data=arr)
+
+        # Save reconstruction parameters as attributes
+        if attributes_dict is not None:
+            for key, value in attributes_dict.items():
+                volume_data.attrs[key] = value
+
 
 def debug_plot_partitions(partitions, recon_shape):
     """
@@ -103,7 +177,8 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     plt.show()
 
 
-def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None, loss_ylim=None,
+def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=None,
+                              loss_ylim=None,
                               fig_title='granularity'):
     """
     Plots multiple granularity and loss data sets on a single figure.
@@ -122,7 +197,8 @@ def plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, la
     if num_plots == 1:
         axes = [axes]  # Make it iterable for a single subplot scenario
 
-    for ax, granularity_sequence, fm_loss, prior_loss, label in zip(axes, granularity_sequences, fm_losses, prior_losses, labels):
+    for ax, granularity_sequence, fm_loss, prior_loss, label in zip(axes, granularity_sequences, fm_losses,
+                                                                    prior_losses, labels):
         index = list(1 + np.arange(len(granularity_sequence)))
 
         # Plot granularity sequence on the first y-axis
@@ -210,7 +286,8 @@ def download_and_extract_tar(download_url, save_dir):
     tarball_path = os.path.join(save_dir, tarball_name)
 
     if os.path.exists(tarball_path):
-        is_download = query_yes_no(f"\nData named {tarball_path} already exists.\nDo you still want to download/copy and overwrite the file?")
+        is_download = False
+        # is_download = query_yes_no(f"\nData named {tarball_path} already exists.\nDo you still want to download/copy and overwrite the file?")
 
     if is_download:
         os.makedirs(os.path.dirname(tarball_path), exist_ok=True)
@@ -247,7 +324,8 @@ def download_and_extract_tar(download_url, save_dir):
 
     return extracted_file_name
 
-def get_top_level_tar_dir(tar_path, max_entries=10):
+
+def get_top_level_tar_dir(tar_path, max_entries=1):
     """
     Determine the top-level directory inside a tarball file by sampling up to max_entries members.
 
@@ -280,138 +358,6 @@ def get_top_level_tar_dir(tar_path, max_entries=10):
         raise ValueError("No top level directory found in {}".format(tar_path))
     return dir_name
 
-def query_yes_no(question, default="n"):
-    """
-    Ask a yes/no question via input() and return the answer.
-
-    Parameters
-    ----------
-    question : str
-        The question presented to the user.
-    default : str
-        The default answer if the user just presses Enter ("y" or "n").
-
-    Returns
-    -------
-    bool
-        True for "yes" or Enter, False for "no".
-    """
-    valid = {"yes": True, "y": True, "ye": True, "no": False, "n": False}
-    prompt = f" [y/n, default={default}] "
-    while True:
-        sys.stdout.write(question + prompt)
-        choice = input().lower()
-        if choice == "":
-            return valid[default]
-        elif choice in valid:
-            return valid[choice]
-        else:
-            sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
-    return
-
-def download_and_extract_tar(download_url, save_dir):
-    """
-    Download or copy a .tar file from a URL or local file path, extract it to the specified directory, and return the path to the extracted top-level directory.
-
-    If the tarball already exists in the save directory, the user will be prompted to decide whether to overwrite it.
-
-    Parameters
-    ----------
-    download_url : str
-        URL or local file path to the tarball. If a URL, it must be public.
-    save_dir : str
-        Path to the directory where the tarball will be saved/copied and extracted.
-
-    Returns
-    -------
-    extracted_file_name : str
-        The path to the extracted top-level directory.
-
-    Example
-    -------
-    >>> extracted_dir = download_and_extract_tar("https://example.com/data.tar.gz", "./data")
-    >>> print(f"Extracted data is in: {extracted_dir}")
-
-    >>> extracted_dir = download_and_extract_tar("/path/to/local/data.tar.gz", "./data")
-    >>> print(f"Extracted data is in: {extracted_dir}")
-    """
-    is_download = True
-    parsed = urlparse(download_url)
-    is_url = parsed.scheme in ('http', 'https')
-
-    tarball_name = os.path.basename(parsed.path if is_url else download_url)
-    tarball_path = os.path.join(save_dir, tarball_name)
-
-    if os.path.exists(tarball_path):
-        is_download = query_yes_no(f"\nData named {tarball_path} already exists.\nDo you still want to download/copy and overwrite the file?")
-
-    if is_download:
-        os.makedirs(os.path.dirname(tarball_path), exist_ok=True)
-        if is_url:
-            print("Downloading file ...")
-            try:
-                urllib.request.urlretrieve(download_url, tarball_path)
-            except urllib.error.HTTPError as e:
-                if e.code == 401:
-                    raise RuntimeError(f'HTTP {e.code}: authentication failed!')
-                elif e.code == 403:
-                    raise RuntimeError(f'HTTP {e.code}: URL forbidden!')
-                elif e.code == 404:
-                    raise RuntimeError(f'HTTP {e.code}: URL not found!')
-                else:
-                    raise RuntimeError(f'HTTP {e.code}: {e.reason}')
-            except urllib.error.URLError as e:
-                raise RuntimeError('URLError raised! Check internet connection.')
-            print(f"Download successful! Tarball file saved to {tarball_path}")
-        else:
-            print(f"Copying local file from {download_url} to {tarball_path} ...")
-            if not os.path.isfile(download_url):
-                raise RuntimeError(f"Provided file path does not exist: {download_url}")
-            shutil.copy2(download_url, tarball_path)
-            print(f"Copy successful! Tarball file saved to {tarball_path}")
-
-        print(f"Extracting tarball file to {save_dir} ...")
-        with tarfile.open(tarball_path, 'r') as tar_file:
-            tar_file.extractall(save_dir)
-        print(f"Extraction successful!")
-
-    top_level_dir = get_top_level_tar_dir(tarball_path)
-    extracted_file_name = os.path.join(save_dir, top_level_dir)
-
-    return extracted_file_name
-
-def get_top_level_tar_dir(tar_path, max_entries=10):
-    """
-    Determine the top-level directory inside a tarball file by sampling up to max_entries members.
-
-    Parameters
-    ----------
-    tar_path : str
-        Path to the tarball file.
-    max_entries : int
-        Maximum number of entries to sample.
-
-    Returns
-    -------
-    dir_name : str
-        The name of the top-level directory.
-    """
-    top_levels = set()
-
-    with tarfile.open(tar_path, 'r') as tar:
-        for i, member in enumerate(tar):
-            if not member.name.strip():
-                continue
-            top_dir = member.name.split('/')[0]
-            top_levels.add(top_dir)
-
-            if len(top_levels) > 1 or i + 1 >= max_entries:
-                break
-    if len(top_levels) == 1:
-        dir_name = top_levels.pop()
-    else:
-        raise ValueError("No top level directory found in {}".format(tar_path))
-    return dir_name
 
 def query_yes_no(question, default="n"):
     """
@@ -440,4 +386,3 @@ def query_yes_no(question, default="n"):
             return valid[choice]
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
-    return

@@ -16,12 +16,14 @@ if __name__ == "__main__":
     ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
 
     phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
+    mj.slice_viewer(phantom, phantom + 0.1 * np.random.rand(*phantom.shape) - 0.05, phantom + 0.05 * np.random.randn(*phantom.shape), slice_axis=(0, 0, 0))
+
     sinogram = ct_model_for_generation.forward_project(phantom)
     recon_fbp = ct_model_for_generation.direct_recon(sinogram)
     recon, recon_params = ct_model_for_generation.recon(sinogram)
-    ct_model_for_generation.save_recon_to_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
-    ct_model_for_generation.save_recon_to_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
+    ct_model_for_generation.save_recon_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
+    ct_model_for_generation.save_recon_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
 
     # Test viewer
-    mj.slice_viewer(phantom, phantom + 0.1 * np.random.rand(*phantom.shape) - 0.05, slice_axis=(0, 0))
-    mj.slice_viewer(None, None, vmin=0.0, vmax=1.0, slice_axis=(2, 2))
+
+    mj.slice_viewer(None, None, vmin=0.0, vmax=1.0, slice_axis=(2, 2), title='Right-click to load images')

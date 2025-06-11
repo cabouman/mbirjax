@@ -1,6 +1,5 @@
 import numpy as np
 import warnings
-import scipy
 import tifffile
 import glob
 import os
@@ -417,178 +416,32 @@ def read_scan_dir(scan_dir, view_ids=None):
 # ####### END subroutines for loading scan images
 
 
-def unit_vector(v):
-    """ Normalize v. Returns v/||v|| """
-    return v / np.linalg.norm(v)
-
-
-def project_vector_to_vector(u1, u2):
-    """ Projects the vector u1 onto the vector u2. Returns the vector <u1|u2>.
+@jax.jit
+def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
     """
-    u2 = unit_vector(u2)
-    u1_proj = np.dot(u1, u2)*u2
-    return u1_proj
+    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
 
+    Args:
+        v (jnp.ndarray):
+            Target reconstruction array of shape (N,) or higher-dimensional.
+        u (jnp.ndarray):
+            Mask array of same shape as `v`, indicating component presence.
 
-# ####### Multi-threshold Otsu's method
-def multi_threshold_otsu(image, classes=2):
+    Returns:
+        jnp.ndarray:
+            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
+
+    Example:
+        >>> v = jnp.array([1.0, 2.0, 3.0])
+        >>> u = jnp.array([0.5, 1.0, 1.5])
+        >>> alpha = _compute_scaling_factor(v, u)
     """
-    Segments an image into several different classes using Otsu's method.
+    v = jnp.asarray(v)
+    u = jnp.asarray(u)
 
-    Parameters
-    ----------
-    image : ndarray
-        Input image in ndarray of float type.
-    classes : int, optional
-        Number of classes to threshold (i.e., number of resulting regions). Default is 2.
-
-    Returns
-    -------
-    list
-        List of threshold values that divide the image into the specified number of classes.
-    """
-    if classes < 2:
-        raise ValueError("Number of classes must be at least 2")
-
-    # Compute the histogram of the image
-    hist, bin_edges = np.histogram(image, bins=256, range=(np.min(image), np.max(image)))
-
-    # Find the optimal thresholds using a recursive approach
-    thresholds = _recursive_otsu(hist, classes - 1)
-
-    # Convert histogram bin indices to original image values
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    scaled_thresholds = [bin_centers[t] for t in thresholds]
-
-    return scaled_thresholds
-
-
-def _recursive_otsu(hist, num_thresholds):
-    """
-    Recursively applies Otsu's method to find the best thresholds for multiple classes.
-
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    num_thresholds : int
-        Number of thresholds to find.
-
-    Returns
-    -------
-    list
-        List of thresholds that divide the histogram into the specified number of classes.
-    """
-    # Base case: no thresholds needed
-    if num_thresholds == 0:
-        return []
-
-    # Base case: single threshold needed
-    if num_thresholds == 1:
-        return [_binary_threshold_otsu(hist)]
-
-    best_thresholds = []
-    best_variance = float('inf')
-
-    # Iterate through possible thresholds
-    for t in range(1, len(hist) - 1):
-        # Split histogram at the threshold
-        left_hist = hist[:t]
-        right_hist = hist[t:]
-
-        # Recursively find thresholds for left and right segments
-        left_thresholds = _recursive_otsu(left_hist, num_thresholds // 2)
-        right_thresholds = _recursive_otsu(right_hist, num_thresholds - len(left_thresholds) - 1)
-
-        # Combine thresholds
-        thresholds = left_thresholds + [t] + [x + t for x in right_thresholds]
-
-        # Compute the total within-class variance
-        total_variance = _compute_within_class_variance(hist, thresholds)
-
-        # Update the best thresholds if the current variance is lower
-        if total_variance < best_variance:
-            best_variance = total_variance
-            best_thresholds = thresholds
-
-    return best_thresholds
-
-
-def _binary_threshold_otsu(hist):
-    """
-    Finds the best threshold for binary segmentation using Otsu's method.
-
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-
-    Returns
-    -------
-    int
-        Best threshold for binary segmentation.
-    """
-    total = np.sum(hist)
-    current_max, threshold = 0, 0
-    sum_total, sum_foreground, weight_foreground, weight_background = 0, 0, 0, 0
-
-    # Compute the sum of pixel values
-    for i in range(len(hist)):
-        sum_total += i * hist[i]
-
-    # Iterate through possible thresholds
-    for i in range(len(hist)):
-        weight_foreground += hist[i]
-        if weight_foreground == 0:
-            continue
-        weight_background = total - weight_foreground
-        if weight_background == 0:
-            break
-
-        sum_foreground += i * hist[i]
-        mean_foreground = sum_foreground / weight_foreground
-        mean_background = (sum_total - sum_foreground) / weight_background
-
-        # Compute between-class variance
-        between_class_variance = weight_foreground * weight_background * (mean_foreground - mean_background) ** 2
-        if between_class_variance > current_max:
-            current_max = between_class_variance
-            threshold = i
-
-    return threshold
-
-
-def _compute_within_class_variance(hist, thresholds):
-    """
-    Computes the total within-class variance given a set of thresholds.
-
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    thresholds : list
-        List of thresholds that divide the histogram into multiple classes.
-
-    Returns
-    -------
-    float
-        Total within-class variance.
-    """
-    total_variance = 0
-    thresholds = [0] + thresholds + [len(hist)]
-
-    # Iterate through each segment defined by the thresholds
-    for i in range(len(thresholds) - 1):
-        class_hist = hist[thresholds[i]:thresholds[i+1]]
-        class_prob = np.sum(class_hist)
-        if class_prob == 0:
-            continue
-        class_mean = np.sum(class_hist * np.arange(thresholds[i], thresholds[i+1])) / class_prob
-        class_variance = np.sum(((np.arange(thresholds[i], thresholds[i+1]) - class_mean) ** 2) * class_hist) / class_prob
-        total_variance += class_variance * class_prob
-
-    return total_variance
-# ####### END Multi-threshold Otsu's method
+    numerator = jnp.sum(u * v)
+    denominator = jnp.sum(u * u)
+    return jnp.where(denominator == 0, 0.0, numerator / denominator)
 
 
 # Normally, this function would be too simple to jit.  However, by using jit, we may be able to
@@ -615,63 +468,21 @@ def put_in_slice(array, flat_indices, value):
     return array
 
 
-# ####### Generalized Huber Weights method
-def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
+def unit_vector(v):
+    """ Normalize v. Returns v/||v|| """
+    return v / np.linalg.norm(v)
+
+
+def project_vector_to_vector(u1, u2):
+    """ Projects the vector u1 onto the vector u2. Returns the vector <u1|u2>.
     """
-    This function generates generalized Huber weights based on the method described in the referenced notes.
-    It adds robustness by treating any element where ``|sino_error / weights| > T`` as an outlier,
-    down-weighting it according to the generalized Huber function.
+    u2 = unit_vector(u2)
+    u1_proj = np.dot(u1, u2)*u2
+    return u1_proj
 
-    The function returns new `ghuber_weights`.
 
-    Typically, to obtain the final robust weights, the `ghuber_weights` should be multiplied by the original `weights`:
+# ####### END Multi-threshold Otsu's method
 
-        final_weights = weights * ghuber_weights
 
-    Args:
-        weights: jnp.ndarray of shape (views, rows, cols)
-            Initial weights, typically derived from inverse variance estimates.
-        sino_error: jnp.ndarray of shape (views, rows, cols)
-            Sinogram error array representing deviations from the model.
-        T: float, optional (default=1.0)
-            Threshold parameter; values greater than T are treated as outliers.
-        delta: float, optional (default=1.0)
-            Controls the strength of the generalized Huber function (delta=1 corresponds to the conventional Huber).
-        epsilon: float, optional (default=1e-6)
-            Small number to avoid division by zero.
 
-    Returns:
-        huber_weights: jnp.ndarray of shape (views, rows, cols)
-            The computed generalized Huber weights.
-
-    Notes:
-        The generalized Huber function used in this function is based on:
-        Venkatakrishnan, S. V., Drummy, L. F., Jackson, M., De Graef, M., Simmons, J. P., and Bouman, C. A.,
-        "Model-Based Iterative Reconstruction for Bright-Field Electron Tomography,"
-        IEEE Transactions on Computational Imaging, vol. 1, no. 1, pp. 1–15, 2015. DOI: 10.1109/TCI.2014.2371751
-
-    Example:
-        >>> from mbirjax import gen_huber_weights
-        >>> huber_weights = gen_huber_weights(weights, sino_error)
-        >>> final_weights = weights * huber_weights
-    """
-    if not (0.0 <= delta <= 1.0):
-        raise ValueError("delta must be between 0 and 1.")
-
-    weights = jnp.asarray(weights)
-    sino_error = jnp.asarray(sino_error)
-
-    # Compute std and global alpha
-    std = 1.0 / jnp.maximum(jnp.sqrt(weights), epsilon)
-    alpha = jnp.linalg.norm(sino_error) / (jnp.linalg.norm(std) + epsilon)
-    std_norm = alpha * std
-
-    # Compute normalized error
-    normalized_error = sino_error / std_norm
-    abs_norm_error = jnp.abs(normalized_error)
-
-    # Apply generalized Huber function
-    huber_weights = jnp.where(abs_norm_error <= T, 1.0, (delta * T) / (abs_norm_error + epsilon))
-
-    return huber_weights
 

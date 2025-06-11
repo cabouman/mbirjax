@@ -1,23 +1,26 @@
 import io
 import types
-from ruamel.yaml import YAML
 import warnings
-import time  # Used for debugging/performance tuning
+import inspect
 import os
+from collections import namedtuple
+import subprocess
+import re
+from typing import Literal, Union, overload, TypedDict
+import time  # Used for debugging/performance tuning
+
+from ruamel.yaml import YAML
 import h5py
 import numpy as np
+from jax.errors import JaxRuntimeError
 
-from jaxlib.xla_extension import XlaRuntimeError
-
-num_cpus = 3 * os.cpu_count() // 4
-os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
+# num_cpus = 3 * os.cpu_count() // 4
+# os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
-from collections import namedtuple
-import subprocess
-import re
+
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
@@ -25,6 +28,8 @@ os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
 ReconParams = namedtuple('ReconParams', recon_param_names)
+
+TomographyParamNames = mj.ParamNames | Literal['view_params_name']
 
 
 class TomographyModel(ParameterHandler):
@@ -43,6 +48,8 @@ class TomographyModel(ParameterHandler):
 
     Sets up the reconstruction size and parameters.
     """
+
+    DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
 
     def __init__(self, sinogram_shape, **kwargs):
 
@@ -76,6 +83,41 @@ class TomographyModel(ParameterHandler):
         self.set_devices_and_batch_sizes()
         self.create_projectors()
 
+    @classmethod
+    def get_required_param_names(cls):
+        """
+        Return a list with the names of the required parameters of cls.__init__.
+
+        Args:
+            cls : type
+                The class whose __init__ we want to inspect.
+
+        Returns:
+            list[str]
+                A list of parameter names, in the order they appear in the signature.
+        """
+        sig = inspect.signature(cls.__init__)
+        params = sig.parameters.values()
+
+        # Filter out *args and **kwargs to get simple names
+        names = [
+            p.name
+            for p in params
+            if p.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                              inspect.Parameter.VAR_KEYWORD)
+        ]
+
+        if names[0] == "self":
+            names = names[1:]
+
+        return names
+
+    @overload
+    def get_params(self, parameter_names: Union[TomographyParamNames, list[TomographyParamNames]]): ...
+
+    def get_params(self, parameter_names):
+        return super().get_params(parameter_names)
+
     def set_devices_and_batch_sizes(self):
         """
         Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
@@ -88,7 +130,6 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
-
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
@@ -253,16 +294,22 @@ class TomographyModel(ParameterHandler):
     @classmethod
     def from_file(cls, filename):
         """
-        Construct a TomographyModel (or a subclass) from parameters saved using to_file()
+        Construct a ParallelBeamModel from parameters saved using save_params()
 
         Args:
             filename (str): Name of the file containing parameters to load.
 
         Returns:
-            ConeBeamModel with the specified parameters.
+            ParallelBeamModel with the specified parameters.
         """
-        # Load the parameters and convert to use the ConeBeamModel keywords.
-        raise ValueError('from_file is not implemented for base TomographyModel')
+        # Load the parameters and separate into required and optional
+        required_param_names = cls.get_required_param_names()
+        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
+
+        # Get an instance with the required parameters, then set any optional parameters
+        new_model = cls(**required_params)
+        new_model.set_params(**params)
+        return new_model
 
     def to_file(self, filename):
         """
@@ -277,91 +324,71 @@ class TomographyModel(ParameterHandler):
         """
         return self.save_params(filename)
 
-    @staticmethod
-    def load_recon_from_hdf5(file_path):
+    def save_recon_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
         """
-        Load the information from an h5 file created with save_recon_to_hdf5
+        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
+    
+        This method is designed to work together with `slice_viewer()`. It creates a file that contains a single
+        dataset named 'recon', with metadata stored as HDF5 attributes: 'recon_params', 'recon_log', 'notes',
+        and optionally 'model_params'.
 
         Args:
-            file_path (string or Path): path to the file to open
-
-        Returns:
-            dict: with entries as in save_recon_to_hdf5
-        """
-        with h5py.File(file_path, "r") as f:
-            array_names = [key for key in f.keys()]
-            if len(array_names) > 1:
-                raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
-            name = array_names[0]
-            recon_dict = dict()
-            recon_dict['recon'] = f[name][()]
-            for name in f[name].attrs.keys():
-                recon_dict[name] = f[name].attrs[name]
-
-            return recon_dict
-
-    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
-        """
-        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.  The h5 file
-        has a single dataset named 'recon', with attributes 'recon_params', 'recon_log', and 'notes'.
-
-        Args:
-            filepath (str or Path): Path to the output .h5 file.
-            recon (array-like): Reconstruction data (NumPy or JAX array).
-            recon_params (ReconParams, optional): Reconstruction parameters namedtuple. Defaults to None.
-            notes (string, optional): User-supplied notes to accompany a reconstruction.
-            save_log (bool, optional): If True, save the current log file if available. Defaults to True.
-            save_model (bool, optional): If True, save model YAML as a string dataset. Defaults to True.
+            filepath (str or Path): Path to the output HDF5 file. Should typically end with a .h5 extension.
+            recon (array-like): The reconstruction volume as a NumPy or JAX array.
+            recon_params (ReconParams, optional): Named tuple of reconstruction parameters. Defaults to None.
+            notes (str, optional): User-supplied notes to attach to the dataset. Defaults to None.
+            save_log (bool, optional): If True, saves the internal log buffer (if available). Defaults to True.
+            save_model (bool, optional): If True, saves the model parameters as a YAML string. Defaults to True.
 
         Raises:
-            Exception: If directory creation fails or save operation errors.
+            Exception: If saving the file or directory creation fails.
+
+        Example:
+            >>> recon, recon_params = ct_model.recon(sinogram)
+            >>> ct_model.save_recon_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
         """
-        # Ensure output directory exists
-        mj.makedirs(filepath)
 
-        # Open HDF5 file for writing
-        with h5py.File(filepath, 'w') as f:
-            # Save reconstruction array
-            arr = np.array(recon)
-            recon_data = f.create_dataset('recon', data=arr)
+        arr = np.array(recon)
 
-            # Save reconstruction parameters as attributes
-            yaml = YAML()
-            yaml.default_flow_style = False
-            if recon_params is None:
-                recon_params_string = "# Recon params not saved."
-            else:
-                buf = io.StringIO()
-                yaml.dump(recon_params._asdict(), buf)
-                recon_params_string = buf.getvalue()
-            recon_data.attrs['recon_params'] = recon_params_string
+        # Create the attribute dictionary
+        yaml_writer = YAML()
+        recon_attrs = dict()
+        if recon_params is None:
+            recon_params_string = "# Recon params not saved."
+        else:
+            buf = io.StringIO()
+            yaml_writer.dump(recon_params._asdict(), buf)
+            recon_params_string = buf.getvalue()
+        recon_attrs['recon_params'] = recon_params_string
 
-            log_text = "# Log info not saved."
-            if save_log and self.log_buffer is not None:
-                log_text = self.log_buffer.getvalue()
-            recon_data.attrs['recon_log'] = log_text
+        log_text = "# Log info not saved."
+        if save_log and self.log_buffer is not None:
+            log_text = self.log_buffer.getvalue()
+        recon_attrs['recon_log'] = log_text
 
-            if notes is None:
-                notes = '# No notes saved'
-            recon_data.attrs['notes'] = notes
+        if notes is None:
+            notes = '# No notes saved'
+        recon_attrs['notes'] = notes
 
-            # Optionally save model YAML
-            if save_model:
-                try:
-                    # to_file(None) should return YAML text
-                    model_yaml = self.to_file(None)
-                except TypeError:
-                    # Fallback: write to temp YAML then read
-                    tmp_yaml = filepath + '.yaml'
-                    self.to_file(tmp_yaml)
-                    with open(tmp_yaml, 'r') as yf:
-                        model_yaml = yf.read()
-                    os.remove(tmp_yaml)
-            else:
-                model_yaml = '# Model not saved'
+        # Optionally save model parameters to YAML
+        if save_model:
+            try:
+                # to_file(None) should return YAML text
+                model_yaml = self.to_file(None)
+            except TypeError:
+                # Fallback: write to temp YAML then read
+                tmp_yaml = filepath + '.yaml'
+                self.to_file(tmp_yaml)
+                with open(tmp_yaml, 'r') as yf:
+                    model_yaml = yf.read()
+                os.remove(tmp_yaml)
+        else:
+            model_yaml = '# Model not saved'
 
-            # Store YAML as a string dataset
-            recon_data.attrs['model_params'] = model_yaml
+        # Store YAML as a string dataset
+        recon_attrs['model_params'] = model_yaml
+
+        mj.save_data_hdf5(filepath, arr, 'recon', recon_attrs)
 
         # Log the save
         if self.logger:
@@ -518,14 +545,16 @@ class TomographyModel(ParameterHandler):
 
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
-        Back project the given sinogram to the voxels given by the indices.
+        Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
+        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.
+        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
+        be the indices into the sinogram that is passed in here.
 
         Args:
-            sinogram (jnp array): 3D jax array containing sinogram.
+            sinogram (jnp array): 3D jax array containing the full sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project
+            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
             coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
             output_device (jax device, optional): Device on which to put the output
 
@@ -540,8 +569,6 @@ class TomographyModel(ParameterHandler):
             view_indices = jnp.arange(num_views)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
-        view_batch_boundaries = [view_indices_batched[j][0] for j in range(len(view_indices_batched))]
-        view_batch_boundaries = np.append(np.array(view_batch_boundaries), num_views)
 
         pixel_indices = jax.device_put(pixel_indices, self.worker)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
@@ -553,9 +580,8 @@ class TomographyModel(ParameterHandler):
 
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        for j, view_index_start in enumerate(view_batch_boundaries[:-1]):
-            view_index_end = view_batch_boundaries[j + 1]
-            view_batch = sinogram[view_index_start:view_index_end]
+        for view_indices_batch in view_indices_batched:
+            view_batch = sinogram[view_indices_batch]
             view_batch = jax.device_put(view_batch, self.worker)
 
             # Loop over pixel batches
@@ -563,7 +589,7 @@ class TomographyModel(ParameterHandler):
             for pixel_index_batch in pixel_indices_batched:
                 # Back project a batch
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batched[j],
+                                                                           view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
                 voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
@@ -620,16 +646,25 @@ class TomographyModel(ParameterHandler):
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
-        Updates parameters using keyword arguments.
-        After setting parameters, it checks if key geometry-related parameters have changed and, if so, recompiles the projectors.
+        Update parameters using keyword arguments.
+
+        This method updates internal model parameters. If any key geometry-related parameters
+        are modified, it triggers recompilation of the projector system unless suppressed
+        via the `no_compile` flag.
 
         Args:
-            no_warning (bool, optional, default=False): This is used internally to allow for some initial parameter setting.
-            no_compile (bool, optional, default=False): Prevent (re)compiling the projectors.  Used for initialization.
-            **kwargs: Arbitrary keyword arguments where keys are parameter names and values are the new parameter values.
+            no_warning (bool, optional): If True, disables validity checking and warning messages. Defaults to False.
+            no_compile (bool, optional): If True, suppresses projector recompilation after updates. Defaults to False.
+            **kwargs: Arbitrary keyword arguments specifying parameter names and values to update.
 
-        Raises:
-            NameError: If any key provided in kwargs is not a recognized parameter.
+        Returns:
+            bool: True if projector recompilation is required and not suppressed by `no_compile`,
+            otherwise False.
+
+        Example:
+            >>> import mbirjax as mj
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> ct_model.set_params(recon_shape=(128, 128, 128), sharpness=0.7)
         """
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
@@ -833,7 +868,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=100):
+    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
         Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
         implementation details are geometry specific, and direct_recon may not be available for all geometries.
@@ -849,6 +884,21 @@ class TomographyModel(ParameterHandler):
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
+
+    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
+        """
+        warnings.warn('direct_filter not implemented for TomographyModel.')
+        return jnp.zeros_like(sinogram, device=self.sinogram_device)
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, num_iterations=None, logfile_path='./logs/recon.log', print_logs=True):
@@ -938,7 +988,7 @@ class TomographyModel(ParameterHandler):
         except MemoryError as e:
             self.logger.error('Insufficient CPU memory')
             raise e
-        except XlaRuntimeError as e:
+        except JaxRuntimeError as e:
             self.logger.error(e)
             if self.gpu_memory > 0:
                 if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:

@@ -53,7 +53,8 @@ class Projectors:
         ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
         projector_params = ProjectorParams(*tuple(projector_param_values))
 
-        view_params_array = self.tomography_model.get_params('view_params_array')
+        view_params_name = self.tomography_model.get_params('view_params_name')
+        view_params_array = self.tomography_model.get_params(view_params_name)
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
         view_batch_size = self.tomography_model.view_batch_size_for_vmap
 
