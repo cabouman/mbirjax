@@ -327,9 +327,10 @@ class TomographyModel(ParameterHandler):
     def save_recon_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
         """
         Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
-
-        The file will contain a single dataset named 'recon', with metadata stored as HDF5 attributes:
-        'recon_params', 'recon_log', 'notes', and optionally 'model_params'.
+    
+        This method is designed to work together with `slice_viewer()`. It creates a file that contains a single
+        dataset named 'recon', with metadata stored as HDF5 attributes: 'recon_params', 'recon_log', 'notes',
+        and optionally 'model_params'.
 
         Args:
             filepath (str or Path): Path to the output HDF5 file. Should typically end with a .h5 extension.
