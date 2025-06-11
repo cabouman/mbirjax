@@ -20,3 +20,5 @@ IO Functions
 ------------
 
 .. autofunction:: mbirjax.utilities.download_and_extract_tar
+.. autofunction:: mbirjax.utilities.save_data_hdf5
+.. autofunction:: mbirjax.utilities.load_data_hdf5
