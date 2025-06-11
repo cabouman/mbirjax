@@ -32,7 +32,7 @@ def load_data_hdf5(file_path):
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon_dict = load_data_hdf5("output/recon_volume.h5", array_name='recon')
+        >>> recon_dict = load_data_hdf5("output/recon.h5", array_name='recon')
         >>> recon = recon_dict['recon']
         >>> recon.shape
         (64, 256, 256)
@@ -52,16 +52,23 @@ def load_data_hdf5(file_path):
 
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
-    Save a numpy array to an hdf5 file, using the string entries in attributes_dict as metadata.
+    Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
 
     Args:
-        file_path (str): Path to the HDF5 file containing the reconstructed volume.
-        array (ndarray or jax array): Volume to save
-        array_name (str): Name of the volume in the hdf5 file
-        attributes_dict (dict): Dictionary with values of string metadata
+        file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
+        array (ndarray or jax.Array): The volume data to save.
+        array_name (str): Name of the dataset within the HDF5 file. Defaults to 'array'.
+        attributes_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+            Keys must be strings, and values should be serializable as HDF5 attributes.
 
     Returns:
-        Nothing
+        None
+
+    Example:
+        >>> import numpy as np
+        >>> volume = np.random.rand(64, 64, 64)
+        >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
+        >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
     """
     # Ensure output directory exists
     mj.makedirs(file_path)
