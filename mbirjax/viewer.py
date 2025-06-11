@@ -806,27 +806,28 @@ class SliceViewer:
                 file_path += ".h5"
 
             # Gather allowable attributes with multi-line textboxes and prepopulate existing values
-            attrs = {}
             # Existing attributes loaded earlier (if any)
             if self.data_attributes[image_index] is not None:
-                existing = self.data_attributes[image_index]
+                data_dict = self.data_attributes[image_index]
             else:
-                existing = {}
-            for name in ["model_params", "notes", "recon_log", "recon_params"]:
-                default_val = existing.get(name, "")
+                data_dict = {}
+            for key in {"model_params", "notes", "recon_log", "recon_params"}.union(data_dict.keys()):
+                default_val = data_dict.get(key, "")
                 val = easygui.textbox(
-                    msg=f"Enter value for {name} (leave blank for none):",
-                    title=name,
+                    msg=f"Enter value for {key} (leave blank for none):",
+                    title=key,
                     text=default_val
                 )
                 # If user cancelled, keep existing text; if cleared, treat as empty
                 if val is None:
                     val = default_val
-                attrs[name] = val
+                data_dict[key] = val
+
+            self.data_attributes[image_index] = data_dict
 
             # Save full 3D volume
             data = self.original_data[image_index]
-            mj.save_data_hdf5(file_path, data, 'volume', attrs)
+            mj.save_data_hdf5(file_path, data, 'volume', data_dict)
 
             easygui.msgbox(f"Saved to {file_path}", title="Save complete")
 
