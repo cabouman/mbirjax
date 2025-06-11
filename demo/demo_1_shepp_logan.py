@@ -111,16 +111,15 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights)
+recon_params = recon_dict['recon_params']
 
 recon.block_until_ready()
 elapsed = time.time() - time0
 # ##########################
-notes = 'Recon from demo 1.  Include other notes to describe the experiment as desired.'
-ct_model_for_recon.save_recon_hdf5('logs/recon.h5', recon, recon_params, notes=notes)
 
 # Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
+pprint.pprint(recon_params, compact=True)
 
 max_diff = np.amax(np.abs(phantom - recon))
 print('Geometry = {}'.format(geometry_type))
@@ -135,6 +134,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
-mj.slice_viewer(phantom, recon, title=title)
+mj.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

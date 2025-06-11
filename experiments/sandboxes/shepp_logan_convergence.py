@@ -132,7 +132,7 @@ def main():
 
         for iteration in range(0, max_iterations, iterations_per_step):
             i = iteration // iterations_per_step
-            recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights,
+            recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights,
                                                            max_iterations=iteration + iterations_per_step,
                                                            first_iteration=iteration, init_recon=recon,
                                                            compute_prior_loss=True,
@@ -222,14 +222,16 @@ def recon_by_continuation(ct_model_for_recon, sinogram, weights,
             cur_snr_db = snr_db  # if iteration >= iterations_per_step else 30
             cur_partition_sequence = 4 * iterations_per_step * [0] + [4, 6, 7]
         ct_model_for_recon.set_params(sharpness=cur_sharpness, snr_db=cur_snr_db, partition_sequence=cur_partition_sequence)
-        recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights,
+        recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights,
                                                        max_iterations=iteration + iterations_per_step,
                                                        first_iteration=iteration, init_recon=recon,
                                                        compute_prior_loss=True,
                                                        stop_threshold_change_pct=stop_threshold_change_pct)
         if baseline is not None:
             nrmse[i] = np.linalg.norm(recon - baseline) / np.linalg.norm(baseline)
-        if recon_params._asdict()['stop_threshold_change_pct'][-1] < stop_threshold_change_pct:
+
+        recon_params = recon_dict['recon_params']
+        if recon_params['stop_threshold_change_pct'][-1] < stop_threshold_change_pct:
             break
 
     elapsed = time.time() - time0

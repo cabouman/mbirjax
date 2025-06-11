@@ -39,8 +39,6 @@ if __name__ == "__main__":
         # Generate sinogram data
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
-        parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
-
         print('Starting forward projection')
         sinogram = parallel_model.sparse_forward_project(voxel_values, full_indices)
 
