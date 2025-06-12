@@ -234,11 +234,17 @@ def histogram_with_mask(recon, crop_fraction=0.05, bins=None):
     """
     # Get the ror mask
     mask = mj.get_2d_ror_mask(recon.shape, crop_radius_fraction=crop_fraction)
-    num_slices_to_crop = int(np.ceil(recon.shape[2] * crop_fraction))
-    start_slice = (num_slices_to_crop + 1) // 2
-    cropped_recon = recon[mask==1]
-    cropped_region = recon[:, :, start_slice:-start_slice]
+    num_pixels_to_crop = [int(np.ceil(recon.shape[k] * crop_fraction)) for k in range(3)]
+    start_pixel = [(num_to_crop + 1) // 2 for num_to_crop in num_pixels_to_crop]
+    mask[0:start_pixel[0]] = 0
+    mask[-start_pixel[0]:] = 0
+    mask[:, 0:start_pixel[1]] = 0
+    mask[:, -start_pixel[1]:] = 0
+    cropped_region = recon[:, :, start_pixel[2]:-start_pixel[2]]
+    cropped_region = cropped_region[mask == 1]
 
     # Compute the histogram of the image
     hist, bin_edges = np.histogram(cropped_region, bins=bins, range=(np.min(cropped_region), np.max(cropped_region)))
+    import matplotlib.pyplot as plt
+    plt.bar(bin_edges[:-1], hist, width=np.diff(bin_edges), edgecolor="black", align="edge")
     return hist, bin_edges
