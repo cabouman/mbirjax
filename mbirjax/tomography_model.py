@@ -383,20 +383,26 @@ class TomographyModel(ParameterHandler):
     def convert_subdicts_to_strings(recon_dict):
         """Serialize the entries in the recon_dict to strings"""
         if isinstance(recon_dict, dict):
+            string_dict = recon_dict.copy()
             yaml_writer = YAML()
-            for key, value in recon_dict.items():
-                if key == 'model_params' and isinstance(recon_dict['model_params'], dict):
+            for key, value in string_dict.items():
+                if key == 'model_params' and isinstance(string_dict['model_params'], dict):
                     # 'model_params' must be handled separately to guarantee the ability to reload
-                    recon_dict['model_params'] = ParameterHandler.save_params(recon_dict['model_params'])
+                    string_dict['model_params'] = ParameterHandler.save_params(string_dict['model_params'])
                 elif isinstance(value, dict):
                     # Otherwise convert dicts to yaml strings
                     buf = io.StringIO()
                     yaml_writer.dump(value, buf)
-                    recon_dict[key] = buf.getvalue()
-                elif not isinstance(value, str):
-                    raise ValueError('Entries in recon_dict must be strings or dicts that can be converted to strings')
+                    string_dict[key] = buf.getvalue()
+                else:
+                    try:
+                        string_dict[key] = str(value)
+                    except:
+                        raise ValueError('Entries in recon_dict must be strings or dicts that can be converted to strings')
+        else:
+            string_dict = recon_dict
 
-        return recon_dict
+        return string_dict
 
     def save_recon_hdf5(self, filepath, recon, recon_dict=None):
         """
@@ -452,7 +458,7 @@ class TomographyModel(ParameterHandler):
             >>> recon.shape
             (64, 256, 256)
         """
-        recon, recon_dict = mbirjax.load_data_hdf5(filepath)
+        recon, recon_dict = mj.load_data_hdf5(filepath)
         if not recreate_model:
             return recon, recon_dict
 
