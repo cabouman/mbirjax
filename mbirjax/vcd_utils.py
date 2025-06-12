@@ -151,22 +151,35 @@ def stitch_arrays(array_list, overlap_length, axis=2):
     return jnp.swapaxes(stitched, 0, axis)
 
 
-def get_2d_ror_mask(recon_shape):
+def get_2d_ror_mask(recon_shape, *, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
-    Get a binary mask for the region of reconstruction.
+    Get a binary mask for the region of reconstruction.  By default, the mask is the largest possible circle
+    inscribed on the longest edge of the 2D recon_shape[0:2].  The radius of this circle can be reduced by
+    setting crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the radius.  Only one
+    of these can be nonzero. Negative values are clipped to 0.
 
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
+        crop_radius_pixels (int): Number of pixels to subtract from the radius before creating the mask.
+        crop_radius_fraction (float): Fraction to subtract from the radius before creating the mask.
 
     Returns:
         A binary mask for the region of reconstruction.
     """
     # Set up a mask to zero out points outside the ROR
+    if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
+        raise ValueError('Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.')
+
     num_recon_rows, num_recon_cols = recon_shape[:2]
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
 
     radius = max(row_center, col_center)
+
+    crop_radius = int(radius * crop_radius_fraction)
+    crop_radius = max(crop_radius, crop_radius_pixels)
+    crop_radius = max(crop_radius, 0)
+    radius -= crop_radius
 
     col_coords = np.arange(num_recon_cols) - col_center
     row_coords = np.arange(num_recon_rows) - row_center
