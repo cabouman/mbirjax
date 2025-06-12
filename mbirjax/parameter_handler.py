@@ -314,11 +314,13 @@ class ParameterHandler:
 
         return True
 
-    def save_params(self, filename=None):
+    @staticmethod
+    def save_params(params, filename=None):
         """
         Serialize parameters to YAML. If filename is provided, write to file; otherwise return YAML text.
 
         Args:
+            params (dict): The parameters dict from a TomographyModel
             filename (str or None): Path to save YAML file (must end in .yml/.yaml). If None, return YAML string.
 
         Returns:
@@ -328,7 +330,7 @@ class ParameterHandler:
             ValueError: If filename is invalid.
         """
         # Prepare parameter dict
-        output_params = copy.deepcopy(self.params)
+        output_params = copy.deepcopy(params)
         for key in output_params:
             output_params[key] = ParameterHandler.serialize_parameter(output_params[key])
 

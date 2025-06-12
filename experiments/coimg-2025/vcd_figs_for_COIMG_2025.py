@@ -46,12 +46,14 @@ if __name__ == "__main__":
     # ##########################
     # Perform default VCD reconstruction
     print('Starting default sequence')
-    recon_default, recon_params_default = ct_model.recon(sinogram, max_iterations=max_iterations,
+    init_recon = np.zeros(phantom.shape)
+    recon_default, recon_dict_default = ct_model.recon(sinogram, init_recon=init_recon, max_iterations=max_iterations,
                                                          compute_prior_loss=True)
-    fm_rmse_default = recon_params_default.fm_rmse
-    prior_loss_default = recon_params_default.prior_loss
-    partition_sequence = recon_params_default.partition_sequence
-    granularity = np.array(recon_params_default.granularity)
+    recon_params_default = recon_dict_default['recon_params']
+    fm_rmse_default = recon_params_default['fm_rmse']
+    prior_loss_default = recon_params_default['prior_loss']
+    partition_sequence = recon_params_default['partition_sequence']
+    granularity = np.array(recon_params_default['granularity'])
     granularity_sequence_default = granularity[partition_sequence]
     label_default = 'VCD'  # 'Base: ' + str(granularity_sequence_default)
 
@@ -60,12 +62,13 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_1)
     granularity = np.array(granularity_alt_1)
     ct_model.set_params(granularity=granularity)
-    recon_alt_1, recon_params_alt_1 = ct_model.recon(sinogram, max_iterations=max_iterations,
+    recon_alt_1, recon_dict_alt_1 = ct_model.recon(sinogram, init_recon=init_recon, max_iterations=max_iterations,
                                                      compute_prior_loss=True)
-    fm_rmse_alt_1 = recon_params_alt_1.fm_rmse
-    prior_loss_alt_1 = recon_params_alt_1.prior_loss
-    partition_sequence = recon_params_alt_1.partition_sequence
-    granularity = np.array(recon_params_alt_1.granularity)
+    recon_params_alt_1 = recon_dict_alt_1['recon_params']
+    fm_rmse_alt_1 = recon_params_alt_1['fm_rmse']
+    prior_loss_alt_1 = recon_params_alt_1['prior_loss']
+    partition_sequence = recon_params_alt_1['partition_sequence']
+    granularity = np.array(recon_params_alt_1['granularity'])
     granularity_sequence_alt_1 = granularity[partition_sequence]
     label_alt_1 = 'Gradient descent'  # 'alt_1: ' + str(granularity_sequence_alt_1)
 
@@ -74,12 +77,13 @@ if __name__ == "__main__":
     ct_model.set_params(partition_sequence=partition_sequence_alt_2)
     granularity = np.array(granularity_alt_2)
     ct_model.set_params(granularity=granularity)
-    recon_alt_2, recon_params_alt_2 = ct_model.recon(sinogram, max_iterations=max_iterations,
+    recon_alt_2, recon_dict_alt_2 = ct_model.recon(sinogram, init_recon=init_recon, max_iterations=max_iterations,
                                                      compute_prior_loss=True)
-    fm_rmse_alt_2 = recon_params_alt_2.fm_rmse
-    prior_loss_alt_2 = recon_params_alt_2.prior_loss
-    partition_sequence = recon_params_alt_2.partition_sequence
-    granularity = np.array(recon_params_alt_2.granularity)
+    recon_params_alt_2 = recon_dict_alt_2['recon_params']
+    fm_rmse_alt_2 = recon_params_alt_2['fm_rmse']
+    prior_loss_alt_2 = recon_params_alt_2['prior_loss']
+    partition_sequence = recon_params_alt_2['partition_sequence']
+    granularity = np.array(recon_params_alt_2['granularity'])
     granularity_sequence_alt_2 = granularity[partition_sequence]
     label_alt_2 = 'ICD'  # 'alt_2: ' + str(granularity_sequence_alt_2)
     # ##########################
