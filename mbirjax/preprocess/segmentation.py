@@ -1,5 +1,6 @@
 import numpy as np
 from jax import numpy as jnp
+import mbirjax as mj
 
 
 def multi_threshold_otsu(image, classes=2, num_bins=256):
@@ -34,7 +35,7 @@ def multi_threshold_otsu(image, classes=2, num_bins=256):
         raise ValueError("Number of bins must be at least equal to number of classes")
 
     # Compute the histogram of the image
-    hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
+    hist, bin_edges = histogram_with_mask(image, bins=num_bins) #np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
@@ -214,3 +215,30 @@ def segment_plastic_metal(recon):
     metal_scale = _compute_scaling_factor(recon, metal_mask)
 
     return plastic_mask, metal_mask, plastic_scale, metal_scale
+
+
+def histogram_with_mask(recon, crop_fraction=0.05, bins=None):
+    """
+    Calculate the histogram of the given recon restricted to a circular mask in the row and column direction and
+    cropped in the slice direction.  The mask is the largest possible inscribed circle minus the specified crop
+    fraction.
+
+    Args:
+        recon (ndarray):  The volume to histogram
+        crop_fraction (float): Use (1 - crop_fraction) * radius to reduce the radius of the mask and (1 - crop_fraction) * num_slices to determine the new number of slices.
+        bins (int): Number of bins to use in np.histogram.
+        range (tuple of floats): (min, max) to use in np.histogram
+
+    Returns:
+
+    """
+    # Get the ror mask
+    mask = mj.get_2d_ror_mask(recon.shape, crop_radius_fraction=crop_fraction)
+    num_slices_to_crop = int(np.ceil(recon.shape[2] * crop_fraction))
+    start_slice = (num_slices_to_crop + 1) // 2
+    cropped_recon = recon[mask==1]
+    cropped_region = recon[:, :, start_slice:-start_slice]
+
+    # Compute the histogram of the image
+    hist, bin_edges = np.histogram(cropped_region, bins=bins, range=(np.min(cropped_region), np.max(cropped_region)))
+    return hist, bin_edges
