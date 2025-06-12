@@ -26,13 +26,13 @@ Select a GPU as runtime type for best performance.
 import numpy as np
 import time
 import pprint
-import jax.numpy as jnp
 import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-geometry_type = 'parallel'  # 'cone' or 'parallel'
+model_type = 'parallel'  # 'cone' or 'parallel'
+object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
@@ -40,70 +40,41 @@ num_views = 64
 num_det_rows = 40
 num_det_channels = 128
 
-# For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
-# np.Inf is an allowable value, in which case this is essentially parallel beam
-source_detector_dist = 4 * num_det_channels
-source_iso_dist = source_detector_dist
+# Generate simulated data
+# In a real application you would not have the phantom, but we include it here for later display purposes
+phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
 
-# For cone beam reconstruction, we need a little more than 180 degrees for full coverage.
-if geometry_type == 'cone':
-    detector_cone_angle = 2 * np.arctan2(num_det_channels / 2, source_detector_dist)
-else:
-    detector_cone_angle = 0
-start_angle = -(np.pi + detector_cone_angle) * (1/2)
-end_angle = (np.pi + detector_cone_angle) * (1/2)
-
-"""**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
-
-Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
-
-"""
-
-# Initialize sinogram
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
-
-if geometry_type == 'cone':
-    ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-elif geometry_type == 'parallel':
-    ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
-else:
-    raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
-
-# Generate 3D Shepp Logan phantom
-print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
-
-# Generate synthetic sinogram data
-print('Creating sinogram')
-sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.asarray(sinogram)
-
-# View sinogram
-title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
-mj.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
+# View the sinogram
+title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
+mj.slice_viewer(sinogram, attribute_dicts=params, slice_axis=0, title='Sino', slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
 # ####################
-# Initialize the model for reconstruction.
-if geometry_type == 'cone':
-    ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+# Get the required parameters and initialize the model for reconstruction.
+angles = params['angles']
+
+if model_type == 'cone':
+    source_detector_dist = params['source_detector_dist']
+    source_iso_dist = params['source_iso_dist']
+    ct_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 else:
-    ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
+    ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
 weights = None
-# weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+# weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.
 # Decrease by 1 or 2 to get softer edges and smoother interiors.
 sharpness = 0.0
-ct_model_for_recon.set_params(sharpness=sharpness)
+ct_model.set_params(sharpness=sharpness)
 
 # Print out model parameters
-ct_model_for_recon.print_params()
+ct_model.print_params()
 
 """**Do the reconstruction and display the results.**"""
 
@@ -111,29 +82,48 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights)
-recon_params = recon_dict['recon_params']
+
+# ct_model.recon returns the estimated object along with a dictionary with entries
+# 'recon_params', 'model_params', 'logs', and 'notes'
+# recon and recon_dict can be used together for viewing and saving to an hdf5 file.
+# Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
+# or to recreate the model if desired.
+recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
 recon.block_until_ready()
 elapsed = time.time() - time0
 # ##########################
 
-# Print parameters used in recon
-pprint.pprint(recon_params, compact=True)
-
 max_diff = np.amax(np.abs(phantom - recon))
-print('Geometry = {}'.format(geometry_type))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
 pct_95 = np.percentile(np.abs(recon - phantom), 95)
-print('NRMSE between recon and phantom = {}'.format(nrmse))
-print('Maximum pixel difference between phantom and recon = {}'.format(max_diff))
-print('95% of recon pixels are within {} of phantom'.format(pct_95))
+
+# Add some notes to include for display and saving
+recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
+recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
+recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
 
 mj.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
-title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
+title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
+mj.slice_viewer(recon, attribute_dicts=[ recon_dict], title='Recon')
 mj.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title)
+
+# recon and recon_dict can be saved from the viewer or directly in code
+filepath = './output/demo1_recon.h5'
+ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+
+print('recon and recon_dict saved to {}'.format(filepath))
+
+# The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
+#  the model if desired. The load function can be used even without an existing instance of a ct model.
+new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
+
+print('recon and recon_dict loaded from {}'.format(filepath))
+print('New model created: {}'.format(new_model.get_params('geometry_type')))
+
+# From this you could view again, restart the recon from the previous iteration, etc.
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
