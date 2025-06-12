@@ -48,7 +48,7 @@ phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-mj.slice_viewer(sinogram, attribute_dicts=params, slice_axis=0, title='Sino', slice_label='View')
+mj.slice_viewer(sinogram, attribute_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
@@ -108,7 +108,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
-mj.slice_viewer(recon, attribute_dicts=[ recon_dict], title='Recon')
 mj.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title)
 
 # recon and recon_dict can be saved from the viewer or directly in code
