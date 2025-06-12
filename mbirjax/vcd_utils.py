@@ -1,9 +1,97 @@
+import warnings
+from enum import Enum
+from typing import Union
 import numpy as np
 import jax.numpy as jnp
 import jax
+import mbirjax as mj
 import mbirjax.bn256 as bn
-import warnings
 import mbirjax.preprocess as mjp
+
+
+class ObjectType(str, Enum):
+    SHEPP_LOGAN = 'shepp-logan'
+    CUBE = 'cube'
+
+class ModelType(str, Enum):
+    PARALLEL = 'parallel'
+    CONE = 'cone'
+
+
+def generate_demo_data(
+    object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
+    model_type: Union[ModelType, str] = ModelType.CONE,
+    num_views: int = 64,
+    num_det_rows: int = 40,
+    num_det_channels: int = 128
+) -> (np.ndarray, np.ndarray):
+    """
+    Create a simple object and a sinogram for demonstration purposes.
+
+    This function will create a 3D volume (aka object or phantom) of the specified type, then use the model type and
+    parameters to create a simulated sinogram.  The object type 'shepp-logan' gives a simplified version of the
+    classic Shepp-Logan test phantom, and type 'cube' gives a simple cube object.
+
+    The output sinogram is a 3D numpy array with shape (num_views, num_det_rows, num_det_channels).  Each 2D array
+    sinogram[view_index] is a simulated image from the detector, with num_det_rows indicating the vertical size
+    and num_det_channels representing the horizontal size.
+
+    Args:
+        object_type (str, optional): One of 'shepp-logan' or 'cube'.  Defaults to 'shepp-logan'.
+        model_type (str, optional): One of 'parallel' or 'cone'.  Defaults to 'cone'.
+        num_views (int, optional):  Number of views in the output sinogram.  Defaults to 64.
+        num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 40.
+        num_det_channels (int, optional): Number of channels (horizontal) in the output sinogram.  Defaults to 128.
+
+    Returns:
+        tuple: (object, sinogram, params)
+            - object (np.ndarray): a volume with shape (num_det_channels, num_det_channels, num_det_rows)
+            - sinogram (np.ndarray): a sinogram with shape (num_views, num_det_rows, num_det_channels)
+            - params (dict): a dict containing 'angles' and, if model_type is 'cone', then also 'source_detector_dist' and 'source_iso_dist'
+    """
+    # Coerce types to Enum
+    object_type = ObjectType(object_type)
+    model_type = ModelType(model_type)
+
+    # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
+    # np.Inf is an allowable value, in which case this is essentially parallel beam
+    source_detector_dist = 4 * num_det_channels
+    source_iso_dist = source_detector_dist
+
+    start_angle = -np.pi
+    end_angle = np.pi
+
+    # Initialize model
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
+    angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+
+    if model_type == ModelType.CONE:
+        ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                                   source_iso_dist=source_iso_dist)
+        params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist}
+    elif model_type == ModelType.PARALLEL:
+        ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
+        params = {'angles': angles}
+    else:
+        raise ValueError(f'Invalid model type. Expected one of {[m.value for m in ModelType]}, got {model_type}')
+
+    # Generate phantom
+    print('Creating phantom')
+    recon_shape = ct_model_for_generation.get_params('recon_shape')
+    device = ct_model_for_generation.main_device
+    if object_type == ObjectType.SHEPP_LOGAN:
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
+    elif object_type == ObjectType.CUBE:
+        phantom = gen_cube_phantom(recon_shape, device=device)
+    else:
+        raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
+
+    # Generate synthetic sinogram data
+    print('Creating sinogram')
+    sinogram = ct_model_for_generation.forward_project(phantom)
+    sinogram = np.asarray(sinogram)
+
+    return phantom, sinogram, params
 
 
 def stitch_arrays(array_list, overlap_length, axis=2):
@@ -527,4 +615,3 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
 
     return weights
-
