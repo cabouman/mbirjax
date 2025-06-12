@@ -3,7 +3,7 @@ from jax import numpy as jnp
 import mbirjax as mj
 
 
-def multi_threshold_otsu(image, classes=2, num_bins=256):
+def multi_threshold_otsu(image, classes=2, num_bins=1024):
     """
     Segment an image into multiple intensity classes using Otsu's method.
 
@@ -43,7 +43,11 @@ def multi_threshold_otsu(image, classes=2, num_bins=256):
     # Convert histogram bin indices to original image values
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     scaled_thresholds = [bin_centers[t] for t in thresholds]
+    print(scaled_thresholds)
 
+    import matplotlib.pyplot as plt
+    plt.bar(bin_edges[:-1], hist, width=np.diff(bin_edges), edgecolor="black", align="edge")
+    plt.show(block=True)
     return scaled_thresholds
 
 
@@ -205,6 +209,15 @@ def segment_plastic_metal(recon):
     thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
+    #
+    # t0 = 0.001
+    # t1 = 0.0275
+    # t2 = 0.0645
+    # recon_0 = recon * (recon > t0) * (recon < t1)
+    # recon_1 = recon * (recon > t1) * (recon < t2)
+    # recon_2 = recon * (recon > t2)
+    # import mbirjax
+    # mbirjax.slice_viewer(recon_0, recon_1, recon_2)
 
     # Create masks
     plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
@@ -245,6 +258,4 @@ def histogram_with_mask(recon, crop_fraction=0.05, bins=None):
 
     # Compute the histogram of the image
     hist, bin_edges = np.histogram(cropped_region, bins=bins, range=(np.min(cropped_region), np.max(cropped_region)))
-    import matplotlib.pyplot as plt
-    plt.bar(bin_edges[:-1], hist, width=np.diff(bin_edges), edgecolor="black", align="edge")
     return hist, bin_edges
