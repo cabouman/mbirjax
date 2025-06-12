@@ -112,10 +112,7 @@ class TestProjectors(unittest.TestCase):
 
             # Load the model
             new_model = self.get_model(geometry_type)
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                new_model = new_model.from_file(filename)
+            new_model = new_model.from_file(filename)
 
         # Compare parameters
         same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)

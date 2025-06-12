@@ -307,8 +307,11 @@ class TomographyModel(ParameterHandler):
         required_params, params = ParameterHandler.load_param_dict(source, required_param_names, values_only=True)
 
         # Get an instance with the required parameters, then set any optional parameters
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            new_model = cls(**required_params)
+            new_model.set_params(**params)
         return new_model
 
     def to_file(self, filename):
