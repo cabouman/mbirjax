@@ -255,7 +255,7 @@ class TestProjectors(unittest.TestCase):
         y_Ax = jnp.sum(y * Ax)
 
         # Determine if property holds
-        adjoint_test_result = np.allclose(Aty_x, y_Ax)
+        adjoint_test_result = np.allclose(Aty_x, y_Ax, rtol=1e-6)
         print("maximum difference = ", np.max(Aty_x - y_Ax))
         print("minimum difference = ", np.min(Aty_x - y_Ax))
         self.assertTrue(adjoint_test_result)
