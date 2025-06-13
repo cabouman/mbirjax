@@ -14,9 +14,10 @@ Display Functions
 -----------------
 
 .. autofunction:: mbirjax.viewer.slice_viewer
-.. automethod:: mbirjax.viewer.SliceViewer
 
 IO Functions
 ------------
 
 .. autofunction:: mbirjax.utilities.download_and_extract_tar
+.. autofunction:: mbirjax.utilities.save_data_hdf5
+.. autofunction:: mbirjax.utilities.load_data_hdf5

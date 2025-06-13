@@ -101,7 +101,7 @@ ct_model_for_recon.print_params()
 # Perform VCD reconstruction
 print('Starting recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=max_iterations,
+recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights, max_iterations=max_iterations,
                                                stop_threshold_change_pct=stop_threshold_change_pct)
 
 recon.block_until_ready()
@@ -109,7 +109,8 @@ elapsed = time.time() - time0
 # ##########################
 
 # Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
+recon_params = recon_dict['recon_params']
+pprint.pprint(recon_params, compact=True)
 
 max_diff = np.amax(np.abs(phantom - recon))
 print('Geometry = {}'.format(geometry_type))

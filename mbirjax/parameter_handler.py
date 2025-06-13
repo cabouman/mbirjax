@@ -3,15 +3,28 @@ import copy
 import logging
 import io
 from collections.abc import Iterable, Sized
+from typing import Literal, Union, Any, TextIO, overload
+import os
 
 import jax.numpy as jnp
 import numpy as np
 from ruamel.yaml import YAML
+
 from mbirjax._utils import Param
 import mbirjax as mj
 
 
-class ParameterHandler():
+ParamNames = Literal[
+    'geometry_type', 'file_format', 'sinogram_shape', 'delta_det_channel',
+    'delta_det_row', 'det_row_offset', 'det_channel_offset', 'sigma_y',
+    'recon_shape', 'delta_voxel', 'sigma_x', 'sigma_prox',
+    'p', 'q', 'T', 'qggmrf_nbr_wts',
+    'auto_regularize_flag', 'positivity_flag', 'snr_db', 'sharpness',
+    'granularity', 'partition_sequence', 'verbose', 'use_gpu',
+]
+
+
+class ParameterHandler:
     array_prefix = ':ARRAY:'
 
     def __init__(self):
@@ -98,6 +111,7 @@ class ParameterHandler():
                 recompile_flag = entry.recompile_flag
                 print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
+        self.set_params(use_gpu=self.get_params('use_gpu'))
 
     @staticmethod
     def convert_arrays_to_strings(cur_params):
@@ -300,11 +314,13 @@ class ParameterHandler():
 
         return True
 
-    def save_params(self, filename=None):
+    @staticmethod
+    def save_params(params, filename=None):
         """
         Serialize parameters to YAML. If filename is provided, write to file; otherwise return YAML text.
 
         Args:
+            params (dict): The parameters dict from a TomographyModel
             filename (str or None): Path to save YAML file (must end in .yml/.yaml). If None, return YAML string.
 
         Returns:
@@ -314,7 +330,7 @@ class ParameterHandler():
             ValueError: If filename is invalid.
         """
         # Prepare parameter dict
-        output_params = copy.deepcopy(self.params)
+        output_params = copy.deepcopy(params)
         for key in output_params:
             output_params[key] = ParameterHandler.serialize_parameter(output_params[key])
 
@@ -334,13 +350,26 @@ class ParameterHandler():
             yaml_writer.dump(output_params, stream)
             return stream.getvalue()
 
+
     @staticmethod
-    def load_param_dict(filename, required_param_names=None, values_only=True):
+    @overload
+    def load_param_dict(source: str) -> dict: ...
+
+    @staticmethod
+    @overload
+    def load_param_dict(source: TextIO, required_param_names=None, values_only=True) -> tuple: ...
+
+    @staticmethod
+    @overload
+    def load_param_dict(source: io.StringIO, required_param_names=None, values_only=True) -> tuple: ...
+
+    @staticmethod
+    def load_param_dict(source: Union[str, TextIO, io.StringIO], required_param_names=None, values_only=True) -> tuple:
         """
-        Load parameter dictionary from yaml file.
+        Load parameters from a YAML file, a YAML string, or a file-like object.
 
         Args:
-            filename (str): Path to load to store the parameter dictionary.  Must end in .yml or .yaml
+            source: A filename (str), a YAML string (str), or a file-like object.  Filename must end in .yml or .yaml
             required_param_names (list of strings): List of parameter names that are required for a class.
             values_only (bool):  If True, then extract and return the values of each entry only.
 
@@ -349,15 +378,26 @@ class ParameterHandler():
             params (dict): Dictionary of all other parameters.
         """
         # Determine file type
-        if not filename.lower().endswith(('.yml', '.yaml')):
-            raise ValueError("Filename must end in .yml or .yaml")
+        yaml_stream: TextIO
 
-        # Save the full parameter dictionary
-        with open(filename, 'r') as file:
-            yaml_reader = YAML(typ="safe")
-            param_dict = yaml_reader.load(file)
-            param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
-            param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
+        if isinstance(source, str):
+            if os.path.exists(source):
+                if not source.lower().endswith(('.yml', '.yaml')):
+                    raise ValueError("Filename must end in .yml or .yaml")
+                with open(source, 'r') as f:
+                    contents = f.read()
+                    yaml_stream = io.StringIO(contents)
+            else:
+                yaml_stream = io.StringIO(source)
+        elif hasattr(source, 'read'):
+            yaml_stream = source
+        else:
+            raise TypeError("Invalid source type for load_param_dict. Must be str or file-like object.")
+        yaml_reader = YAML(typ="safe")
+        param_dict = yaml_reader.load(yaml_stream)
+
+        param_dict = {key: ParameterHandler.deserialize_parameter(val) for key, val in param_dict.items()}
+        param_dict = ParameterHandler.convert_strings_to_arrays(param_dict)
 
         # Convert any lists to tuples for consistency with save
         for key in param_dict.keys():
@@ -464,7 +504,7 @@ class ParameterHandler():
         return recompile_flag
 
     @staticmethod
-    def get_params_from_dict(param_dict, parameter_names):
+    def get_params_from_dict(param_dict, parameter_names: Union[str, list[str]]):
         """
         Get the values of the listed parameter names from the supplied dict.
         Raises an exception if a parameter name is not defined in parameters.
@@ -490,7 +530,7 @@ class ParameterHandler():
                 raise NameError('"{}" is not a recognized argument'.format(name))
         return values
 
-    def get_params(self, parameter_names):
+    def get_params(self, parameter_names: Union[ParamNames, list[ParamNames]]) -> Any:
         """
         Get the values of the listed parameter names from the internal parameter dictionary.
 

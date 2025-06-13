@@ -3,11 +3,17 @@ import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
 import warnings
-import mbirjax
-from mbirjax import tomography_utils, TomographyModel
+from typing import Literal, Union, overload, Any
+
+import numpy
+
+import mbirjax as mj
+from mbirjax import TomographyModel, tomography_utils
+
+ConeBeamParamNames = mj.ParamNames | Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
 
-class ConeBeamModel(mbirjax.TomographyModel):
+class ConeBeamModel(TomographyModel):
     """
     A class designed for handling forward and backward projections in a cone beam geometry, extending the
     :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for cone beam setups.
@@ -48,6 +54,12 @@ class ConeBeamModel(mbirjax.TomographyModel):
 
         super().__init__(sinogram_shape, angles=angles, source_detector_dist=source_detector_dist,
                          source_iso_dist=source_iso_dist, view_params_name=view_params_name, recon_slice_offset=0.0)
+
+    @overload
+    def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
+
+    def get_params(self, parameter_names) -> Any:
+        return super().get_params(parameter_names)
 
     def get_magnification(self):
         """

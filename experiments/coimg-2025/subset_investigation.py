@@ -114,7 +114,7 @@ if __name__ == "__main__":
         num_small_tiles = [np.ceil(image_shape[k] / small_tile_side).astype(int) for k in [0, 1]]
         perms = [np.arange(num_subsets) for j in np.arange(np.prod(num_small_tiles))]
         perms = np.array(perms).T
-        small_tile_corners = np.meshgrid(np.arange(num_small_tiles[0]), np.arange(num_small_tiles[1]))
+        small_tile_corners = list(np.meshgrid(np.arange(num_small_tiles[0]), np.arange(num_small_tiles[1])))
         small_tile_corners[0] *= small_tile_side
         small_tile_corners[1] *= small_tile_side
         tile_inds = np.unravel_index(perms, (small_tile_side, small_tile_side))

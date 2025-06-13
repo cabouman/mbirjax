@@ -87,9 +87,10 @@ ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_di
                                             source_iso_dist=source_iso_dist)
 ct_model_for_recon.set_params(sharpness=sharpness)
 
-recon_correct, recon_params_correct = ct_model_for_recon.recon(sinogram)
+recon_correct, recon_dict_correct = ct_model_for_recon.recon(sinogram)
 
-pprint.pprint(recon_params_correct._asdict(), compact=True)
+recon_params_correct = recon_dict_correct['recon_params']
+pprint.pprint(recon_params_correct, compact=True)
 
 """**Do a reconstruction with angles in reverse order.**"""
 
@@ -97,14 +98,15 @@ print('\nStarting recon with incorrect rotation\n')
 angles_reversed = angles[::-1]
 ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles_reversed, source_detector_dist=source_detector_dist,
                                             source_iso_dist=source_iso_dist)
-recon_incorrect, recon_params_incorrect = ct_model_for_recon.recon(sinogram)
+recon_incorrect, recon_dict_incorrect = ct_model_for_recon.recon(sinogram)
 
-pprint.pprint(recon_params_incorrect._asdict(), compact=True)
+recon_params_incorrect = recon_dict_incorrect['recon_params']
+pprint.pprint(recon_params_incorrect, compact=True)
 
 """**Display the results with correct and incorrect angles.**"""
 
 title = 'Correct rotation recon (left) vs incorrect rotation recon (right)'
 title += '\nThe incorrect angle specification leads to shape distortion and top/bottom reflection.'
-mj.slice_viewer(recon_correct, recon_incorrect, title=title, vmin=0.0, vmax=1.0)
+mj.slice_viewer(recon_correct, recon_incorrect, attribute_dicts=[recon_dict_correct, recon_dict_incorrect], title=title, vmin=0.0, vmax=1.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

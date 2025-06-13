@@ -2,24 +2,25 @@ import io
 import types
 import warnings
 import inspect
-import time  # Used for debugging/performance tuning
 import os
+from collections import namedtuple
+import subprocess
+import re
+from typing import Literal, Union, overload
+import datetime
+import time  # Used for debugging/performance tuning
 
 from ruamel.yaml import YAML
-import h5py
 import numpy as np
-
 from jax.errors import JaxRuntimeError
 
-num_cpus = 3 * os.cpu_count() // 4
-os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
+# num_cpus = 3 * os.cpu_count() // 4
+# os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
-from collections import namedtuple
-import subprocess
-import re
+
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
@@ -27,6 +28,8 @@ os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
 ReconParams = namedtuple('ReconParams', recon_param_names)
+
+TomographyParamNames = mj.ParamNames | Literal['view_params_name']
 
 
 class TomographyModel(ParameterHandler):
@@ -109,6 +112,12 @@ class TomographyModel(ParameterHandler):
 
         return names
 
+    @overload
+    def get_params(self, parameter_names: Union[TomographyParamNames, list[TomographyParamNames]]): ...
+
+    def get_params(self, parameter_names):
+        return super().get_params(parameter_names)
+
     def set_devices_and_batch_sizes(self):
         """
         Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
@@ -121,7 +130,6 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
-
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
@@ -284,28 +292,32 @@ class TomographyModel(ParameterHandler):
         return
 
     @classmethod
-    def from_file(cls, filename):
+    def from_file(cls, source):
         """
-        Construct a ParallelBeamModel from parameters saved using save_params()
+        Construct a TomographyModel from parameters saved using :meth:`to_file`
 
         Args:
-            filename (str): Name of the file containing parameters to load.
+            source: A filename (str), a YAML string (str), or a file-like object.  Filename must end in .yml or .yaml
 
         Returns:
             ParallelBeamModel with the specified parameters.
         """
         # Load the parameters and separate into required and optional
         required_param_names = cls.get_required_param_names()
-        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
+        required_params, params = ParameterHandler.load_param_dict(source, required_param_names, values_only=True)
 
         # Get an instance with the required parameters, then set any optional parameters
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            new_model = cls(**required_params)
+            new_model.set_params(**params)
         return new_model
 
     def to_file(self, filename):
         """
-        Save parameters to yaml file.
+        Save all parameters of the current TomographyModel to yaml file or string.  The resulting file can be loaded using
+        :meth:`from_file` to construct a new TomographyModel of the same type and with the same parameters.
 
         Args:
             filename (str or None): Path to file to store the parameter dictionary.  Must end in .yml or .yaml if a string.
@@ -314,115 +326,149 @@ class TomographyModel(ParameterHandler):
         Returns:
             A string if filename=None; None if the filename is given and also creates or overwrites the specified file.
         """
-        return self.save_params(filename)
+        return self.save_params(self.params, filename)
 
-    @staticmethod
-    def load_recon_from_hdf5(file_path):
+    def get_recon_dict(self, recon_params=None, notes=None, save_log=True, save_model=True, str_format=False):
         """
-        Load a reconstructed image from an HDF5 file.
+        Encapsulate the recon parameters, logs, notes, and optionally all model parameters to a text-based dict
+        with entries 'recon_params', 'recon_log', 'notes', and optionally 'model_params'.  This dict can be used with
+        :func:`mbirjax.viewer.slice_viewer` and :meth:`TomographyModel.save_recon_hdf5`.
 
-        This function loads a reconstruction volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
-        It assumes that the reconstruction data is stored under the key 'recon' in the root group.
+        This dict from this function is returned by :meth:`TomographyModel.recon`.
 
         Args:
-            file_path (str): Path to the HDF5 file containing the reconstructed volume.
+            recon_params (dict, optional): dict of reconstruction parameters. Defaults to None.
+            notes (str, optional): User-supplied notes to attach to the dataset. Defaults to None.
+            save_log (bool, optional): If True, saves the internal log buffer (if available). Defaults to True.
+            save_model (bool, optional): If True, saves the model parameters as a YAML string. Defaults to True.
+            str_format (bool, optional): If True, then each top level entry is a string, which is a yaml string when the entries could be saved as a dict.
 
         Returns:
-            numpy.ndarray: Reconstructed volume as a NumPy array with shape (num_rows, num_cols, num_slices).
-
-        Raises:
-            FileNotFoundError: If the file does not exist.
-            KeyError: If the expected 'recon' dataset is not found in the file.
+            dict: A dict with entries
+                 - 'recon_params'
+                 - 'notes'
+                 - 'recon_log'
+                 - 'model_params'.
 
         Example:
-            >>> recon = load_recon_from_hdf5("output/recon_volume.h5")
-            >>> recon.shape
-            (64, 256, 256)
+            >>> recon, recon_dict = ct_model.recon(sinogram)
+            >>> print(recon_dict['recon_log'])
         """
-        with h5py.File(file_path, "r") as f:
-            array_names = [key for key in f.keys()]
-            if len(array_names) > 1:
-                raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
-            name = array_names[0]
-            recon_dict = dict()
-            recon_dict['recon'] = f[name][()]
-            for name in f[name].attrs.keys():
-                recon_dict[name] = f[name].attrs[name]
 
-            return recon_dict
+        # Create the attribute dictionary
+        recon_dict = dict()
+        if recon_params is None:
+            recon_dict['recon_params'] = "# Recon params not saved."
+        else:
+            recon_dict['recon_params'] = recon_params
 
-    def save_recon_to_hdf5(self, filepath, recon, recon_params=None, notes=None, save_log=True, save_model=True):
+        if self.log_buffer is None or not save_log:
+            recon_dict['recon_log'] = "# Log info not saved."
+        else:
+            recon_dict['recon_log'] = self.log_buffer.getvalue()
+
+        if notes is None:
+            notes = '# No notes saved'
+        recon_dict['notes'] = notes
+
+        # Optionally save model parameters to YAML
+        if save_model:
+            recon_dict['model_params'] = self.params.copy()
+        else:
+            recon_dict['model_params'] = '# Model not saved'
+
+        if str_format:
+            recon_dict = self.convert_subdicts_to_strings(recon_dict)
+
+        return recon_dict
+
+    @staticmethod
+    def convert_subdicts_to_strings(recon_dict):
+        """Serialize the entries in the recon_dict to strings"""
+        if isinstance(recon_dict, dict):
+            string_dict = recon_dict.copy()
+            yaml_writer = YAML()
+            for key, value in string_dict.items():
+                if key == 'model_params' and isinstance(string_dict['model_params'], dict):
+                    # 'model_params' must be handled separately to guarantee the ability to reload
+                    string_dict['model_params'] = ParameterHandler.save_params(string_dict['model_params'])
+                elif isinstance(value, dict):
+                    # Otherwise convert dicts to yaml strings
+                    buf = io.StringIO()
+                    yaml_writer.dump(value, buf)
+                    string_dict[key] = buf.getvalue()
+                else:
+                    try:
+                        string_dict[key] = str(value)
+                    except:
+                        raise ValueError('Entries in recon_dict must be strings or dicts that can be converted to strings')
+        else:
+            string_dict = recon_dict
+
+        return string_dict
+
+    def save_recon_hdf5(self, filepath, recon, recon_dict=None):
         """
-        Save the reconstruction array, its parameters, and optionally the full model to an HDF5 file.
+        Save the reconstruction array and optionally the recon_dict from :meth:`recon`.
 
-        The file will contain a single dataset named 'recon', with metadata stored as HDF5 attributes:
-        'recon_params', 'recon_log', 'notes', and optionally 'model_params'.
+        This method creates a file that contains a single dataset named 'recon', with the entries in recon_dict
+        serialized to strings and saved as hdf5 dataset attributes.
+
+        The resulting file can be loaded with :meth:`load_recon_hdf5` or :meth:`mbirjax.viewer.slice_viewer`.
 
         Args:
             filepath (str or Path): Path to the output HDF5 file. Should typically end with a .h5 extension.
             recon (array-like): The reconstruction volume as a NumPy or JAX array.
-            recon_params (ReconParams, optional): Named tuple of reconstruction parameters. Defaults to None.
-            notes (str, optional): User-supplied notes to attach to the dataset. Defaults to None.
-            save_log (bool, optional): If True, saves the internal log buffer (if available). Defaults to True.
-            save_model (bool, optional): If True, saves the model parameters as a YAML string. Defaults to True.
+            recon_dict (dict or None, optional): The dictionary of recon attributes from :meth:`get_recon_dict`
 
         Raises:
             Exception: If saving the file or directory creation fails.
 
         Example:
-            >>> recon, recon_params = ct_model.recon(sinogram)
-            >>> ct_model.save_recon_to_hdf5("output/my_recon.h5", recon, recon_params=recon_params, notes="Test scan")
+            >>> recon, recon_dict = ct_model.recon(sinogram)
+            >>> recon_dict['notes'] += 'Test scan'
+            >>> ct_model.save_recon_hdf5("output/my_recon.h5", recon, recon_dict=recon_dict)
         """
-        # Ensure output directory exists
-        mj.makedirs(filepath)
-
-        # Open HDF5 file for writing
-        with h5py.File(filepath, 'w') as f:
-            # Save reconstruction array
-            arr = np.array(recon)
-            recon_data = f.create_dataset('recon', data=arr)
-
-            # Save reconstruction parameters as attributes
-            yaml = YAML()
-            yaml.default_flow_style = False
-            if recon_params is None:
-                recon_params_string = "# Recon params not saved."
-            else:
-                buf = io.StringIO()
-                yaml.dump(recon_params._asdict(), buf)
-                recon_params_string = buf.getvalue()
-            recon_data.attrs['recon_params'] = recon_params_string
-
-            log_text = "# Log info not saved."
-            if save_log and self.log_buffer is not None:
-                log_text = self.log_buffer.getvalue()
-            recon_data.attrs['recon_log'] = log_text
-
-            if notes is None:
-                notes = '# No notes saved'
-            recon_data.attrs['notes'] = notes
-
-            # Optionally save model YAML
-            if save_model:
-                try:
-                    # to_file(None) should return YAML text
-                    model_yaml = self.to_file(None)
-                except TypeError:
-                    # Fallback: write to temp YAML then read
-                    tmp_yaml = filepath + '.yaml'
-                    self.to_file(tmp_yaml)
-                    with open(tmp_yaml, 'r') as yf:
-                        model_yaml = yf.read()
-                    os.remove(tmp_yaml)
-            else:
-                model_yaml = '# Model not saved'
-
-            # Store YAML as a string dataset
-            recon_data.attrs['model_params'] = model_yaml
+        arr = np.array(recon)
+        mj.save_data_hdf5(filepath, arr, 'recon', recon_dict)
 
         # Log the save
         if self.logger:
             self.logger.info(f"Saved reconstruction and params to '{filepath}'")
+
+    @staticmethod
+    def load_recon_hdf5(filepath, recreate_model=False):
+        """
+        This function loads a numpy array stored in an HDF5 file created by :meth:`save_recon_hdf5`.
+        It also loads any associated attribute dict and can use the model parameters in that dict to create a new model.
+
+        Args:
+            filepath (str): Path to the HDF5 file containing the reconstructed volume.
+            recreate_model (bool, optional): If True, then use the recon_dict to recreate the model used for the recon.
+
+        Returns:
+            (recon, recon_dict) or (recon, recon_dict, ct_model) if recreate_model=True
+                - recon (ndarray): The tensor saved by save_data_hdf5()
+                - recon_dict (dict): A dict with the attributes for the data array as in :meth:`get_recon_dict`
+                - ct_model (TomographyModel): A model of the type and paramters encoded in recon_dict.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            ValueError: If more than one dataset is not found in the file.
+
+        Example:
+            >>> recon, recon_dict = ct_model.load_recon_hdf5("output/recon_volume.h5")
+            >>> recon.shape
+            (64, 256, 256)
+        """
+        recon, recon_dict = mj.load_data_hdf5(filepath)
+        if not recreate_model:
+            return recon, recon_dict
+
+        model_yaml = recon_dict['model_params']
+        class_name = model_yaml.split("<class '")[1].split("'>")[0].split(".")[-1]
+        ct_model = getattr(mj, class_name).from_file(model_yaml)
+        return recon, recon_dict, ct_model
 
     def create_projectors(self):
         """
@@ -758,7 +804,7 @@ class TomographyModel(ParameterHandler):
         RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
         regularization_param_values = [float(val) for val in self.get_params(
             regularization_param_names)]  # These should be floats, but the user may have set them to jnp.float
-        regularization_params = RegularizationParams(*tuple(regularization_param_values))
+        regularization_params = RegularizationParams(*tuple(regularization_param_values))._asdict()
 
         return regularization_params
 
@@ -952,8 +998,13 @@ class TomographyModel(ParameterHandler):
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
         Returns:
-            [recon, recon_params]: reconstruction and a named tuple containing the recon parameters.
-            recon_params (namedtuple): max_iterations, granularity, partition_sequence, fm_rmse, prior_loss, regularization_params
+            (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
+                - recon (jax array): the reconstruction volume
+                - recon_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
+                    * 'recon_params'
+                    * 'notes'
+                    * 'recon_logs'
+                    * 'model_params'
         """
         if num_iterations is not None:
             warnings.warn('num_iterations has been deprecated and will be removed in a future release.\n'
@@ -1012,8 +1063,8 @@ class TomographyModel(ParameterHandler):
             alpha_values = [float(val) for val in loss_vectors[3]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params._asdict(), stop_threshold_change_pct, alpha_values]
-            recon_params = ReconParams(*tuple(recon_param_values))
+                                  regularization_params, stop_threshold_change_pct, alpha_values]
+            recon_params = ReconParams(*tuple(recon_param_values))._asdict()
 
         except MemoryError as e:
             self.logger.error('Insufficient CPU memory')
@@ -1037,7 +1088,9 @@ class TomographyModel(ParameterHandler):
         if logfile_path:
             self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
 
-        return recon, recon_params
+        notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
+        recon_dict = self.get_recon_dict(recon_params, notes=notes)
+        return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):

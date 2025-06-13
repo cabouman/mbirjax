@@ -77,9 +77,9 @@ if __name__ == "__main__":
         parallel_model.set_params(partition_sequence=sequence)
         cur_residual = np.zeros((max_iterations,) + phantom.shape[0:2])
         cur_recon = np.zeros((max_iterations,) + phantom.shape[0:2])
-        recon = None
+        recon = np.zeros(phantom.shape)
         for iteration in range(max_iterations):
-            recon, cur_recon_params = parallel_model.recon(sinogram, max_iterations=iteration + 1,
+            recon, cur_recon_dict = parallel_model.recon(sinogram, max_iterations=iteration + 1,
                                                            first_iteration=iteration, init_recon=recon,
                                                            compute_prior_loss=True)
             cur_residual[iteration] = recon[:, :, 0] - phantom[:, :, 0]
@@ -114,9 +114,9 @@ if __name__ == "__main__":
     # mbirjax.slice_viewer(vcd_recons, icd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, icd right', slice_label='Iteration')
     # mbirjax.slice_viewer(vcd_residual, icd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, icd right', slice_label='Iteration')
     # mbirjax.slice_viewer(vcd_residual_fft, icd_residual_fft, title='Residual |FFT| in dB\nVCD left, ICD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
-
-    # fm_rmse_vcd = cur_recon_params.fm_rmse
-    # prior_loss_vcd = cur_recon_params.prior_loss
+    # cur_recon_params = cur_recon_dict['recon_params']
+    # fm_rmse_vcd = cur_recon_params['fm_rmse']
+    # prior_loss_vcd = cur_recon_params['prior_loss']
     # default_partition_sequence = parallel_model.get_params('partition_sequence')
     # partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
     # granularity_sequence_vcd = granularity[partition_sequence]

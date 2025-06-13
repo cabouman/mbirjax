@@ -1,8 +1,10 @@
+import tempfile
+import unittest
 import numpy as np
 import jax
 import jax.numpy as jnp
+from ruamel.yaml import YAML
 import mbirjax
-import unittest
 
 
 class TestVCD(unittest.TestCase):
@@ -87,7 +89,7 @@ class TestVCD(unittest.TestCase):
         # Perform VCD reconstruction
         sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
-        recon, recon_params = ct_model.recon(sinogram)
+        recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
 
         max_diff = np.amax(np.abs(phantom - recon))
@@ -98,6 +100,19 @@ class TestVCD(unittest.TestCase):
         self.assertTrue(max_diff < tolerances['max_diff'] and
                         nrmse < tolerances['nrmse'] and
                         pct_95 < tolerances['pct_95'])
+
+        print('  Testing hdf5 save and load')
+        notes = "Testing save/load"
+        with tempfile.NamedTemporaryFile('w') as file:
+            filepath = file.name
+            ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+            loaded_recon, loaded_recon_dict, new_model = mbirjax.TomographyModel.load_recon_hdf5(str(filepath),
+                                                                                                 recreate_model=True)
+            loaded_notes = loaded_recon_dict['notes']
+
+            assert np.allclose(recon, loaded_recon)
+            assert np.allclose(ct_model.get_params('sigma_x'), new_model.get_params('sigma_x')) # just one representative parameter
+            assert recon_dict['notes'] == loaded_notes
 
 
 if __name__ == '__main__':

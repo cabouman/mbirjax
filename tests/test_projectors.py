@@ -1,9 +1,9 @@
+import tempfile
+import unittest
 import numpy as np
-import os
 import jax
 import jax.numpy as jnp
 import mbirjax
-import unittest
 
 
 class TestProjectors(unittest.TestCase):
@@ -122,21 +122,17 @@ class TestProjectors(unittest.TestCase):
         Aty = ct_model.reshape_recon(Aty)
 
         # Save the model
-        filename = 'saved_model_test.yaml'
-        ct_model.to_file(filename)
+        with tempfile.NamedTemporaryFile('w', suffix='.yaml') as file:
+            filename = file.name
+            ct_model.to_file(filename)
 
-        # Load the model
-        new_model = self.get_model(geometry_type)
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+            # Load the model
+            new_model = self.get_model(geometry_type)
             new_model = new_model.from_file(filename)
-        if os.path.exists(filename):
-            os.remove(filename)
 
         # Compare parameters
         same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
-        assert(same_params)
+        assert same_params
 
         # Do a forward and back projection with loaded model
         Ax_new = new_model.sparse_forward_project(voxel_values, indices)

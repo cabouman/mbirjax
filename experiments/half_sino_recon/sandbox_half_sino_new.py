@@ -87,7 +87,7 @@ max_diff = np.amax(np.abs(sinogram[:, :num_det_rows_half] - sinogram_top))
 mbirjax.slice_viewer(sinogram[:, :num_det_rows_half], sinogram_top, slice_axis=0,
                      title='Top part of native sinogram and half sinogram\nMax pixel diff = {:.3g}'.format(max_diff)  )
 
-full_recon, full_recon_params = ct_model.recon(full_sinogram)
+full_recon, full_recon_dict = ct_model.recon(full_sinogram)
 
 mbirjax.slice_viewer(phantom, full_recon, slice_axis=2)
 
@@ -134,7 +134,8 @@ for sinogram_half, sign in zip([sinogram[:, 0:num_det_rows_half], sinogram[:, -n
     # Perform VCD reconstruction
     print('Starting recon')
     time0 = time.time()
-    recon, recon_params = ct_model_for_half_recon.recon(sinogram_half)
+    recon, recon_dict = ct_model_for_half_recon.recon(sinogram_half)
+    recon_params = recon_dict['recon_params']
 
     recon.block_until_ready()
     elapsed = time.time() - time0
@@ -154,7 +155,7 @@ recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] = (1 - overlap_weigh
 recon[:, :, num_non_overlap_slices:-num_non_overlap_slices] += overlap_weights * recon_bottom[:, :, :num_overlap_slices]
 
 # Print parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
+pprint.pprint(recon_params, compact=True)
 
 max_diff = np.amax(np.abs(phantom - recon))
 print('Geometry = {}'.format(geometry_type))
@@ -168,7 +169,8 @@ mbirjax.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 print('Computing full recon for comparison')
-full_recon, full_params = ct_model_for_generation.recon(sinogram)
+full_recon, full_dict = ct_model_for_generation.recon(sinogram)
+full_params = full_dict['recon_params']
 
 # Display results
 title = 'Standard VCD recon (left) and residual with 2 halves stitched VCD Recon (right) \nThe residual is (stitched recon) - (standard recon).'
