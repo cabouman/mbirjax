@@ -57,7 +57,13 @@ class ParameterHandler:
         # Configure logger
         logger = logging.getLogger(self.__class__.__name__)
         logger.setLevel(level)
-        logger.handlers.clear()
+        # Close and remove any existing handlers to prevent leaked file descriptors
+        for h in list(logger.handlers):
+            try:
+                h.flush()
+            finally:
+                h.close()
+                logger.removeHandler(h)
 
         # In-memory buffer handler (always enabled)
         self.log_buffer = io.StringIO()

@@ -1088,6 +1088,9 @@ class TomographyModel(ParameterHandler):
         if logfile_path:
             self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
 
+        for h in list(self.logger.handlers):  # Make sure the log files are up to date
+            h.flush()
+
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         return recon, recon_dict
