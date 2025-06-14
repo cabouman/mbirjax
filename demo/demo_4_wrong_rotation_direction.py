@@ -107,6 +107,6 @@ pprint.pprint(recon_params_incorrect, compact=True)
 
 title = 'Correct rotation recon (left) vs incorrect rotation recon (right)'
 title += '\nThe incorrect angle specification leads to shape distortion and top/bottom reflection.'
-mj.slice_viewer(recon_correct, recon_incorrect, attribute_dicts=[recon_dict_correct, recon_dict_incorrect], title=title, vmin=0.0, vmax=1.0)
+mj.slice_viewer(recon_correct, recon_incorrect, data_dicts=[recon_dict_correct, recon_dict_incorrect], title=title, vmin=0.0, vmax=1.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

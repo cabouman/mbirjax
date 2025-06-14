@@ -56,4 +56,4 @@ for s in sharpness_levels:
 # Display results
 
 title = 'Phantom Noisy phantom and denoising with changing sharpness'
-mj.slice_viewer(*phantoms, attribute_dicts=dicts, slice_label=slice_labels, title=title)
+mj.slice_viewer(*phantoms, data_dicts=dicts, slice_label=slice_labels, title=title)

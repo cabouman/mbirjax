@@ -45,17 +45,16 @@ num_det_channels = 128
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels)
+angles = params['angles']
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-mj.slice_viewer(sinogram, attribute_dicts=params, slice_axis=0, title=title, slice_label='View')
+mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
 # ####################
-# Get the required parameters and initialize the model for reconstruction.
-angles = params['angles']
-
+# Use the parameters to get the data and initialize the model for reconstruction.
 if model_type == 'cone':
     source_detector_dist = params['source_detector_dist']
     source_iso_dist = params['source_iso_dist']
@@ -108,7 +107,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
-mj.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title)
+mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
 # recon and recon_dict can be saved from the viewer or directly in code
 filepath = './output/demo1_recon.h5'

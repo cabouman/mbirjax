@@ -23,7 +23,7 @@ if __name__ == "__main__":
     recon_fbp = ct_model_for_generation.direct_recon(sinogram)
     recon, recon_dict = ct_model_for_generation.recon(sinogram)
 
-    mj.slice_viewer(recon, sinogram, attribute_dicts=[recon_dict, None], slice_axis=[2, 0])
+    mj.slice_viewer(recon, sinogram, data_dicts=[recon_dict, None], slice_axis=[2, 0])
 
     ct_model_for_generation.save_recon_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
     ct_model_for_generation.save_recon_hdf5(filepath='./test_mbir.h5', recon=recon, recon_dict=recon_dict)
