@@ -190,7 +190,7 @@ def get_2d_ror_mask(recon_shape, *, crop_radius_pixels=0, crop_radius_fraction=0
     return mask
 
 
-def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None):
+def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, use_ror_mask=True):
     """
     Generates a collection of voxel partitions for an array of specified partition sizes.
     This function creates a tuple of randomly generated 2D voxel partitions.
@@ -199,19 +199,20 @@ def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None):
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         granularity (list or tuple):  List of num_subsets to use for each partition
         output_device (jax device): Device on which to place the output of the partition
+        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
 
     Returns:
         tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
     """
     partitions = []
     for num_subsets in granularity:
-        partition = gen_pixel_partition(recon_shape, num_subsets)
+        partition = gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
         partitions += [jax.device_put(partition, output_device),]
 
     return partitions
 
 
-def gen_pixel_partition_grid(recon_shape, num_subsets):
+def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
 
     small_tile_side = np.ceil(np.sqrt(num_subsets)).astype(int)
     num_subsets = small_tile_side ** 2
@@ -221,7 +222,7 @@ def gen_pixel_partition_grid(recon_shape, num_subsets):
     subset_inds = np.tile(single_subset_inds, num_small_tiles)
     subset_inds = subset_inds[:recon_shape[0], :recon_shape[1]]
 
-    ror_mask = get_2d_ror_mask(recon_shape[:2])
+    ror_mask = get_2d_ror_mask(recon_shape[:2]) if use_ror_mask else 1
     subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a - at each location outside the mask, subset_ind at other points
     subset_inds = subset_inds.flatten()
     num_inds = len(np.where(subset_inds > -1)[0])
@@ -260,7 +261,7 @@ def gen_pixel_partition_grid(recon_shape, num_subsets):
     return jnp.array(indices)
 
 
-def gen_pixel_partition(recon_shape, num_subsets):
+def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
@@ -268,6 +269,7 @@ def gen_pixel_partition(recon_shape, num_subsets):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
+        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -281,9 +283,10 @@ def gen_pixel_partition(recon_shape, num_subsets):
     indices = np.arange(max_index_val, dtype=np.int32)
 
     # Mask off indices that are outside the region of reconstruction
-    mask = get_2d_ror_mask(recon_shape)
-    mask = mask.flatten()
-    indices = indices[mask == 1]
+    if use_ror_mask:
+        mask = get_2d_ror_mask(recon_shape)
+        mask = mask.flatten()
+        indices = indices[mask == 1]
     if num_subsets > len(indices):
         num_subsets = len(indices)
         warning = '\nThe number of partition subsets is greater than the number of pixels in the region of '
@@ -308,7 +311,7 @@ def gen_pixel_partition(recon_shape, num_subsets):
     return jnp.array(indices)
 
 
-def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
+def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
@@ -316,6 +319,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
+        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -325,7 +329,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets):
     """
     pattern = bn.bn256
     num_tiles = [np.ceil(recon_shape[k] / pattern.shape[k]).astype(int) for k in [0, 1]]
-    ror_mask = get_2d_ror_mask(recon_shape)
+    ror_mask = get_2d_ror_mask(recon_shape) if use_ror_mask else 1
 
     single_subset_inds = np.floor(pattern / (2**16 / num_subsets)).astype(int)
 
@@ -391,12 +395,12 @@ def gen_partition_sequence(partition_sequence, max_iterations):
     return extended_partition_sequence
 
 
-def gen_full_indices(recon_shape):
+def gen_full_indices(recon_shape, use_ror_mask=True):
     """
     Generates a full array of voxels in the region of reconstruction.
     This is useful for computing forward projections.
     """
-    partition = gen_pixel_partition(recon_shape, num_subsets=1)
+    partition = gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)
     full_indices = partition[0]
 
     return full_indices

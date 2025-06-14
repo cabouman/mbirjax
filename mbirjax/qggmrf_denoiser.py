@@ -14,8 +14,9 @@ class QGGMRFDenoiser(TomographyModel):
 
         view_params_name = ''
         super().__init__(sinogram_shape, view_params_name=view_params_name)
+        self.use_ror_mask = False
 
-    def denoise(self, image, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
+    def denoise(self, image, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
                  first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
         Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
@@ -25,6 +26,7 @@ class QGGMRFDenoiser(TomographyModel):
 
         Args:
             image (numpy or jax array):  The 3D volume to be denoised.
+            use_ror_mask (bool, optional): Set true to restrict denoising to an inscribed circle in the image.  Defaults to False.
             init_image (numpy or jax array, optional):  An initial image for the minimization.  Defaults to image.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
@@ -52,6 +54,7 @@ class QGGMRFDenoiser(TomographyModel):
         --------
         TomographyModel : The base class from which this class inherits.
         """
+        self.use_ror_mask = use_ror_mask
         return self.recon(image, init_recon=init_image, max_iterations=max_iterations,
                           stop_threshold_change_pct=stop_threshold_change_pct, first_iteration=first_iteration,
                           compute_prior_loss=compute_prior_loss, logfile_path=logfile_path, print_logs=print_logs)

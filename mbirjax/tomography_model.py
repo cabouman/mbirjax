@@ -62,6 +62,7 @@ class TomographyModel(ParameterHandler):
             delta_voxel = delta_det_channel / magnification
             self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
 
+        self.use_ror_mask = True
         self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
@@ -541,7 +542,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         output_device = self.main_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
@@ -563,7 +564,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
@@ -1023,7 +1024,8 @@ class TomographyModel(ParameterHandler):
 
             # Generate set of voxel partitions
             recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
+            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
+                                                        use_ror_mask=self.use_ror_mask)
             partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
             # Generate sequence of partitions to use
