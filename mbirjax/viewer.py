@@ -2,7 +2,7 @@ import os
 import warnings
 import matplotlib
 
-import mbirjax
+import mbirjax as mj
 
 # Set backend
 if os.environ.get("READTHEDOCS") == "True":
@@ -75,6 +75,7 @@ class SliceViewer:
             - 2D arrays are automatically promoted to 3D via a singleton axis.
             - `None` values are replaced with placeholder zero arrays.
 
+        data_dicts (None or dict or list of None or dicts, optional): Dictionary of string entries to associated with the data (e.g., from :meth:`get_recon_dict`)
         title (str, optional): Window title. Defaults to an empty string.
         vmin (float, optional): Minimum intensity value for display. Defaults to the global minimum across all datasets.
         vmax (float, optional): Maximum intensity value for display. Defaults to the global maximum across all datasets.
@@ -89,7 +90,7 @@ class SliceViewer:
         - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
     """
 
-    def __init__(self, *datasets, title='', vmin=None, vmax=None, slice_label=None,
+    def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
         self.datasets = datasets
         self.n_volumes = len(datasets)
@@ -103,7 +104,16 @@ class SliceViewer:
 
         self.original_data = []
         self.data = []
-        self.data_attributes = [()] * self.n_volumes
+        if data_dicts is None:
+            self.data_dicts = [None] * self.n_volumes
+        else:
+            if isinstance(data_dicts, dict):
+                data_dicts = [data_dicts]
+            if len(data_dicts) == self.n_volumes and all([isinstance(d, dict) or d is None for d in data_dicts]):
+                self.data_dicts = [mj.TomographyModel.convert_subdicts_to_strings(d) for d in data_dicts]
+            else:
+                raise ValueError('data_dicts must be single dict or a list of dicts of the same length as the number of datasets')
+
         self.axes_perms = np.zeros(0).astype(int)
         self.labels = []
         self.cur_slices = []
@@ -695,7 +705,7 @@ class SliceViewer:
             else:
                 options.append(['Restore original image', lambda: self._on_restore(image_index)])
         if TKAGG:
-            options += [["Show attributes", lambda: self._on_show_attributes(image_index)]]
+            options += [["Show data dict", lambda: self._on_show_data_dict(image_index)]]
         options += [
             ["Transpose image", lambda: self._on_transpose(image_index)],
             [LOAD_LABEL, lambda: self._on_load(image_index)],
@@ -705,27 +715,27 @@ class SliceViewer:
         ]
         return options
 
-    def _on_show_attributes(self, image_index):
-        # Handle the display of image attributes
-        attributes = self.data_attributes[image_index]
-        if not attributes:
+    def _on_show_data_dict(self, image_index):
+        # Handle the display of image data_dict
+        data_dict = self.data_dicts[image_index]
+        if not data_dict:
             easygui.textbox(
-                msg='No attributes available',
-                title='No attributes',
-                text='Load an h5 file with attributes to get attributes',
+                msg='No data dict available',
+                title='No data dict',
+                text='No data dict included with this image',
                 codebox=False,
                 callback=None,
                 run=True
             )
             return
 
-        names = [attribute[0] for attribute in attributes]
-        if len(attributes) > 1:
+        names = list(data_dict.keys())
+        if len(data_dict) > 1:
             choices = names + ['Cancel']
-            msg = ['Choose an attribute to display:', ' '] + names
+            msg = ['Choose an entry to display:', ' '] + names
             choice = easygui.buttonbox(
                 msg=multiline(*msg),
-                title='Choose an attribute to display',
+                title='Choose an entry to display',
                 choices=choices
             )
             if choice == 'Cancel':
@@ -734,11 +744,11 @@ class SliceViewer:
             choice = names[0]
 
         index = names.index(choice)
-        attribute = attributes[index][1]
+        dict_entry = data_dict[names[index]]
         easygui.textbox(
-            msg=f'Attribute = {choice}',
+            msg=f'Dict entry = {choice}',
             title=choice,
-            text=attribute,
+            text=dict_entry,
             codebox=False,
             callback=None,
             run=True
@@ -776,7 +786,7 @@ class SliceViewer:
             warnings.warn("Unable to load file.  Use matplotlib.use('TkAgg') to enable file load.")
 
     def _on_save(self, image_index):
-        # Handle saving the full 3D volume and optional attributes
+        # Handle saving the full 3D volume and optional data_dict
         if not hasattr(self.fig.canvas.manager, 'window'):
             warnings.warn("Save disabled: matplotlib backend is not TkAgg")
             return
@@ -795,27 +805,29 @@ class SliceViewer:
             if not file_path.lower().endswith(".h5"):
                 file_path += ".h5"
 
-            # Gather allowable attributes with multi-line textboxes and prepopulate existing values
-            attrs = {}
-            # Existing attributes loaded earlier (if any)
-            existing = {}
-            if hasattr(self, 'data_attributes') and len(self.data_attributes) > image_index:
-                existing = dict(self.data_attributes[image_index])
-            for name in ["model_params", "notes", "recon_log", "recon_params"]:
-                default_val = existing.get(name, "")
+            # Gather allowable data_dict with multi-line textboxes and prepopulate existing values
+            # Existing data_dict loaded earlier (if any)
+            if self.data_dicts[image_index] is not None:
+                data_dict = self.data_dicts[image_index]
+            else:
+                data_dict = {}
+            for key in {"model_params", "notes", "recon_log", "recon_params"}.union(data_dict.keys()):
+                default_val = data_dict.get(key, "")
                 val = easygui.textbox(
-                    msg=f"Enter value for {name} (leave blank for none):",
-                    title=name,
+                    msg=f"Enter value for {key} (leave blank for none):",
+                    title=key,
                     text=default_val
                 )
                 # If user cancelled, keep existing text; if cleared, treat as empty
                 if val is None:
                     val = default_val
-                attrs[name] = val
+                data_dict[key] = val
+
+            self.data_dicts[image_index] = data_dict
 
             # Save full 3D volume
             data = self.original_data[image_index]
-            mbirjax.save_data_hdf5(file_path, data, 'volume', attrs)
+            mj.save_data_hdf5(file_path, data, 'volume', data_dict)
 
             easygui.msgbox(f"Saved to {file_path}", title="Save complete")
 
@@ -931,7 +943,7 @@ class SliceViewer:
     def _load_file(self, file_path, image_index):
         # Do the actual file load, with different behavior for npy, npz, and h5/hdf5.
         ext = os.path.splitext(file_path)[-1].lower()
-        attributes = ()
+        data_dict = ()
 
         if ext == ".npy":
             new_array = np.load(file_path)
@@ -955,7 +967,7 @@ class SliceViewer:
                 if choice is None:
                     return
                 new_array = f[choice][()]
-                attributes = [[name, f[choice].attrs[name]] for name in f[choice].attrs.keys()]
+                data_dict = {name: f[choice].attrs[name] for name in f[choice].attrs.keys()}
 
         if new_array.ndim == 2:
             new_array = new_array[..., np.newaxis]
@@ -974,7 +986,7 @@ class SliceViewer:
         else:
             raise ValueError("Loaded array must be 2D, 3D, or 4D")
 
-        self.data_attributes[image_index] = attributes
+        self.data_dicts[image_index] = data_dict
         self.axes_perms[image_index] = self._get_perm_from_slice_ind(self.axes_perms[image_index][-1])
         transposed = np.transpose(new_array, self.axes_perms[image_index])
         self.data[image_index] = transposed
@@ -1039,40 +1051,40 @@ def _choose_array_name(array_names, shapes, file_path):
     return choice
 
 
-def slice_viewer(*datasets, **kwargs):
+def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
+                 slice_axis=None, cmap='gray', show_instructions=True):
     """
     Launch an interactive viewer for inspecting one or more 2D or 3D image arrays.
 
-    This is a convenience wrapper around the `SliceViewer` class. It supports real-time
-    browsing of volumetric data along arbitrary slice axes, synchronized views, interactive
-    region-of-interest (ROI) statistics, and customizable display settings.
+    This function provides a graphical interface for exploring one or more 3D volumes or 2D slices.
+    Features include synchronized slice navigation, ROI statistics, axis transposition, file loading,
+    dynamic intensity range adjustment, and interactive GUI tools for zooming and panning.
+
+    Each image can have an associated data dict, typically obtained from :meth:`TomographyModel.recon`, which
+    can be viewed as a text file within the viewer.
+
+    Designed primarily for inspecting CT or other volumetric reconstructions in research workflows.
 
     Args:
-        *datasets (ndarray or None): One or more 2D or 3D NumPy arrays or `None`.
+        *datasets (ndarray or None): One or more 2D or 3D NumPy arrays to display.
+            - 2D arrays are automatically promoted to 3D via a singleton axis.
+            - `None` values are replaced with placeholder zero arrays.
 
-            - 2D arrays are promoted to 3D by adding a singleton axis.
-
-            - `None` entries are replaced with a dummy 3D array of zeros.
-
-        **kwargs: Additional keyword arguments passed to `SliceViewer`. These may include:
-
-            - title (str): Title for the viewer window.
-
-            - vmin (float): Minimum intensity value to display.
-
-            - vmax (float): Maximum intensity value to display.
-
-            - slice_label (str or list of str): Label(s) for the displayed slice.
-
-            - slice_axis (int or list of int): Axis to slice along (0, 1, or 2).
-
-            - cmap (str): Colormap to use (e.g., 'gray', 'viridis').
-
-            - show_instructions (bool): Whether to display help text inside the viewer.
+        data_dicts (None or dict or list of None or dicts, optional): Dictionary of string entries to associated with the data (e.g., from :meth:`TomographyModel.get_recon_dict`)
+        title (str, optional): Window title. Defaults to an empty string.
+        vmin (float, optional): Minimum intensity value for display. Defaults to the global minimum across all datasets.
+        vmax (float, optional): Maximum intensity value for display. Defaults to the global maximum across all datasets.
+        slice_label (str or list of str, optional): Label(s) for the current slice. Defaults to "Slice".
+        slice_axis (int or list of int, optional): Axis along which to slice (0, 1, or 2). Defaults to the last axis (2).
+        cmap (str, optional): Colormap to use. Defaults to "gray".
+        show_instructions (bool, optional): Whether to display usage instructions in the figure. Defaults to True.
 
     Notes:
         - This function blocks execution until the viewer window is closed.
-        - Right-click an image or intensity slider (if using the TkAgg backend) to access advanced options.
-
+        - Right-click an image to access a context menu with options such as axis transposition and file loading.
+        - Right-click the intensity slider (if using TkAgg backend) to manually set display range bounds.
+        - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
     """
-    viewer = SliceViewer(*datasets, **kwargs)
+    viewer = SliceViewer(*datasets, data_dicts=data_dicts, title=title, vmin=vmin, vmax=vmax,
+                         slice_label=slice_label,  slice_axis=slice_axis, cmap=cmap,
+                         show_instructions=show_instructions)

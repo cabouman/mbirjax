@@ -16,43 +16,46 @@ from ruamel.yaml import YAML
 
 def load_data_hdf5(file_path):
     """
-    Load a volume (tensor) from an HDF5 file.
+    Load a numpy array from an HDF5 file.
 
-    This function loads a volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
-    It also loads any associated attributes.
+    This function loads an array stored in an HDF5 file using :func:`save_data_hdf5`.
+    It also loads any associated attributes and returns them as a dict.
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstructed volume.
 
     Returns:
-        dict: A dictionary data_dict with the loaded array as data_dict[volume_name].
+        tuple: (array, data_dict)
+            - array (ndarray): The array saved by :func:`save_data_hdf5`
+            - data_dict (dict): A dict with the attributes for the data array.
 
     Raises:
         FileNotFoundError: If the file does not exist.
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon_dict = load_data_hdf5("output/recon.h5", array_name='recon')
-        >>> recon = recon_dict['recon']
+        >>> recon, recon_dict = mbirjax.utilities.load_data_hdf5("output/recon_volume.h5")
         >>> recon.shape
         (64, 256, 256)
     """
     with h5py.File(file_path, "r") as f:
-        array_names = [key for key in f.keys()]
+        array_names = [key for key in f.keys()] # If this h5 file was created with save_data_hdf5, then there will be only one key
         if len(array_names) > 1:
             raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
         data_name = array_names[0]
+        array = f[data_name][()]
         data_dict = dict()
-        data_dict[data_name] = f[data_name][()]
         for name in f[data_name].attrs.keys():
             data_dict[name] = f[data_name].attrs[name]
 
-        return data_dict
+        return array, data_dict
 
 
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
+    The resulting structure has a single dataset with one array and associated text attributes.
+    These can be retrieved using :func:`load_data_hdf5`.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
@@ -69,6 +72,13 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         >>> volume = np.random.rand(64, 64, 64)
         >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
         >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
+        Nothing
+
+    Example:
+        >>> recon, recon_dict = ct_model.recon(sinogram)
+        >>> recon_info = {'ALU units': '0.3mm', 'sinogram name': 'test part 038'}
+        >>> file_path = './output/test_part_038.yaml'
+        >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
     """
     # Ensure output directory exists
     mj.makedirs(file_path)
@@ -80,7 +90,9 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         volume_data = f.create_dataset(array_name, data=arr)
 
         # Save reconstruction parameters as attributes
-        if attributes_dict is not None:
+        if isinstance(attributes_dict, dict):
+            # Convert subdicts to strings
+            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
             for key, value in attributes_dict.items():
                 volume_data.attrs[key] = value
 

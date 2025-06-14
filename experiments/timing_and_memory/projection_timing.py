@@ -139,7 +139,7 @@ if __name__ == "__main__":
 
     time0 = time.time()
     sinogram = np.array(sinogram)
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, max_iterations=10)
+    recon, recon_dict = ct_model.recon(sinogram, weights=weights, compute_prior_loss=False, max_iterations=10)
 
     recon.block_until_ready()
     elapsed = time.time() - time0
@@ -149,7 +149,8 @@ if __name__ == "__main__":
     # mbirjax.get_memory_stats()
 
     # Print out parameters used in recon
-    # pprint.pprint(recon_params._asdict())
+    # recon_params = recon_dict['recon_params']
+    # pprint.pprint(recon_params)
     #
     phantom = np.array(phantom)
     recon = np.array(recon)

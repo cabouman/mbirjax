@@ -44,7 +44,7 @@ def compute_sino_and_params(filename, bh_correction=True):
             sino, cone_beam_params, optional_params = compute_sino_and_params("scan.h5", bh_correction=True)
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
             ct_model.set_params(**optional_params)
-            recon, recon_params = ct_model.recon(sino, weights=weights)
+            recon, recon_dict = ct_model.recon(sino, weights=weights)
     """
     import mbirjax.preprocess as mjp
     with h5py.File(filename, 'r') as h5_file:

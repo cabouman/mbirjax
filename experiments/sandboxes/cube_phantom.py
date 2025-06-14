@@ -70,7 +70,8 @@ if __name__ == "__main__":
     # ##########################
     # Perform VCD reconstruction
     time0 = time.time()
-    recon, recon_params = ct_model.recon(sinogram, weights=weights, max_iterations=15)
+    recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=15)
+    recon_params = recon_dict['recon_params']
 
     recon.block_until_ready()
     elapsed = time.time() - time0
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     # ##########################
 
     # Print out parameters used in recon
-    pprint.pprint(recon_params._asdict())
+    pprint.pprint(recon_params)
 
     max_diff = np.amax(np.abs(phantom - recon))
     print('Geometry = {}'.format(geometry_type))

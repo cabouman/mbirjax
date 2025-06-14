@@ -93,12 +93,13 @@ ct_model_for_recon.set_params(sharpness=sharpness)
 
 print('Starting cropped center recon')
 time0 = time.time()
-recon, recon_params = ct_model_for_recon.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights)
 recon.block_until_ready()
 elapsed = time.time() - time0
 
 # Print out parameters used in recon
-pprint.pprint(recon_params._asdict(), compact=True)
+recon_params = recon_dict['recon_params']
+pprint.pprint(recon_params, compact=True)
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 """**Display the cropped center reconstruction.**"""
@@ -111,6 +112,6 @@ recon_radius = [length // 2 for length in recon_shape]
 start_inds = [phantom.shape[j] // 2 - recon_radius[j] for j in range(2)]
 end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]
 cropped_phantom = phantom[start_inds[0]:end_inds[0], start_inds[1]:end_inds[1]]
-mj.slice_viewer(cropped_phantom, recon, title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(cropped_phantom, recon, data_dicts=[None, recon_dict], title=title, vmin=0.0, vmax=2.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

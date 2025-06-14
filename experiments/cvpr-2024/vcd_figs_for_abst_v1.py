@@ -66,14 +66,15 @@ if __name__ == "__main__":
 
     # Print out model parameters
     parallel_model.print_params()
-
+    init_recon = np.zeros(phantom.shape)
     # ##########################
     # Perform VCD reconstruction
     max_iterations = 10
-    recon_vcd, recon_params_vcd = parallel_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+    recon_vcd, recon_dict_vcd = parallel_model.recon(sinogram, init_recon=init_recon, weights=weights, max_iterations=max_iterations,
                                                        compute_prior_loss=True)
-    fm_rmse_vcd = recon_params_vcd.fm_rmse
-    prior_loss_vcd = recon_params_vcd.prior_loss
+    recon_params_vcd = recon_dict_vcd['recon_params']
+    fm_rmse_vcd = recon_params_vcd['fm_rmse']
+    prior_loss_vcd = recon_params_vcd['prior_loss']
     default_partition_sequence = parallel_model.get_params('partition_sequence')
     partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
     granularity_sequence_vcd = granularity[partition_sequence]
@@ -81,20 +82,22 @@ if __name__ == "__main__":
     # Perform GD reconstruction
     partition_sequence = [0, ]
     parallel_model.set_params(partition_sequence=partition_sequence)
-    recon_prev_default, recon_params_prev_default = parallel_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+    recon_prev_default, recon_dict_prev_default = parallel_model.recon(sinogram, init_recon=init_recon, weights=weights, max_iterations=max_iterations,
                                                                          compute_prior_loss=True)
-    fm_rmse_prev_default = recon_params_prev_default.fm_rmse
-    prior_loss_prev_default = recon_params_prev_default.prior_loss
+    recon_params_prev_default = recon_dict_prev_default['recon_params']
+    fm_rmse_prev_default = recon_params_prev_default['fm_rmse']
+    prior_loss_prev_default = recon_params_prev_default['prior_loss']
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
     granularity_sequence_prev_default = granularity[partition_sequence]
 
     # Perform CD reconstruction
     partition_sequence = [3, ]
     parallel_model.set_params(partition_sequence=partition_sequence)
-    recon_cd, recon_params_cd = parallel_model.recon(sinogram, weights=weights, max_iterations=max_iterations,
+    recon_cd, recon_dict_cd = parallel_model.recon(sinogram, init_recon=init_recon, weights=weights, max_iterations=max_iterations,
                                                      compute_prior_loss=True)
-    fm_rmse_cd = recon_params_cd.fm_rmse
-    prior_loss_cd = recon_params_cd.prior_loss
+    recon_params_cd = recon_dict_cd['recon_params']
+    fm_rmse_cd = recon_params_cd['fm_rmse']
+    prior_loss_cd = recon_params_cd['prior_loss']
     partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################
