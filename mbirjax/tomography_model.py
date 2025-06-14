@@ -676,7 +676,10 @@ class TomographyModel(ParameterHandler):
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
         """
-        Computes the diagonal elements of the Hessian matrix for given weights.
+        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
+        matrix except using the square of the coefficients in the backprojection to a given voxel.
+        If weights is not None, it must be an array with the same shape as the sinogram to be backprojected.
+        If weights is None, then constant weights 1 will be used
 
         Args:
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
@@ -684,24 +687,6 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
-        """
-        """
-        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
-        matrix except using the square of the coefficients in the backprojection to a given voxel.
-        One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
-        array of ones of size sinogram_shape.
-
-        Args:
-           weights (ndarray or jax array or None, optional): 3D array of shape
-                (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
-                if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
-                match those indicated by view_indices.  Defaults to all 1s.
-           view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                If None, then all views are used.
-
-        Returns:
-            An array that is the same size as the reconstruction.
         """
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
