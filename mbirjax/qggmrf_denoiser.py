@@ -6,8 +6,8 @@ from mbirjax import TomographyModel
 
 class QGGMRFDenoiser(TomographyModel):
     """
-    The QGGMRFDenoiser is meant for internal use to implement a qggmrf proximal map using the
-    MBIRJAX recon framework.
+    The QGGMRFDenoiser uses the MBIRJAX recon framework to implement a qggmrf proximal map denoiser.
+    The primary interface is through :meth:`denoise`.
     """
 
     def __init__(self, sinogram_shape):
@@ -15,20 +15,50 @@ class QGGMRFDenoiser(TomographyModel):
         view_params_name = ''
         super().__init__(sinogram_shape, view_params_name=view_params_name)
 
-    def denoise(self, volume, sigma=None, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
+    def denoise(self, image, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
                  first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
-        if sigma is not None:
-            self.set_params(sigma_x=sigma)
+        """
+        Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
 
-        return self.recon(volume, init_recon=init_image, max_iterations=max_iterations,
+        The noise level is estimated from the image, and the denoising strength can be adjusted using parameters
+        sharpness (default=1.0) and/or snr_db (default=30).
+
+        Args:
+            image (numpy or jax array):  The 3D volume to be denoised.
+            init_image (numpy or jax array, optional):  An initial image for the minimization.  Defaults to image.
+            max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
+            stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
+            first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
+            compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
+            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            print_logs (bool, optional): If true then print logs to console.  Defaults to True.
+
+        Returns:
+            tuple: (denoised_image, denoiser_dict)
+                - denoised_image (jax array): A denoised image of the same shape as image
+                - denoiser_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
+                    * 'recon_params'
+                    * 'notes'
+                    * 'recon_logs'
+                    * 'model_params'
+
+        Example:
+            >>> denoiser = mj.QGGMRFDenoiser(noisy_image.shape)
+            >>> denoiser.set_params(sharpness=1.1, snr_db=33)
+            >>> denoised_image, denoised_dict = denoiser.denoise(noisy_image)
+            >>> mj.slice_viewer(noisy_image, denoised_image, data_dicts=[None, denoised_dict], title='Noisy and denoised images')
+
+        See Also
+        --------
+        TomographyModel : The base class from which this class inherits.
+        """
+        return self.recon(image, init_recon=init_image, max_iterations=max_iterations,
                           stop_threshold_change_pct=stop_threshold_change_pct, first_iteration=first_iteration,
                           compute_prior_loss=compute_prior_loss, logfile_path=logfile_path, print_logs=print_logs)
 
     def get_magnification(self):
         """
-        Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
-        its projection on the detector.  For parallel beam, this is 1, but it may be parameter-dependent
-        for other geometries.
+        Return 1 to satisfy the TomographyModel interface.
 
         Returns:
             (float): magnification
@@ -54,7 +84,7 @@ class QGGMRFDenoiser(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Function to get a list of the primary geometry parameters for identity projection.
+        Return a minimal set of parameters to satisfy the TomographyModel interface.
 
         Returns:
             namedtuple of required geometry parameters.
@@ -82,11 +112,7 @@ class QGGMRFDenoiser(TomographyModel):
 
     def forward_project(self, recon):
         """
-        Perform a full forward projection at all voxels in the field-of-view.
-
-        Note:
-            This method should generally not be used directly for iterative reconstruction.  For iterative
-            reconstruction, use :meth:`recon`.
+        Perform a full forward projection at all voxels in the field-of-view, which in this case is the identity.
 
         Args:
             recon (jnp array): The 3D reconstruction array.
@@ -99,11 +125,7 @@ class QGGMRFDenoiser(TomographyModel):
 
     def back_project(self, sinogram):
         """
-        Perform a full back projection at all voxels in the field-of-view.
-
-        Note:
-            This method should generally not be used directly for iterative reconstruction.  For iterative
-            reconstruction, use :meth:`recon`.
+        Perform a full back projection at all voxels in the field-of-view, which in this case is the identity.
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.

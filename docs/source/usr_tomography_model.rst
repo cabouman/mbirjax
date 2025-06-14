@@ -1,9 +1,9 @@
 .. _TomographyModelDocs:
 
 
-===============
-TomographyModel
-===============
+================
+Tomography Model
+================
 
 The ``TomographyModel`` provides the basic interface for all specific geometries for tomographic projection
 and reconstruction.
@@ -35,6 +35,8 @@ Weights and Metal Artifact Reduction
 .. automethod:: mbirjax.TomographyModel.gen_weights
 
 .. automethod:: mbirjax.TomographyModel.gen_weights_mar
+
+.. _SaveLoadDocs:
 
 Saving and Loading
 ------------------
