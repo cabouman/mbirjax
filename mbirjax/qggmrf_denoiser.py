@@ -1,6 +1,9 @@
+from collections import namedtuple
+import io
+import numpy as np
 import jax
 import jax.numpy as jnp
-from collections import namedtuple
+import mbirjax as mj
 from mbirjax import TomographyModel
 
 
@@ -12,12 +15,12 @@ class QGGMRFDenoiser(TomographyModel):
 
     def __init__(self, sinogram_shape):
 
-        view_params_name = ''
+        view_params_name = 'None'
         super().__init__(sinogram_shape, view_params_name=view_params_name)
         self.use_ror_mask = False
 
     def denoise(self, image, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
-                 first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
+                first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
         Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
 
@@ -55,9 +58,177 @@ class QGGMRFDenoiser(TomographyModel):
         TomographyModel : The base class from which this class inherits.
         """
         self.use_ror_mask = use_ror_mask
-        return self.recon(image, init_recon=init_image, max_iterations=max_iterations,
-                          stop_threshold_change_pct=stop_threshold_change_pct, first_iteration=first_iteration,
-                          compute_prior_loss=compute_prior_loss, logfile_path=logfile_path, print_logs=print_logs)
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        regularization_params = self.auto_set_regularization_params(image)
+
+        # Generate set of voxel partitions
+        image_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+        partitions = mj.gen_set_of_pixel_partitions(image_shape, granularity, output_device=self.main_device,
+                                                    use_ror_mask=self.use_ror_mask)
+        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.get_params('partition_sequence')
+        partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
+        partition_sequence = partition_sequence[first_iteration:]
+
+        sinogram = image
+        error_sinogram = init_image
+        weighted_error_sinogram = error_sinogram
+        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
+        if wtd_err_sino_norm > 0:
+            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+        else:
+            alpha = 1
+
+        error_sinogram = (sinogram - alpha * error_sinogram).reshape((-1, sinogram.shape[-1]))
+        flat_error_sinogram = error_sinogram
+        init_image = alpha * init_image
+        image = init_image
+
+        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
+
+        # Initialize the emtpy image
+        flat_image = image.reshape((-1, image_shape[2]))
+
+        # Create the finer grained image update operators
+        vcd_subset_denoiser = self.create_vcd_subset_denoiser()
+
+        self.logger.info('Starting VCD iterations')
+        if verbose >= 2:
+            output = io.StringIO()
+            mj.get_memory_stats(file=output)
+            self.logger.debug(output.getvalue())
+            self.logger.debug('--------')
+
+        # Do the iterations
+        max_iters = partition_sequence.size
+        fm_rmse = np.zeros(max_iters)
+        pm_loss = np.zeros(max_iters)
+        nmae_update = np.zeros(max_iters)
+        alpha_values = np.zeros(max_iters)
+        num_iters = 0
+        for i in range(max_iters):
+            # Get the current partition (set of subsets) and shuffle the subsets
+            partition = partitions[partition_sequence[i]]
+
+            # Do an iteration
+            flat_image, flat_error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(
+                vcd_subset_denoiser,
+                flat_image,
+                flat_error_sinogram,
+                partition)
+
+            # Compute the stats and display as desired
+            fm_rmse[i] = self.get_forward_model_loss(flat_error_sinogram, sigma_y)
+            nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_image))
+            es_rmse = jnp.linalg.norm(flat_error_sinogram) / jnp.sqrt(float(flat_error_sinogram.size))
+            alpha_values[i] = alpha
+
+            if verbose >= 1:
+                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(
+                    i + first_iteration, max_iters + first_iteration,
+                    100 * nmae_update[i],
+                    fm_rmse[i])
+                if compute_prior_loss:
+                    qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+                    b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
+                    qggmrf_params = (b, sigma_x, p, q, T)
+                    pm_loss[i] = mj.qggmrf_loss(flat_image.reshape(image.shape), qggmrf_params)
+                    pm_loss[i] /= flat_image.size
+                    # Each loss is scaled by the number of elements, but the optimization uses unscaled values.
+                    # To provide an accurate, yet properly scaled total loss, first remove the scaling and add,
+                    # then scale by the average number of elements between the two.
+                    total_loss = ((fm_rmse[i] * sinogram.size + pm_loss[i] * flat_image.size) /
+                                  (0.5 * (sinogram.size + flat_image.size)))
+                    iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
+
+                self.logger.info(iter_output)
+                self.logger.info(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
+                self.logger.info('Number subsets = {}'.format(partition.shape[0]))
+                if verbose >= 2:
+                    output = io.StringIO()
+                    mj.get_memory_stats(file=output)
+                    self.logger.debug(output.getvalue())
+                    self.logger.debug('--------')
+            num_iters += 1
+            if nmae_update[i] < stop_threshold_change_pct / 100:
+                self.logger.warning('Change threshold stopping condition reached')
+                break
+
+        return self.reshape_recon(flat_image), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
+                                                alpha_values[0:num_iters])
+
+    def create_vcd_subset_denoiser(self):
+        """
+        Create a jit-compiled function to apply the qggmrf proximal map to a subset of pixels.
+
+        Returns:
+            (callable) vcd_subset_denoiser(error_sinogram, flat_image, pixel_indices) that updates the image.
+        """
+
+        fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
+        qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+        b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
+        qggmrf_params = tuple((b, sigma_x, p, q, T))
+        image_shape = self.get_params('recon_shape')
+
+        def vcd_subset_denoiser(flat_image, flat_error_sinogram, pixel_indices, pixel_indices_worker, times):
+
+            # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+            with jax.default_device(self.main_device):
+                if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+                    prior_grad, prior_hess = (
+                        mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_image, image_shape, pixel_indices,
+                                                                           qggmrf_params, self.main_device,
+                                                                           self.worker))
+                else:
+                    prior_grad, prior_hess = (
+                        mj.qggmrf_gradient_and_hessian_at_indices(flat_image, image_shape, pixel_indices,
+                                                                  qggmrf_params))
+
+            # Back project to get the gradient - the forward Hessian is all 1s for the qggmrf proximal map
+            cur_error_sinogram = flat_error_sinogram[pixel_indices_worker]
+            forward_grad = - fm_constant * cur_error_sinogram
+            forward_hess = 1
+
+            # Compute update vector update direction in recon domain
+            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+
+            # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
+
+            # Estimated upper bound for hessian
+            prior_overrelaxation_factor = 2
+            prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
+                                      jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+
+            # Compute update direction in sinogram domain
+            delta_sinogram = delta_recon_at_indices
+            forward_linear = fm_constant * jnp.tensordot(cur_error_sinogram, delta_sinogram, axes=2)
+            forward_quadratic = fm_constant * jnp.tensordot(delta_sinogram, delta_sinogram, axes=2)
+
+            # Compute optimal update step
+            alpha_numerator = forward_linear - prior_linear
+            alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
+            alpha = alpha_numerator / alpha_denominator
+            max_alpha = 1.5
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
+
+            delta_recon_at_indices = alpha * delta_recon_at_indices
+            flat_image = flat_image.at[pixel_indices].add(delta_recon_at_indices)
+
+            # Update sinogram and loss
+            cur_error_sinogram = cur_error_sinogram - float(alpha) * delta_sinogram
+            flat_error_sinogram = flat_error_sinogram.at[pixel_indices_worker].set(cur_error_sinogram)
+            ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
+            alpha_for_subset = alpha
+
+            time_names = []
+            return flat_image, flat_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
+
+        return vcd_subset_denoiser
 
     def get_magnification(self):
         """
@@ -79,10 +250,10 @@ class QGGMRFDenoiser(TomographyModel):
         super().verify_valid_params()
         sinogram_shape = self.get_params('sinogram_shape')
 
-        recon_shape = self.get_params('recon_shape')
-        if recon_shape != sinogram_shape:
-            error_message = "recon_shape and sinogram_shape must be the same. \n"
-            error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
+        image_shape = self.get_params('recon_shape')
+        if image_shape != sinogram_shape:
+            error_message = "image_shape and sinogram_shape must be the same. \n"
+            error_message += "Got {} for image_shape and {} for sinogram_shape".format(image_shape, sinogram_shape)
             raise ValueError(error_message)
 
     def get_geometry_parameters(self):
@@ -154,9 +325,9 @@ class QGGMRFDenoiser(TomographyModel):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        recon_shape = self.get_params('recon_shape')
-        row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
-        sinogram = jnp.zeros(recon_shape, device=output_device)
+        image_shape = self.get_params('image_shape')
+        row_index, col_index = jnp.unravel_index(pixel_indices, image_shape[:2])
+        sinogram = jnp.zeros(image_shape, device=output_device)
         sinogram = sinogram.at[row_index, col_index].set(voxel_values)
         return sinogram
 
@@ -179,7 +350,8 @@ class QGGMRFDenoiser(TomographyModel):
             A jax array of shape (len(indices), num_slices)
         """
         row_index, col_index = jnp.unravel_index(pixel_indices, sinogram.shape[:2])
-        recon = jax.device_put(sinogram[row_index, col_index], output_device)  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
+        recon = jax.device_put(sinogram[row_index, col_index],
+                               output_device)  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
         return recon
 
     def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=1):

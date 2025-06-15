@@ -1644,8 +1644,12 @@ class TomographyModel(ParameterHandler):
         Returns:
             float loss.
         """
+        if weights is None:
+            weights = 1
+            avg_weight = 1
+        else:
+            avg_weight = jnp.average(weights)
         if normalize:
-            avg_weight = 1 if weights is None else jnp.average(weights)
             loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:
