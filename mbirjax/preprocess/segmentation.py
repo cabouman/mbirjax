@@ -3,7 +3,7 @@ from jax import numpy as jnp
 import mbirjax as mj
 
 
-def multi_threshold_otsu(image, classes=2, num_bins=1024):
+def multi_threshold_otsu(image, classes=2, crop_fraction=0.05, num_bins=1024):
     """
     Segment an image into multiple intensity classes using Otsu's method.
 
@@ -16,6 +16,9 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024):
             Input image as a NumPy array of floating-point values.
         classes (int, optional):
             Number of classes to divide the image into. Must be ≥ 2. Defaults to 2.
+        crop_fraction (float):
+            Fraction of the volume dimensions to exclude at the edges.
+        bins (int): Number of bins to use in np.histogram.
         num_bins (int, optional):
             Number of bins to use when constructing the image histogram. Defaults to 256.
 
@@ -35,7 +38,7 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024):
         raise ValueError("Number of bins must be at least equal to number of classes")
 
     # Compute the histogram of the image
-    hist, bin_edges = histogram_with_mask(image, bins=num_bins) #np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
+    hist, bin_edges = histogram_with_mask(image, crop_fraction=crop_fraction, bins=num_bins) #np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
@@ -178,7 +181,7 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 
 
-def segment_plastic_metal(recon):
+def segment_plastic_metal(recon, crop_fraction=0.05, num_bins=1024):
     """
     Segment a reconstruction into plastic and metal masks using multi-threshold Otsu.
 
@@ -206,7 +209,7 @@ def segment_plastic_metal(recon):
     """
     from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
-    thresholds = multi_threshold_otsu(recon, classes=3)
+    thresholds = multi_threshold_otsu(recon, classes=3, crop_fraction=crop_fraction, num_bins=1024)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
