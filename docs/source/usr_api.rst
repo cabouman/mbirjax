@@ -35,17 +35,6 @@ for direct (non-iterative) reconstruction in the case of many views and low-nois
    mbirjax.TomographyModel.gen_weights_mar
    mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
-Saving and Loading
-------------------
-
-Saving and loading are implemented in :ref:`TomographyModelDocs`, with methods overridden in geometry-specific models
-as needed.
-
-.. autosummary::
-
-   mbirjax.TomographyModel.to_file
-   mbirjax.TomographyModel.from_file
-
 Parameter Handling
 ------------------
 
@@ -74,11 +63,12 @@ Parameter handling uses the following primary methods.
    usr_parameters
    usr_parallel_beam_model
    usr_cone_beam_model
-   usr_utilities
    usr_preprocess
+   usr_denoiser
+   usr_utilities
 
 Preprocessing
-------------------
+-------------
 
 Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
 The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
@@ -98,5 +88,34 @@ The remaining functions can be used for multiple types of scan data.
    preprocess.correct_det_rotation_and_background
    preprocess.estimate_background_offset
 
+Denoising
+---------
+
+3D volume denoising is implemented with a Bayesian formulation using the QGGMRF prior loss function, which promotes
+nearby voxels to have similar values while preserving edges.  Using :math:`Q(v)` to denote the loss function, the
+denoiser is
+
+        .. math::
+
+            F(x) = \arg\min_v \left\{ Q(v) + \frac{1}{2}\|v - x\|^{2} \right\}.
+
+.. autosummary::
+
+   QGGMRFDenoiser.denoise
+
+Saving, Loading, and Display
+----------------------------
+
+* Saving and loading of the parameters needed to define a model are implemented in :meth:`TomographyModel.to_file` and :meth:`TomographyModel.from_file`.
+* Saving and loading of the data and the dict of parameters/logs returned from :meth:`TomographyModel.recon` are implemented in :meth:`TomographyModel.save_recon_hdf5` and :meth:`TomographyModel.load_recon_hdf5`.
+* Display of reconstructions and parameters/log dict is handled by :func:`viewer.slice_viewer`, which can be given these objects directly or which can be used to load hdf5 files interactively.
+
+.. autosummary::
+
+   TomographyModel.to_file
+   TomographyModel.from_file
+   TomographyModel.save_recon_hdf5
+   TomographyModel.load_recon_hdf5
+   viewer.slice_viewer
 
 

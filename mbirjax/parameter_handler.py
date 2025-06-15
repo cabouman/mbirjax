@@ -57,7 +57,13 @@ class ParameterHandler:
         # Configure logger
         logger = logging.getLogger(self.__class__.__name__)
         logger.setLevel(level)
-        logger.handlers.clear()
+        # Close and remove any existing handlers to prevent leaked file descriptors
+        for h in list(logger.handlers):
+            try:
+                h.flush()
+            finally:
+                h.close()
+                logger.removeHandler(h)
 
         # In-memory buffer handler (always enabled)
         self.log_buffer = io.StringIO()
@@ -314,11 +320,13 @@ class ParameterHandler:
 
         return True
 
-    def save_params(self, filename=None):
+    @staticmethod
+    def save_params(params, filename=None):
         """
         Serialize parameters to YAML. If filename is provided, write to file; otherwise return YAML text.
 
         Args:
+            params (dict): The parameters dict from a TomographyModel
             filename (str or None): Path to save YAML file (must end in .yml/.yaml). If None, return YAML string.
 
         Returns:
@@ -328,7 +336,7 @@ class ParameterHandler:
             ValueError: If filename is invalid.
         """
         # Prepare parameter dict
-        output_params = copy.deepcopy(self.params)
+        output_params = copy.deepcopy(params)
         for key in output_params:
             output_params[key] = ParameterHandler.serialize_parameter(output_params[key])
 

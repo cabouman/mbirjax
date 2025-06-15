@@ -1,8 +1,8 @@
 .. _ConeBeamModelDocs:
 
-=============
-ConeBeamModel
-=============
+===============
+Cone Beam Model
+===============
 
 The ``ConeBeamModel`` class implements a geometry and reconstruction model for cone beam computed tomography.
 This class inherits all behaviors and attributes of the :ref:`TomographyModelDocs`.

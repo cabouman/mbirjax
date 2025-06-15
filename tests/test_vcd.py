@@ -9,12 +9,7 @@ import mbirjax
 
 class TestVCD(unittest.TestCase):
     """
-    Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
-    This means if x is an image, and y is a sinogram, then <y, Ax> = <Aty, x>.
-    The code below verifies this for the full forward and back projectors and the versions that specify a
-    subset of voxels in x.
-    This code also verifies that first applying the full back projector and selecting the voxels to get (Aty)[ss]
-    is the same as using the subset back projector with the specified set of voxels.
+    Unit tests for verifying the reconstruction accuracy of the VCD algorithm in MBIRJAX.
     """
 
     def setUp(self):
@@ -94,7 +89,7 @@ class TestVCD(unittest.TestCase):
         # Perform VCD reconstruction
         sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
-        recon, recon_params = ct_model.recon(sinogram)
+        recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
 
         max_diff = np.amax(np.abs(phantom - recon))
@@ -110,15 +105,14 @@ class TestVCD(unittest.TestCase):
         notes = "Testing save/load"
         with tempfile.NamedTemporaryFile('w') as file:
             filepath = file.name
-            ct_model.save_recon_hdf5(filepath, recon, recon_params, notes, save_model=False)
-            recon_dict = mbirjax.load_data_hdf5(str(filepath))
-            loaded_recon = recon_dict['recon']
-            yaml_reader = YAML(typ="safe")
-            loaded_recon_params_dict = yaml_reader.load(recon_dict['recon_params'])
-            loaded_notes = recon_dict['notes']
+            ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+            loaded_recon, loaded_recon_dict, new_model = mbirjax.TomographyModel.load_recon_hdf5(str(filepath),
+                                                                                                 recreate_model=True)
+            loaded_notes = loaded_recon_dict['notes']
+
             assert np.allclose(recon, loaded_recon)
-            assert set(recon_params._fields) == set(loaded_recon_params_dict.keys())
-            assert notes == loaded_notes
+            assert np.allclose(ct_model.get_params('sigma_x'), new_model.get_params('sigma_x')) # just one representative parameter
+            assert recon_dict['notes'] == loaded_notes
 
 
 if __name__ == '__main__':

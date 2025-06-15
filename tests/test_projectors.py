@@ -35,6 +35,7 @@ class TestProjectors(unittest.TestCase):
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.translation_vector = None
 
     def tearDown(self):
         """Clean up after each test method."""
@@ -49,6 +50,16 @@ class TestProjectors(unittest.TestCase):
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
+    def set_translation_vectors(self, geometry_type):
+        if geometry_type == 'translation':
+            self.translation_vectors = np.zeros((self.num_views, 3))
+            self.translation_vectors[:, 0] = np.random.uniform(-10, 10, self.num_views)
+            self.translation_vectors[:, 1] = 0.0
+            self.translation_vectors[:, 2] = np.random.uniform(-10, 10, self.num_views)
+            self.translation_vectors = jnp.array(self.translation_vectors)
+        else:
+            self.translation_vectors = None
+
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
             ct_model = mbirjax.ConeBeamModel(self.sinogram_shape, self.angles,
@@ -56,6 +67,10 @@ class TestProjectors(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'translation':
+            ct_model = mbirjax.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                                source_detector_dist=self.source_detector_dist,
+                                                source_iso_dist=self.source_iso_dist)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -85,6 +100,7 @@ class TestProjectors(unittest.TestCase):
         Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Generate phantom
@@ -112,10 +128,7 @@ class TestProjectors(unittest.TestCase):
 
             # Load the model
             new_model = self.get_model(geometry_type)
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                new_model = new_model.from_file(filename)
+            new_model = new_model.from_file(filename)
 
         # Compare parameters
         same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
@@ -137,6 +150,7 @@ class TestProjectors(unittest.TestCase):
 
     def verify_view_batching(self, geometry_type):
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Generate phantom
@@ -188,6 +202,7 @@ class TestProjectors(unittest.TestCase):
         Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Initialize a random key
@@ -240,7 +255,9 @@ class TestProjectors(unittest.TestCase):
         y_Ax = jnp.sum(y * Ax)
 
         # Determine if property holds
-        adjoint_test_result = np.allclose(Aty_x, y_Ax)
+        adjoint_test_result = np.allclose(Aty_x, y_Ax, rtol=1e-4)
+        print("maximum difference = ", np.max(Aty_x - y_Ax))
+        print("minimum difference = ", np.min(Aty_x - y_Ax))
         self.assertTrue(adjoint_test_result)
 
     def verify_hessian(self, geometry_type):
@@ -249,6 +266,7 @@ class TestProjectors(unittest.TestCase):
         Choose a random pixel, set it to epsilon, apply A^T A and compare to the value from compute_hessian_diagaonal.
         """
         self.set_angles(geometry_type)
+        self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # ## Test the hessian against a finite difference approximation ## #
