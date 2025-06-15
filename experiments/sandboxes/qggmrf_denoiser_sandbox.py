@@ -11,29 +11,29 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Set the experiment parameters
-sharpness_levels = [1, 0.5, 0]
+sharpness_levels = [3]
 sigma_noise = 0.1
+num_tiles = 2
+max_iterations = 300
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 60
-num_det_rows = 100
-num_det_channels = 100
+num_views = 128
+num_det_rows = 128
+num_det_channels = 128
 snr_db = 30
-max_iterations = 20
 stop_threshold_change_pct = 0.1
 
 # Get some noisy data
 recon_shape = (num_det_channels, num_det_channels, num_det_rows)
 phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+phantom = np.tile(phantom, (num_tiles, num_tiles, num_tiles))
+recon_shape = [num_tiles * size for size in recon_shape]
 phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
 
 denoiser = mj.QGGMRFDenoiser(phantom.shape)
 denoiser.set_params(snr_db=snr_db)
 denoiser.set_params(partition_sequence=[7])
-
-# Print out model parameters
-denoiser.print_params()
 
 """**Do the reconstruction and display the results.**"""
 phantoms = [phantom_noisy]
@@ -56,8 +56,9 @@ for s in sharpness_levels:
 
     init_image = phantom_denoised
 
-# ##########################
-
+# ########################### Print out model parameters
+denoiser.print_params()
+mj.get_memory_stats()
 # Display results
 title = 'Noisy phantom and denoising with changing sharpness'
 mj.slice_viewer(*phantoms, slice_label=slice_labels, title=title, vmin=-0.2, vmax=1.0)

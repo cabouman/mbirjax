@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 
-This code is demonstrates the use of the qggmrf denoiser.
+This code demonstrates the use of the qggmrf denoiser.
 
 """
 

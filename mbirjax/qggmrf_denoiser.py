@@ -18,6 +18,7 @@ class QGGMRFDenoiser(TomographyModel):
         view_params_name = 'None'
         super().__init__(sinogram_shape, view_params_name=view_params_name)
         self.use_ror_mask = False
+        self.set_params(use_gpu='full')
 
     def denoise(self, image, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
                 first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
@@ -73,24 +74,18 @@ class QGGMRFDenoiser(TomographyModel):
         partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
         partition_sequence = partition_sequence[first_iteration:]
 
-        sinogram = image
-        error_sinogram = init_image
-        weighted_error_sinogram = error_sinogram
-        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
-        if wtd_err_sino_norm > 0:
-            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
-        else:
-            alpha = 1
+        if init_image is None:
+            init_image = image.copy()
 
-        error_sinogram = (sinogram - alpha * error_sinogram).reshape((-1, sinogram.shape[-1]))
-        flat_error_sinogram = error_sinogram
-        init_image = alpha * init_image
-        image = init_image
+        flat_error_image = (image - init_image).reshape((-1, image.shape[-1]))
+        flat_error_image = jax.device_put(flat_error_image, self.worker)
+        image_out = init_image
 
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
 
-        # Initialize the emtpy image
-        flat_image = image.reshape((-1, image_shape[2]))
+        # Initialize the output image
+        flat_image = image_out.reshape((-1, image_shape[2]))
+        flat_image = jax.device_put(flat_image, self.worker)
 
         # Create the finer grained image update operators
         vcd_subset_denoiser = self.create_vcd_subset_denoiser()
@@ -114,16 +109,16 @@ class QGGMRFDenoiser(TomographyModel):
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_image, flat_error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(
+            flat_image, flat_error_image, ell1_for_partition, alpha = self.vcd_partition_iterator(
                 vcd_subset_denoiser,
                 flat_image,
-                flat_error_sinogram,
+                flat_error_image,
                 partition)
 
             # Compute the stats and display as desired
-            fm_rmse[i] = self.get_forward_model_loss(flat_error_sinogram, sigma_y)
+            fm_rmse[i] = self.get_forward_model_loss(flat_error_image, sigma_y)
             nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_image))
-            es_rmse = jnp.linalg.norm(flat_error_sinogram) / jnp.sqrt(float(flat_error_sinogram.size))
+            es_rmse = jnp.linalg.norm(flat_error_image) / jnp.sqrt(float(flat_error_image.size))
             alpha_values[i] = alpha
 
             if verbose >= 1:
@@ -140,8 +135,8 @@ class QGGMRFDenoiser(TomographyModel):
                     # Each loss is scaled by the number of elements, but the optimization uses unscaled values.
                     # To provide an accurate, yet properly scaled total loss, first remove the scaling and add,
                     # then scale by the average number of elements between the two.
-                    total_loss = ((fm_rmse[i] * sinogram.size + pm_loss[i] * flat_image.size) /
-                                  (0.5 * (sinogram.size + flat_image.size)))
+                    total_loss = ((fm_rmse[i] * image.size + pm_loss[i] * flat_image.size) /
+                                  (0.5 * (image.size + flat_image.size)))
                     iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
 
                 self.logger.info(iter_output)
@@ -165,7 +160,7 @@ class QGGMRFDenoiser(TomographyModel):
         Create a jit-compiled function to apply the qggmrf proximal map to a subset of pixels.
 
         Returns:
-            (callable) vcd_subset_denoiser(error_sinogram, flat_image, pixel_indices) that updates the image.
+            (callable) vcd_subset_denoiser(error_image, flat_image, pixel_indices) that updates the image.
         """
 
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
@@ -174,7 +169,7 @@ class QGGMRFDenoiser(TomographyModel):
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         image_shape = self.get_params('recon_shape')
 
-        def vcd_subset_denoiser(flat_image, flat_error_sinogram, pixel_indices, pixel_indices_worker, times):
+        def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices, pixel_indices_worker, times):
 
             # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
             with jax.default_device(self.main_device):
@@ -189,8 +184,8 @@ class QGGMRFDenoiser(TomographyModel):
                                                                   qggmrf_params))
 
             # Back project to get the gradient - the forward Hessian is all 1s for the qggmrf proximal map
-            cur_error_sinogram = flat_error_sinogram[pixel_indices_worker]
-            forward_grad = - fm_constant * cur_error_sinogram
+            cur_error_image = flat_error_image[pixel_indices_worker]
+            forward_grad = - fm_constant * cur_error_image
             forward_hess = 1
 
             # Compute update vector update direction in recon domain
@@ -200,13 +195,13 @@ class QGGMRFDenoiser(TomographyModel):
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
 
             # Estimated upper bound for hessian
-            prior_overrelaxation_factor = 2
+            prior_overrelaxation_factor = 1
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
             delta_sinogram = delta_recon_at_indices
-            forward_linear = fm_constant * jnp.tensordot(cur_error_sinogram, delta_sinogram, axes=2)
+            forward_linear = fm_constant * jnp.tensordot(cur_error_image, delta_sinogram, axes=2)
             forward_quadratic = fm_constant * jnp.tensordot(delta_sinogram, delta_sinogram, axes=2)
 
             # Compute optimal update step
@@ -220,15 +215,15 @@ class QGGMRFDenoiser(TomographyModel):
             flat_image = flat_image.at[pixel_indices].add(delta_recon_at_indices)
 
             # Update sinogram and loss
-            cur_error_sinogram = cur_error_sinogram - float(alpha) * delta_sinogram
-            flat_error_sinogram = flat_error_sinogram.at[pixel_indices_worker].set(cur_error_sinogram)
+            cur_error_image = cur_error_image - alpha * delta_sinogram
+            flat_error_image = flat_error_image.at[pixel_indices_worker].set(cur_error_image)
             ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
             alpha_for_subset = alpha
 
             time_names = []
-            return flat_image, flat_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
+            return flat_image, flat_error_image, ell1_for_subset, alpha_for_subset, times, time_names
 
-        return vcd_subset_denoiser
+        return jax.jit(vcd_subset_denoiser)
 
     def get_magnification(self):
         """
