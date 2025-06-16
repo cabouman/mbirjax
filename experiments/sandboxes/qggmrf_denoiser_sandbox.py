@@ -4,6 +4,7 @@
 This code is demonstrates the use of the qggmrf denoiser.
 
 """
+import time
 
 import numpy as np
 import mbirjax as mj
@@ -11,9 +12,10 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Set the experiment parameters
-sharpness_levels = [3]
+np.random.seed(0)
+sharpness_levels = [1]
 sigma_noise = 0.1
-num_tiles = 2
+num_tiles = 3
 max_iterations = 300
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -33,7 +35,7 @@ phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
 
 denoiser = mj.QGGMRFDenoiser(phantom.shape)
 denoiser.set_params(snr_db=snr_db)
-denoiser.set_params(partition_sequence=[7])
+denoiser.set_params(partition_sequence=[4])
 
 """**Do the reconstruction and display the results.**"""
 phantoms = [phantom_noisy]
@@ -44,6 +46,7 @@ init_image = phantom_noisy
 
 # ##########################
 # Denoise at various levels
+time0 = time.time()
 for s in sharpness_levels:
     print('Starting recon with sharpness = {}'.format(s))
     denoiser.set_params(sharpness=s)
@@ -57,8 +60,10 @@ for s in sharpness_levels:
     init_image = phantom_denoised
 
 # ########################### Print out model parameters
+elapsed = time.time() - time0
 denoiser.print_params()
 mj.get_memory_stats()
 # Display results
 title = 'Noisy phantom and denoising with changing sharpness'
+print('Elapsed time = {:.3f} sec'.format(elapsed))
 mj.slice_viewer(*phantoms, slice_label=slice_labels, title=title, vmin=-0.2, vmax=1.0)
