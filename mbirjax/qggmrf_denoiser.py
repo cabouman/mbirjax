@@ -4,6 +4,7 @@ import datetime
 import numpy as np
 import jax
 import jax.numpy as jnp
+import jax.lax as lax
 import mbirjax as mj
 from mbirjax import TomographyModel
 
@@ -68,18 +69,18 @@ class QGGMRFDenoiser(TomographyModel):
         self.sigma_noise = sigma_noise
         if first_iteration == 0 or self.logger is None:
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+
+        self.logger.info('Initializing QGGMRFDenoiser')
         regularization_params = self.auto_set_regularization_params(image)
 
         # Generate set of voxel partitions
         image_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mj.gen_set_of_pixel_partitions(image_shape, granularity, output_device=self.main_device,
-                                                    use_ror_mask=self.use_ror_mask)
-        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+        partition_sequence = self.get_params('partition_sequence')
+        partition_index = partition_sequence[0]
+        partitions = mj.gen_set_of_pixel_partitions(image_shape, [granularity[partition_index]], use_ror_mask=self.use_ror_mask)
 
         # Generate sequence of partitions to use
-        partition_sequence = self.get_params('partition_sequence')
-        partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
-        partition_sequence = partition_sequence[first_iteration:]
+        partition = partitions[0]
 
         if init_image is None:
             init_image = image.copy()
@@ -95,43 +96,136 @@ class QGGMRFDenoiser(TomographyModel):
         flat_image = jax.device_put(flat_image, self.worker)
 
         # Create the finer grained image update operators
-        vcd_subset_denoiser = self.create_vcd_subset_denoiser()
 
-        import jax.lax as lax
+        fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
+        qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+        b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
+        qggmrf_params = tuple((b, sigma_x, p, q, T))
+        image_shape = self.get_params('recon_shape')
 
         @jax.jit  # JIT the whole sweep
-        def denoise_over_partition(flat_image, flat_error_image, partition, times):
+        def denoise_over_partition(flat_image, flat_error_image):
             """Run vcd_subset_denoiser over every subset in `partition`
             using lax.fori_loop to keep the loop on-device and JIT-compatible."""
 
             # Bundle *all* mutable state into one carry object
             def body_fn(i, carry):
                 (flat_image, flat_error_image,
-                 ell1_accum, alpha_accum, times) = carry
+                 ell1_accum, alpha_accum) = carry
 
                 subset = partition[i]  # pick i-th subset
 
                 (flat_image, flat_error_image,
-                 ell1_subset, alpha_subset,
-                 times, _time_names) = vcd_subset_denoiser(
+                 ell1_subset, alpha_subset) = vcd_subset_denoiser(
                     flat_image,
                     flat_error_image,
-                    subset, subset, times)
+                    subset, fm_constant, qggmrf_params, image_shape)
 
                 # update running totals
                 ell1_accum = ell1_accum + ell1_subset
                 alpha_accum = alpha_accum + alpha_subset
 
                 return (flat_image, flat_error_image,
-                        ell1_accum, alpha_accum, times)
+                        ell1_accum, alpha_accum)
 
             # initial carry
             init_carry = (flat_image, flat_error_image,
-                          0.0, 0.0, times)
+                          0.0, 0.0)
 
             # run 0 … N-1
             final_carry = lax.fori_loop(0, partition.shape[0], body_fn, init_carry)
             return final_carry  # unpack outside if you like
+
+        # pre-allocate history arrays (static length = max_iters)
+        max_iters = max_iterations
+        fm_rmse_init = jnp.zeros(max_iters)
+        nmae_update_init = jnp.zeros(max_iters)
+        alpha_values_init = jnp.zeros(max_iters)
+
+        stop_thresh = stop_threshold_change_pct / 100.0  # scalar threshold
+
+        @jax.jit
+        def run_denoising_loop(flat_image, flat_error_image):
+            """
+            Runs the outer optimisation loop with lax.while_loop.
+            Returns:
+                (flat_image, flat_error_image,
+                 fm_rmse_hist, nmae_hist, alpha_hist, num_iters)
+            """
+
+            # -------- carry = all mutable state --------
+            # i                 : iteration counter
+            # flat_image        : current image
+            # flat_error_image  : current residual
+            # fm_rmse_hist      : history array (filled progressively)
+            # nmae_hist         : "
+            # alpha_hist        : "
+            # nmae_curr         : nmae from *most recent* iteration
+            carry0 = (
+                0,  # i=0
+                flat_image,
+                flat_error_image,
+                fm_rmse_init,
+                nmae_update_init,
+                alpha_values_init,
+                jnp.inf  # nmae_curr (start high so loop begins)
+            )
+
+            # -------- termination condition --------
+            def cond_fn(carry):
+                i, *_, nmae_curr = carry
+                not_enough_iters = i < max_iters
+                change_big_enough = nmae_curr >= stop_thresh
+                return jnp.logical_and(not_enough_iters, change_big_enough)
+
+            # -------- body: one outer iteration --------
+            def body_fn(carry):
+                (i,
+                 flat_img,
+                 flat_err_img,
+                 fm_hist,
+                 nmae_hist,
+                 alpha_hist,
+                 _) = carry
+
+                # inner loop (already JAX-ified with fori_loop previously)
+                flat_img, flat_err_img, ell1_for_part, alpha_val = \
+                    denoise_over_partition(flat_img, flat_err_img)
+
+                # --- compute stats ---
+                nmae = ell1_for_part / jnp.sum(jnp.abs(flat_img))
+                fm = self.get_forward_model_loss(flat_err_img, sigma_y)
+
+                # --- write into the history arrays ---
+                fm_hist = fm_hist.at[i].set(fm)
+                nmae_hist = nmae_hist.at[i].set(nmae)
+                alpha_hist = alpha_hist.at[i].set(alpha_val)
+
+                # bump iteration counter
+                return (
+                    i + 1,
+                    flat_img,
+                    flat_err_img,
+                    fm_hist,
+                    nmae_hist,
+                    alpha_hist,
+                    nmae  # new “nmae_curr” for cond_fn
+                )
+
+            # run the while-loop
+            final_carry = lax.while_loop(cond_fn, body_fn, carry0)
+
+            # unpack results
+            (num_iters,
+             flat_image,
+             flat_error_image,
+             fm_rmse_hist,
+             nmae_hist,
+             alpha_hist,
+             _ ) = final_carry
+
+            return (flat_image, flat_error_image,
+                    fm_rmse_hist, nmae_hist, alpha_hist, num_iters)
 
         self.logger.info('Starting VCD iterations')
         if verbose >= 2:
@@ -141,76 +235,14 @@ class QGGMRFDenoiser(TomographyModel):
             self.logger.debug('--------')
 
         # Do the iterations
-        max_iters = partition_sequence.size
-        fm_rmse = np.zeros(max_iters)
+        (flat_image,
+         flat_error_image,
+         fm_rmse,  # full length = max_iters (unused slots stay 0)
+         nmae_update,
+         alpha_values,
+         num_iters) = run_denoising_loop(flat_image, flat_error_image)
+
         pm_loss = np.zeros(max_iters)
-        nmae_update = np.zeros(max_iters)
-        alpha_values = np.zeros(max_iters)
-        num_iters = 0
-        for i in range(max_iters):
-            partition = partitions[partition_sequence[i]]
-            times = []
-            flat_image, flat_error_image, ell1_for_partition, alpha, times = \
-                denoise_over_partition(flat_image, flat_error_image, partition, times)
-            # # Test local loop
-            #
-            # ell1_for_partition = 0
-            # alpha = 0
-            #
-            # for subset in partition:
-            #     flat_image, flat_error_image, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_denoiser(
-            #         flat_image,
-            #         flat_error_image,
-            #         subset, subset, times)
-            #
-            #     ell1_for_partition += ell1_for_subset
-            #     alpha += alpha_for_subset
-            # # End test local loop
-            #
-            # # Do an iteration
-            # flat_image, flat_error_image, ell1_for_partition, alpha = self.vcd_partition_iterator(
-            #     vcd_subset_denoiser,
-            #     flat_image,
-            #     flat_error_image,
-            #     partition)
-
-            # Compute the stats and display as desired
-            fm_rmse[i] = self.get_forward_model_loss(flat_error_image, sigma_y)
-            nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_image))
-            es_rmse = jnp.linalg.norm(flat_error_image) / jnp.sqrt(float(flat_error_image.size))
-            alpha_values[i] = alpha
-
-            if verbose >= 1:
-                iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(
-                    i + first_iteration, max_iters + first_iteration,
-                    100 * nmae_update[i],
-                    fm_rmse[i])
-                if compute_prior_loss:
-                    qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
-                    b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
-                    qggmrf_params = (b, sigma_x, p, q, T)
-                    pm_loss[i] = mj.qggmrf_loss(flat_image.reshape(image.shape), qggmrf_params)
-                    pm_loss[i] /= flat_image.size
-                    # Each loss is scaled by the number of elements, but the optimization uses unscaled values.
-                    # To provide an accurate, yet properly scaled total loss, first remove the scaling and add,
-                    # then scale by the average number of elements between the two.
-                    total_loss = ((fm_rmse[i] * image.size + pm_loss[i] * flat_image.size) /
-                                  (0.5 * (image.size + flat_image.size)))
-                    iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
-
-                self.logger.info(iter_output)
-                self.logger.info(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
-                self.logger.info('Number subsets = {}'.format(partition.shape[0]))
-                if verbose >= 2:
-                    output = io.StringIO()
-                    mj.get_memory_stats(file=output)
-                    self.logger.debug(output.getvalue())
-                    self.logger.debug('--------')
-            num_iters += 1
-            if nmae_update[i] < stop_threshold_change_pct / 100:
-                self.logger.warning('Change threshold stopping condition reached')
-                break
-
         recon_params = (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
                                                 alpha_values[0:num_iters])
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
@@ -219,76 +251,6 @@ class QGGMRFDenoiser(TomographyModel):
         denoised_image = self.reshape_recon(flat_image)
 
         return denoised_image, denoiser_dict
-
-    def create_vcd_subset_denoiser(self):
-        """
-        Create a jit-compiled function to apply the qggmrf proximal map to a subset of pixels.
-
-        Returns:
-            (callable) vcd_subset_denoiser(error_image, flat_image, pixel_indices) that updates the image.
-        """
-
-        fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
-        qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
-        b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
-        qggmrf_params = tuple((b, sigma_x, p, q, T))
-        image_shape = self.get_params('recon_shape')
-
-        def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices, pixel_indices_worker, times):
-
-            # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-            with jax.default_device(self.main_device):
-                if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
-                    prior_grad, prior_hess = (
-                        mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_image, image_shape, pixel_indices,
-                                                                           qggmrf_params, self.main_device,
-                                                                           self.worker))
-                else:
-                    prior_grad, prior_hess = (
-                        mj.qggmrf_gradient_and_hessian_at_indices(flat_image, image_shape, pixel_indices,
-                                                                  qggmrf_params))
-
-            # Back project to get the gradient - the forward Hessian is all 1s for the qggmrf proximal map
-            cur_error_image = flat_error_image[pixel_indices_worker]
-            forward_grad = - fm_constant * cur_error_image
-            forward_hess = 1
-
-            # Compute update vector update direction in recon domain
-            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
-
-            # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
-
-            # Estimated upper bound for hessian
-            prior_overrelaxation_factor = 1.1
-            prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
-                                      jnp.sum(prior_hess * delta_recon_at_indices ** 2))
-
-            # Compute update direction in sinogram domain
-            delta_sinogram = delta_recon_at_indices
-            forward_linear = fm_constant * jnp.tensordot(cur_error_image, delta_sinogram, axes=2)
-            forward_quadratic = fm_constant * jnp.tensordot(delta_sinogram, delta_sinogram, axes=2)
-
-            # Compute optimal update step
-            alpha_numerator = forward_linear - prior_linear
-            alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
-            alpha = alpha_numerator / alpha_denominator
-            max_alpha = 1.5
-            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
-
-            delta_recon_at_indices = alpha * delta_recon_at_indices
-            flat_image = flat_image.at[pixel_indices].add(delta_recon_at_indices)
-
-            # Update sinogram and loss
-            cur_error_image = cur_error_image - alpha * delta_sinogram
-            flat_error_image = flat_error_image.at[pixel_indices_worker].set(cur_error_image)
-            ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
-            alpha_for_subset = alpha
-
-            time_names = []
-            return flat_image, flat_error_image, ell1_for_subset, alpha_for_subset, times, time_names
-
-        return jax.jit(vcd_subset_denoiser)
 
     def get_magnification(self):
         """
@@ -406,3 +368,52 @@ class QGGMRFDenoiser(TomographyModel):
         threshold = min(threshold, np.amax(noisy_image))
         indicator = np.int8(noisy_image >= threshold)
         return indicator
+
+
+def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
+                        fm_constant, qggmrf_params, image_shape):
+
+    # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+
+    prior_grad, prior_hess = (
+        mj.qggmrf_gradient_and_hessian_at_indices(flat_image, image_shape, pixel_indices,
+                                                  qggmrf_params))
+
+    # Back project to get the gradient - the forward Hessian is all 1s for the qggmrf proximal map
+    cur_error_image = flat_error_image[pixel_indices]
+    forward_grad = - fm_constant * cur_error_image
+    forward_hess = 1
+
+    # Compute update vector update direction in recon domain
+    delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+
+    # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+    prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
+
+    # Estimated upper bound for hessian
+    prior_overrelaxation_factor = 1.1
+    prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
+                              jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+
+    # Compute update direction in sinogram domain
+    delta_sinogram = delta_recon_at_indices
+    forward_linear = fm_constant * jnp.tensordot(cur_error_image, delta_sinogram, axes=2)
+    forward_quadratic = fm_constant * jnp.tensordot(delta_sinogram, delta_sinogram, axes=2)
+
+    # Compute optimal update step
+    alpha_numerator = forward_linear - prior_linear
+    alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
+    alpha = alpha_numerator / alpha_denominator
+    max_alpha = 1.5
+    alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
+
+    delta_recon_at_indices = alpha * delta_recon_at_indices
+    flat_image = flat_image.at[pixel_indices].add(delta_recon_at_indices)
+
+    # Update sinogram and loss
+    cur_error_image = cur_error_image - alpha * delta_sinogram
+    flat_error_image = flat_error_image.at[pixel_indices].set(cur_error_image)
+    ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
+    alpha_for_subset = alpha
+
+    return flat_image, flat_error_image, ell1_for_subset, alpha_for_subset
