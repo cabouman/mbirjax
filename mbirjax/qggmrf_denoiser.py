@@ -18,7 +18,11 @@ class QGGMRFDenoiser(TomographyModel):
         view_params_name = 'None'
         super().__init__(sinogram_shape, view_params_name=view_params_name)
         self.use_ror_mask = False
-        self.set_params(use_gpu='full')
+        try:
+            jax.devices('gpu')
+            self.set_params(use_gpu='full')
+        except RuntimeError:
+            self.set_params(use_gpu='none')
 
     def denoise(self, image, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
                 first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
@@ -195,7 +199,7 @@ class QGGMRFDenoiser(TomographyModel):
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
 
             # Estimated upper bound for hessian
-            prior_overrelaxation_factor = 1
+            prior_overrelaxation_factor = 1.1
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
@@ -234,6 +238,25 @@ class QGGMRFDenoiser(TomographyModel):
         """
         magnification = 1.0
         return magnification
+
+    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
+        """
+        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
+        sigma_x in MBIR reconstruction.
+
+        Args:
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+        """
+
+        # Estimate the std of the noisy image
+        # typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
+        inds = np.where(sino_indicator)
+        inds = [np.clip(inds[j], 1, None) for j in range(len(inds))]
+        diffs = sinogram[inds[0], inds[1], inds[2]] - sinogram[inds[0]-1, inds[1], inds[2]]
+        recon_std = np.median(diffs) / 30
+
+        return recon_std
 
     def verify_valid_params(self):
         """
@@ -278,93 +301,3 @@ class QGGMRFDenoiser(TomographyModel):
         """Compute the default recon shape to equal the sinogram shape"""
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=sinogram_shape)
-
-    def forward_project(self, recon):
-        """
-        Perform a full forward projection at all voxels in the field-of-view, which in this case is the identity.
-
-        Args:
-            recon (jnp array): The 3D reconstruction array.
-
-        Returns:
-            jnp array: The resulting 3D sinogram after projection.
-        """
-        sinogram = recon  # Since jax arrays are immutable, we shouldn't need to do recon.copy()
-        return sinogram
-
-    def back_project(self, sinogram):
-        """
-        Perform a full back projection at all voxels in the field-of-view, which in this case is the identity.
-
-        Args:
-            sinogram (jnp array): 3D jax array containing sinogram.
-
-        Returns:
-            jnp array: The resulting 3D sinogram after projection.
-        """
-        recon = sinogram  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
-        return recon
-
-    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
-        """
-        Forward project the given voxel values to a sinogram.
-        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.
-
-        Args:
-            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
-            pixel_indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (jax array): Array of indices of views to project
-            output_device (jax device): Device on which to put the output
-
-        Returns:
-            jnp array: The resulting 3D sinogram after projection.
-        """
-        image_shape = self.get_params('image_shape')
-        row_index, col_index = jnp.unravel_index(pixel_indices, image_shape[:2])
-        sinogram = jnp.zeros(image_shape, device=output_device)
-        sinogram = sinogram.at[row_index, col_index].set(voxel_values)
-        return sinogram
-
-    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
-        """
-        Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
-        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
-        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
-        be the indices into the sinogram that is passed in here.
-
-        Args:
-            sinogram (jnp array): 3D jax array containing the full sinogram.
-            pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
-            coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
-            output_device (jax device, optional): Device on which to put the output
-
-        Returns:
-            A jax array of shape (len(indices), num_slices)
-        """
-        row_index, col_index = jnp.unravel_index(pixel_indices, sinogram.shape[:2])
-        recon = jax.device_put(sinogram[row_index, col_index],
-                               output_device)  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
-        return recon
-
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=1):
-        """
-        Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
-        implementation details are geometry specific, and direct_recon may not be available for all geometries.
-
-        Args:
-            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
-            view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
-
-        Returns:
-            recon (jax array): The reconstructed volume after direct reconstruction.
-        """
-        recon = sinogram  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
-        return recon
-
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=1):
-        sinogram = sinogram  # Since jax arrays are immutable, we shouldn't need to do sinogram.copy()
-        return sinogram
