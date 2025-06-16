@@ -1,5 +1,6 @@
 from collections import namedtuple
 import io
+import datetime
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -94,6 +95,42 @@ class QGGMRFDenoiser(TomographyModel):
         # Create the finer grained image update operators
         vcd_subset_denoiser = self.create_vcd_subset_denoiser()
 
+        import jax.lax as lax
+
+        @jax.jit  # JIT the whole sweep
+        def denoise_over_partition(flat_image, flat_error_image, partition, times):
+            """Run vcd_subset_denoiser over every subset in `partition`
+            using lax.fori_loop to keep the loop on-device and JIT-compatible."""
+
+            # Bundle *all* mutable state into one carry object
+            def body_fn(i, carry):
+                (flat_image, flat_error_image,
+                 ell1_accum, alpha_accum, times) = carry
+
+                subset = partition[i]  # pick i-th subset
+
+                (flat_image, flat_error_image,
+                 ell1_subset, alpha_subset,
+                 times, _time_names) = vcd_subset_denoiser(
+                    flat_image,
+                    flat_error_image,
+                    subset, subset, times)
+
+                # update running totals
+                ell1_accum = ell1_accum + ell1_subset
+                alpha_accum = alpha_accum + alpha_subset
+
+                return (flat_image, flat_error_image,
+                        ell1_accum, alpha_accum, times)
+
+            # initial carry
+            init_carry = (flat_image, flat_error_image,
+                          0.0, 0.0, times)
+
+            # run 0 … N-1
+            final_carry = lax.fori_loop(0, partition.shape[0], body_fn, init_carry)
+            return final_carry  # unpack outside if you like
+
         self.logger.info('Starting VCD iterations')
         if verbose >= 2:
             output = io.StringIO()
@@ -109,15 +146,31 @@ class QGGMRFDenoiser(TomographyModel):
         alpha_values = np.zeros(max_iters)
         num_iters = 0
         for i in range(max_iters):
-            # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
-
-            # Do an iteration
-            flat_image, flat_error_image, ell1_for_partition, alpha = self.vcd_partition_iterator(
-                vcd_subset_denoiser,
-                flat_image,
-                flat_error_image,
-                partition)
+            times = []
+            flat_image, flat_error_image, ell1_for_partition, alpha, times = \
+                denoise_over_partition(flat_image, flat_error_image, partition, times)
+            # # Test local loop
+            #
+            # ell1_for_partition = 0
+            # alpha = 0
+            #
+            # for subset in partition:
+            #     flat_image, flat_error_image, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_denoiser(
+            #         flat_image,
+            #         flat_error_image,
+            #         subset, subset, times)
+            #
+            #     ell1_for_partition += ell1_for_subset
+            #     alpha += alpha_for_subset
+            # # End test local loop
+            #
+            # # Do an iteration
+            # flat_image, flat_error_image, ell1_for_partition, alpha = self.vcd_partition_iterator(
+            #     vcd_subset_denoiser,
+            #     flat_image,
+            #     flat_error_image,
+            #     partition)
 
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(flat_error_image, sigma_y)
@@ -156,8 +209,14 @@ class QGGMRFDenoiser(TomographyModel):
                 self.logger.warning('Change threshold stopping condition reached')
                 break
 
-        return self.reshape_recon(flat_image), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
+        recon_params = (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
                                                 alpha_values[0:num_iters])
+        notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
+
+        denoiser_dict = self.get_recon_dict(recon_params, notes=notes)
+        denoised_image = self.reshape_recon(flat_image)
+
+        return denoised_image, denoiser_dict
 
     def create_vcd_subset_denoiser(self):
         """
