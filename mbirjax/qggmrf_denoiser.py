@@ -19,13 +19,14 @@ class QGGMRFDenoiser(TomographyModel):
         view_params_name = 'None'
         super().__init__(sinogram_shape, view_params_name=view_params_name)
         self.use_ror_mask = False
+        self.sigma_noise = None
         try:
             jax.devices('gpu')
             self.set_params(use_gpu='full')
         except RuntimeError:
             self.set_params(use_gpu='none')
 
-    def denoise(self, image, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
+    def denoise(self, image, sigma_noise, use_ror_mask=False, init_image=None, max_iterations=15, stop_threshold_change_pct=0.2,
                 first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
         Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
@@ -64,6 +65,7 @@ class QGGMRFDenoiser(TomographyModel):
         TomographyModel : The base class from which this class inherits.
         """
         self.use_ror_mask = use_ror_mask
+        self.sigma_noise = sigma_noise
         if first_iteration == 0 or self.logger is None:
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
         regularization_params = self.auto_set_regularization_params(image)
@@ -298,24 +300,49 @@ class QGGMRFDenoiser(TomographyModel):
         magnification = 1.0
         return magnification
 
-    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
+    def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
+        sigma_y = self.sigma_noise
+        self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
+
+    # def auto_set_sigma_x(self, recon_std):
+    #     """
+    #     Compute the automatic value of ``sigma_x`` for use in MBIR reconstruction with qGGMRF prior.
+    #
+    #     Args:
+    #         recon_std (float): Estimated standard deviation of the reconstruction from _get_estimate_of_recon_std.
+    #     """
+    #     # Get parameters
+    #     sharpness = self.get_params('sharpness')
+    #
+    #     # Compute sigma_x as a fraction of the typical recon value
+    #     # 0.2 is an empirically determined constant
+    #     sigma_x = np.float32(0.04 * (2 ** sharpness) * recon_std)
+    #     self.set_params(no_warning=True, sigma_x=sigma_x, auto_regularize_flag=True)
+
+    def _get_estimate_of_recon_std(self, noisy_image, support_indicator):
         """
-        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
+        Estimate the standard deviation of the reconstruction from the noisy image.  This is used to scale sigma_prox and
         sigma_x in MBIR reconstruction.
 
         Args:
-            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+            noisy_image (ndarray): 3D jax array containing noisy image with shape (num_views, num_det_rows, num_det_channels).
+            support_indicator (ndarray): a binary mask that indicates the region of image support; same shape as noisy_image.
         """
 
-        # Estimate the std of the noisy image
-        # typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
-        inds = np.where(sino_indicator)
-        inds = [np.clip(inds[j], 1, None) for j in range(len(inds))]
-        diffs = sinogram[inds[0], inds[1], inds[2]] - sinogram[inds[0]-1, inds[1], inds[2]]
-        recon_std = np.median(diffs) / 30
+        # # Compute the typical magnitude of a noisy image value
+        # typical_image_value = np.average(np.abs(noisy_image), weights=support_indicator)
+        # return typical_image_value
 
-        return recon_std
+        inds = np.where(support_indicator)
+        inds = [np.clip(inds[j], 1, None) for j in range(len(inds))]
+        vals = np.stack([noisy_image[inds[0], inds[1], inds[2]],
+                        noisy_image[inds[0]-1, inds[1], inds[2]],
+                        noisy_image[inds[0], inds[1]-1, inds[2]],
+                        noisy_image[inds[0], inds[1], inds[2]-1]], axis=0)
+        std = np.std(vals, axis=0)
+        recon_std = np.mean(std)
+
+        return recon_std  # typical_image_value
 
     def verify_valid_params(self):
         """
@@ -360,3 +387,22 @@ class QGGMRFDenoiser(TomographyModel):
         """Compute the default recon shape to equal the sinogram shape"""
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=sinogram_shape)
+
+    def _get_sino_indicator(self, noisy_image):
+        """
+        Compute a binary mask that indicates the region of noisy_image support.
+
+        Args:
+            noisy_image (ndarray): 3D jax array containing noisy_image with shape (num_views, num_det_rows, num_det_channels).
+
+        Returns:
+            (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``noisy_image``.
+        """
+        sigma_noise = self.sigma_noise
+
+        percent_noise_floor = 5.0
+        # Form indicator by thresholding noisy_image
+        threshold = (0.01 * percent_noise_floor) * np.mean(np.fabs(noisy_image)) + sigma_noise
+        threshold = min(threshold, np.amax(noisy_image))
+        indicator = np.int8(noisy_image >= threshold)
+        return indicator

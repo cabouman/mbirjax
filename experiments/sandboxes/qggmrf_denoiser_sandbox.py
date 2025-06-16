@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 
-This code is demonstrates the use of the qggmrf denoiser.
+This code demonstrates the use of the qggmrf denoiser.
 
 """
 import time
@@ -13,9 +13,9 @@ import mbirjax as mj
 
 # Set the experiment parameters
 np.random.seed(0)
-sharpness_levels = [1]
+sharpness_levels = [1, 0, -1, -2]
 sigma_noise = 0.1
-num_tiles = 3
+num_tiles = 1
 max_iterations = 300
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -30,6 +30,8 @@ stop_threshold_change_pct = 0.1
 recon_shape = (num_det_channels, num_det_channels, num_det_rows)
 phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 phantom = np.tile(phantom, (num_tiles, num_tiles, num_tiles))
+dc = 0.0
+phantom = phantom + dc
 recon_shape = [num_tiles * size for size in recon_shape]
 phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
 
@@ -50,7 +52,7 @@ time0 = time.time()
 for s in sharpness_levels:
     print('Starting recon with sharpness = {}'.format(s))
     denoiser.set_params(sharpness=s)
-    phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, init_image=init_image, max_iterations=max_iterations,
+    phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, sigma_noise=sigma_noise, init_image=init_image, max_iterations=max_iterations,
                                                     stop_threshold_change_pct=stop_threshold_change_pct)
     phantoms.append(phantom_denoised)
     dicts.append(recon_dict)
@@ -66,4 +68,4 @@ mj.get_memory_stats()
 # Display results
 title = 'Noisy phantom and denoising with changing sharpness'
 print('Elapsed time = {:.3f} sec'.format(elapsed))
-mj.slice_viewer(*phantoms, slice_label=slice_labels, title=title, vmin=-0.2, vmax=1.0)
+mj.slice_viewer(*phantoms, slice_label=slice_labels, title=title, vmin=dc-0.2, vmax=dc+1.0)
