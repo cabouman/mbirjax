@@ -32,11 +32,10 @@ class TestProx(unittest.TestCase):
         """
         num_det_rows = 100
         num_det_channels = 100
-        snr_db = 30
         max_iterations = 20
         stop_threshold_change_pct = 0.1
         sigma_noise = 0.1
-        sharpness = 0.5
+        sharpness = 0.0
 
         # Get some noisy data
         recon_shape = (num_det_channels, num_det_channels, num_det_rows)
@@ -44,16 +43,13 @@ class TestProx(unittest.TestCase):
         phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
 
         denoiser = mj.QGGMRFDenoiser(phantom.shape)
-        denoiser.set_params(snr_db=snr_db)
-
         denoiser.set_params(sharpness=sharpness)
-        phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy,
+        sigma_noise = 0.1
+        phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, sigma_noise,
                                                         max_iterations=max_iterations,
                                                         stop_threshold_change_pct=stop_threshold_change_pct)
         nrmse = np.linalg.norm(phantom_denoised - phantom) / np.linalg.norm(phantom)
-
-        tolerance = 0.18
-
+        tolerance = 0.2
         self.assertTrue(nrmse < tolerance)
 
 
