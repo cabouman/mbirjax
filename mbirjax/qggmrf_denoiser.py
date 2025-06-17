@@ -18,10 +18,10 @@ class QGGMRFDenoiser(TomographyModel):
     The primary interface is through :meth:`denoise`.
     """
 
-    def __init__(self, sinogram_shape):
+    def __init__(self, image_shape):
 
         view_params_name = 'None'
-        super().__init__(sinogram_shape, view_params_name=view_params_name, sigma_noise=None)
+        super().__init__(image_shape, view_params_name=view_params_name, sigma_noise=None)
         self.use_ror_mask = False
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
