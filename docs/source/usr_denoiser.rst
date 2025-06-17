@@ -4,19 +4,20 @@
 QGGMRF Denoiser
 ===============
 
-The ``QGGMRFDenoiser`` class implements a 3D volume denoiser using a Bayesian formulation.
-The loss function in this formulation is the QGGMRF function, which promotes
-nearby voxels to have similar values while preserving edges.  Using :math:`Q(v)` to denote the loss function, the
+The ``QGGMRFDenoiser`` class implements a 3D volume denoiser using a Bayesian formulation of the MAP estimate for
+additive white Gaussian denoising.
+The prior function in this formulation is the QGGMRF function, which promotes
+nearby voxels to have similar values while preserving edges.  Using :math:`Q(v)` to denote the prior function, the
 denoiser is
 
         .. math::
 
-            F(x) = \arg\min_v \left\{ Q(v) + \frac{1}{2}\|v - x\|^{2} \right\}.
+            F(x) = \arg\min_v \left\{ \frac{1}{2 \sigma_{noise}^2}\|x - v\|^{2} + Q(v) \right\}.
 
-This denoiser automatically estimates the noise level in the image.  The amount of denoising can be adjusted using
-parameters sharpness (default=1.0) and/or snr_db (default=30).
-This class inherits the behaviors and attributes of the :ref:`TomographyModelDocs`:  the proximal map above is
-implemented through forward and backprojections that are the identity map.
+This denoiser automatically estimates the noise level in the image or can be given an estimate of the noise
+standard deviation through the parameter `sigma_noise`.  Larger values of `sigma_noise` lead to smoother images.
+Alternatively, the amount of denoising can be adjusted using parameter `sharpness` (default=0.0).
+This class inherits many of the behaviors and attributes of the :ref:`TomographyModelDocs`.
 
 Constructor
 -----------

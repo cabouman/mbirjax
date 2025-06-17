@@ -146,13 +146,13 @@ class QGGMRFDenoiser(TomographyModel):
         Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
 
         With default settings, and with X a clean image and W equal to AWGN of standard deviation sigma_noise,
-        the result of :meth:`denoise` applied to X+W is roughly the denoised image X' that minimizes
-        NRMSE(X, X') over all choices of sigma_noise.
+        the result of :meth:`denoise` applied to X+W is the MAP estimate of the denoised image using the
+        qGGMRF prior function.
 
         The amount of denoising can be changed by changing sigma_noise.  If sigma_noise is None, then sigma_noise
         is estimated from a set of samples from the image.
 
-        Denoising strength can also be adjusted using parameters sharpness (default=0.0) and/or snr_db (default=30).
+        Denoising strength can also be adjusted using the parameter `sharpness` (default=0.0).
 
         Args:
             image (numpy or jax array):  The 3D volume to be denoised.
@@ -314,7 +314,7 @@ class QGGMRFDenoiser(TomographyModel):
                 # Insert call back to print progress
                 print_rate = 5
                 iter_updates = (i, nmae_body[i])
-                carry = lax.cond(
+                _ = lax.cond(
                     (i % print_rate) == 0,
                     lambda c: (
                         # call host_callback then return unchanged carry
