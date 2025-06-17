@@ -259,11 +259,15 @@ class QGGMRFDenoiser(TomographyModel):
 
         # pre-allocate history arrays (static length = max_iters)
         max_iters = max_iterations
-        fm_rmse_init = jnp.zeros(max_iters)
         nmae_update_init = jnp.zeros(max_iters)
         alpha_values_init = jnp.zeros(max_iters)
 
         stop_thresh = stop_threshold_change_pct / 100.0  # scalar threshold
+
+        def log_updates(updates):
+            cur_iter, cur_nmae = updates
+            iter_output = 'After iteration {} of a max of {}: Pct change={:.4f}'.format(cur_iter + first_iteration, max_iters, 100 * cur_nmae)
+            self.logger.info(iter_output)
 
         @jax.jit
         def run_denoising_loop(local_flat_image, local_flat_error_image):
@@ -271,18 +275,17 @@ class QGGMRFDenoiser(TomographyModel):
             Runs the outer optimisation loop with lax.while_loop.
             Returns:
                 (local_flat_image, local_flat_error_image,
-                 fm_rmse_hist, nmae_hist, alpha_hist, num_iters)
+                nmae_hist, alpha_hist, num_iters)
             """
 
             # -------- carry = all mutable state --------
             # i                 : iteration counter
             # local_flat_image        : current image
             # local_flat_error_image  : current residual
-            # fm_rmse_hist      : history array (filled progressively)
-            # nmae_hist         : "
+            # nmae_hist         : history array (filled progressively)
             # alpha_hist        : "
             # nmae_curr         : nmae from *most recent* iteration
-            carry0 = (0, local_flat_image, local_flat_error_image, fm_rmse_init,
+            carry0 = (0, local_flat_image, local_flat_error_image,
                       nmae_update_init, alpha_values_init, jnp.inf  # nmae_curr (start high so loop begins)
                       )
 
@@ -295,7 +298,7 @@ class QGGMRFDenoiser(TomographyModel):
 
             # -------- body: one outer iteration --------
             def body_fn(carry):
-                (i, flat_img, flat_err_img, fm_hist, nmae_body, alpha_body, _) = carry
+                (i, flat_img, flat_err_img, nmae_body, alpha_body, _) = carry
 
                 # inner loop (already JAX-ified with fori_loop previously)
                 flat_img, flat_err_img, ell1_for_part, alpha_val = \
@@ -303,25 +306,35 @@ class QGGMRFDenoiser(TomographyModel):
 
                 # --- compute stats ---
                 nmae = ell1_for_part / jnp.sum(jnp.abs(flat_img))
-                fm = self.get_forward_model_loss(flat_err_img, sigma_y)
 
                 # --- write into the history arrays ---
-                fm_hist = fm_hist.at[i].set(fm)
                 nmae_body = nmae_body.at[i].set(nmae)
                 alpha_body = alpha_body.at[i].set(alpha_val)
 
+                # Insert call back to print progress
+                print_rate = 5
+                iter_updates = (i, nmae_body[i])
+                carry = lax.cond(
+                    (i % print_rate) == 0,
+                    lambda c: (
+                        # call host_callback then return unchanged carry
+                        jax.debug.callback(log_updates, iter_updates)
+                    ),
+                    lambda c: c,
+                    None
+                )
+
                 # bump iteration counter
-                return i + 1, flat_img, flat_err_img, fm_hist, nmae_body, alpha_body, nmae  # new nmae for cond_fn
+                return i + 1, flat_img, flat_err_img, nmae_body, alpha_body, nmae  # new nmae for cond_fn
 
             # run the while-loop
             final_carry = lax.while_loop(cond_fn, body_fn, carry0)
 
             # unpack results
             (num_iters_loop, local_flat_image, local_flat_error_image,
-             fm_rmse_hist, nmae_hist, alpha_hist, _) = final_carry
+             nmae_hist, alpha_hist, _) = final_carry
 
-            return (local_flat_image, local_flat_error_image,
-                    fm_rmse_hist, nmae_hist, alpha_hist, num_iters_loop)
+            return local_flat_image, local_flat_error_image, nmae_hist, alpha_hist, num_iters_loop
 
         self.logger.info('Starting VCD iterations')
         if verbose >= 2:
@@ -331,18 +344,16 @@ class QGGMRFDenoiser(TomographyModel):
             self.logger.debug('--------')
 
         # Do the iterations
-        (flat_image, flat_error_image, fm_rmse,  # full length = max_iters (unused slots stay 0)
+        (flat_image, flat_error_image,  # full length = max_iters (unused slots stay 0)
          nmae_update, alpha_values, num_iters) = run_denoising_loop(flat_image, flat_error_image)
 
-        recon_params = (fm_rmse[0:num_iters], nmae_update[0:num_iters], alpha_values[0:num_iters])
-
-        fm_rmse = [float(val) for val in recon_params[0]]
+        fm_rmse = None
+        recon_params = (fm_rmse, nmae_update[0:num_iters], alpha_values[0:num_iters])
         stop_threshold_change_pct = [100 * float(val) for val in recon_params[1]]
         alpha_values = [float(val) for val in recon_params[2]]
-        num_iterations = len(fm_rmse)
 
         prior_loss = None
-        recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
+        recon_param_values = [int(num_iters), granularity, partition_sequence, fm_rmse, prior_loss,
                               regularization_params, stop_threshold_change_pct, alpha_values]
         recon_params = mj.ReconParams(*tuple(recon_param_values))._asdict()
 
@@ -351,6 +362,7 @@ class QGGMRFDenoiser(TomographyModel):
         denoised_image = self.reshape_recon(flat_image)
 
         return denoised_image, denoiser_dict
+
 
 def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
                         fm_constant, qggmrf_params, image_shape):
