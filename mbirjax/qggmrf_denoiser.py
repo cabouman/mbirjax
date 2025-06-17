@@ -145,9 +145,14 @@ class QGGMRFDenoiser(TomographyModel):
         """
         Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
 
-        With default settings,
-        The noise level is estimated from the image, and the denoising strength can be adjusted using parameters
-        sharpness (default=1.0) and/or snr_db (default=30).
+        With default settings, and with X a clean image and W equal to AWGN of standard deviation sigma_noise,
+        the result of :meth:`denoise` applied to X+W is roughly the denoised image X' that minimizes
+        NRMSE(X, X') over all choices of sigma_noise.
+
+        The amount of denoising can be changed by changing sigma_noise.  If sigma_noise is None, then sigma_noise
+        is estimated from a set of samples from the image.
+
+        Denoising strength can also be adjusted using parameters sharpness (default=0.0) and/or snr_db (default=30).
 
         Args:
             image (numpy or jax array):  The 3D volume to be denoised.
@@ -171,8 +176,8 @@ class QGGMRFDenoiser(TomographyModel):
 
         Example:
             >>> denoiser = mj.QGGMRFDenoiser(noisy_image.shape)
-            >>> denoiser.set_params(sharpness=1.1, snr_db=33)
-            >>> denoised_image, denoised_dict = denoiser.denoise(noisy_image)
+            >>> denoiser.set_params(sharpness=0.5)  # Increase sharpness a little over the default of 0.0
+            >>> denoised_image, denoised_dict = denoiser.denoise(noisy_image)  # Estimate the noise level from the image
             >>> mj.slice_viewer(noisy_image, denoised_image, data_dicts=[None, denoised_dict], title='Noisy and denoised images')
 
         See Also
