@@ -62,6 +62,7 @@ class TomographyModel(ParameterHandler):
             delta_voxel = delta_det_channel / magnification
             self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
 
+        self.use_ror_mask = True
         self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
@@ -541,7 +542,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         output_device = self.main_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
@@ -563,7 +564,7 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
@@ -676,7 +677,10 @@ class TomographyModel(ParameterHandler):
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
         """
-        Computes the diagonal elements of the Hessian matrix for given weights.
+        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
+        matrix except using the square of the coefficients in the backprojection to a given voxel.
+        If weights is not None, it must be an array with the same shape as the sinogram to be backprojected.
+        If weights is None, then constant weights 1 will be used
 
         Args:
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
@@ -684,24 +688,6 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
-        """
-        """
-        Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
-        matrix except using the square of the coefficients in the backprojection to a given voxel.
-        One of weights or sinogram_shape must be not None. If weights is not None, it must be an array with the same
-        shape as the sinogram to be backprojected.  If weights is None, then a weights matrix will be computed as an
-        array of ones of size sinogram_shape.
-
-        Args:
-           weights (ndarray or jax array or None, optional): 3D array of shape
-                (cur_num_views, num_det_rows, num_det_cols), where cur_num_views is recon_shape[0]
-                if view_indices is () and len(view_indices) otherwise, in which case the views in weights should
-                match those indicated by view_indices.  Defaults to all 1s.
-           view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                If None, then all views are used.
-
-        Returns:
-            An array that is the same size as the reconstruction.
         """
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
@@ -1038,7 +1024,8 @@ class TomographyModel(ParameterHandler):
 
             # Generate set of voxel partitions
             recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device)
+            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
+                                                        use_ror_mask=self.use_ror_mask)
             partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
             # Generate sequence of partitions to use
@@ -1087,6 +1074,9 @@ class TomographyModel(ParameterHandler):
 
         if logfile_path:
             self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
+
+        for h in list(self.logger.handlers):  # Make sure the log files are up to date
+            h.flush()
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
@@ -1654,8 +1644,12 @@ class TomographyModel(ParameterHandler):
         Returns:
             float loss.
         """
+        if weights is None:
+            weights = 1
+            avg_weight = 1
+        else:
+            avg_weight = jnp.average(weights)
         if normalize:
-            avg_weight = 1 if weights is None else jnp.average(weights)
             loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(
                 (error_sinogram * error_sinogram) * (weights / avg_weight)))
         else:

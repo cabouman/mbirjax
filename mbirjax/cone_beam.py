@@ -40,6 +40,10 @@ class ConeBeamModel(TomographyModel):
 
         **recon_slice_offset** (float, default=0) -
         Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
+
+    See Also
+    --------
+    TomographyModel : The base class from which this class inherits.
     """
 
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE

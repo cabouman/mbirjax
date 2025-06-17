@@ -106,7 +106,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 title = 'Default recon: Phantom (left) vs VCD Recon (right)'
 title += '\nAdjust intensity range to [0, 1] to see internal artifacts from projection outside detector.'
 title += '\nAdjust intensity range to [1.5, 2] to see outer ring from projection outside detector.'
-mj.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title, vmin=0.0, vmax=2.0)
 
 """**Decrease sharpness to reduce artifacts.**
 
@@ -130,7 +130,7 @@ pprint.pprint(recon_params_smooth, compact=True)
 title = 'Recon with sharpness = {:.1f}: Phantom (left) vs VCD Recon (right)'.format(sharpness)
 title += '\nAdjust intensity range to [0, 1] to see reduced internal artifacts from projection outside detector.'
 title += '\nOuter ring is still evident in intensity range [1, 2], and edges are blurry.'
-mj.slice_viewer(phantom, recon_smooth, attribute_dicts=[None, recon_dict_smooth], title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon_smooth, data_dicts=[None, recon_dict_smooth], title=title, vmin=0.0, vmax=2.0)
 
 """**Padded recon VCD reconstruction**
 
@@ -162,6 +162,6 @@ pprint.pprint(recon_params_enlarged, compact=True)
 title = 'Padded recon with sharpness = {:.1f}: Phantom (left) vs VCD Recon (right)'.format(sharpness)
 title += '\nPadding the recon reduces the internal artifacts even with default sharpness.'
 title += '\nEdges are sharp, outer ring is mostly gone, and the partially projected pixels are partially recovered.'
-mj.slice_viewer(phantom, recon_enlarged, attribute_dicts=[None, recon_dict_enlarged], title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(phantom, recon_enlarged, data_dicts=[None, recon_dict_enlarged], title=title, vmin=0.0, vmax=2.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

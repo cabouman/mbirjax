@@ -145,6 +145,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.'
-mbirjax.slice_viewer(phantom, recon, attribute_dicts=[None, recon_dict], title=title)
+mbirjax.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

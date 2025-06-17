@@ -1,8 +1,8 @@
 .. _ParallelBeamModelDocs:
 
-=================
-ParallelBeamModel
-=================
+===================
+Parallel Beam Model
+===================
 
 The ``ParallelBeamModel`` class implements a geometry and reconstruction model for parallel-beam computed tomography.
 This class inherits all behaviors and attributes of the :ref:`TomographyModelDocs`.
@@ -10,8 +10,6 @@ It also implements some parallel-beam specific functions such as FBP (Filtered B
 
 See the API docs for the :class:`~mbirjax.TomographyModel` class for details on a wide range
 of functions that can be implemented using the ``ParallelBeamModel``.
-
-
 
 Constructor
 -----------

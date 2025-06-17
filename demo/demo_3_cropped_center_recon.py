@@ -112,6 +112,6 @@ recon_radius = [length // 2 for length in recon_shape]
 start_inds = [phantom.shape[j] // 2 - recon_radius[j] for j in range(2)]
 end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]
 cropped_phantom = phantom[start_inds[0]:end_inds[0], start_inds[1]:end_inds[1]]
-mj.slice_viewer(cropped_phantom, recon, attribute_dicts=[None, recon_dict], title=title, vmin=0.0, vmax=2.0)
+mj.slice_viewer(cropped_phantom, recon, data_dicts=[None, recon_dict], title=title, vmin=0.0, vmax=2.0)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """
