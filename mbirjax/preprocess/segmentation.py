@@ -1,6 +1,7 @@
 import numpy as np
 from jax import numpy as jnp
 import mbirjax as mj
+import utilities
 
 
 def multi_threshold_otsu(image, classes=2, num_bins=1024):
@@ -211,6 +212,7 @@ def segment_plastic_metal(recon):
     plastic_metal_threshold = thresholds[1]
 
     # Create masks
+    recon = utilities.apply_cylindrical_mask(recon, radial_margin=10, num_top_slices=10, num_bottom_slices=10)
     plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
     metal_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
 
