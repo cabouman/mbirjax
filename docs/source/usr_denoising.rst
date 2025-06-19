@@ -1,8 +1,14 @@
-.. _QGGMRFDenoiserDocs:
+.. _DenoisingDocs:
 
-===============
-QGGMRF Denoiser
-===============
+=========
+Denoising
+=========
+
+MBIRJAX includes a Bayesian MAP denoising using the qGGMRF prior and a 3D median filter.
+
+++++++++++++++
+QGGMRFDenoiser
+++++++++++++++
 
 The ``QGGMRFDenoiser`` class implements a 3D volume denoiser using a Bayesian formulation of the MAP estimate for
 additive white Gaussian denoising.
@@ -30,5 +36,13 @@ Denoise
 
 .. automethod:: mbirjax.QGGMRFDenoiser.denoise
 
+
++++++++++++++
+Median Filter
++++++++++++++
+
+MBIRJAX also includes a 3x3x3 median filter, which can be used as a simple denoiser.
+
+.. autofunction:: mbirjax.median_filter3d
 
 

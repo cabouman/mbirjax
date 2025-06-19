@@ -37,13 +37,14 @@ General preprocess functions
 .. autofunction:: apply_cylindrical_mask
 
 
-MAR preprocess functions
-------------------------
+MAR utilities
+-------------
 
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: gen_huber_weights
 .. autofunction:: BH_correction
+.. autofunction:: recon_BH_plastic_metal
 
 Segmentation functions
 ----------------------
