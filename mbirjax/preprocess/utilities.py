@@ -481,7 +481,7 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-def apply_cylindrical_mask(recon, radial_margin, num_top_slices, num_bottom_slices):
+def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
 
@@ -492,8 +492,8 @@ def apply_cylindrical_mask(recon, radial_margin, num_top_slices, num_bottom_slic
     Args:
         recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
-        num_top_slices (int): Number of top slices to set to zero along the Z-axis.
-        num_bottom_slices (int): Number of bottom slices to set to zero along the Z-axis.
+        top_margin (int): Number of top slices to set to zero along the Z-axis.
+        bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
 
     Returns:
         jnp.ndarray: Masked 3D volume of the same shape as `recon`.
@@ -501,7 +501,7 @@ def apply_cylindrical_mask(recon, radial_margin, num_top_slices, num_bottom_slic
     Example:
         >>> import jax.numpy as jnp
         >>> vol = jnp.ones((128, 128, 64))
-        >>> masked_vol = apply_cylindrical_mask(vol, radial_margin=10, num_top_slices=4, num_bottom_slices=4)
+        >>> masked_vol = apply_cylindrical_mask(vol, radial_margin=10, top_margin=4, bottom_margin=4)
         >>> masked_vol.shape
         (128, 128, 64)
     """
@@ -521,10 +521,10 @@ def apply_cylindrical_mask(recon, radial_margin, num_top_slices, num_bottom_slic
     recon = recon * circular_mask[:, :, None]
 
     # Zero out top and bottom slices along Z
-    if num_top_slices > 0:
-        recon = recon.at[:, :, :num_top_slices].set(0)
-    if num_bottom_slices > 0:
-        recon = recon.at[:, :, -num_bottom_slices:].set(0)
+    if top_margin > 0:
+        recon = recon.at[:, :, :top_margin].set(0)
+    if bottom_margin > 0:
+        recon = recon.at[:, :, -bottom_margin:].set(0)
 
     return recon
 
