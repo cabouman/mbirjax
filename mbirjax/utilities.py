@@ -403,36 +403,29 @@ def query_yes_no(question, default="n"):
 
 def export_recon_hdf5(file_path, recon, recon_dict=None, flip_coordinates=True, remove_flash=True, radial_margin=0, top_margin=0, bottom_margin=0):
     """
-    Export a reconstruction volume to an HDF5 file, with optional postprocessing and metadata.
+      Export a 3-D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function saves a 3D NumPy or JAX array to a single-dataset HDF5 file. It optionally applies
-    postprocessing steps including coordinate flipping (to move the slice axis to the first dimension)
-    and removal of peripheral flash artifacts via a cylindrical mask. Metadata attributes can be embedded
-    alongside the dataset and later retrieved using `load_data_hdf5()`.
+      The function can (1) **flip axes** from ``(row, col, slice) → (slice, row, col)``,
+      and (2) remove flash artifacts via a cylindrical mask before saving.
+      Any key–value metadata in *recon_dict* is written as HDF5 attributes so it can
+      later be retrieved with :func:`load_data_hdf5`.
 
-    Args:
-        file_path (str): Path to the output HDF5 file. Intermediate directories will be created if necessary.
-        array (ndarray or jax.Array): The 3D volume data to be saved.
-        array_name (str): Name of the dataset within the HDF5 file. Defaults to 'array'.
-        attributes_dict (dict, optional): Dictionary of metadata to store as HDF5 attributes.
-            Keys must be strings and values must be compatible with HDF5 attribute types (e.g., strings, numbers).
-        flip_coordinates (bool): If True, transpose the array from (row, column, slice) to (slice, row, column) before saving.
-            Useful for standardizing right-hand slice-first conventions.
-        remove_flash (bool): If True, apply a cylindrical mask to zero out edge regions, reducing flash artifacts.
+      Parameters
+      ----------
+       file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
+       recon (numpy.ndarray | jax.Array): 3-D volume in left-hand order ``(row, col, slice)``.  Will be converted to NumPy
+       just before writing because *h5py* cannot accept JAX arrays.
+       recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+       flip_coordinates (bool): If *True*, reorder axes to ``(slice, row, col)`` (right-hand slice-first) before saving.
 
-    Returns:
-        None
+       remove_flash (bool): If *True*, apply :func:`apply_cylindrical_mask` with the margins below.
+       radial_margin (int): Margin to subtract from the cylinder radius in pixels.
+       top_margin (int): Number of top slices to set to zero along the Z-axis.
+       bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
 
-    Example:
-        >>> import numpy as np
-        >>> volume = np.random.rand(64, 64, 64)
-        >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
-        >>> export_recon_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
-
-    Example:
-        >>> recon, _ = ct_model.recon(sinogram)
-        >>> recon_info = {'voxel_size': '0.3mm', 'sinogram_id': 'test_038'}
-        >>> export_recon_hdf5('./output/test_038.h5', recon, attributes_dict=recon_info)
+       Notes
+       -----
+       If *remove_flash* is ``False`` the margin arguments are ignored.
     """
 
     recon = jnp.asarray(recon)
