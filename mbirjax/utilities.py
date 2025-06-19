@@ -401,7 +401,7 @@ def query_yes_no(question, default="n"):
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
 
 
-def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None, flip_coordinates=True, remove_flash=True):
+def export_recon_hdf5(file_path, recon, recon_dict=None, flip_coordinates=True, remove_flash=True, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Export a reconstruction volume to an HDF5 file, with optional postprocessing and metadata.
 
@@ -435,12 +435,14 @@ def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None
         >>> export_recon_hdf5('./output/test_038.h5', recon, attributes_dict=recon_info)
     """
 
-    arr = jnp.asarray(array)
+    recon = jnp.asarray(recon)
 
     if flip_coordinates:
-        arr = jnp.transpose(arr, (2, 0, 1))
+        recon = jnp.transpose(recon, (2, 0, 1))
     if remove_flash:
-        arr = apply_cylindrical_mask(arr, radial_margin=10, top_margin=10, bottom_margin=10)
+        recon = apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
-    save_data_hdf5(file_path=file_path, array=np.array(arr), array_name=array_name , attributes_dict=attributes_dict)
+    recon = np.array(recon)
+
+    save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
