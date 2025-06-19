@@ -3,6 +3,7 @@ import os, sys
 # === Core scientific/plotting libraries ===
 import matplotlib.pyplot as plt
 import numpy as np
+import jax.numpy as jnp
 
 # === Project-specific imports ===
 import mbirjax as mj
@@ -12,7 +13,7 @@ from urllib.parse import urlparse
 import shutil
 import h5py
 from ruamel.yaml import YAML
-
+from mbirjax.preprocess.utilities import apply_cylindrical_mask
 
 def load_data_hdf5(file_path):
     """
@@ -398,3 +399,51 @@ def query_yes_no(question, default="n"):
             return valid[choice]
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
+
+
+def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None):
+    """
+    Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
+    The resulting structure has a single dataset with one array and associated text attributes.
+    These can be retrieved using :func:`load_data_hdf5`.
+
+    Args:
+        file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
+        array (ndarray or jax.Array): The volume data to save.
+        array_name (str): Name of the dataset within the HDF5 file. Defaults to 'array'.
+        attributes_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+            Keys must be strings, and values should be serializable as HDF5 attributes.
+
+    Returns:
+        None
+
+    Example:
+        >>> import numpy as np
+        >>> volume = np.random.rand(64, 64, 64)
+        >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
+        >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
+        Nothing
+
+    Example:
+        >>> recon, recon_dict = ct_model.recon(sinogram)
+        >>> recon_info = {'ALU units': '0.3mm', 'sinogram name': 'test part 038'}
+        >>> file_path = './output/test_part_038.yaml'
+        >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
+    """
+    # Ensure output directory exists
+    mj.makedirs(file_path)
+
+    # Open HDF5 file for writing
+    with h5py.File(file_path, 'w') as f:
+        # Save reconstruction array
+        arr = jnp.array(array)
+        arr = jnp.transpose(arr, (2, 0, 1))
+        arr = apply_cylindrical_mask(arr, radial_margin=10, top_margin=10, bottom_margin=10)
+        volume_data = f.create_dataset(array_name, data=arr)
+
+        # Save reconstruction parameters as attributes
+        if isinstance(attributes_dict, dict):
+            # Convert subdicts to strings
+            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
+            for key, value in attributes_dict.items():
+                volume_data.attrs[key] = value
