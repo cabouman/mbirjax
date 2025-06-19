@@ -403,16 +403,22 @@ def query_yes_no(question, default="n"):
 
 def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None, flip_coordinates=True, remove_flash=True):
     """
-    Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
-    The resulting structure has a single dataset with one array and associated text attributes.
-    These can be retrieved using :func:`load_data_hdf5`. This function also crops out flash and flip coordinates.
+    Export a reconstruction volume to an HDF5 file, with optional postprocessing and metadata.
+
+    This function saves a 3D NumPy or JAX array to a single-dataset HDF5 file. It optionally applies
+    postprocessing steps including coordinate flipping (to move the slice axis to the first dimension)
+    and removal of peripheral flash artifacts via a cylindrical mask. Metadata attributes can be embedded
+    alongside the dataset and later retrieved using `load_data_hdf5()`.
 
     Args:
-        file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
-        array (ndarray or jax.Array): The volume data to save.
+        file_path (str): Path to the output HDF5 file. Intermediate directories will be created if necessary.
+        array (ndarray or jax.Array): The 3D volume data to be saved.
         array_name (str): Name of the dataset within the HDF5 file. Defaults to 'array'.
-        attributes_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
-            Keys must be strings, and values should be serializable as HDF5 attributes.
+        attributes_dict (dict, optional): Dictionary of metadata to store as HDF5 attributes.
+            Keys must be strings and values must be compatible with HDF5 attribute types (e.g., strings, numbers).
+        flip_coordinates (bool): If True, transpose the array from (row, column, slice) to (slice, row, column) before saving.
+            Useful for standardizing right-hand slice-first conventions.
+        remove_flash (bool): If True, apply a cylindrical mask to zero out edge regions, reducing flash artifacts.
 
     Returns:
         None
@@ -421,21 +427,20 @@ def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None
         >>> import numpy as np
         >>> volume = np.random.rand(64, 64, 64)
         >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
-        >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
-        Nothing
+        >>> export_recon_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
 
     Example:
-        >>> recon, recon_dict = ct_model.recon(sinogram)
-        >>> recon_info = {'ALU units': '0.3mm', 'sinogram name': 'test part 038'}
-        >>> file_path = './output/test_part_038.yaml'
-        >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
+        >>> recon, _ = ct_model.recon(sinogram)
+        >>> recon_info = {'voxel_size': '0.3mm', 'sinogram_id': 'test_038'}
+        >>> export_recon_hdf5('./output/test_038.h5', recon, attributes_dict=recon_info)
     """
 
-    arr = jnp.array(array)
+    arr = jnp.asarray(array)
+
     if flip_coordinates:
         arr = jnp.transpose(arr, (2, 0, 1))
     if remove_flash:
         arr = apply_cylindrical_mask(arr, radial_margin=10, top_margin=10, bottom_margin=10)
 
-    save_data_hdf5(file_path=file_path, array=arr, array_name=array_name , attributes_dict=attributes_dict)
+    save_data_hdf5(file_path=file_path, array=np.array(arr), array_name=array_name , attributes_dict=attributes_dict)
 
