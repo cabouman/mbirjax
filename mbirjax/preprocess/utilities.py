@@ -489,6 +489,8 @@ def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
     in the (row, col) plane and also zeroes a specified number of slices from
     the top and bottom along the Z-axis (slice axis).
 
+    This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
+
     Args:
         recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
