@@ -401,11 +401,11 @@ def query_yes_no(question, default="n"):
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
 
 
-def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None):
+def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None, flip_coordinates=True, remove_flash=True):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
     The resulting structure has a single dataset with one array and associated text attributes.
-    These can be retrieved using :func:`load_data_hdf5`.
+    These can be retrieved using :func:`load_data_hdf5`. This function also crops out flash and flip coordinates.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
@@ -430,20 +430,12 @@ def export_recon_hdf5(file_path, array, array_name='array', attributes_dict=None
         >>> file_path = './output/test_part_038.yaml'
         >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
     """
-    # Ensure output directory exists
-    mj.makedirs(file_path)
 
-    # Open HDF5 file for writing
-    with h5py.File(file_path, 'w') as f:
-        # Save reconstruction array
-        arr = jnp.array(array)
+    arr = jnp.array(array)
+    if flip_coordinates:
         arr = jnp.transpose(arr, (2, 0, 1))
+    if remove_flash:
         arr = apply_cylindrical_mask(arr, radial_margin=10, top_margin=10, bottom_margin=10)
-        volume_data = f.create_dataset(array_name, data=arr)
 
-        # Save reconstruction parameters as attributes
-        if isinstance(attributes_dict, dict):
-            # Convert subdicts to strings
-            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
-            for key, value in attributes_dict.items():
-                volume_data.attrs[key] = value
+    save_data_hdf5(file_path=file_path, array=arr, array_name=array_name , attributes_dict=attributes_dict)
+
