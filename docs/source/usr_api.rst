@@ -64,7 +64,7 @@ Parameter handling uses the following primary methods.
    usr_parallel_beam_model
    usr_cone_beam_model
    usr_preprocess
-   usr_denoiser
+   usr_denoising
    usr_utilities
 
 Preprocessing
@@ -91,7 +91,9 @@ The remaining functions can be used for multiple types of scan data.
 Denoising
 ---------
 
-3D volume denoising is implemented with a Bayesian formulation using the QGGMRF prior loss function, which promotes
+MBIRJAX includes a Bayesian MAP denoising using the qGGMRF prior and a 3D median filter.
+
+Bayesian denoising is implemented via the class :class:`QGGMRFDenoiser` with a using the QGGMRF prior loss function, which promotes
 nearby voxels to have similar values while preserving edges.  Using :math:`Q(v)` to denote the loss function, the
 denoiser is
 
@@ -102,6 +104,12 @@ denoiser is
 .. autosummary::
 
    QGGMRFDenoiser.denoise
+
+The median filter is implemented in jax using a fixed 3x3x3 neighborhood with replicated edges at the boundary.
+
+.. autosummary::
+
+   median_filter3d
 
 Saving, Loading, and Display
 ----------------------------

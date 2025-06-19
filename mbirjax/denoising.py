@@ -1,4 +1,3 @@
-from collections import namedtuple
 import io
 import datetime
 from typing import Literal, Union, overload, Any
@@ -410,3 +409,88 @@ def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
     alpha_for_subset = alpha
 
     return flat_image, flat_error_image, ell1_for_subset, alpha_for_subset
+
+
+def median_filter3d(x, max_block_gb=4.0) -> jnp.ndarray:
+    """
+    Apply a 27‑point (3x3x3) median filter to a 3‑D JAX array using replicated
+    (edge) boundary conditions.
+
+    The volume is processed in d0‑blocks so that the kernel can be
+    `jax.jit`‑compiled while limiting peak device memory. Each block is padded with
+    a one‑voxel halo; halos duplicate the nearest edge voxel so that the result
+    matches NumPy’s `"edge"` mode.
+
+    Args:
+        x (jax array or ndarray): Input array. Any numeric dtype supported by JAX is allowed.
+        max_block_gb (float. optional): A rough upper bound on the amount of memory in GB to use for the filtering.  Defaults to 4.0.
+
+    Returns:
+
+        jax.numpy.ndarray: An array of the same shape and dtype as *x* containing the median‑filtered result.
+
+    Notes
+    -----
+    * The function automatically splits the 0‑dimension into blocks so that at
+      most roughly ``max_block_gb`` of temporary data are materialised.
+      If the array is large and the 0 dimension is small relative to another dimension, it may be more memory efficient
+      to apply jnp.swapaxes(x, 0, long_dim) before applying median_filter3d, although swapaxes will make a copy of x.
+    * Within each block the filter is computed by rolling the data in all 26
+      neighbour directions, stacking the 27 volumes, and taking
+      :func:`jnp.median` along the new axis.
+
+    Examples
+    --------
+    >>> import jax.numpy as jnp
+    >>> import mbirjax as mj
+    >>> vol = jnp.arange(27.).reshape(3, 3, 3)
+    >>> mj.median_filter3d(vol)
+    Array([[[3., 3., 4.],
+            [6., 6., 7.],
+            [6., 7., 8.]],
+           ...
+           dtype=float32)
+    """
+    d0, d1, d2 = x.shape
+    x_gb = x.size * 4 / (1024**3)
+    num_blocks = np.ceil(27 * x_gb / max_block_gb).astype(int)
+    block_size = max(d0 // num_blocks, 1)
+    # 1) Pad d2 in every dim by 1 for the edge‐replicated halo
+    xp = jnp.pad(x, pad_width=1, mode='edge')      # (d0+2, d1+2, d2+2)
+
+    # 2) Pad d0 *further* up to a multiple of block_size
+    n_blocks = (d0 + block_size - 1) // block_size
+    padded_Z = n_blocks * block_size
+    # pad only at the *end* in d0 so that we can dynamic‐slice fixed size blocks
+    pad_extra = padded_Z - d0
+    xp = jnp.pad(xp,
+                 pad_width=((0, pad_extra), (0,0), (0,0)),
+                 mode='edge')                        # (padded_Z+2, d1+2, d2+2)
+
+    # fixed slice size for every block
+    slice_sz = (block_size + 2,  d1 + 2,  d2 + 2)
+
+    def filter_one_block(i):
+        # compute the dynamic start index in the padded xp
+        z0 = i * block_size
+        start = (z0, 0, 0)
+        # grab a fixed‐shape window [block_size+2, d1+2, d2+2]
+        block = lax.dynamic_slice(xp, start, slice_sz)
+
+        # replicate the 27‐roll → stack → median recipe on this small block
+        patches = [
+          jnp.roll(block, shift=(dz,dy,dx), axis=(0,1,2))
+          for dz in (-1,0,1) for dy in (-1,0,1) for dx in (-1,0,1)
+        ]
+        stacked  = jnp.stack(patches, axis=0)      # (27, blkZ+2, d1+2, d2+2)
+        filtered = jnp.median(stacked, axis=0)    # (blkZ+2, d1+2, d2+2)
+
+        # strip off the 1‐voxel halo in all dims → (blkZ, d1, d2)
+        return filtered[1:-1, 1:-1, 1:-1]
+
+    # 3) Map over blocks
+    blocks = lax.map(filter_one_block, jnp.arange(n_blocks))  # (n_blocks, blkZ, d1, d2)
+
+    # 4) Stitch & then crop back to original d0
+    out = jnp.concatenate(blocks, axis=0)  # (padded_Z, d1, d2)
+    return out[:d0, :, :]                   # (d0, d1, d2)

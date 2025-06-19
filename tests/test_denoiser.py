@@ -26,7 +26,7 @@ class TestProx(unittest.TestCase):
         """Clean up after each test method."""
         pass
 
-    def test_denoiser(self):
+    def test_qggmrf_denoiser(self):
         """
         Verify that the denoiser works.
         """
@@ -52,6 +52,20 @@ class TestProx(unittest.TestCase):
         tolerance = 0.2
         self.assertTrue(nrmse < tolerance)
 
+    def test_median_filter_3d(self):
+        a = np.arange(3 * 3 * 3).reshape((3, 3, 3))
+
+        b = mj.median_filter3d(a)
+        c = np.array([[[3., 3., 4.],
+                       [6., 6., 7.],
+                       [6., 7., 8.]],
+                      [[10., 11., 11.],
+                       [12., 13., 14.],
+                       [15., 15., 16.]],
+                      [[18., 19., 20.],
+                       [19., 20., 20.],
+                       [22., 23., 23.]]])
+        assert np.allclose(b, c)
 
 if __name__ == '__main__':
     unittest.main()
