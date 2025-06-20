@@ -138,6 +138,7 @@ class TranslationModel(mbirjax.TomographyModel):
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
+        # Get model parameters
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         magnification = self.get_magnification()
@@ -145,25 +146,39 @@ class TranslationModel(mbirjax.TomographyModel):
         num_views, num_det_rows, num_det_channels = sinogram_shape
         translation_vectors = self.get_params('translation_vectors')
 
+        # Calculate the width and height of the detector in ALU
         detect_box = jnp.array([delta_det_channel*num_det_channels, delta_det_row*num_det_rows])
+
+        # Compute 1/2 the cone angle in radians
         half_cone_angle = jnp.arctan2(jnp.max(detect_box), 2*source_detector_dist)
+
+        # Compute the row pitch based on a heuristic
         delta_recon_row = delta_voxel / jnp.tan(half_cone_angle)
         delta_recon_row = float(delta_recon_row)
 
+        # Compute cube = (width, depth, height) of the scanned region in ALU
         max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
         min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
         cube = max_translation - min_translation
-        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
-        num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
-        warnings.warn('We need to put an upper limit on num_recon_rows')
 
+        # Compute recon_box = (width, height) of the reconstruction box in voxels
+        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
+
+        # Use a heuristic to determine a reasonable number of slices
+        num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
+        # Make sure the object extends no further than half way to the source
+        max_rows = jnp.floor((source_iso_dist - cube[1])/delta_det_row)
+        if max_rows < 1:
+            print(f"[Error] Computed max_rows = {max_rows} < 1. This suggests the object extends beyond the source.")
+        num_recon_rows = jnp.minimum(num_recon_rows, max_rows)
+
+        # Set the parameters to their computed values
         num_recon_cols, num_recon_slices = recon_box
         num_recon_cols = int(num_recon_cols)
         num_recon_rows = int(num_recon_rows)
         num_recon_slices = int(num_recon_slices)
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape,
-                        delta_recon_row=delta_recon_row)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_recon_row=delta_recon_row)
 
 
     @staticmethod
