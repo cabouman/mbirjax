@@ -132,7 +132,7 @@ def main():
     recon, recon_params = ct_model_for_recon.recon(sinogram, init_recon=0, weights=weights, stop_threshold_change_pct=0)
 
     # Display Results
-    mj.slice_viewer(test_sample, recon, vmin=0, vmax=1, title='Object (left) vs. MBIR reconstruction (right)')
+    mj.slice_viewer(test_sample, recon, vmin=0, vmax=1, title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
 
 
 if __name__ == '__main__':

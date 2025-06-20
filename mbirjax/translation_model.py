@@ -49,7 +49,7 @@ class TranslationModel(mbirjax.TomographyModel):
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
-        self.bp_psf_radius = 1
+        self.use_ror_mask = False
         self.entries_per_cylinder_batch = 128
         translation_vectors = jnp.asarray(translation_vectors)
         view_params_name = 'translation_vectors'
@@ -86,11 +86,10 @@ class TranslationModel(mbirjax.TomographyModel):
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
-        geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
+        geometry_param_names += ['magnification', 'psf_radius',
                                  'entries_per_cylinder_batch']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
-        geometry_param_values.append(self.bp_psf_radius)
         geometry_param_values.append(self.entries_per_cylinder_batch)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
@@ -132,13 +131,8 @@ class TranslationModel(mbirjax.TomographyModel):
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
-        # Then repeat for the back projection from detector elements to voxels.
-        # The voxels closest to the detector will be covered the most by a given detector element.
-        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
-        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
-        self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
-        if psf_radius > 1:
-            warnings.warn('A single voxel may project onto several detector elements, which may lead to artifacts. Consider using smaller voxels.')
+        if psf_radius > 4:
+            warnings.warn('A single voxel may project onto 5 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
@@ -161,6 +155,7 @@ class TranslationModel(mbirjax.TomographyModel):
         cube = max_translation - min_translation
         recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
         num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
+        warnings.warn('We need to put an upper limit on num_recon_rows')
 
         num_recon_cols, num_recon_slices = recon_box
         num_recon_cols = int(num_recon_cols)
@@ -347,7 +342,7 @@ class TranslationModel(mbirjax.TomographyModel):
             # Allocate space
             new_column_batch = jnp.zeros(det_rows_per_batch)
             # Do the vertical projection
-            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius + 1):
+            for k_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
                 k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
                 # The projection of these centers is the projection of k_m_center (which is m_p) plus
                 # the offset times the slope of the map from voxel index to detector index
