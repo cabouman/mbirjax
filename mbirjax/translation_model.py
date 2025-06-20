@@ -117,22 +117,18 @@ class TranslationModel(mbirjax.TomographyModel):
         if jnp.isinf(source_detector_dist):
             raise ValueError('Distance from source to detector is infinite, which means all translated projections have the same information.')
         else:
-            # Determine the closest and farthest points from the source to determine max and min magnification.
-            # iso is at the center of the recon volume, so we move half the length to get max/min distances.
-            # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
-            # for rotation, but for realistic cases it shouldn't matter.
+            # Determine the distance from the source to the closest voxel.
             source_to_closest_pixel = source_iso_dist - (0.5 * recon_shape[0] * delta_recon_row) - max_translation[1]
+            # Determine the maximum magnification.
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_iso_dist + (0.5 * recon_shape[0] * delta_recon_row) - min_translation[1]
-            min_magnification = source_detector_dist / source_to_farthest_pixel
 
-        if max_magnification < 0:
-            raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
+            if source_to_closest_pixel < 0:
+                raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
         if psf_radius > 4:
-            warnings.warn('A single voxel may project onto 5 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
+            warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
