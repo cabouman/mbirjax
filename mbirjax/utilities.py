@@ -3,6 +3,7 @@ import os, sys
 # === Core scientific/plotting libraries ===
 import matplotlib.pyplot as plt
 import numpy as np
+import jax.numpy as jnp
 
 # === Project-specific imports ===
 import mbirjax as mj
@@ -429,11 +430,11 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
     recon = jnp.transpose(recon, (2, 0, 1))
 
     if remove_flash:
-        recon = apply_cylindrical_mask(recon=recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+        recon = mj.preprocess.apply_cylindrical_mask(recon=recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
 
     recon = np.array(recon)
 
-    save_data_hdf5(file_path=file_path, recon=recon,array_name='recon', attributes_dict=recon_dict)
+    save_data_hdf5(file_path=file_path, array=recon, array_name='recon', attributes_dict=recon_dict)
 
 
 def import_recon_hdf5(file_path):
