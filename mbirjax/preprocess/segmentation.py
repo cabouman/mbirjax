@@ -212,13 +212,11 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     """
     from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
-    masked_recon_for_histogram = crop_recon_to_mask(recon, radial_margin, top_margin, bottom_margin)
-    thresholds = multi_threshold_otsu(masked_recon_for_histogram, classes=3)
-    plastic_low_threshold = thresholds[0]
-    plastic_metal_threshold = thresholds[1]
-
     # Remove any flash from the boundary of the recon
     recon = apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+    thresholds = multi_threshold_otsu(recon, classes=3)
+    plastic_low_threshold = thresholds[0]
+    plastic_metal_threshold = thresholds[1]
 
     # Create masks
     plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
@@ -231,10 +229,3 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     return plastic_mask, metal_mask, plastic_scale, metal_scale
 
 
-def crop_recon_to_mask(recon, radial_margin, top_margin, bottom_margin):
-
-    mask = jnp.ones(recon.shape)
-    mask = apply_cylindrical_mask(mask, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
-    masked_recon = recon[mask == 1]
-
-    return masked_recon
