@@ -20,23 +20,27 @@ export_recon_hdf5(file_path=file_path, recon=phantom,
                   radial_margin=10, top_margin=8, bottom_margin=6)
 
 # 3. Import from HDF5
-exported_recon = mj.utilities.load_data_hdf5(file_path)
+exported_recon, _ = mj.utilities.load_data_hdf5(file_path) # Load using the standard function
 
 imported_recon, recon_dict = import_recon_hdf5(file_path)
 
 # 4. Verify equivalence
+
+# Expected behaviour: The phantom on the right is flash-removed and flipped to right hand coordnidates.
 mj.slice_viewer(
     phantom,
     exported_recon,
     slice_axis=0,
-    slice_label=["Original Phantom", "Exported Phantom: Flash Removed & Flipped"],
-    title="Shepp-Logan: Original vs Imported"
+    slice_label=["Original Phantom (row, col, slice)", "Exported Phantom: Flash Removed & Flipped (slice, row, col)"],
+    title="Shepp-Logan: Original vs Exported"
 )
+
+# Expected behaviour: Two phantoms should look similar, except the right one is flash-removed.
 
 mj.slice_viewer(
     phantom,
     imported_recon,
-    slice_axis=0,
+    slice_axis=2,
     slice_label=["Original Phantom", "Imported Phantom: Flash Removed & Flipped Back"],
     title="Shepp-Logan: Original vs Imported"
 )
