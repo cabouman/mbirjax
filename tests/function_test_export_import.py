@@ -1,6 +1,5 @@
 # dev_scripts/test_export_hdf5.py
 import os
-
 import h5py
 import numpy as np
 import mbirjax as mj
@@ -26,7 +25,7 @@ imported_recon, recon_dict = import_recon_hdf5(file_path)
 
 # 4. Verify equivalence
 
-# Expected behaviour: The phantom on the right is flash-removed and flipped to right hand coordnidates.
+# Expected behaviour: The phantom on the right is flash-removed and flipped to right hand coordinates.
 mj.slice_viewer(
     phantom,
     exported_recon,
