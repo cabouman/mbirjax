@@ -159,7 +159,7 @@ class TranslationModel(mbirjax.TomographyModel):
         max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
         min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
         cube = max_translation - min_translation
-        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification)/delta_voxel)
+        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
         num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
 
         num_recon_cols, num_recon_slices = recon_box
