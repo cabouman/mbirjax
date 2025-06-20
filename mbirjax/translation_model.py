@@ -8,27 +8,44 @@ import mbirjax
 
 class TranslationModel(mbirjax.TomographyModel):
     """
-    A class designed for handling forward and backward projections using translations with a cone beam source. This extends
-    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for translation mode.
+    Implements a tomography model using translation-based cone-beam projections.
 
-    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
-    to suit translation mode geometrical requirements. See the documentation of the parent class for standard methods
-    like setting parameters and performing projections and reconstructions.
+    This class inherits from `mbirjax.TomographyModel` and specializes it for scenarios where the object undergoes
+    translations instead of rotations during image acquisition. The forward and backward projections are computed using
+    per-view translation vectors.
 
-    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
-    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+    Parameters should generally be set using `set_params`, except for core geometry parameters which must be passed
+    during initialization.
 
     Args:
-        sinogram_shape (tuple):
-            Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
-            different translations, 'rows' correspond to the number of detector rows, and 'channels' index columns of
-            the detector that are assumed to be aligned with the rotation axis.
-        translation_vectors (jnp.ndarray):
-            A 2D array of translation vectors in ALUs, specifying the translation of the object relative to the origin.  A vector of (x, y) translates the object right x units and down y units, as seen looking from source to detector.
+        sinogram_shape (tuple[int, int, int]): Shape of the sinogram as (num_views, num_rows, num_channels),
+            where 'num_views' is the number of translation steps, 'num_rows' is the number of detector rows,
+            and 'num_channels' is the number of detector columns.
+        translation_vectors (jnp.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
+            Each vector specifies how the object is translated for each view.
+            Positive x shifts the object left, z shifts up, and y shifts away from the source.
+        source_detector_dist (float): Distance from the X-ray source to the detector.
+        source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
-    See Also
-    --------
-    TomographyModel : The base class from which this class inherits.
+    See Also:
+        mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
+
+    Example:
+        ```python
+        import jax.numpy as jnp
+        from mbirjax.translation_model import TranslationModel
+
+        sinogram_shape = (180, 256, 256)
+        translation_vectors = jnp.zeros((180, 3))
+        model = TranslationModel(
+            sinogram_shape=sinogram_shape,
+            translation_vectors=translation_vectors,
+            source_detector_dist=1000.0,
+            source_iso_dist=500.0
+        )
+        model.set_params(delta_voxel=1.0)
+        model.auto_set_recon_size(sinogram_shape)
+        ```
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
@@ -86,25 +103,28 @@ class TranslationModel(mbirjax.TomographyModel):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
         """
-        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel, delta_recon_row = self.get_params(
-            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_recon_row'])
+        delta_det_row, delta_det_channel, source_iso_dist, source_detector_dist, recon_shape, delta_voxel, delta_recon_row, translation_vectors = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_iso_dist', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_recon_row', 'translation_vectors'])
         magnification = self.get_magnification()
 
         # Compute minimum detector pitch
         delta_det = jnp.minimum(delta_det_row, delta_det_channel)
 
+        # Find the maximum and minimum translation vectors
+        max_translation = jnp.amax(translation_vectors, axis=0)
+        min_translation = jnp.amin(translation_vectors, axis=0)
+
         # Compute maximum magnification
         if jnp.isinf(source_detector_dist):
             raise ValueError('Distance from source to detector is infinite, which means all translated projections have the same information.')
         else:
-            source_to_iso_dist = source_detector_dist / magnification
             # Determine the closest and farthest points from the source to determine max and min magnification.
             # iso is at the center of the recon volume, so we move half the length to get max/min distances.
             # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
             # for rotation, but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_closest_pixel = source_iso_dist - (0.5 * recon_shape[0] * delta_recon_row) - max_translation[1]
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_farthest_pixel = source_iso_dist + (0.5 * recon_shape[0] * delta_recon_row) - min_translation[1]
             min_magnification = source_detector_dist / source_to_farthest_pixel
 
         if max_magnification < 0:
