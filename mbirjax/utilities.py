@@ -398,3 +398,69 @@ def query_yes_no(question, default="n"):
             return valid[choice]
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
+
+
+
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
+    """
+    Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
+
+    This function transposes the input volume to right-hand coordinates (slice, row, col),
+    optionally applies a cylindrical mask to remove peripheral and top/bottom slices (referred to as `flash`),
+    and writes the volume and optional metadata to an HDF5 file.
+
+    Args:
+        file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
+        recon (Union[np.ndarray, jax.Array]): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
+        recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
+        top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
+        bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
+
+    Example:
+        >>> from mbirjax.utilities import export_recon_hdf5
+        >>> import jax.numpy as jnp
+        >>> recon = jnp.ones((128, 128, 64))  # (row, col, slice) order
+        >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
+    """
+
+    recon = jnp.asarray(recon)
+    recon = jnp.transpose(recon, (2, 0, 1))
+
+    if remove_flash:
+        recon = apply_cylindrical_mask(recon=recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+
+    recon = np.array(recon)
+
+    save_data_hdf5(file_path=file_path, recon=recon,array_name='recon', attributes_dict=recon_dict)
+
+
+def import_recon_hdf5(file_path):
+    """
+    Import a 3D reconstruction volume from an HDF5 file.
+
+    This function loads a reconstruction volume and associated metadata from an HDF5 file,
+    and reorders the volume axes from (slice, row, col) to (row, col, slice) to match
+    MBIRJAX conventions.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstruction volume.
+
+    Returns:
+        Tuple[np.ndarray, dict]: A tuple containing:
+            - recon (np.ndarray): The reconstructed 3D volume in (row, col, slice) order.
+            - recon_dict (dict): Dictionary containing metadata associated with the reconstruction.
+
+    Example:
+        >>> from mbirjax.utilities import import_recon_hdf5
+        >>> recon, recon_dict = import_recon_hdf5("output/recon_volume.h5")
+        >>> print(recon.shape)
+        (128, 128, 64)
+    """
+    recon, recon_dict = load_data_hdf5(file_path=file_path)
+
+    recon = np.transpose(recon, axes=(1, 2, 0))
+
+    return recon, recon_dict
+
