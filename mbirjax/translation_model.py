@@ -8,28 +8,44 @@ import mbirjax
 
 class TranslationModel(mbirjax.TomographyModel):
     """
-    A class designed for handling forward and backward projections using translations with a cone beam source. This extends
-    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for translation mode.
+    Implements a tomography model using translation-based cone-beam projections.
 
-    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
-    to suit translation mode geometrical requirements. See the documentation of the parent class for standard methods
-    like setting parameters and performing projections and reconstructions.
+    This class inherits from `mbirjax.TomographyModel` and specializes it for scenarios where the object undergoes
+    translations instead of rotations during image acquisition. The forward and backward projections are computed using
+    per-view translation vectors.
 
-    Parameters not included in the constructor can be set using the set_params method of :ref:`TomographyModelDocs`.
-    Refer to :ref:`TomographyModelDocs` documentation for a detailed list of possible parameters.
+    Parameters should generally be set using `set_params`, except for core geometry parameters which must be passed
+    during initialization.
 
     Args:
-        sinogram_shape (tuple):
-            Shape of the sinogram as a tuple in the form `(num_views, num_rows, num_channels)`, where 'num_views' is the number of
-            different translations, 'num_rows' is the number of detector rows, and 'num_channels' is the number of detector columns.
-        translation_vectors (jnp.ndarray):
-            A num_views x 3 JAX array of translation vectors in ALUs, specifying the translation of the center of the object relative to iso.
-            A vector of (x, y, z) translates the object left x units and up y units, as seen looking from source to detector,
-            and z units towards the source.
+        sinogram_shape (tuple[int, int, int]): Shape of the sinogram as (num_views, num_rows, num_channels),
+            where 'num_views' is the number of translation steps, 'num_rows' is the number of detector rows,
+            and 'num_channels' is the number of detector columns.
+        translation_vectors (jnp.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
+            Each vector specifies how the object is translated for each view.
+            Positive x shifts the object left, z shifts up, and y shifts away from the source.
+        source_detector_dist (float): Distance from the X-ray source to the detector.
+        source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
-    See Also
-    --------
-    TomographyModel : The base class from which this class inherits.
+    See Also:
+        mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
+
+    Example:
+        ```python
+        import jax.numpy as jnp
+        from mbirjax.translation_model import TranslationModel
+
+        sinogram_shape = (180, 256, 256)
+        translation_vectors = jnp.zeros((180, 3))
+        model = TranslationModel(
+            sinogram_shape=sinogram_shape,
+            translation_vectors=translation_vectors,
+            source_detector_dist=1000.0,
+            source_iso_dist=500.0
+        )
+        model.set_params(delta_voxel=1.0)
+        model.auto_set_recon_size(sinogram_shape)
+        ```
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
