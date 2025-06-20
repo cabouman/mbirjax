@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax
 import dm_pix
 import tqdm
+from mbirjax.utilities import save_data_hdf5, load_data_hdf5
 
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
@@ -531,6 +532,64 @@ def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
     return recon
 
 
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
+    """
+      Export a 3-D reconstruction volume to an HDF5 file with optional post-processing.
+
+      The function can (1) **flip axes** from ``(row, col, slice) → (slice, row, col)``,
+      and (2) remove flash artifacts via a cylindrical mask before saving.
+      Any key–value metadata in *recon_dict* is written as HDF5 attributes so it can
+      later be retrieved with :func:`load_data_hdf5`.
+
+      Parameters
+      ----------
+       file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
+       recon (numpy.ndarray | jax.Array): 3-D volume in left-hand order ``(row, col, slice)``.  Will be converted to NumPy
+       just before writing because *h5py* cannot accept JAX arrays.
+       recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+       flip_coordinates (bool): If *True*, reorder axes to ``(slice, row, col)`` (right-hand slice-first) before saving.
+
+       remove_flash (bool): If *True*, apply :func:`apply_cylindrical_mask` with the margins below.
+       radial_margin (int): Margin to subtract from the cylinder radius in pixels.
+       top_margin (int): Number of top slices to set to zero along the Z-axis.
+       bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
+
+       Notes
+       -----
+       If *remove_flash* is ``False`` the margin arguments are ignored.
+    """
+
+    recon = jnp.asarray(recon)
+    recon = jnp.transpose(recon, (2, 0, 1))
+
+    if remove_flash:
+        recon = apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+
+    recon = np.array(recon)
+
+    save_data_hdf5(file_path, recon, 'recon', recon_dict)
+
+
+def import_recon_hdf5(file_path):
+    """
+    Import a reconstruction volume from an HDF5 file with optional preprocessing.
+
+    This function loads a reconstruction volume and associated metadata from an HDF5 file, with options for flipping
+    axes, removing flash artifacts, and applying a cylindrical mask to trim peripheral and top/bottom regions.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstructed volume.
+
+    Returns:
+        tuple: (recon, recon_dict)
+            - recon (ndarray): The processed 3D reconstruction volume.
+            - recon_dict (dict): Metadata dictionary loaded from the HDF5 file.
+    """
+    recon, recon_dict = load_data_hdf5(file_path)
+
+    recon = np.transpose(recon, (1, 2, 0))
+
+    return recon, recon_dict
 
 
 
