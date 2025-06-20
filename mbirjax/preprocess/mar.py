@@ -3,11 +3,6 @@ import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 
-__all__ = [
-    "recon_BH_plastic_metal",
-    "BH_correction",
-    "gen_huber_weights",
-]
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     """
