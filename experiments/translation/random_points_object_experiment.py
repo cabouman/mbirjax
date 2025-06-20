@@ -58,20 +58,36 @@ for row in range(1, rows + 1):
 
         dx = x - center_x
         dz = z - center_z
+        dy = np.random.choice([-5.0, 0.0, 5.0])
 
-        translation_vectors[idx] = [dx, 0.0, dz]
+        translation_vectors[idx] = [dx, dy, dz]
         idx += 1
 
 
 # Define the model for sinogram generation
 ct_model_for_generation = mj.TranslationModel(sinogram_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
-# Check the reconstruction size that is set automatically
+# Check the reconstruction size that is set by auto_set_recon_size
 auto_recon_shape = ct_model_for_generation.get_params('recon_shape')
 print("Auto set recon size = ", auto_recon_shape)
 
 # Set sinogram generation parameter values
 ct_model_for_generation.set_params(recon_shape=test_sample.shape)
+
+# Check the translation of the object along y-direction
+source_iso_dist, delta_recon_row = ct_model_for_generation.get_params(['source_iso_dist', 'delta_recon_row'])
+source_to_closest_pixel = source_iso_dist - (0.5 * test_sample.shape[0] * delta_recon_row)
+source_to_farthest_pixel = source_iso_dist + (0.5 * test_sample.shape[0] * delta_recon_row)
+print("Source to closest pixel without translation = ", source_to_closest_pixel)
+print("Source to farthest pixel without translation = ", source_to_farthest_pixel)
+max_translation = np.amax(translation_vectors, axis=0)
+min_translation = np.amin(translation_vectors, axis=0)
+source_to_closest_pixel = source_iso_dist - (0.5 * test_sample.shape[0] * delta_recon_row) - max_translation[1]
+source_to_farthest_pixel = source_iso_dist + (0.5 * test_sample.shape[0] * delta_recon_row) - min_translation[1]
+print("Maximum translation in y = ", max_translation[1])
+print("Minimum translation in y = ", min_translation[1])
+print("Source to closest pixel distance with translation = ", source_to_closest_pixel)
+print("Source to farthest pixel distance with translation = ", source_to_farthest_pixel)
 
 # Generate synthetic sinogram data
 sinogram = ct_model_for_generation.forward_project(test_sample)
