@@ -36,7 +36,7 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024):
         raise ValueError("Number of bins must be at least equal to number of classes")
 
     # Compute the histogram of the image
-    hist, bin_edges = histogram_with_mask(image, bins=num_bins) #np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
+    hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
     # Find the optimal thresholds using a recursive approach
     thresholds = _recursive_otsu(hist, classes - 1)
@@ -212,7 +212,8 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     """
     from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
-    thresholds = multi_threshold_otsu(recon, classes=3)
+    masked_recon_for_histogram = crop_recon_to_mask(recon, radial_margin, top_margin, bottom_margin)
+    thresholds = multi_threshold_otsu(masked_recon_for_histogram, classes=3)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
@@ -230,32 +231,10 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     return plastic_mask, metal_mask, plastic_scale, metal_scale
 
 
-def histogram_with_mask(recon, crop_fraction=0.05, bins=None):
-    """
-    Calculate the histogram of the given recon restricted to a circular mask in the row and column direction and
-    cropped in the slice direction.  The mask is the largest possible inscribed circle minus the specified crop
-    fraction.
+def crop_recon_to_mask(recon, radial_margin, top_margin, bottom_margin):
 
-    Args:
-        recon (ndarray):  The volume to histogram
-        crop_fraction (float): Use (1 - crop_fraction) * radius to reduce the radius of the mask and (1 - crop_fraction) * num_slices to determine the new number of slices.
-        bins (int): Number of bins to use in np.histogram.
-        range (tuple of floats): (min, max) to use in np.histogram
+    mask = jnp.ones(recon.shape)
+    mask = apply_cylindrical_mask(mask, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+    masked_recon = recon[mask == 1]
 
-    Returns:
-
-    """
-    # Get the ror mask
-    mask = mj.get_2d_ror_mask(recon.shape, crop_radius_fraction=crop_fraction)
-    num_pixels_to_crop = [int(np.ceil(recon.shape[k] * crop_fraction)) for k in range(3)]
-    start_pixel = [(num_to_crop + 1) // 2 for num_to_crop in num_pixels_to_crop]
-    mask[0:start_pixel[0]] = 0
-    mask[-start_pixel[0]:] = 0
-    mask[:, 0:start_pixel[1]] = 0
-    mask[:, -start_pixel[1]:] = 0
-    cropped_region = recon[:, :, start_pixel[2]:-start_pixel[2]]
-    cropped_region = cropped_region[mask == 1]
-
-    # Compute the histogram of the image
-    hist, bin_edges = np.histogram(cropped_region, bins=bins, range=(np.min(cropped_region), np.max(cropped_region)))
-    return hist, bin_edges
+    return masked_recon
