@@ -536,25 +536,26 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function transposes the input volume to right-hand coordinates (slice, row, col), optionally applies a cylindrical
-    mask to remove flash artifacts, and writes the volume and metadata to an HDF5 file.
+    This function converts the input volume from (row, col, slice) to (slice, row, col) order,
+    optionally applies a cylindrical mask to suppress flash artifacts, and writes the result
+    along with metadata to an HDF5 file.
 
     Args:
-        file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
-        recon (np.ndarray | jax.Array): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
-        recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
-        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
-        radial_margin (int): Margin to subtract from the cylinder radius in pixels. Defaults to 10.
-        top_margin (int): Number of top slices to set to zero along the Z-axis. Defaults to 10.
-        bottom_margin (int): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
+        file_path (str): Path to the output HDF5 file. Parent directories will be created if they do not exist.
+        recon (np.ndarray | jax.Array): Input 3D volume in (row, col, slice) order.
+        recon_dict (dict, optional): Dictionary of attributes to store as metadata in the file.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to trim peripheral and boundary regions. Defaults to True.
+        radial_margin (int, optional): Margin to subtract from the cylinder radius in pixels.
+        top_margin (int, optional): Number of top slices to set to zero along the Z-axis.
+        bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis.
     """
 
     recon = jnp.asarray(recon)
-    recon = jnp.transpose(recon, (2, 0, 1))
 
     if remove_flash:
         recon = apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
+    recon = jnp.transpose(recon, (2, 0, 1))
     recon = np.array(recon)
 
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
@@ -564,16 +565,16 @@ def import_recon_hdf5(file_path):
     """
     Import a 3D reconstruction volume from an HDF5 file.
 
-    This function loads a reconstruction volume and associated metadata, and reorders axes
-    from (slice, row, col) to (row, col, slice).
+    This function reads a reconstruction and its metadata from an HDF5 file,
+    and converts the array from (slice, row, col) to (row, col, slice) order.
 
     Args:
-        file_path (str): Path to the HDF5 file containing the reconstruction volume.
+        file_path (str): Path to the HDF5 file containing the reconstruction.
 
     Returns:
-        Tuple[np.ndarray, dict]: Tuple containing:
-            - recon: The reconstructed 3D volume in (row, col, slice) order.
-            - recon_dict: Metadata dictionary loaded from the HDF5 file.
+        Tuple[np.ndarray, dict]: A tuple containing:
+            - recon: 3D volume in (row, col, slice) order.
+            - recon_dict: Dictionary of metadata loaded from the file.
     """
     recon, recon_dict = load_data_hdf5(file_path)
 
