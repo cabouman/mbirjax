@@ -86,12 +86,16 @@ class TranslationModel(mbirjax.TomographyModel):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
         """
-        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel, delta_recon_row = self.get_params(
-            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_recon_row'])
+        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel, delta_recon_row, translation_vectors = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_recon_row', 'translation_vectors'])
         magnification = self.get_magnification()
 
         # Compute minimum detector pitch
         delta_det = jnp.minimum(delta_det_row, delta_det_channel)
+
+        # Find the maximum and minimum translation vectors
+        max_translation = jnp.amax(translation_vectors, axis=0)
+        min_translation = jnp.amin(translation_vectors, axis=0)
 
         # Compute maximum magnification
         if jnp.isinf(source_detector_dist):
@@ -102,9 +106,9 @@ class TranslationModel(mbirjax.TomographyModel):
             # iso is at the center of the recon volume, so we move half the length to get max/min distances.
             # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
             # for rotation, but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_closest_pixel = source_to_iso_dist - 0.5 * (recon_shape[0] + max_translation[1]) * delta_recon_row
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1]) * delta_voxel
+            source_to_farthest_pixel = source_to_iso_dist + 0.5 * (recon_shape[0] - min_translation[1]) * delta_recon_row
             min_magnification = source_detector_dist / source_to_farthest_pixel
 
         if max_magnification < 0:
