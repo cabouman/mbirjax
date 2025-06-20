@@ -20,11 +20,12 @@ class TranslationModel(mbirjax.TomographyModel):
 
     Args:
         sinogram_shape (tuple):
-            Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
-            different translations, 'rows' correspond to the number of detector rows, and 'channels' index columns of
-            the detector that are assumed to be aligned with the rotation axis.
+            Shape of the sinogram as a tuple in the form `(num_views, num_rows, num_channels)`, where 'num_views' is the number of
+            different translations, 'num_rows' is the number of detector rows, and 'num_channels' is the number of detector columns.
         translation_vectors (jnp.ndarray):
-            A 2D array of translation vectors in ALUs, specifying the translation of the object relative to the origin.  A vector of (x, y) translates the object right x units and down y units, as seen looking from source to detector.
+            A num_views x 3 JAX array of translation vectors in ALUs, specifying the translation of the center of the object relative to iso.
+            A vector of (x, y, z) translates the object left x units and up y units, as seen looking from source to detector,
+            and z units towards the source.
 
     See Also
     --------
