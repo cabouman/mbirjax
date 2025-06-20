@@ -534,29 +534,19 @@ def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
 
 def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
     """
-      Export a 3-D reconstruction volume to an HDF5 file with optional post-processing.
+    Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-      The function can (1) **flip axes** from ``(row, col, slice) → (slice, row, col)``,
-      and (2) remove flash artifacts via a cylindrical mask before saving.
-      Any key–value metadata in *recon_dict* is written as HDF5 attributes so it can
-      later be retrieved with :func:`load_data_hdf5`.
+    This function transposes the input volume to right-hand coordinates (slice, row, col), optionally applies a cylindrical
+    mask to remove flash artifacts, and writes the volume and metadata to an HDF5 file.
 
-      Parameters
-      ----------
-       file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
-       recon (numpy.ndarray | jax.Array): 3-D volume in left-hand order ``(row, col, slice)``.  Will be converted to NumPy
-       just before writing because *h5py* cannot accept JAX arrays.
-       recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
-       flip_coordinates (bool): If *True*, reorder axes to ``(slice, row, col)`` (right-hand slice-first) before saving.
-
-       remove_flash (bool): If *True*, apply :func:`apply_cylindrical_mask` with the margins below.
-       radial_margin (int): Margin to subtract from the cylinder radius in pixels.
-       top_margin (int): Number of top slices to set to zero along the Z-axis.
-       bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
-
-       Notes
-       -----
-       If *remove_flash* is ``False`` the margin arguments are ignored.
+    Args:
+        file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
+        recon (np.ndarray | jax.Array): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
+        recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
+        radial_margin (int): Margin to subtract from the cylinder radius in pixels. Defaults to 10.
+        top_margin (int): Number of top slices to set to zero along the Z-axis. Defaults to 10.
+        bottom_margin (int): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
     """
 
     recon = jnp.asarray(recon)
@@ -572,18 +562,18 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
 
 def import_recon_hdf5(file_path):
     """
-    Import a reconstruction volume from an HDF5 file with optional preprocessing.
+    Import a 3D reconstruction volume from an HDF5 file.
 
-    This function loads a reconstruction volume and associated metadata from an HDF5 file, with options for flipping
-    axes, removing flash artifacts, and applying a cylindrical mask to trim peripheral and top/bottom regions.
+    This function loads a reconstruction volume and associated metadata, and reorders axes
+    from (slice, row, col) to (row, col, slice).
 
     Args:
-        file_path (str): Path to the HDF5 file containing the reconstructed volume.
+        file_path (str): Path to the HDF5 file containing the reconstruction volume.
 
     Returns:
-        tuple: (recon, recon_dict)
-            - recon (ndarray): The processed 3D reconstruction volume.
-            - recon_dict (dict): Metadata dictionary loaded from the HDF5 file.
+        Tuple[np.ndarray, dict]: Tuple containing:
+            - recon: The reconstructed 3D volume in (row, col, slice) order.
+            - recon_dict: Metadata dictionary loaded from the HDF5 file.
     """
     recon, recon_dict = load_data_hdf5(file_path)
 
