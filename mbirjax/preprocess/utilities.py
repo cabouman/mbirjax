@@ -9,6 +9,19 @@ import dm_pix
 import tqdm
 
 
+__all__ = [
+    "compute_sino_transmission",
+    "interpolate_defective_pixels",
+    "correct_det_rotation_and_background",
+    "estimate_background_offset",
+    "downsample_view_data",
+    "crop_view_data",
+    "read_scan_img",
+    "read_scan_dir",
+    "apply_cylindrical_mask",
+]
+
+
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
@@ -529,8 +542,4 @@ def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
         recon = recon.at[:, :, -bottom_margin:].set(0)
 
     return recon
-
-
-
-
 
