@@ -6,22 +6,38 @@ import matplotlib.pyplot as plt
 
 
 # Utility function to display translation vectors' x and z components using a scatter plot
-def display_translation_vectors(translation_vectors):
-    """Display the x and z components of translation vectors using a scatter plot.
+def display_translation_vectors(translation_vectors, recon_shape):
+    """Display the x and z components of translation vectors using a scatter plot,
+    and overlay a box representing the reconstruction volume in (column, slice) space.
 
     Args:
         translation_vectors (np.ndarray): Array of shape (N, 3) containing [dx, dy, dz] vectors.
+        recon_shape (tuple[int, int, int]): Shape of the reconstruction volume (rows, columns, slices).
     """
     dx = translation_vectors[:, 0]
     dz = translation_vectors[:, 2]
 
     plt.figure(figsize=(6, 6))
-    plt.scatter(dx, dz, c='blue', marker='o')
-    plt.title("Translation Grid (dx vs dz)")
-    plt.xlabel("dx")
-    plt.ylabel("dz")
-    plt.grid(True)
+    plt.scatter(dx, dz, c='blue', marker='o', label='Translations')
+
+    # Get col and slice dimensions (horizontal and vertical axes in view)
+    num_cols = recon_shape[1]
+    num_slices = recon_shape[2]
+
+    # Compute box boundaries centered around origin
+    half_width = num_cols / 2
+    half_height = num_slices / 2
+
+    box_x = [-half_width, half_width, half_width, -half_width, -half_width]
+    box_z = [-half_height, -half_height, half_height, half_height, -half_height]
+
+    plt.plot(box_x, box_z, 'r--', linewidth=2, label='Reconstruction Region')
+
+    plt.title("Translation Grid Point with Recon Outline")
+    plt.xlabel("Horizontal Translation in ALU")
+    plt.ylabel("Vertical Translation in ALU")
     plt.axis('equal')
+    plt.legend()
     plt.show()
 
 
@@ -216,6 +232,11 @@ def main():
     tct_model.set_params(sharpness=sharpness)
     recon_shape = tct_model.get_params('recon_shape')
 
+    # Print model parameters
+    tct_model.print_params()
+    # Display translation array
+    display_translation_vectors(translation_vectors, recon_shape)
+
     # Generate ground truth phantom
     gt_recon = gen_translation_phantom(option='text', recon_shape=recon_shape)
 
@@ -230,11 +251,6 @@ def main():
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
-
-    # Print model parameters
-    tct_model.print_params()
-    # Display translation array
-    display_translation_vectors(translation_vectors)
 
     # Perform MBIR reconstruction
     recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=25)
