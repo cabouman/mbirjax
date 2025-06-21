@@ -56,6 +56,7 @@ def gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z
     return translation_vectors
 
 
+
 def gen_dot_phantom(recon_shape):
     """
     Generate a synthetic ground truth reconstruction volume.
@@ -156,6 +157,34 @@ def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
     return phantom
 
 
+# --- Translation Phantom Generator ---
+def gen_translation_phantom(option, recon_shape):
+    """
+    Generate a synthetic ground truth phantom based on the selected option.
+
+    Args:
+        option (str): Phantom type to generate. Options are 'dots' or 'text'.
+        recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
+
+    Returns:
+        np.ndarray: Generated phantom volume.
+    """
+    if option == 'dots':
+        return gen_dot_phantom(recon_shape)
+    elif option == 'text':
+        num_rows = recon_shape[0]
+        words = ["Purdue", "Presents", "Translation", "Tomography"]
+        positions = [
+            (num_rows // 5 * 1, recon_shape[1] // 2, recon_shape[2] // 2),
+            (num_rows // 5 * 2, recon_shape[1] // 2, recon_shape[2] // 2),
+            (num_rows // 5 * 3, recon_shape[1] // 2, recon_shape[2] // 2),
+            (num_rows // 5 * 4, recon_shape[1] // 2, recon_shape[2] // 2),
+        ]
+        return gen_text_phantom(recon_shape, words, positions)
+    else:
+        raise ValueError(f"Unsupported phantom option: {option}")
+
+
 
 def main():
     # Define geometry
@@ -173,7 +202,8 @@ def main():
     z_spacing = 22
 
     # Set recon parameters
-    sharpness = 0.0
+    sharpness = 1.0
+    phantom_type = "text"   # Can be "dots" or "text"
 
     # Generate translation vectors
     translation_vectors = gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
@@ -187,15 +217,7 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Generate ground truth phantom
-    num_rows = recon_shape[0]
-    words = ["Purdue", "Presents", "Translation", "Tomography"]
-    positions = [
-        (num_rows // 5 * 1, recon_shape[1] // 2, recon_shape[2] // 2),
-        (num_rows // 5 * 2, recon_shape[1] // 2, recon_shape[2] // 2),
-        (num_rows // 5 * 3, recon_shape[1] // 2, recon_shape[2] // 2),
-        (num_rows // 5 * 4, recon_shape[1] // 2, recon_shape[2] // 2),
-    ]
-    gt_recon = gen_text_phantom(recon_shape, words, positions)
+    gt_recon = gen_translation_phantom(option='text', recon_shape=recon_shape)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
