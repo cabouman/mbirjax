@@ -1,4 +1,4 @@
-
+import hashlib
 import numpy as np
 import time
 import jax.numpy as jnp
@@ -38,10 +38,11 @@ pixel_indices = partitions[0][0]
 pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.worker)
 
 ############################### CONTROL ###############################
-print("Started control back projection")
+print("Starting control back projection")
 
 time0 = time.time()
-control_back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices, output_device=back_projection_model.main_device)
+control_back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices,
+                                                                    output_device=back_projection_model.main_device)
 control_back_projection.block_until_ready()
 elapsed = time.time() - time0
 
@@ -50,11 +51,13 @@ print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
 
 # view back projection
 recon_rows, recon_cols, recon_slices = recon_shape
-control_back_projection = jnp.zeros((recon_rows*recon_cols, recon_slices)).at[pixel_indices].add(control_back_projection)
+control_back_projection = jnp.zeros((recon_rows*recon_cols,recon_slices)).at[pixel_indices].add(control_back_projection)
 control_back_projection = back_projection_model.reshape_recon(control_back_projection)
-title = 'Control Back Projection'
-mj.slice_viewer(control_back_projection, slice_axis=0, title=title)
+mj.slice_viewer(control_back_projection, slice_axis=0, title='Control Back Projection')
 
 # save back projection
 control_back_projection = np.array(control_back_projection)
-np.save("output/control_back_projection.npy", control_back_projection)
+hash_digest = hashlib.sha256(control_back_projection.tobytes()).hexdigest()
+file_path = f"output/control_back_projection_{hash_digest[:8]}.npy"
+print(f"Control back projection being saved to file {file_path}")
+np.save(file_path, control_back_projection)
