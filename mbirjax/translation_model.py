@@ -3,6 +3,9 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
+
+import numpy as np
+
 import mbirjax
 
 
@@ -149,7 +152,7 @@ class TranslationModel(mbirjax.TomographyModel):
         half_cone_angle = jnp.arctan2(jnp.max(detect_box), 2*source_detector_dist)
 
         # Compute the row pitch based on a heuristic
-        delta_recon_row = delta_voxel / jnp.tan(half_cone_angle)
+        delta_recon_row = np.sqrt(2) * (delta_voxel / jnp.tan(half_cone_angle))
         delta_recon_row = float(delta_recon_row)
 
         # Compute cube = (width, depth, height) of the scanned region in ALU
