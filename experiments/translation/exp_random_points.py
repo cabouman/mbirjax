@@ -2,41 +2,27 @@ import numpy as np
 import mbirjax as mj
 
 
-def generate_translation_data(sinogram_shape, source_detector_dist, source_iso_dist,
-                              num_horiz_translations, num_vert_translations, verbose=0):
-
-    ### Set the translation vectors
-    # Define the starting point
-    magnification = source_detector_dist / source_iso_dist
-    delta_det_channel = 1
-    delta_det_row = 1
-    num_det_channels, num_det_rows = sinogram_shape[1:]
-    fov_width_alu = num_det_channels * delta_det_channel / magnification
-    fov_height_alu = num_det_rows * delta_det_row / magnification
-    center_x, center_z = fov_width_alu / 2, fov_height_alu / 2
-
-    # Generate grid positions
-    # Calculate spacing between positions
-    spacing_x = fov_width_alu / (num_horiz_translations + 1)
-    spacing_z = fov_height_alu / (num_vert_translations + 1)
+def generate_translation_data(source_iso_dist, source_detector_dist, num_det_rows, num_det_channels,
+                              num_x_translations, num_z_translations, x_spacing, z_spacing, verbose=0):
 
     # Generate all translation vectors
-    num_views = num_horiz_translations * num_vert_translations
+    num_views = num_x_translations * num_z_translations
     translation_vectors = np.zeros((num_views, 3))
 
+    x_center = (num_x_translations - 1) / 2
+    z_center = (num_z_translations - 1) / 2
+
     idx = 0
-    for row in range(1, num_vert_translations + 1):
-        for col in range(1, num_horiz_translations + 1):
-            x = col * spacing_x
-            z = row * spacing_z
-
-            dx = x - center_x
-            dz = z - center_z
+    for row in range(0, num_z_translations):
+        for col in range(0, num_x_translations):
+            dx = col * x_spacing - x_center
+            dz = row * z_spacing - z_center
             dy = 0
-            # dy = np.random.choice([-5.0, 0.0, 5.0])
-
             translation_vectors[idx] = [dx, dy, dz]
             idx += 1
+
+    # Compute sinogram shape
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
     # Define the model for sinogram generation
     ct_model_for_generation = mj.TranslationModel(sinogram_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
@@ -45,7 +31,7 @@ def generate_translation_data(sinogram_shape, source_detector_dist, source_iso_d
     auto_recon_shape = ct_model_for_generation.get_params('recon_shape')
     print("Auto set recon size = ", auto_recon_shape)
 
-    ### Generate test sample
+    ### Generate ground truth recon
     np.random.seed(42)
     gt_recon = np.zeros(auto_recon_shape, dtype=np.float32)
 
@@ -66,9 +52,8 @@ def generate_translation_data(sinogram_shape, source_detector_dist, source_iso_d
 
         gt_recon[row_idx] = flat_row.reshape(auto_recon_shape[1:])
 
-    # Generate synthetic sinogram data
-    sinogram = ct_model_for_generation.forward_project(gt_recon)
-    sinogram = np.asarray(sinogram)
+    # Generate sinogram shape
+    sino_shape = (num_views, num_det_rows, num_det_channels)
 
     if verbose > 0:
         # Print out closest and farthest voxels
@@ -80,48 +65,55 @@ def generate_translation_data(sinogram_shape, source_detector_dist, source_iso_d
         print("Source to closest pixel distance with translation = ", source_to_closest_pixel)
         print("Source to farthest pixel distance with translation = ", source_to_farthest_pixel)
 
-    return gt_recon, sinogram, translation_vectors
+    return gt_recon, sino_shape, translation_vectors
 
 
 def main():
-    ### Set sinogram shape
-    num_views = 128
+    # Define geometry
+    source_iso_dist = 32
+    source_detector_dist = 64
+
+    # Define detector size
     num_det_rows = 128
     num_det_channels = 128
-    sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
-    ### Set the source to detector distance and source to iso distance
-    source_detector_dist = 64
-    source_iso_dist = 32
-
-    # Set number of views in each direction
-    num_horiz_translations = 16
-    num_vert_translations = 8
+    # Define view sampling parameters
+    num_x_translations = 9
+    num_z_translations = 9
+    x_spacing = 16
+    z_spacing = 16
 
     # Set sinogram generation parameter values
-    gt_recon, sinogram, translation_vectors = generate_translation_data(sinogram_shape, source_detector_dist, source_iso_dist, num_horiz_translations, num_vert_translations)
+    gt_recon, sino_shape, translation_vectors = generate_translation_data(source_iso_dist, source_detector_dist,
+                                                              num_det_rows, num_det_channels,
+                                                              num_x_translations, num_z_translations, x_spacing, z_spacing, verbose=1)
 
     # View test sample
     mj.slice_viewer(gt_recon, title='Ground Truth Recon', slice_label='View', slice_axis=0)
 
-    # View sinogram
-    mj.slice_viewer(sinogram, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
-
     # Initialize model for reconstruction.
-    ct_model_for_recon = mj.TranslationModel(sinogram_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+
+
+    sino = tct_model.forward_project(gt_recon)
+
+
+    # View sinogram
+    mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
+
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
 
     # Set reconstruction parameter values
     sharpness = 0.0
-    ct_model_for_recon.set_params(sharpness=sharpness, recon_shape=gt_recon.shape)
+    tct_model.set_params(sharpness=sharpness, recon_shape=gt_recon.shape)
 
     # Print model parameters
-    ct_model_for_recon.print_params()
+    tct_model.print_params()
 
     # Perform MBIR reconstruction
-    recon, recon_params = ct_model_for_recon.recon(sinogram, init_recon=0, weights=weights, stop_threshold_change_pct=0)
+    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights)
 
     # Display Results
     mj.slice_viewer(gt_recon, recon, vmin=0, vmax=1, title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
