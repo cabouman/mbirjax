@@ -1,0 +1,60 @@
+
+import numpy as np
+import time
+import jax.numpy as jnp
+import mbirjax as mj
+import jax
+
+mj.get_memory_stats()
+
+# sinogram shape
+num_views = 1000
+num_det_rows = 1000
+num_det_channels = 1000
+sinogram_shape = (num_views, num_det_rows, num_det_channels)
+
+# angles
+start_angle = -np.pi * (1/2)
+end_angle = np.pi * (1/2)
+angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+
+# recon model
+back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
+back_projection_model.set_params(sharpness=0.0)
+
+# Print out model parameters
+back_projection_model.print_params()
+
+# Generate simulated data
+_, sinogram, _ = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
+sinogram = jax.device_put(sinogram, device=back_projection_model.sinogram_device)
+
+# get partition pixel indices
+recon_shape, granularity = back_projection_model.get_params(['recon_shape', 'granularity'])
+partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
+pixel_indices = partitions[0][0]
+pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.worker)
+
+############################### CONTROL ###############################
+print("Started control back projection")
+
+time0 = time.time()
+control_back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices, output_device=back_projection_model.main_device)
+control_back_projection.block_until_ready()
+elapsed = time.time() - time0
+
+mj.get_memory_stats()
+print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
+
+# view back projection
+recon_rows, recon_cols, recon_slices = recon_shape
+control_back_projection = jnp.zeros((recon_rows*recon_cols, recon_slices)).at[pixel_indices].add(control_back_projection)
+control_back_projection = back_projection_model.reshape_recon(control_back_projection)
+title = 'Control Back Projection'
+mj.slice_viewer(control_back_projection, slice_axis=0, title=title)
+
+# save back projection
+control_back_projection = np.array(control_back_projection)
+np.save("output/control_back_projection.npy", control_back_projection)
