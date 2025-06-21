@@ -23,10 +23,19 @@ def display_translation_vectors(translation_vectors):
     plt.show()
 
 
-def generate_translation_data(source_iso_dist, source_detector_dist, num_det_rows, num_det_channels,
-                              num_x_translations, num_z_translations, x_spacing, z_spacing):
+def generate_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing):
+    """
+    Generate translation vectors for lateral (x) and axial (z) displacements.
 
-    # Generate all translation vectors
+    Args:
+        num_x_translations (int): Number of x-direction translations
+        num_z_translations (int): Number of z-direction translations
+        x_spacing (float): Spacing between x translations in ALU
+        z_spacing (float): Spacing between z translations in ALU
+
+    Returns:
+        np.ndarray: Array of shape (num_views, 3) with translation vectors [dx, dy, dz]
+    """
     num_views = num_x_translations * num_z_translations
     translation_vectors = np.zeros((num_views, 3))
 
@@ -34,55 +43,50 @@ def generate_translation_data(source_iso_dist, source_detector_dist, num_det_row
     z_center = (num_z_translations - 1) / 2
 
     idx = 0
-    for row in range(0, num_z_translations):
-        for col in range(0, num_x_translations):
+    for row in range(num_z_translations):
+        for col in range(num_x_translations):
             dx = (col - x_center) * x_spacing
             dz = (row - z_center) * z_spacing
             dy = 0
             translation_vectors[idx] = [dx, dy, dz]
             idx += 1
 
-    # Compute sinogram shape
-    sinogram_shape = (num_views, num_det_rows, num_det_channels)
+    return translation_vectors
 
-    # Define the model for sinogram generation
-    ct_model_for_generation = mj.TranslationModel(sinogram_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
-    # Check the reconstruction size that is set by auto_set_recon_size
-    auto_recon_shape = ct_model_for_generation.get_params('recon_shape')
-    print("Auto set recon size = ", auto_recon_shape)
+def generate_ground_truth_recon(recon_shape):
+    """
+    Generate a synthetic ground truth reconstruction volume.
 
-    ### Generate ground truth recon
+    Args:
+        recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
+
+    Returns:
+        np.ndarray: Ground truth reconstruction volume with sparse binary features.
+    """
     np.random.seed(42)
-    gt_recon = np.zeros(auto_recon_shape, dtype=np.float32)
+    gt_recon = np.zeros(recon_shape, dtype=np.float32)
+    fill_rate = 0.05
 
-    # Define Central rows
-    y_pad = auto_recon_shape[0] // 6
+    y_pad = recon_shape[0] // 6
     central_start = y_pad
-    central_end = auto_recon_shape[0] - y_pad
+    central_end = recon_shape[0] - y_pad
 
-    # Calculate number of 1s per slice (1% of all points)
-    row_size = auto_recon_shape[1] * auto_recon_shape[2]
-    num_ones_per_row = int(row_size * 0.01)
+    row_size = recon_shape[1] * recon_shape[2]
+    num_ones_per_row = int(row_size * fill_rate)
 
-    # Fill central rows with random 1s
     for row_idx in range(central_start, central_end):
         flat_row = gt_recon[row_idx].flatten()
-
         positions_ones = np.random.choice(row_size, num_ones_per_row, replace=False)
         flat_row[positions_ones] = 1.0
+        gt_recon[row_idx] = flat_row.reshape(recon_shape[1:])
 
-        gt_recon[row_idx] = flat_row.reshape(auto_recon_shape[1:])
-
-    # Generate sinogram shape
-    sino_shape = (num_views, num_det_rows, num_det_channels)
-
-    return gt_recon, sino_shape, translation_vectors
+    return gt_recon
 
 
 def main():
     # Define geometry
-    source_iso_dist = 32
+    source_iso_dist = 64
     source_detector_dist = 64
 
     # Define detector size
@@ -90,25 +94,30 @@ def main():
     num_det_channels = 128
 
     # Define view sampling parameters
-    num_x_translations = 9
-    num_z_translations = 9
-    x_spacing = 16
-    z_spacing = 16
+    num_x_translations = 7
+    num_z_translations = 7
+    x_spacing = 32
+    z_spacing = 32
 
     # Set recon parameters
     sharpness = 0.0
 
-    # Set sinogram generation parameter values
-    gt_recon, sino_shape, translation_vectors = generate_translation_data(source_iso_dist, source_detector_dist,
-                                                              num_det_rows, num_det_channels,
-                                                              num_x_translations, num_z_translations, x_spacing, z_spacing)
+    # Generate translation vectors
+    translation_vectors = generate_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
 
-    # View test sample
-    mj.slice_viewer(gt_recon, title='Ground Truth Recon', slice_label='View', slice_axis=0)
+    # Compute sinogram shape
+    sino_shape = (translation_vectors.shape[0], num_det_rows, num_det_channels)
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-    tct_model.set_params(sharpness=sharpness, recon_shape=gt_recon.shape)
+    tct_model.set_params(sharpness=sharpness)
+
+    # Generate ground truth phantom
+    recon_shape = tct_model.get_params('recon_shape')
+    gt_recon = generate_ground_truth_recon(recon_shape)
+
+    # View test sample
+    mj.slice_viewer(gt_recon, title='Ground Truth Recon', slice_label='View', slice_axis=0)
 
     # Generate synthetic sonogram data
     sino = tct_model.forward_project(gt_recon)
