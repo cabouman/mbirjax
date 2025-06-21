@@ -33,11 +33,11 @@ def display_translation_vectors(translation_vectors, recon_shape):
 
     plt.plot(box_x, box_z, 'r--', linewidth=2, label='Reconstruction Region')
 
-    plt.title("Translation Grid Point with Recon Outline")
+    plt.title("Translation Grid Points with Recon Outline")
     plt.xlabel("Horizontal Translation in ALU")
     plt.ylabel("Vertical Translation in ALU")
     plt.axis('equal')
-    plt.legend()
+    plt.legend(loc='upper right')
     plt.show()
 
 
@@ -72,6 +72,38 @@ def gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z
     return translation_vectors
 
 
+def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+    """
+    Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
+
+    Args:
+        volume (np.ndarray): 3D array to save as a movie.
+        filename (str): Output path for the GIF file.
+        vmin (float): Min pixel value for display normalization.
+        vmax (float): Max pixel value for display normalization.
+    """
+    try:
+        import imageio.v2 as imageio
+    except ImportError:
+        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
+        return
+
+    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+    images = []
+    for i in range(volume.shape[0]):
+        fig, ax = plt.subplots()
+        canvas = FigureCanvas(fig)
+        ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.axis('off')
+        # Convert canvas to image using RGBA buffer, then drop alpha channel
+        canvas.draw()
+        buf = canvas.get_renderer().buffer_rgba()
+        image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
+        image = image[..., :3]  # Drop alpha channel
+        images.append(image)
+        plt.close(fig)
+
+    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
 
 def gen_dot_phantom(recon_shape):
     """
@@ -253,11 +285,15 @@ def main():
     weights = None
 
     # Perform MBIR reconstruction
-    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=25)
+    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=15)
 
     # Display Results
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
                     title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
+
+    # Save as animated gifs
+    save_volume_as_gif(gt_recon, "gt_recon.gif", vmin=0, vmax=1)
+    save_volume_as_gif(recon, "mbir_recon.gif", vmin=0, vmax=1)
 
 
 if __name__ == '__main__':
