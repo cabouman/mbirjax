@@ -1,4 +1,6 @@
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
 import mbirjax as mj
 import matplotlib.pyplot as plt
 
@@ -23,7 +25,7 @@ def display_translation_vectors(translation_vectors):
     plt.show()
 
 
-def generate_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing):
+def gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing):
     """
     Generate translation vectors for lateral (x) and axial (z) displacements.
 
@@ -54,7 +56,7 @@ def generate_translation_vectors(num_x_translations, num_z_translations, x_spaci
     return translation_vectors
 
 
-def generate_ground_truth_recon(recon_shape):
+def gen_dot_phantom(recon_shape):
     """
     Generate a synthetic ground truth reconstruction volume.
 
@@ -84,6 +86,75 @@ def generate_ground_truth_recon(recon_shape):
     return gt_recon
 
 
+
+# --- 3D Text Phantom Generator ---
+def gen_text_phantom(recon_shape, words, positions, array_size=256, font_path="DejaVuSans.ttf"):
+    """
+    Generate a 3D text phantom with binary word patterns embedded in specific slices.
+
+    Args:
+        recon_shape (tuple[int, int, int]): Shape of the phantom volume (num_rows, num_cols, num_slices).
+        words (list[str]): List of ASCII words to render.
+        positions (list[tuple[int, int, int]]): List of (row, col, slice) positions corresponding to each word.
+        array_size (int, optional): Size of the 2D square image used to render each word. Default is 256.
+        font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
+
+    Returns:
+        np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
+    """
+    assert len(words) == len(positions), "Number of words must match number of positions."
+
+    phantom = np.zeros(recon_shape, dtype=np.float32)
+    try:
+        font = ImageFont.truetype(font_path, size=20)
+    except OSError:
+        from pathlib import Path
+        fallback_paths = [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",  # macOS fallback
+            "/Library/Fonts/Arial.ttf",  # Additional macOS path
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux fallback
+        ]
+        for fallback in fallback_paths:
+            if Path(fallback).exists():
+                font = ImageFont.truetype(fallback, size=20)
+                break
+        else:
+            raise FileNotFoundError(
+                f"Could not find a usable font. Tried the following paths:\n"
+                + "\n".join(fallback_paths)
+                + "\nPlease install one of these fonts or specify a valid font_path."
+            )
+
+    for word, (r, c, s) in zip(words, positions):
+        img = Image.new('L', (array_size, array_size), 0)
+        draw = ImageDraw.Draw(img)
+
+        text_box = draw.textbbox((0, 0), word, font=font)
+        text_width = text_box[2] - text_box[0]
+        text_height = text_box[3] - text_box[1]
+
+        x = (array_size - text_width) // 2
+        y = (array_size - text_height) // 2
+        draw.text((x, y), word, fill=1, font=font)
+
+        word_array = np.array(img.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT))
+        word_array = (word_array > 0).astype(np.float32)
+
+        # Crop or pad word_array to fit in the recon volume
+        r_start = max(0, r)
+        r_end = min(recon_shape[0], r + 1)
+        c_start = max(0, c - array_size // 2)
+        c_end = min(recon_shape[1], c_start + array_size)
+        s_start = max(0, s - array_size // 2)
+        s_end = min(recon_shape[2], s_start + array_size)
+
+        word_crop = word_array[:(c_end - c_start), :(s_end - s_start)]
+        phantom[r_start:r_end, c_start:c_end, s_start:s_end] = word_crop
+
+    return phantom
+
+
+
 def main():
     # Define geometry
     source_iso_dist = 64
@@ -103,7 +174,7 @@ def main():
     sharpness = 0.0
 
     # Generate translation vectors
-    translation_vectors = generate_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
+    translation_vectors = gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
 
     # Compute sinogram shape
     sino_shape = (translation_vectors.shape[0], num_det_rows, num_det_channels)
@@ -111,13 +182,18 @@ def main():
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     tct_model.set_params(sharpness=sharpness)
+    recon_shape = tct_model.get_params('recon_shape')
 
     # Generate ground truth phantom
-    recon_shape = tct_model.get_params('recon_shape')
-    gt_recon = generate_ground_truth_recon(recon_shape)
+    words = ["Hello", "Goodbye"]
+    positions = [
+        (5, recon_shape[1] // 2, recon_shape[2] // 2),
+        (10, recon_shape[1] // 2, recon_shape[2] // 2)
+    ]
+    gt_recon = gen_text_phantom(recon_shape, words, positions)
 
     # View test sample
-    mj.slice_viewer(gt_recon, title='Ground Truth Recon', slice_label='View', slice_axis=0)
+    mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
 
     # Generate synthetic sonogram data
     sino = tct_model.forward_project(gt_recon)
@@ -134,10 +210,11 @@ def main():
     display_translation_vectors(translation_vectors)
 
     # Perform MBIR reconstruction
-    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights)
+    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=20)
 
     # Display Results
-    mj.slice_viewer(gt_recon, recon, vmin=0, vmax=1, title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
+    mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
+                    title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
 
 
 if __name__ == '__main__':
