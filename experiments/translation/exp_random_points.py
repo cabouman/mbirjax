@@ -1,9 +1,30 @@
 import numpy as np
 import mbirjax as mj
+import matplotlib.pyplot as plt
+
+
+# Utility function to display translation vectors' x and z components using a scatter plot
+def display_translation_vectors(translation_vectors):
+    """Display the x and z components of translation vectors using a scatter plot.
+
+    Args:
+        translation_vectors (np.ndarray): Array of shape (N, 3) containing [dx, dy, dz] vectors.
+    """
+    dx = translation_vectors[:, 0]
+    dz = translation_vectors[:, 2]
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(dx, dz, c='blue', marker='o')
+    plt.title("Translation Grid (dx vs dz)")
+    plt.xlabel("dx")
+    plt.ylabel("dz")
+    plt.grid(True)
+    plt.axis('equal')
+    plt.show()
 
 
 def generate_translation_data(source_iso_dist, source_detector_dist, num_det_rows, num_det_channels,
-                              num_x_translations, num_z_translations, x_spacing, z_spacing, verbose=0):
+                              num_x_translations, num_z_translations, x_spacing, z_spacing):
 
     # Generate all translation vectors
     num_views = num_x_translations * num_z_translations
@@ -36,8 +57,9 @@ def generate_translation_data(source_iso_dist, source_detector_dist, num_det_row
     gt_recon = np.zeros(auto_recon_shape, dtype=np.float32)
 
     # Define Central rows
-    central_start = auto_recon_shape[0] // 3
-    central_end = 2 * auto_recon_shape[0] // 3
+    y_pad = auto_recon_shape[0] // 6
+    central_start = y_pad
+    central_end = auto_recon_shape[0] - y_pad
 
     # Calculate number of 1s per slice (1% of all points)
     row_size = auto_recon_shape[1] * auto_recon_shape[2]
@@ -54,16 +76,6 @@ def generate_translation_data(source_iso_dist, source_detector_dist, num_det_row
 
     # Generate sinogram shape
     sino_shape = (num_views, num_det_rows, num_det_channels)
-
-    if verbose > 0:
-        # Print out closest and farthest voxels
-        source_iso_dist, delta_recon_row = ct_model_for_generation.get_params(['source_iso_dist', 'delta_recon_row'])
-        max_translation = np.amax(translation_vectors, axis=0)
-        min_translation = np.amin(translation_vectors, axis=0)
-        source_to_closest_pixel = source_iso_dist - (0.5 * gt_recon.shape[0] * delta_recon_row) - max_translation[1]
-        source_to_farthest_pixel = source_iso_dist + (0.5 * gt_recon.shape[0] * delta_recon_row) - min_translation[1]
-        print("Source to closest pixel distance with translation = ", source_to_closest_pixel)
-        print("Source to farthest pixel distance with translation = ", source_to_farthest_pixel)
 
     return gt_recon, sino_shape, translation_vectors
 
@@ -89,7 +101,7 @@ def main():
     # Set sinogram generation parameter values
     gt_recon, sino_shape, translation_vectors = generate_translation_data(source_iso_dist, source_detector_dist,
                                                               num_det_rows, num_det_channels,
-                                                              num_x_translations, num_z_translations, x_spacing, z_spacing, verbose=1)
+                                                              num_x_translations, num_z_translations, x_spacing, z_spacing)
 
     # View test sample
     mj.slice_viewer(gt_recon, title='Ground Truth Recon', slice_label='View', slice_axis=0)
@@ -109,8 +121,8 @@ def main():
 
     # Print model parameters
     tct_model.print_params()
-    # Print out translation array
-    print("Translation vectors:\n", translation_vectors)
+    # Display translation array
+    display_translation_vectors(translation_vectors)
 
     # Perform MBIR reconstruction
     recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights)
