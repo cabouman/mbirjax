@@ -187,10 +187,13 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Generate ground truth phantom
-    words = ["Hello", "Goodbye"]
+    num_rows = recon_shape[0]
+    words = ["Purdue", "Presents", "Translation", "Tomography"]
     positions = [
-        (5, recon_shape[1] // 2, recon_shape[2] // 2),
-        (10, recon_shape[1] // 2, recon_shape[2] // 2)
+        (num_rows // 5 * 1, recon_shape[1] // 2, recon_shape[2] // 2),
+        (num_rows // 5 * 2, recon_shape[1] // 2, recon_shape[2] // 2),
+        (num_rows // 5 * 3, recon_shape[1] // 2, recon_shape[2] // 2),
+        (num_rows // 5 * 4, recon_shape[1] // 2, recon_shape[2] // 2),
     ]
     gt_recon = gen_text_phantom(recon_shape, words, positions)
 
@@ -212,7 +215,7 @@ def main():
     display_translation_vectors(translation_vectors)
 
     # Perform MBIR reconstruction
-    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=20)
+    recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights, max_iterations=25)
 
     # Display Results
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
