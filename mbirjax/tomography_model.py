@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
@@ -48,6 +49,7 @@ class TomographyModel(ParameterHandler):
 
     Sets up the reconstruction size and parameters.
     """
+    print("SPARSE BACK PROJECTION HAS BEEN ALTERED TO USE SHARDING")
 
     DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
 
@@ -131,6 +133,27 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
+
+        try:
+            # Get available gpu devices and create a mesh
+            devices = np.array(jax.devices('gpu')).reshape((-1, 1))
+            mesh = Mesh(devices, ('views', 'rows'))
+
+            self.sinogram_device = NamedSharding(mesh, P('views'))
+            self.worker = NamedSharding(mesh, P())
+
+            self.main_device = jax.devices('cpu')[0]
+        except RuntimeError:
+            # this is a GPU test so raise an error if anything fails with the GPU
+            raise RuntimeError("GPU failed")
+
+        sinogram_shape = self.get_params('sinogram_shape')
+        num_views, _, _ = sinogram_shape
+        self.view_batch_size_for_vmap = num_views
+        self.transfer_pixel_batch_size = 1000
+
+        return
+
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
@@ -639,39 +662,25 @@ class TomographyModel(ParameterHandler):
             A jax array of shape (len(indices), num_slices)
         """
         # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        num_views = sinogram.shape[0]
-        if view_indices is None:
-            view_indices = jnp.arange(num_views)
-        num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
 
-        pixel_indices = jax.device_put(pixel_indices, self.worker)
-        num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
-        pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
+        num_pixels = pixel_indices.shape[0]
+        pixel_batch_start_indices = jnp.arange(num_pixels, step=transfer_pixel_batch_size)
+        pixel_batch_end_indices = jnp.concatenate([pixel_batch_start_indices[1:], num_pixels * jnp.ones(1, dtype=int)])
 
-        recon_shape = self.get_params('recon_shape')
-        num_pixels = len(pixel_indices)
-        num_slices = recon_shape[2]
+        # Loop over pixel batches
+        voxel_batch_list = []
+        for start, end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
+            print(start, end=" ")
+            # Back project a batch
+            pixel_index_batch = jax.device_put(pixel_indices[start:end], self.worker)
+            voxel_batch = self.projector_functions.sparse_back_project(sinogram, pixel_index_batch,
+                                                                       coeff_power=coeff_power)
+            voxel_batch = voxel_batch.block_until_ready()
+            voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
 
         # Get the final recon as a jax array
-        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        for view_indices_batch in view_indices_batched:
-            view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.worker)
-
-            # Loop over pixel batches
-            voxel_batch_list = []
-            for pixel_index_batch in pixel_indices_batched:
-                # Back project a batch
-                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batch,
-                                                                           coeff_power=coeff_power)
-                voxel_batch = voxel_batch.block_until_ready()
-                voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
-
-            recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
+        recon_at_indices = jnp.concatenate(voxel_batch_list, axis=0)
 
         return recon_at_indices
 
