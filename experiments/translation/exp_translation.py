@@ -88,7 +88,7 @@ def gen_dot_phantom(recon_shape):
 
 
 # --- 3D Text Phantom Generator ---
-def gen_text_phantom(recon_shape, words, positions, array_size=256, font_path="DejaVuSans.ttf"):
+def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -103,6 +103,8 @@ def gen_text_phantom(recon_shape, words, positions, array_size=256, font_path="D
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
     assert len(words) == len(positions), "Number of words must match number of positions."
+
+    array_size = np.minimum(recon_shape[1], recon_shape[2])
 
     phantom = np.zeros(recon_shape, dtype=np.float32)
     try:
@@ -167,8 +169,8 @@ def main():
     # Define view sampling parameters
     num_x_translations = 7
     num_z_translations = 7
-    x_spacing = 32
-    z_spacing = 32
+    x_spacing = 22
+    z_spacing = 22
 
     # Set recon parameters
     sharpness = 0.0
