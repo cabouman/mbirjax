@@ -4,11 +4,22 @@ import mbirjax as mj
 
 file_path = "output/control_back_projection_02d2da50.npy"
 expected_hash = "02d2da5081fec0ef3705b4b53e8a484e53a30d8040e60396b0616778b3cf8125"
-back_projection_normal = np.load(file_path)
+control_back_projection = np.load(file_path)
 
-hash_digest = hashlib.sha256(back_projection_normal.tobytes()).hexdigest()
+hash_digest = hashlib.sha256(control_back_projection.tobytes()).hexdigest()
 if hash_digest != expected_hash:
     print("\033[93m" + f"hash_digest of {file_path} is not the expected value." + "\033[0m")
     print("hash_digest:", hash_digest)
 
-mj.slice_viewer(back_projection_normal, slice_axis=0, title='Control Back Projection')
+# mj.slice_viewer(control_back_projection, slice_axis=0, title='Control Back Projection')
+
+file_path = "output/sharded_back_projection_caa1f1ee.npy"
+expected_hash = "caa1f1ee9324007a2256ee887289dc9ad2903bfb5aa2f2d49ecfe2fd0f97cf1e"
+sharded_back_projection = np.load(file_path)
+
+hash_digest = hashlib.sha256(sharded_back_projection.tobytes()).hexdigest()
+if hash_digest != expected_hash:
+    print("\033[93m" + f"hash_digest of {file_path} is not the expected value." + "\033[0m")
+    print("hash_digest:", hash_digest)
+
+mj.slice_viewer(sharded_back_projection, slice_axis=0, title='Control Back Projection')
