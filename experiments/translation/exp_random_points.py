@@ -15,8 +15,8 @@ def generate_translation_data(source_iso_dist, source_detector_dist, num_det_row
     idx = 0
     for row in range(0, num_z_translations):
         for col in range(0, num_x_translations):
-            dx = col * x_spacing - x_center
-            dz = row * z_spacing - z_center
+            dx = (col - x_center) * x_spacing
+            dz = (row - z_center) * z_spacing
             dy = 0
             translation_vectors[idx] = [dx, dy, dz]
             idx += 1
@@ -83,6 +83,9 @@ def main():
     x_spacing = 16
     z_spacing = 16
 
+    # Set recon parameters
+    sharpness = 0.0
+
     # Set sinogram generation parameter values
     gt_recon, sino_shape, translation_vectors = generate_translation_data(source_iso_dist, source_detector_dist,
                                                               num_det_rows, num_det_channels,
@@ -93,24 +96,21 @@ def main():
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    tct_model.set_params(sharpness=sharpness, recon_shape=gt_recon.shape)
 
-
+    # Generate synthetic sonogram data
     sino = tct_model.forward_project(gt_recon)
-
 
     # View sinogram
     mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
 
-
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
 
-    # Set reconstruction parameter values
-    sharpness = 0.0
-    tct_model.set_params(sharpness=sharpness, recon_shape=gt_recon.shape)
-
     # Print model parameters
     tct_model.print_params()
+    # Print out translation array
+    print("Translation vectors:\n", translation_vectors)
 
     # Perform MBIR reconstruction
     recon, recon_params = tct_model.recon(sino, init_recon=0, weights=weights)
