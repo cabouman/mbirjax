@@ -153,8 +153,8 @@ class TranslationModel(mbirjax.TomographyModel):
 
         # Compute the row pitch based on a heuristic
         # ToDo: Fix this line of code. The line that is commented out is logically correct, but it causes a pytest error.
-        #delta_recon_row = np.sqrt(2) * (delta_voxel / jnp.tan(half_cone_angle))
-        delta_recon_row = delta_voxel / jnp.tan(half_cone_angle)
+        delta_recon_row = np.sqrt(2) * (delta_voxel / jnp.tan(half_cone_angle))
+        # delta_recon_row = delta_voxel / jnp.tan(half_cone_angle)
         delta_recon_row = float(delta_recon_row)
 
         # Compute cube = (width, depth, height) of the scanned region in ALU
@@ -168,10 +168,10 @@ class TranslationModel(mbirjax.TomographyModel):
         # Use a heuristic to determine a reasonable number of slices
         num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
         # Make sure the object extends no further than half way to the source
-        max_rows = jnp.floor((source_iso_dist - cube[1])/delta_det_row)
-        if max_rows < 1:
-            print(f"[Error] Computed max_rows = {max_rows} < 1. This suggests the object extends beyond the source.")
-        num_recon_rows = jnp.minimum(num_recon_rows, max_rows)
+        max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
+        if max_recon_rows < 1:
+            print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
+        num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
 
         # Set the parameters to their computed values
         num_recon_cols, num_recon_slices = recon_box
