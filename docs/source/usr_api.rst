@@ -14,6 +14,7 @@ The first step is to create an instance with a specific geometry. This is done b
 
    mbirjax.ParallelBeamModel
    mbirjax.ConeBeamModel
+   mbirjax.TranslationModel
 
 Reconstruction and Projection
 -----------------------------
@@ -63,6 +64,7 @@ Parameter handling uses the following primary methods.
    usr_parameters
    usr_parallel_beam_model
    usr_cone_beam_model
+   usr_translation_model
    usr_preprocess
    usr_denoising
    usr_utilities
