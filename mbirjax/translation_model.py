@@ -3,6 +3,9 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
+
+import numpy as np
+
 import mbirjax
 
 
@@ -18,10 +21,10 @@ class TranslationModel(mbirjax.TomographyModel):
     during initialization.
 
     Args:
-        sinogram_shape (tuple[int, int, int]): Shape of the sinogram as (num_views, num_rows, num_channels),
+        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
             where 'num_views' is the number of translation steps, 'num_rows' is the number of detector rows,
             and 'num_channels' is the number of detector columns.
-        translation_vectors (jnp.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
+        translation_vectors (jax.numpy.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
             Each vector specifies how the object is translated for each view.
             Positive x shifts the object left, z shifts up, and y shifts away from the source.
         source_detector_dist (float): Distance from the X-ray source to the detector.
@@ -31,25 +34,25 @@ class TranslationModel(mbirjax.TomographyModel):
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
 
     Example:
-        ```python
-        import jax.numpy as jnp
-        from mbirjax.translation_model import TranslationModel
+        .. code-block:: python
 
-        sinogram_shape = (180, 256, 256)
-        translation_vectors = jnp.zeros((180, 3))
-        model = TranslationModel(
-            sinogram_shape=sinogram_shape,
-            translation_vectors=translation_vectors,
-            source_detector_dist=1000.0,
-            source_iso_dist=500.0
-        )
-        model.set_params(delta_voxel=1.0)
-        model.auto_set_recon_size(sinogram_shape)
-        ```
+            import jax.numpy as jnp
+            from mbirjax.translation_model import TranslationModel
+
+            sinogram_shape = (180, 256, 256)
+            translation_vectors = jnp.zeros((180, 3))
+            model = TranslationModel(
+                sinogram_shape=sinogram_shape,
+                translation_vectors=translation_vectors,
+                source_detector_dist=1000.0,
+                source_iso_dist=500.0
+            )
+            model.set_params(delta_voxel=1.0)
+            model.auto_set_recon_size(sinogram_shape)
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
-        self.bp_psf_radius = 1
+        self.use_ror_mask = False
         self.entries_per_cylinder_batch = 128
         translation_vectors = jnp.asarray(translation_vectors)
         view_params_name = 'translation_vectors'
@@ -86,11 +89,10 @@ class TranslationModel(mbirjax.TomographyModel):
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
-        geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
+        geometry_param_names += ['magnification', 'psf_radius',
                                  'entries_per_cylinder_batch']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
-        geometry_param_values.append(self.bp_psf_radius)
         geometry_param_values.append(self.entries_per_cylinder_batch)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
@@ -118,32 +120,24 @@ class TranslationModel(mbirjax.TomographyModel):
         if jnp.isinf(source_detector_dist):
             raise ValueError('Distance from source to detector is infinite, which means all translated projections have the same information.')
         else:
-            # Determine the closest and farthest points from the source to determine max and min magnification.
-            # iso is at the center of the recon volume, so we move half the length to get max/min distances.
-            # This doesn't give exactly the closest pixel (which is really in the corner) since we're not accounting
-            # for rotation, but for realistic cases it shouldn't matter.
+            # Determine the distance from the source to the closest voxel.
             source_to_closest_pixel = source_iso_dist - (0.5 * recon_shape[0] * delta_recon_row) - max_translation[1]
+            # Determine the maximum magnification.
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_iso_dist + (0.5 * recon_shape[0] * delta_recon_row) - min_translation[1]
-            min_magnification = source_detector_dist / source_to_farthest_pixel
 
-        if max_magnification < 0:
-            raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
+            if source_to_closest_pixel < 0:
+                raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
-        # Then repeat for the back projection from detector elements to voxels.
-        # The voxels closest to the detector will be covered the most by a given detector element.
-        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
-        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
-        self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
-        if psf_radius > 1:
-            warnings.warn('A single voxel may project onto several detector elements, which may lead to artifacts. Consider using smaller voxels.')
+        if psf_radius > 4:
+            warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
     def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
+        # Get model parameters
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         magnification = self.get_magnification()
@@ -151,24 +145,39 @@ class TranslationModel(mbirjax.TomographyModel):
         num_views, num_det_rows, num_det_channels = sinogram_shape
         translation_vectors = self.get_params('translation_vectors')
 
+        # Calculate the width and height of the detector in ALU
         detect_box = jnp.array([delta_det_channel*num_det_channels, delta_det_row*num_det_rows])
+
+        # Compute 1/2 the cone angle in radians
         half_cone_angle = jnp.arctan2(jnp.max(detect_box), 2*source_detector_dist)
-        delta_recon_row = delta_voxel / jnp.tan(half_cone_angle)
+
+        # Compute the row pitch based on a heuristic
+        delta_recon_row = np.sqrt(2) * (delta_voxel / jnp.tan(half_cone_angle))
         delta_recon_row = float(delta_recon_row)
 
+        # Compute cube = (width, depth, height) of the scanned region in ALU
         max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
         min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
         cube = max_translation - min_translation
-        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification)/delta_voxel)
-        num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
 
+        # Compute recon_box = (width, height) of the reconstruction box in voxels
+        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
+
+        # Use a heuristic to determine a reasonable number of slices
+        num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
+        # Make sure the object extends no further than half way to the source
+        max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
+        if max_recon_rows < 1:
+            print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
+        num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
+
+        # Set the parameters to their computed values
         num_recon_cols, num_recon_slices = recon_box
         num_recon_cols = int(num_recon_cols)
         num_recon_rows = int(num_recon_rows)
         num_recon_slices = int(num_recon_slices)
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape,
-                        delta_recon_row=delta_recon_row)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_recon_row=delta_recon_row)
 
 
     @staticmethod
@@ -347,7 +356,7 @@ class TranslationModel(mbirjax.TomographyModel):
             # Allocate space
             new_column_batch = jnp.zeros(det_rows_per_batch)
             # Do the vertical projection
-            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius + 1):
+            for k_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
                 k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
                 # The projection of these centers is the projection of k_m_center (which is m_p) plus
                 # the offset times the slope of the map from voxel index to detector index
