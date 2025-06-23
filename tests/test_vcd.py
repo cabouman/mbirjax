@@ -1,9 +1,9 @@
 import tempfile
 import unittest
+import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ruamel.yaml import YAML
 import mbirjax
 
 
@@ -19,7 +19,10 @@ class TestVCD(unittest.TestCase):
         self.geometry_types = mbirjax._utils._geometry_types_for_tests
         parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
         cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
-        self.all_tolerances = [parallel_tolerances, cone_tolerances]
+        translation_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
+        self.all_tolerances = [parallel_tolerances, cone_tolerances, translation_tolerances]
+        if len(self.geometry_types) != len(self.all_tolerances):
+            raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
         # Set parameters
         self.num_views = 64
@@ -49,13 +52,37 @@ class TestVCD(unittest.TestCase):
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
+        num_x_translations = 20
+        num_z_translations = 20
+        x_spacing = 1
+        z_spacing = 1
+        num_views = num_x_translations * num_z_translations
+        translation_vectors = np.zeros((num_views, 3))
+
+        x_center = (num_x_translations - 1) / 2
+        z_center = (num_z_translations - 1) / 2
+
+        idx = 0
+        for row in range(num_z_translations):
+            for col in range(num_x_translations):
+                dx = (col - x_center) * x_spacing
+                dz = (row - z_center) * z_spacing
+                dy = 0
+                translation_vectors[idx] = [dx, dy, dz]
+                idx += 1
+        self.translation_vectors = translation_vectors
+
     def get_model(self, geometry_type):
-        if geometry_type == 'cone':
+        if geometry_type == 'parallel':
+            ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'cone':
             ct_model = mbirjax.ConeBeamModel(self.sinogram_shape, self.angles,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
-        elif geometry_type == 'parallel':
-            ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'translation':
+            ct_model = mbirjax.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                                source_detector_dist=self.source_detector_dist,
+                                                source_iso_dist=self.source_iso_dist)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -78,6 +105,10 @@ class TestVCD(unittest.TestCase):
         print('  Creating phantom')
         phantom = ct_model.gen_modified_3d_sl_phantom()
 
+        if geometry_type == 'translation':
+            warnings.warn('test_vcd not implemented for translation mode.')
+            return
+
         # Generate synthetic sinogram data
         print('  Creating sinogram')
         sinogram = ct_model.forward_project(phantom)
@@ -91,11 +122,12 @@ class TestVCD(unittest.TestCase):
         print('  Starting recon')
         recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
-
         max_diff = np.amax(np.abs(phantom - recon))
         nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
         pct_95 = np.percentile(np.abs(recon - phantom), 95)
         print('  nrmse = {:.3f}'.format(nrmse))
+        print('  max_diff = {:.3f}'.format(max_diff))
+        print('  pct_95 = {:.3f}'.format(pct_95))
 
         self.assertTrue(max_diff < tolerances['max_diff'] and
                         nrmse < tolerances['nrmse'] and
