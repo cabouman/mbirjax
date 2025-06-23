@@ -21,10 +21,10 @@ class TranslationModel(mbirjax.TomographyModel):
     during initialization.
 
     Args:
-        sinogram_shape (tuple[int, int, int]): Shape of the sinogram as (num_views, num_rows, num_channels),
+        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
             where 'num_views' is the number of translation steps, 'num_rows' is the number of detector rows,
             and 'num_channels' is the number of detector columns.
-        translation_vectors (jnp.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
+        translation_vectors (jax.numpy.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
             Each vector specifies how the object is translated for each view.
             Positive x shifts the object left, z shifts up, and y shifts away from the source.
         source_detector_dist (float): Distance from the X-ray source to the detector.
@@ -34,21 +34,21 @@ class TranslationModel(mbirjax.TomographyModel):
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
 
     Example:
-        ```python
-        import jax.numpy as jnp
-        from mbirjax.translation_model import TranslationModel
+        .. code-block:: python
 
-        sinogram_shape = (180, 256, 256)
-        translation_vectors = jnp.zeros((180, 3))
-        model = TranslationModel(
-            sinogram_shape=sinogram_shape,
-            translation_vectors=translation_vectors,
-            source_detector_dist=1000.0,
-            source_iso_dist=500.0
-        )
-        model.set_params(delta_voxel=1.0)
-        model.auto_set_recon_size(sinogram_shape)
-        ```
+            import jax.numpy as jnp
+            from mbirjax.translation_model import TranslationModel
+
+            sinogram_shape = (180, 256, 256)
+            translation_vectors = jnp.zeros((180, 3))
+            model = TranslationModel(
+                sinogram_shape=sinogram_shape,
+                translation_vectors=translation_vectors,
+                source_detector_dist=1000.0,
+                source_iso_dist=500.0
+            )
+            model.set_params(delta_voxel=1.0)
+            model.auto_set_recon_size(sinogram_shape)
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
