@@ -1,8 +1,10 @@
 import numpy as np
 from jax import numpy as jnp
+import mbirjax as mj
+from .utilities import apply_cylindrical_mask
 
 
-def multi_threshold_otsu(image, classes=2, num_bins=256):
+def multi_threshold_otsu(image, classes=2, num_bins=1024):
     """
     Segment an image into multiple intensity classes using Otsu's method.
 
@@ -42,7 +44,11 @@ def multi_threshold_otsu(image, classes=2, num_bins=256):
     # Convert histogram bin indices to original image values
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     scaled_thresholds = [bin_centers[t] for t in thresholds]
+    # print(scaled_thresholds)
 
+    # import matplotlib.pyplot as plt
+    # plt.bar(bin_edges[:-1], hist, width=np.diff(bin_edges), edgecolor="black", align="edge")
+    # plt.show(block=True)
     return scaled_thresholds
 
 
@@ -173,16 +179,21 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 
 
-def segment_plastic_metal(recon):
+def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Segment a reconstruction into plastic and metal masks using multi-threshold Otsu.
 
     This function uses multi-threshold Otsu segmentation to classify the input
     reconstruction into several classes and returns binary masks for the plastic
-    and metal components. It also returns scaling factor representing the average value of the recon in the segmented region.
+    and metal components. It also returns a scaling factor representing the average
+    value of the reconstruction in each segmented region. A cylindrical mask is applied
+    to the volume prior to thresholding.
 
     Args:
         recon (jnp.ndarray): Reconstructed volume array.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius. Defaults to 10.
+        top_margin (int, optional): Number of slices to mask out from the top of the volume. Defaults to 10.
+        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume. Defaults to 10.
 
     Returns:
         Tuple[jnp.ndarray, jnp.ndarray, float, float]: A tuple containing:
@@ -201,6 +212,8 @@ def segment_plastic_metal(recon):
     """
     from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
+    # Remove any flash from the boundary of the recon
+    recon = apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
     thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
@@ -214,3 +227,5 @@ def segment_plastic_metal(recon):
     metal_scale = _compute_scaling_factor(recon, metal_mask)
 
     return plastic_mask, metal_mask, plastic_scale, metal_scale
+
+

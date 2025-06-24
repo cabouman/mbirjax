@@ -34,14 +34,17 @@ General preprocess functions
 .. autofunction:: estimate_background_offset
 .. autofunction:: downsample_view_data
 .. autofunction:: crop_view_data
+.. autofunction:: apply_cylindrical_mask
 
-MAR preprocess functions
-------------------------
+
+MAR utilities
+-------------
 
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: gen_huber_weights
 .. autofunction:: BH_correction
+.. autofunction:: recon_BH_plastic_metal
 
 Segmentation functions
 ----------------------

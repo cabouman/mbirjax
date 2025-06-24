@@ -1,30 +1,28 @@
 import tempfile
 import unittest
+import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ruamel.yaml import YAML
-import mbirjax
+import mbirjax as mj
 
 
 class TestVCD(unittest.TestCase):
     """
-    Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
-    This means if x is an image, and y is a sinogram, then <y, Ax> = <Aty, x>.
-    The code below verifies this for the full forward and back projectors and the versions that specify a
-    subset of voxels in x.
-    This code also verifies that first applying the full back projector and selecting the voxels to get (Aty)[ss]
-    is the same as using the subset back projector with the specified set of voxels.
+    Unit tests for verifying the reconstruction accuracy of the VCD algorithm in MBIRJAX.
     """
 
     def setUp(self):
         """Set up before each test method."""
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
-        self.geometry_types = mbirjax._utils._geometry_types_for_tests
+        self.geometry_types = mj._utils._geometry_types_for_tests
         parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
         cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
-        self.all_tolerances = [parallel_tolerances, cone_tolerances]
+        translation_tolerances = {'nrmse': 0.8, 'max_diff': 1.05, 'pct_95': 0.03}
+        self.all_tolerances = [parallel_tolerances, cone_tolerances, translation_tolerances]
+        if len(self.geometry_types) != len(self.all_tolerances):
+            raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
         # Set parameters
         self.num_views = 64
@@ -40,12 +38,13 @@ class TestVCD(unittest.TestCase):
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.translation_vectors = None
 
     def tearDown(self):
         """Clean up after each test method."""
         pass
 
-    def set_angles(self, geometry_type):
+    def set_view_params(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
         else:
@@ -54,13 +53,26 @@ class TestVCD(unittest.TestCase):
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
+        num_x_translations = 7
+        num_z_translations = 7
+        x_spacing = 22
+        z_spacing = 22
+
+        # Generate translation vectors
+        translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
+        self.translation_vectors = translation_vectors
+
     def get_model(self, geometry_type):
-        if geometry_type == 'cone':
-            ct_model = mbirjax.ConeBeamModel(self.sinogram_shape, self.angles,
+        if geometry_type == 'parallel':
+            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
-        elif geometry_type == 'parallel':
-            ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'translation':
+            ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                                source_detector_dist=self.source_detector_dist,
+                                                source_iso_dist=self.source_iso_dist)
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -76,12 +88,17 @@ class TestVCD(unittest.TestCase):
         """
         Verify that the vcd reconstructions for a simple phantom are within tolerance
         """
-        self.set_angles(geometry_type)
+        self.set_view_params(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')
-        phantom = ct_model.gen_modified_3d_sl_phantom()
+
+        if geometry_type == 'translation':
+            recon_shape = ct_model.get_params('recon_shape')
+            phantom = mj.gen_translation_phantom(option='text', recon_shape=recon_shape)
+        else:
+            phantom = ct_model.gen_modified_3d_sl_phantom()
 
         # Generate synthetic sinogram data
         print('  Creating sinogram')
@@ -94,13 +111,14 @@ class TestVCD(unittest.TestCase):
         # Perform VCD reconstruction
         sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
-        recon, recon_params = ct_model.recon(sinogram)
+        recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
-
         max_diff = np.amax(np.abs(phantom - recon))
         nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
         pct_95 = np.percentile(np.abs(recon - phantom), 95)
         print('  nrmse = {:.3f}'.format(nrmse))
+        print('  max_diff = {:.3f}'.format(max_diff))
+        print('  pct_95 = {:.3f}'.format(pct_95))
 
         self.assertTrue(max_diff < tolerances['max_diff'] and
                         nrmse < tolerances['nrmse'] and
@@ -110,15 +128,14 @@ class TestVCD(unittest.TestCase):
         notes = "Testing save/load"
         with tempfile.NamedTemporaryFile('w') as file:
             filepath = file.name
-            ct_model.save_recon_hdf5(filepath, recon, recon_params, notes, save_model=False)
-            recon_dict = mbirjax.load_data_hdf5(str(filepath))
-            loaded_recon = recon_dict['recon']
-            yaml_reader = YAML(typ="safe")
-            loaded_recon_params_dict = yaml_reader.load(recon_dict['recon_params'])
-            loaded_notes = recon_dict['notes']
+            ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+            loaded_recon, loaded_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(str(filepath),
+                                                                                                 recreate_model=True)
+            loaded_notes = loaded_recon_dict['notes']
+
             assert np.allclose(recon, loaded_recon)
-            assert set(recon_params._fields) == set(loaded_recon_params_dict.keys())
-            assert notes == loaded_notes
+            assert np.allclose(ct_model.get_params('sigma_x'), new_model.get_params('sigma_x')) # just one representative parameter
+            assert recon_dict['notes'] == loaded_notes
 
 
 if __name__ == '__main__':

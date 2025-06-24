@@ -124,6 +124,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 title = (f"Phantom (left) vs {'FDK' if geometry_type == 'cone' else 'FBP'} Recon (right). "
          f"Filter used: ramp. \nUse the sliders to change the slice or adjust the intensity range.")
 
-mj.slice_viewer(phantom, recon, title=title)
+recon_dict = ct_model_for_recon.get_recon_dict()
+mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
 """**Next:** Try changing some of the parameters and re-running or try [some of the other demos](https://mbirjax.readthedocs.io/en/latest/demos_and_faqs.html).  """

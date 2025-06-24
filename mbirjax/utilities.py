@@ -3,6 +3,7 @@ import os, sys
 # === Core scientific/plotting libraries ===
 import matplotlib.pyplot as plt
 import numpy as np
+import jax.numpy as jnp
 
 # === Project-specific imports ===
 import mbirjax as mj
@@ -16,43 +17,80 @@ from ruamel.yaml import YAML
 
 def load_data_hdf5(file_path):
     """
-    Load a volume (tensor) from an HDF5 file.
+    Load a numpy array from an HDF5 file.
 
-    This function loads a volume stored in an HDF5 file using the MBIRJAX HDF5 schema.
-    It also loads any associated attributes.
+    This function loads an array stored in an HDF5 file using :func:`save_data_hdf5`.
+    It also loads any associated attributes and returns them as a dict.
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstructed volume.
 
     Returns:
-        dict: A dictionary data_dict with the loaded array as data_dict[volume_name].
+        tuple: (array, data_dict)
+            - array (ndarray): The array saved by :func:`save_data_hdf5`
+            - data_dict (dict): A dict with the attributes for the data array.
 
     Raises:
         FileNotFoundError: If the file does not exist.
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon_dict = load_data_hdf5("output/recon.h5", array_name='recon')
-        >>> recon = recon_dict['recon']
+        >>> recon, recon_dict = mbirjax.utilities.load_data_hdf5("output/recon_volume.h5")
         >>> recon.shape
         (64, 256, 256)
     """
     with h5py.File(file_path, "r") as f:
-        array_names = [key for key in f.keys()]
+        array_names = [key for key in f.keys()] # If this h5 file was created with save_data_hdf5, then there will be only one key
         if len(array_names) > 1:
             raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
         data_name = array_names[0]
+        array = f[data_name][()]
         data_dict = dict()
-        data_dict[data_name] = f[data_name][()]
         for name in f[data_name].attrs.keys():
             data_dict[name] = f[data_name].attrs[name]
 
-        return data_dict
+        return array, data_dict
+
+
+def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+    """
+    Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
+
+    Args:
+        volume (np.ndarray): 3D array to save as a movie.
+        filename (str): Output path for the GIF file.
+        vmin (float): Min pixel value for display normalization.
+        vmax (float): Max pixel value for display normalization.
+    """
+    try:
+        import imageio.v2 as imageio
+    except ImportError:
+        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
+        return
+
+    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+    images = []
+    for i in range(volume.shape[0]):
+        fig, ax = plt.subplots()
+        canvas = FigureCanvas(fig)
+        ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.axis('off')
+        # Convert canvas to image using RGBA buffer, then drop alpha channel
+        canvas.draw()
+        buf = canvas.get_renderer().buffer_rgba()
+        image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
+        image = image[..., :3]  # Drop alpha channel
+        images.append(image)
+        plt.close(fig)
+
+    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
 
 
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
+    The resulting structure has a single dataset with one array and associated text attributes.
+    These can be retrieved using :func:`load_data_hdf5`.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Directories will be created if they do not exist.
@@ -69,6 +107,13 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         >>> volume = np.random.rand(64, 64, 64)
         >>> attrs = {'voxel_size': '1.0mm', 'modality': 'CT'}
         >>> save_data_hdf5('output/recon.h5', volume, array_name='recon', attributes_dict=attrs)
+        Nothing
+
+    Example:
+        >>> recon, recon_dict = ct_model.recon(sinogram)
+        >>> recon_info = {'ALU units': '0.3mm', 'sinogram name': 'test part 038'}
+        >>> file_path = './output/test_part_038.yaml'
+        >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
     """
     # Ensure output directory exists
     mj.makedirs(file_path)
@@ -80,10 +125,46 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         volume_data = f.create_dataset(array_name, data=arr)
 
         # Save reconstruction parameters as attributes
-        if attributes_dict is not None:
+        if isinstance(attributes_dict, dict):
+            # Convert subdicts to strings
+            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
             for key, value in attributes_dict.items():
                 volume_data.attrs[key] = value
 
+
+def display_translation_vectors(translation_vectors, recon_shape):
+    """Display the x and z components of translation vectors using a scatter plot,
+    and overlay a box representing the reconstruction volume in (column, slice) space.
+
+    Args:
+        translation_vectors (np.ndarray): Array of shape (N, 3) containing [dx, dy, dz] vectors.
+        recon_shape (tuple[int, int, int]): Shape of the reconstruction volume (rows, columns, slices).
+    """
+    dx = translation_vectors[:, 0]
+    dz = translation_vectors[:, 2]
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(dx, dz, c='blue', marker='o', label='Translations')
+
+    # Get col and slice dimensions (horizontal and vertical axes in view)
+    num_cols = recon_shape[1]
+    num_slices = recon_shape[2]
+
+    # Compute box boundaries centered around origin
+    half_width = num_cols / 2
+    half_height = num_slices / 2
+
+    box_x = [-half_width, half_width, half_width, -half_width, -half_width]
+    box_z = [-half_height, -half_height, half_height, half_height, -half_height]
+
+    plt.plot(box_x, box_z, 'r--', linewidth=2, label='Reconstruction Region')
+
+    plt.title("Translation Grid Points with Recon Outline")
+    plt.xlabel("Horizontal Translation in ALU")
+    plt.ylabel("Vertical Translation in ALU")
+    plt.axis('equal')
+    plt.legend(loc='upper right')
+    plt.show()
 
 def debug_plot_partitions(partitions, recon_shape):
     """
@@ -386,3 +467,69 @@ def query_yes_no(question, default="n"):
             return valid[choice]
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
+
+
+
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
+    """
+    Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
+
+    This function transposes the input volume to right-hand coordinates (slice, row, col),
+    optionally applies a cylindrical mask to remove peripheral and top/bottom slices (referred to as `flash`),
+    and writes the volume and optional metadata to an HDF5 file.
+
+    Args:
+        file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
+        recon (Union[np.ndarray, jax.Array]): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
+        recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
+        top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
+        bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
+
+    Example:
+        >>> from mbirjax.utilities import export_recon_hdf5
+        >>> import jax.numpy as jnp
+        >>> recon = jnp.ones((128, 128, 64))  # (row, col, slice) order
+        >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
+    """
+
+    recon = jnp.asarray(recon)
+
+    if remove_flash:
+        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+
+    recon = jnp.transpose(recon, (2, 0, 1))
+    recon = np.array(recon)
+
+    save_data_hdf5(file_path, recon, 'recon', recon_dict)
+
+
+def import_recon_hdf5(file_path):
+    """
+    Import a 3D reconstruction volume from an HDF5 file.
+
+    This function loads a reconstruction volume and associated metadata from an HDF5 file,
+    and reorders the volume axes from (slice, row, col) to (row, col, slice) to match
+    MBIRJAX conventions.
+
+    Args:
+        file_path (str): Path to the HDF5 file containing the reconstruction volume.
+
+    Returns:
+        Tuple[np.ndarray, dict]: A tuple containing:
+            - recon (np.ndarray): The reconstructed 3D volume in (row, col, slice) order.
+            - recon_dict (dict): Dictionary containing metadata associated with the reconstruction.
+
+    Example:
+        >>> from mbirjax.utilities import import_recon_hdf5
+        >>> recon, recon_dict = import_recon_hdf5("output/recon_volume.h5")
+        >>> print(recon.shape)
+        (128, 128, 64)
+    """
+    recon, recon_dict = load_data_hdf5(file_path=file_path)
+
+    recon = np.transpose(recon, axes=(1, 2, 0))
+
+    return recon, recon_dict
+

@@ -16,13 +16,17 @@ if __name__ == "__main__":
     ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
 
     phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
-    mj.slice_viewer(phantom, phantom + 0.1 * np.random.rand(*phantom.shape) - 0.05, phantom + 0.05 * np.random.randn(*phantom.shape), slice_axis=(0, 0, 0))
+    # mj.slice_viewer(phantom, phantom + 0.1 * np.random.rand(*phantom.shape) - 0.05, phantom + 0.05 * np.random.randn(*phantom.shape), slice_axis=(0, 0, 0))
 
     sinogram = ct_model_for_generation.forward_project(phantom)
+
     recon_fbp = ct_model_for_generation.direct_recon(sinogram)
-    recon, recon_params = ct_model_for_generation.recon(sinogram)
+    recon, recon_dict = ct_model_for_generation.recon(sinogram)
+
+    mj.slice_viewer(recon, sinogram, data_dicts=[recon_dict, None], slice_axis=[2, 0])
+
     ct_model_for_generation.save_recon_hdf5(filepath='./test_fbp.h5', recon=recon_fbp)
-    ct_model_for_generation.save_recon_hdf5(filepath='./test_mbir.h5', recon=recon, recon_params=recon_params)
+    ct_model_for_generation.save_recon_hdf5(filepath='./test_mbir.h5', recon=recon, recon_dict=recon_dict)
 
     # Test viewer
 

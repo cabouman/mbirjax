@@ -481,8 +481,52 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-# ####### END Multi-threshold Otsu's method
+def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
+    """
+    Applies a cylindrical mask to a 3D reconstruction volume.
 
+    This function zeros out all voxels outside a centered cylindrical region
+    in the (row, col) plane and also zeroes a specified number of slices from
+    the top and bottom along the Z-axis (slice axis).
 
+    This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
+    Args:
+        recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
+        radial_margin (int): Margin to subtract from the cylinder radius in pixels.
+        top_margin (int): Number of top slices to set to zero along the Z-axis.
+        bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
+
+    Returns:
+        jnp.ndarray: Masked 3D volume of the same shape as `recon`.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> vol = jnp.ones((128, 128, 64))
+        >>> masked_vol = apply_cylindrical_mask(vol, radial_margin=10, top_margin=4, bottom_margin=4)
+        >>> masked_vol.shape
+        (128, 128, 64)
+    """
+    num_recon_rows, num_recon_cols, num_slices = recon.shape
+    row_center = (num_recon_rows - 1) / 2
+    col_center = (num_recon_cols - 1) / 2
+
+    base_radius = max(row_center, col_center)
+    radius = base_radius - radial_margin
+
+    # Create circular mask in (row, col) plane
+    row_coords, col_coords = jnp.meshgrid(jnp.arange(num_recon_rows), jnp.arange(num_recon_cols), indexing='ij')
+    dist_sq = (row_coords - row_center) ** 2 + (col_coords - col_center) ** 2
+    circular_mask = (dist_sq <= radius ** 2).astype(recon.dtype)
+
+    # Apply cylindrical mask to all slices
+    recon = recon * circular_mask[:, :, None]
+
+    # Zero out top and bottom slices along Z
+    if top_margin > 0:
+        recon = recon.at[:, :, :top_margin].set(0)
+    if bottom_margin > 0:
+        recon = recon.at[:, :, -bottom_margin:].set(0)
+
+    return recon
 
