@@ -670,8 +670,8 @@ class TomographyModel(ParameterHandler):
 
         # Loop over pixel batches
         voxel_batch_list = []
-        for start, end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
-            print(start, end=" ")
+        import tqdm
+        for start, end in tqdm.tqdm(zip(pixel_batch_start_indices, pixel_batch_end_indices)):
             # Back project a batch
             pixel_index_batch = jax.device_put(pixel_indices[start:end], self.worker)
             voxel_batch = self.projector_functions.sparse_back_project(sinogram, pixel_index_batch,
