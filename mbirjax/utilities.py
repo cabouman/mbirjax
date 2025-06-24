@@ -52,6 +52,40 @@ def load_data_hdf5(file_path):
         return array, data_dict
 
 
+def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+    """
+    Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
+
+    Args:
+        volume (np.ndarray): 3D array to save as a movie.
+        filename (str): Output path for the GIF file.
+        vmin (float): Min pixel value for display normalization.
+        vmax (float): Max pixel value for display normalization.
+    """
+    try:
+        import imageio.v2 as imageio
+    except ImportError:
+        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
+        return
+
+    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+    images = []
+    for i in range(volume.shape[0]):
+        fig, ax = plt.subplots()
+        canvas = FigureCanvas(fig)
+        ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.axis('off')
+        # Convert canvas to image using RGBA buffer, then drop alpha channel
+        canvas.draw()
+        buf = canvas.get_renderer().buffer_rgba()
+        image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
+        image = image[..., :3]  # Drop alpha channel
+        images.append(image)
+        plt.close(fig)
+
+    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
+
+
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
@@ -97,6 +131,40 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
             for key, value in attributes_dict.items():
                 volume_data.attrs[key] = value
 
+
+def display_translation_vectors(translation_vectors, recon_shape):
+    """Display the x and z components of translation vectors using a scatter plot,
+    and overlay a box representing the reconstruction volume in (column, slice) space.
+
+    Args:
+        translation_vectors (np.ndarray): Array of shape (N, 3) containing [dx, dy, dz] vectors.
+        recon_shape (tuple[int, int, int]): Shape of the reconstruction volume (rows, columns, slices).
+    """
+    dx = translation_vectors[:, 0]
+    dz = translation_vectors[:, 2]
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(dx, dz, c='blue', marker='o', label='Translations')
+
+    # Get col and slice dimensions (horizontal and vertical axes in view)
+    num_cols = recon_shape[1]
+    num_slices = recon_shape[2]
+
+    # Compute box boundaries centered around origin
+    half_width = num_cols / 2
+    half_height = num_slices / 2
+
+    box_x = [-half_width, half_width, half_width, -half_width, -half_width]
+    box_z = [-half_height, -half_height, half_height, half_height, -half_height]
+
+    plt.plot(box_x, box_z, 'r--', linewidth=2, label='Reconstruction Region')
+
+    plt.title("Translation Grid Points with Recon Outline")
+    plt.xlabel("Horizontal Translation in ALU")
+    plt.ylabel("Vertical Translation in ALU")
+    plt.axis('equal')
+    plt.legend(loc='upper right')
+    plt.show()
 
 def debug_plot_partitions(partitions, recon_shape):
     """

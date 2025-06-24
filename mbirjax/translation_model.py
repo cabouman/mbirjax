@@ -24,7 +24,7 @@ class TranslationModel(mbirjax.TomographyModel):
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
             where 'num_views' is the number of translation steps, 'num_rows' is the number of detector rows,
             and 'num_channels' is the number of detector columns.
-        translation_vectors (jax.numpy.ndarray): A (num_views, 3) array of translations (x, y, z) in ALUs.
+        translation_vectors (jax array or numpy array): A (num_views, 3) array of translations (x, y, z) in ALUs.
             Each vector specifies how the object is translated for each view.
             Positive x shifts the object left, z shifts up, and y shifts away from the source.
         source_detector_dist (float): Distance from the X-ray source to the detector.
@@ -58,8 +58,7 @@ class TranslationModel(mbirjax.TomographyModel):
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name)
-
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.5, 1, 1,))
 
     def get_magnification(self):
         """
