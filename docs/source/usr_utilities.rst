@@ -24,7 +24,7 @@ As noted above, saving and loading models and reconstructions is handled through
 
 The functions here are for direct interactions with files.
 
-.. autofunction:: mbirjax.utilities.download_and_extract_tar
+.. autofunction:: mbirjax.utilities.download_and_extract
 .. autofunction:: mbirjax.utilities.save_data_hdf5
 .. autofunction:: mbirjax.utilities.load_data_hdf5
 .. autofunction:: mbirjax.utilities.export_recon_hdf5

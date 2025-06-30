@@ -31,7 +31,8 @@ dependencies = [
     "h5py",
     "dm-pix",
     "tqdm",
-    "easygui"
+    "easygui",
+    "gdown"
 ]
 
 [project.optional-dependencies]
