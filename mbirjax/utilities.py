@@ -494,6 +494,17 @@ def download_and_extract(download_url, save_dir):
     return file_path
 
 
+# Deprecated alias for backward compatibility
+def download_and_extract_tar(download_url, save_dir):
+    """
+    Deprecated alias for download_and_extract().
+
+    This function exists for backward compatibility and will be removed in a future release.
+    """
+    print("WARNING: 'download_and_extract_tar' is deprecated and will be removed in a future release. Please use 'download_and_extract' instead.")
+    return download_and_extract(download_url, save_dir)
+
+
 def get_top_level_tar_dir(tar_path, max_entries=1):
     """
     Determine the top-level directory inside a tarball file by sampling up to max_entries members.
