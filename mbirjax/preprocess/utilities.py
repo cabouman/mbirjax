@@ -481,7 +481,7 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
+def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
 
@@ -503,7 +503,7 @@ def apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin):
     Example:
         >>> import jax.numpy as jnp
         >>> vol = jnp.ones((128, 128, 64))
-        >>> masked_vol = apply_cylindrical_mask(vol, radial_margin=10, top_margin=4, bottom_margin=4)
+        >>> masked_vol = apply_cylindrical_mask(vol,radial_margin=10,top_margin=4,bottom_margin=4)
         >>> masked_vol.shape
         (128, 128, 64)
     """
