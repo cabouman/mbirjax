@@ -30,10 +30,11 @@ class TranslationModel(mbirjax.TomographyModel):
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
-Usage Notes:
-    - Reconstruction parameters should typically be set using `set_params`.
-    - The row voxel thickness can be adjusted with `delta_recon_row`, while the voxel column and slice spacing
-      can be controlled via the base parameter `delta_voxel`.
+
+    Usage Notes:
+        - Reconstruction parameters should typically be set using `set_params`.
+        - The row voxel thickness can be adjusted with `delta_recon_row`, while the voxel column and slice spacing
+          can be controlled via the base parameter `delta_voxel`.
 
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
