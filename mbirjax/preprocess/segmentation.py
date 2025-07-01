@@ -1,7 +1,7 @@
 import numpy as np
 from jax import numpy as jnp
 import mbirjax as mj
-from .utilities import apply_cylindrical_mask
+import mbirjax.preprocess as mjp
 
 
 def multi_threshold_otsu(image, classes=2, num_bins=1024):
@@ -213,7 +213,7 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
     # Remove any flash from the boundary of the recon
-    recon = apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
+    recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                    bottom_margin=bottom_margin)
     thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]
@@ -230,3 +230,56 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     return plastic_mask, metal_mask, plastic_scale, metal_scale
 
 
+def segment_plastic_metal_dual(recon, radial_margin=10, top_margin=10, bottom_margin=10):
+    """
+    Segment a reconstruction into plastic and metal (dual material) masks using multi-threshold Otsu.
+
+    This function uses multi-threshold Otsu segmentation to classify the input
+    reconstruction into several classes and returns binary masks for the plastic
+    and metal components. It also returns a scaling factor representing the average
+    value of the reconstruction in each segmented region. A cylindrical mask is applied
+    to the volume prior to thresholding.
+
+    Args:
+        recon (jnp.ndarray): Reconstructed volume array.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius. Defaults to 10.
+        top_margin (int, optional): Number of slices to mask out from the top of the volume. Defaults to 10.
+        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume. Defaults to 10.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray , float, float, float]: A tuple containing:
+            - plastic_mask (jnp.ndarray): Binary mask for plastic regions.
+            - metal_low_mask (jnp.ndarray): Binary mask for low-intensity metal regions.
+            - metal_high_mask (jnp.ndarray): Binary mask for high-intensity metal regions.
+            - plastic_scale (float): Scaling factor for the plastic mask.
+            - metal_low_scale (float): Scaling factor for the low-intensity metal mask.
+            - metal_high_scale (float): Scaling factor for the high-intensity metal mask.
+
+    Example:
+        >>> import mbirjax as mj
+        >>> import mbirjax.preprocess as mjp
+        >>> plastic_mask, metal_low_mask, metal_high_mask, plastic_scale, metal_low_scale, metal_high_scale = mjp.segment_plastic_metal(recon)
+        >>> mj.slice_viewer(plastic_mask, metal_low_mask, metal_high_mask, vmin=0, vmax=1.0,
+        ...                 slice_label=['Plastic', 'Low-intensity Metal', 'High-intensity Metal'],
+        ...                 title='Plastic and Metal Masks')
+    """
+    from mbirjax.preprocess.utilities import _compute_scaling_factor
+    # Determine class thresholds based on the 3-classes
+    # Remove any flash from the boundary of the recon
+    recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+    thresholds = multi_threshold_otsu(recon, classes=4)
+    plastic_low_threshold = thresholds[0]
+    plastic_metal_threshold = thresholds[1]
+    metal_low_high_threshold = thresholds[2]
+
+    # Create masks
+    plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
+    metal_low_mask = jnp.where((recon > plastic_metal_threshold) & (recon <= metal_low_high_threshold), 1.0, 0.0)
+    metal_high_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
+
+    # Scale factors that match the unitary masks to the reconstruction
+    plastic_scale = _compute_scaling_factor(recon, plastic_mask)
+    metal_low_scale = _compute_scaling_factor(recon, metal_low_mask)
+    metal_high_scale = _compute_scaling_factor(recon, metal_high_mask)
+
+    return plastic_mask, metal_low_mask, metal_high_mask, plastic_scale, metal_low_scale, metal_high_scale

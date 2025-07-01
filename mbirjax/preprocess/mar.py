@@ -151,58 +151,68 @@ def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order=(3, 4), include_const=False):
     """
-    Beam-hardening correction for objects containing a combination of plastic and metal.
-
-    The function takes the measured sinogram and initial reconstruction as input, and it returns a corrected sinogram.
-    It is designed to reduce metal artifacts for scans of objects made from a combination of plastic and metal material.
-    The metal and plastic materials are each assumed to be composed of a single material.
-    However, it should work fine for a combination of different plastics as long as their optical density properites do not vary too much.
-
-    Note:
-        The corrected sinogram should result in a more accurate reconstruction of the plastic, but may not accurately reconstruct the metal portion.
+    Beam-hardening correction for plastic and metal components in CT data.
+    Supports 2-material model (plastic + metal) or 3-material model (plastic + metal1 + metal2).
 
     Args:
-        ct_model:
-            Object with `forward_project` method and `main_device` attribute.
-        measured_sino (jnp.ndarray):
-            Raw sinogram data of shape (views, rows, cols).
-        recon (jnp.ndarray):
-            Reconstructed volume array corresponding to `measured_sino`.
-        epsilon (float, optional):
-            Tolerance for regularization.
+        ct_model: Object with `forward_project` method and `main_device` attribute.
+        measured_sino (jnp.ndarray): Raw sinogram, shape (views, rows, cols).
+        recon (jnp.ndarray): Reconstructed volume.
+        epsilon (float): Regularization strength.
+        order (tuple): Polynomial orders.
+            - If 2-tuple: (cross_order, metal_order)
+            - If 4-tuple: (cross_order, metal1_order, metal2_cross_order, metal2_order)
+        include_const (bool): Whether to include a constant term.
 
     Returns:
-        corrected_sino (jnp.ndarray):
-            Beam-hardening corrected sinogram, same shape as `measured_sino`.
-
-    Example:
-        >>> corrected = correct_BH_plastic_metal(ct_model, measured_sino, recon)
+        corrected_sino (jnp.ndarray): Corrected sinogram.
     """
-    # Segment recon into plastic and metal regions
-    plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
-
-    # Forward project idealized plastic and metal components
     device = ct_model.main_device
-    ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
-    ideal_metal_sino = metal_scale * ct_model.forward_project(jax.device_put(metal_mask, device)).reshape(-1)
     y = measured_sino.reshape(-1)
 
-    # Compute normalized plastic and metal sinograms with max amplitude = 1
-    p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
-    m_normalization = jnp.max(jnp.abs(ideal_metal_sino))
-    p = ideal_plastic_sino / p_normalization
-    m = ideal_metal_sino / m_normalization
+    if len(order) == 2:
+        # === Two-material model ===
+        cross_order, metal_order = order
+        plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
 
-    # Set order of models
-    cross_order, metal_order = order
+        ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+        ideal_metal_sino = metal_scale * ct_model.forward_project(jax.device_put(metal_mask, device)).reshape(-1)
 
-    # Build H matrix
-    H = [p * m ** i for i in range(cross_order)]  # p, p*m, ..., p*m^(cross_order-1)
-    H += [m ** i for i in range(1, metal_order)]  # m, m^2, ..., m^(metal_order-1)
+        p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
+        m_normalization = jnp.max(jnp.abs(ideal_metal_sino))
+        p = ideal_plastic_sino / p_normalization
+        m = ideal_metal_sino / m_normalization
 
-    # Include constant if desired
+        H = [p * m ** i for i in range(cross_order)]
+        H += [m ** i for i in range(1, metal_order)]
+
+    elif len(order) == 4:
+        # === Three-material model ===
+        metal1_cross_order, metal2_cross_order, metal1_order, metal2_order = order
+        plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = \
+            segment_plastic_metal_dual(recon)  # You must define this version.
+
+        ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+        ideal_metal1_sino = metal1_scale * ct_model.forward_project(jax.device_put(metal1_mask, device)).reshape(-1)
+        ideal_metal2_sino = metal2_scale * ct_model.forward_project(jax.device_put(metal2_mask, device)).reshape(-1)
+
+        p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
+        m1_norm = jnp.max(jnp.abs(ideal_metal1_sino))
+        m2_norm = jnp.max(jnp.abs(ideal_metal2_sino))
+        p = ideal_plastic_sino / p_normalization
+        m1 = ideal_metal1_sino / m1_norm
+        m2 = ideal_metal2_sino / m2_norm
+
+        H = [p * m1 ** i for i in range(metal1_cross_order)]
+        H += [p * m2 ** i for i in range(metal2_cross_order)]
+        H += [m1 ** i for i in range(1, metal1_order)]
+        H += [m2 ** i for i in range(1, metal2_order)]
+
+    else:
+        raise ValueError("order must be a tuple of length 2 or 4.")
+
     if include_const:
-        H.append(jnp.ones_like(p))  # constant term at the end
+        H.append(jnp.ones_like(p))
 
     # Compute H^t H and H^t y
     order_total = len(H)
@@ -220,15 +230,26 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     theta = jnp.linalg.solve(HtH_reg, Hty)
 
     # Separate metal terms
-    metal_start_idx = cross_order
-    metal_sino = jnp.zeros_like(y)
-    for idx in range(metal_start_idx, order_total):
-        metal_sino += theta[idx] * H[idx]
+    if len(order) == 2:
+        metal_start_idx = cross_order
+        metal_sino = jnp.zeros_like(y)
+        for idx in range(metal_start_idx, order_total):
+            metal_sino += theta[idx] * H[idx]
 
-    # Build linear plastic scaling denominator
-    linear_plastic_coef = jnp.zeros_like(p)
-    for idx in range(cross_order):
-        linear_plastic_coef += theta[idx] * (m ** idx)
+        # Build linear plastic scaling denominator
+        linear_plastic_coef = jnp.zeros_like(p)
+        for idx in range(cross_order):
+            linear_plastic_coef += theta[idx] * (m ** idx)
+
+    elif len(order) == 4:
+        metal_start_idx = metal1_cross_order + metal2_cross_order
+        metal_sino = jnp.zeros_like(y)
+        for idx in range(metal_start_idx, order_total):
+            metal_sino += theta[idx] * H[idx]
+        linear_plastic_coef = (
+            sum(theta[i] * (m1 ** i) for i in range(metal1_cross_order)) +
+            sum(theta[i + metal1_cross_order] * (m2 ** i) for i in range(metal2_cross_order))
+        )
 
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
     linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
@@ -242,9 +263,13 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     corrected_plastic_sino = p_normalization * numerator / linear_plastic_coef
 
     # Combine corrected plastic and metal sinogram and reshape
-    corrected_sino_flat = corrected_plastic_sino + ideal_metal_sino
-    corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
+    if len(order) == 2:
+        corrected_sino_flat = corrected_plastic_sino + ideal_metal_sino
+    else:
+        corrected_sino_flat = corrected_plastic_sino + ideal_metal1_sino + ideal_metal2_sino
 
+    corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
+    # mbirjax.slice_viewer(corrected_sino, slice_axis=0)
     return corrected_sino
 
 
