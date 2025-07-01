@@ -275,7 +275,7 @@ def segment_plastic_metal_dual(recon, radial_margin=10, top_margin=10, bottom_ma
     # Create masks
     plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
     metal_low_mask = jnp.where((recon > plastic_metal_threshold) & (recon <= metal_low_high_threshold), 1.0, 0.0)
-    metal_high_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
+    metal_high_mask = jnp.where(recon > metal_low_high_threshold, 1.0, 0.0)
 
     # Scale factors that match the unitary masks to the reconstruction
     plastic_scale = _compute_scaling_factor(recon, plastic_mask)
