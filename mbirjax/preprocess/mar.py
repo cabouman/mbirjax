@@ -189,8 +189,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     elif len(order) == 4:
         # === Three-material model ===
         metal1_cross_order, metal2_cross_order, metal1_order, metal2_order = order
-        plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = \
-            segment_plastic_metal_dual(recon)  # You must define this version.
+        plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = mjp.segment_plastic_metal_dual(recon)
 
         ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
         ideal_metal1_sino = metal1_scale * ct_model.forward_project(jax.device_put(metal1_mask, device)).reshape(-1)
@@ -254,10 +253,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
     linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
 
-    # Numerator: subtract metal + constant if included
+    # Numerator: subtract metal
     numerator = y - metal_sino
-    if include_const:
-        numerator -= theta[-1]
 
     # Compute BH corrected version of plastic sinogram with metal removed
     corrected_plastic_sino = p_normalization * numerator / linear_plastic_coef
