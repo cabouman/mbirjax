@@ -337,44 +337,33 @@ def makedirs(filepath):
             raise Exception(f"Could not create save directory '{save_dir}': {e}")
 
 
-def download_and_extract(download_url, save_dir, force_download=False):
+def download_and_extract(download_url, save_dir):
     """
-    Download or copy a file from a URL or local file path. If it's a .tar file, extract it to the specified directory.
-    Supports Google Drive links, regular HTTP/HTTPS URLs, and local file paths.
-    If the file already exists in the save directory, the user will be prompted to decide whether to overwrite it.
+    Download or copy a file from a URL or local file path. If the file is a tarball (.tar, .tar.gz, etc.), extract it
+    into the specified directory. Supports Google Drive links, standard HTTP/HTTPS URLs, and local paths.
 
-    Parameters
-    ----------
-    download_url : str
-        URL or local file path to the file. Supports:
-        - Google Drive shared links
-        - HTTP/HTTPS URLs
-        - Local file paths
-        If a URL, it must be public and accessible.
-    save_dir : str
-        Path to the directory where the file will be saved/copied and extracted (if tar).
-    force_download : bool
-        If True, always re-download/re-copy the file. Default is False.
+    If the file already exists in the save directory, it will not be re-downloaded or copied.
 
-    Returns
-    -------
-    result_path : str
-        - For tar files: The path to the extracted top-level directory
-        - For other files: The path to the downloaded/copied file
+    Args:
+        download_url (str): URL or local file path to the file. Supported formats include:
+            - Google Drive shared links
+            - HTTP/HTTPS URLs
+            - Local file paths
+        save_dir (str): Directory where the file will be saved and extracted (if applicable).
 
-    Example
-    -------
-    >>> # Tar file extraction
-    >>> extracted_dir = download_and_extract("https://example.com/data.tar.gz", "./data")
-    >>> print(f"Extracted data is in: {extracted_dir}")
+    Returns:
+        str:
+            - For tar files: Path to the extracted top-level directory.
+            - For other files: Path to the downloaded or copied file.
 
-    >>> # Google Drive file download
-    >>> file_path = download_and_extract("https://drive.google.com/file/d/1ABC123/view", "./data")
-    >>> print(f"Downloaded file is at: {file_path}")
+    Raises:
+        RuntimeError: If the file cannot be downloaded, copied, or extracted.
+        ValueError: If the Google Drive URL is invalid or tar file has no top-level directory.
 
-    >>> # Local file copy
-    >>> result = download_and_extract("/path/to/local/data.tar.gz", "./data")
-    >>> print(f"Result is in: {result}")
+    Examples:
+        >>> extracted_dir = download_and_extract("https://example.com/data.tar.gz", "./data")
+        >>> file_path = download_and_extract("https://drive.google.com/file/d/1ABC123/view", "./data")
+        >>> result = download_and_extract("/path/to/local/data.tar.gz", "./data")
     """
 
     def is_google_drive_url(url):
@@ -395,7 +384,6 @@ def download_and_extract(download_url, save_dir, force_download=False):
         else:
             raise ValueError("Invalid Google Drive URL format")
 
-    is_download = True
     parsed = urlparse(download_url)
     is_url = parsed.scheme in ('http', 'https')
     is_google_drive = is_url and is_google_drive_url(download_url)
@@ -404,21 +392,22 @@ def download_and_extract(download_url, save_dir, force_download=False):
         file_id = extract_google_drive_id(download_url)
         marker_file = os.path.join(save_dir, f".gdrive_{file_id}")
 
-        if os.path.exists(marker_file) and not force_download:
+        if os.path.exists(marker_file):
             with open(marker_file, 'r') as f:
                 actual_filename = f.read().strip()
             file_path = os.path.join(save_dir, actual_filename)
             filename = actual_filename
             is_download = False
-
         else:
             filename = f"gdrive_{file_id}"
-
+            is_download = True
     else:
         filename = os.path.basename(parsed.path if is_url else download_url)
         file_path = os.path.join(save_dir, filename)
-        if os.path.exists(file_path) and not force_download:
+        if os.path.exists(file_path):
             is_download = False
+        else:
+            is_download = True
 
     if is_download:
         os.makedirs(save_dir, exist_ok=True)
