@@ -416,32 +416,34 @@ def read_scan_dir(scan_dir, view_ids=None):
 # ####### END subroutines for loading scan images
 
 
-@jax.jit
-def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+def compute_scaling_factor(target_vect: jnp.ndarray, vect_to_scale: jnp.ndarray) -> float:
     """
-    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
+    Approximate the optimal scalar α that minimizes the squared error ‖target_vect – α vect_to_scale‖².
+    This is computed as <target_vect, vect_to_scale> / (<vect_to_scale, vect_to_scale> + epsilon) to
+    avoid division by 0, hence is only approximate for vect_to_scale near 0.
 
     Args:
-        v (jnp.ndarray):
-            Target reconstruction array of shape (N,) or higher-dimensional.
-        u (jnp.ndarray):
-            Mask array of same shape as `v`, indicating component presence.
+        target_vect (jnp.ndarray):
+            Target reconstruction vector or array of shape (N,) or higher-dimensional.
+        vect_to_scale (jnp.ndarray):
+            Vector or array of same shape as `target_vect`.
 
     Returns:
-        jnp.ndarray:
-            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
+        float:
+            Scalar α minimizing ‖target_vect – α vect_to_scale‖².
 
     Example:
         >>> v = jnp.array([1.0, 2.0, 3.0])
         >>> u = jnp.array([0.5, 1.0, 1.5])
-        >>> alpha = _compute_scaling_factor(v, u)
+        >>> alpha = compute_scaling_factor(v,u)
     """
-    v = jnp.asarray(v)
-    u = jnp.asarray(u)
+    target_vect = jnp.asarray(target_vect)
+    vect_to_scale = jnp.asarray(vect_to_scale)
 
-    numerator = jnp.sum(u * v)
-    denominator = jnp.sum(u * u)
-    return jnp.where(denominator == 0, 0.0, numerator / denominator)
+    numerator = jnp.sum(vect_to_scale * target_vect)
+    denominator = jnp.sum(vect_to_scale * vect_to_scale)
+    epsilon = 1e-8
+    return float(numerator / (denominator + epsilon))
 
 
 # Normally, this function would be too simple to jit.  However, by using jit, we may be able to
