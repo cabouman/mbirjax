@@ -15,6 +15,7 @@ import shutil
 import h5py
 import re
 import gdown
+import warnings
 from ruamel.yaml import YAML
 
 
@@ -338,40 +339,31 @@ def makedirs(filepath):
 
 def download_and_extract(download_url, save_dir):
     """
-    Download or copy a file from a URL or local file path. If it's a .tar file, extract it to the specified directory.
-    Supports Google Drive links, regular HTTP/HTTPS URLs, and local file paths.
-    If the file already exists in the save directory, the user will be prompted to decide whether to overwrite it.
+    Download or copy a file from a URL or local file path. If the file is a tarball (.tar, .tar.gz, etc.), extract it
+    into the specified directory. Supports Google Drive links, standard HTTP/HTTPS URLs, and local paths.
 
-    Parameters
-    ----------
-    download_url : str
-        URL or local file path to the file. Supports:
-        - Google Drive shared links
-        - HTTP/HTTPS URLs
-        - Local file paths
-        If a URL, it must be public and accessible.
-    save_dir : str
-        Path to the directory where the file will be saved/copied and extracted (if tar).
+    If the file already exists in the save directory, it will not be re-downloaded or copied.
 
-    Returns
-    -------
-    result_path : str
-        - For tar files: The path to the extracted top-level directory
-        - For other files: The path to the downloaded/copied file
+    Args:
+        download_url (str): URL or local file path to the file. Supported formats include:
+            - Google Drive shared links
+            - HTTP/HTTPS URLs
+            - Local file paths
+        save_dir (str): Directory where the file will be saved and extracted (if applicable).
 
-    Example
-    -------
-    >>> # Tar file extraction
-    >>> extracted_dir = download_and_extract("https://example.com/data.tar.gz", "./data")
-    >>> print(f"Extracted data is in: {extracted_dir}")
+    Returns:
+        str:
+            - For tar files: Path to the extracted top-level directory.
+            - For other files: Path to the downloaded or copied file.
 
-    >>> # Google Drive file download
-    >>> file_path = download_and_extract("https://drive.google.com/file/d/1ABC123/view", "./data")
-    >>> print(f"Downloaded file is at: {file_path}")
+    Raises:
+        RuntimeError: If the file cannot be downloaded, copied, or extracted.
+        ValueError: If the Google Drive URL is invalid or tar file has no top-level directory.
 
-    >>> # Local file copy
-    >>> result = download_and_extract("/path/to/local/data.tar.gz", "./data")
-    >>> print(f"Result is in: {result}")
+    Examples:
+        >>> extracted_dir = download_and_extract("https://example.com/data.tar.gz", "./data")
+        >>> file_path = download_and_extract("https://drive.google.com/file/d/1ABC123/view", "./data")
+        >>> result = download_and_extract("/path/to/local/data.tar.gz", "./data")
     """
 
     def is_google_drive_url(url):
@@ -392,7 +384,6 @@ def download_and_extract(download_url, save_dir):
         else:
             raise ValueError("Invalid Google Drive URL format")
 
-    is_download = True
     parsed = urlparse(download_url)
     is_url = parsed.scheme in ('http', 'https')
     is_google_drive = is_url and is_google_drive_url(download_url)
@@ -402,18 +393,21 @@ def download_and_extract(download_url, save_dir):
         marker_file = os.path.join(save_dir, f".gdrive_{file_id}")
 
         if os.path.exists(marker_file):
-            is_download = query_yes_no(
-                f"\nGoogle Drive file (ID: {file_id}) has been downloaded before.\nDo you want to download it again?")
-
-        filename = f"gdrive_{file_id}"
+            with open(marker_file, 'r') as f:
+                actual_filename = f.read().strip()
+            file_path = os.path.join(save_dir, actual_filename)
+            filename = actual_filename
+            is_download = False
+        else:
+            filename = f"gdrive_{file_id}"
+            is_download = True
     else:
         filename = os.path.basename(parsed.path if is_url else download_url)
-
-    if not is_google_drive:
         file_path = os.path.join(save_dir, filename)
         if os.path.exists(file_path):
-            is_download = query_yes_no(
-                f"\nFile named {file_path} already exists.\nDo you still want to download/copy and overwrite the file?")
+            is_download = False
+        else:
+            is_download = True
 
     if is_download:
         os.makedirs(save_dir, exist_ok=True)
@@ -501,7 +495,7 @@ def download_and_extract_tar(download_url, save_dir):
 
     This function exists for backward compatibility and will be removed in a future release.
     """
-    print("WARNING: 'download_and_extract_tar' is deprecated and will be removed in a future release. Please use 'download_and_extract' instead.")
+    warnings.warn("'download_and_extract_tar' is deprecated and will be removed in a future release. Please use 'download_and_extract' instead.")
     return download_and_extract(download_url, save_dir)
 
 
@@ -537,35 +531,6 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
     else:
         raise ValueError("No top level directory found in {}".format(tar_path))
     return dir_name
-
-
-def query_yes_no(question, default="n"):
-    """
-    Ask a yes/no question via input() and return the answer.
-
-    Parameters
-    ----------
-    question : str
-        The question presented to the user.
-    default : str
-        The default answer if the user just presses Enter ("y" or "n").
-
-    Returns
-    -------
-    bool
-        True for "yes" or Enter, False for "no".
-    """
-    valid = {"yes": True, "y": True, "ye": True, "no": False, "n": False}
-    prompt = f" [y/n, default={default}] "
-    while True:
-        sys.stdout.write(question + prompt)
-        choice = input().lower()
-        if choice == "":
-            return valid[default]
-        elif choice in valid:
-            return valid[choice]
-        else:
-            sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
 
 
 

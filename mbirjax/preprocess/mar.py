@@ -119,36 +119,6 @@ def BH_correction(sino, alpha, batch_size=64):
     return corrected_sino
 
 
-
-@jax.jit
-def _compute_scaling_factor(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-    """
-    Compute the optimal scalar α that minimizes the squared error ‖v – α u‖².
-
-    Args:
-        v (jnp.ndarray):
-            Target reconstruction array of shape (N,) or higher-dimensional.
-        u (jnp.ndarray):
-            Mask array of same shape as `v`, indicating component presence.
-
-    Returns:
-        jnp.ndarray:
-            Scalar α minimizing ‖v – α u‖². Returns 0 if `u` is all zeros.
-
-    Example:
-        >>> v = jnp.array([1.0, 2.0, 3.0])
-        >>> u = jnp.array([0.5, 1.0, 1.5])
-        >>> alpha = _compute_scaling_factor(v, u)
-    """
-    v = jnp.asarray(v)
-    u = jnp.asarray(u)
-
-    numerator = jnp.sum(u * v)
-    denominator = jnp.sum(u * u)
-    return jnp.where(denominator == 0, 0.0, numerator / denominator)
-
-
-
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order=(3, 4), include_const=False):
     """
     Beam-hardening correction for objects containing a combination of plastic and metal.
