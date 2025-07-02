@@ -186,9 +186,9 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
         H = [p * m ** i for i in range(cross_order)]
         H += [m ** i for i in range(1, metal_order)]
 
-    elif len(order) == 4:
+    elif len(order) == 5:
         # === Three-material model ===
-        metal1_cross_order, metal2_cross_order, metal1_order, metal2_order = order
+        metal1_cross_order, metal2_cross_order, metal_both_cross_order, metal1_order, metal2_order = order
         plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = mjp.segment_plastic_metal_dual(recon)
 
         ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
@@ -204,6 +204,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
 
         H = [p * m1 ** i for i in range(metal1_cross_order)]
         H += [p * m2 ** i for i in range(1, metal2_cross_order)]
+        H += [p * m1 ** i * m2 ** i for i in range(1, metal_both_cross_order)]
         H += [m1 ** i for i in range(1, metal1_order)]
         H += [m2 ** i for i in range(1, metal2_order)]
 
@@ -240,14 +241,15 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
         for idx in range(cross_order):
             linear_plastic_coef += theta[idx] * (m ** idx)
 
-    elif len(order) == 4:
-        metal_start_idx = metal1_cross_order + metal2_cross_order
+    elif len(order) == 5:
+        metal_start_idx = metal1_cross_order + metal2_cross_order + metal_both_cross_order - 2
         metal_sino = jnp.zeros_like(y)
         for idx in range(metal_start_idx, order_total):
             metal_sino += theta[idx] * H[idx]
         linear_plastic_coef = (
             sum(theta[i] * (m1 ** i) for i in range(metal1_cross_order)) +
-            sum(theta[i + metal1_cross_order] * (m2 ** i) for i in range(metal2_cross_order))
+            sum(theta[i + metal1_cross_order - 1] * (m2 ** i) for i in range(1, metal2_cross_order)) +
+            sum(theta[i + metal1_cross_order + metal2_cross_order - 2] * (m1 ** i) * (m2 ** i) for i in range(1, metal_both_cross_order))
         )
 
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
