@@ -203,7 +203,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
         m2 = ideal_metal2_sino / m2_norm
 
         H = [p * m1 ** i for i in range(metal1_cross_order)]
-        H += [p * m2 ** i for i in range(metal2_cross_order)]
+        H += [p * m2 ** i for i in range(1, metal2_cross_order)]
         H += [m1 ** i for i in range(1, metal1_order)]
         H += [m2 ** i for i in range(1, metal2_order)]
 
