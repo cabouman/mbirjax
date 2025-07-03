@@ -46,6 +46,16 @@ MAR utilities
 .. autofunction:: BH_correction
 .. autofunction:: recon_BH_plastic_metal
 
+
+Stripe/Ring Removal
+-------------------
+
+.. currentmodule:: mbirjax.preprocess
+
+.. autofunction:: remove_all_stripe
+.. autofunction:: remove_stripe_fw
+
+
 Segmentation functions
 ----------------------
 
