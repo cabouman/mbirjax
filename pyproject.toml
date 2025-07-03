@@ -32,7 +32,8 @@ dependencies = [
     "dm-pix",
     "tqdm",
     "easygui",
-    "gdown"
+    "gdown",
+    "pywavelets"
 ]
 
 [project.optional-dependencies]
