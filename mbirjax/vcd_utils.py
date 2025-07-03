@@ -649,7 +649,7 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(option, recon_shape):
+def gen_translation_phantom(option, recon_shape, fill_rate=0.05, font_size=20):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
@@ -661,7 +661,7 @@ def gen_translation_phantom(option, recon_shape):
         np.ndarray: Generated phantom volume.
     """
     if option == 'dots':
-        return gen_dot_phantom(recon_shape)
+        return gen_dot_phantom(recon_shape, fill_rate=fill_rate)
     elif option == 'text':
         num_rows = recon_shape[0]
         words = ["Purdue", "Presents", "Translation", "Tomography"]
@@ -671,12 +671,12 @@ def gen_translation_phantom(option, recon_shape):
             (num_rows // 5 * 3, recon_shape[1] // 2, recon_shape[2] // 2),
             (num_rows // 5 * 4, recon_shape[1] // 2, recon_shape[2] // 2),
         ]
-        return gen_text_phantom(recon_shape, words, positions)
+        return gen_text_phantom(recon_shape, words, positions, font_size=font_size)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
 
-def gen_dot_phantom(recon_shape):
+def gen_dot_phantom(recon_shape, fill_rate=0.05):
     """
     Generate a synthetic ground truth reconstruction volume.
 
@@ -688,7 +688,6 @@ def gen_dot_phantom(recon_shape):
     """
     np.random.seed(42)
     gt_recon = np.zeros(recon_shape, dtype=np.float32)
-    fill_rate = 0.05
 
     y_pad = recon_shape[0] // 6
     central_start = y_pad
@@ -706,7 +705,7 @@ def gen_dot_phantom(recon_shape):
     return gt_recon
 
 
-def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
+def gen_text_phantom(recon_shape, words, positions, font_size=20, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -726,7 +725,7 @@ def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
 
     phantom = np.zeros(recon_shape, dtype=np.float32)
     try:
-        font = ImageFont.truetype(font_path, size=20)
+        font = ImageFont.truetype(font_path, size=font_size)
     except OSError:
         from pathlib import Path
         fallback_paths = [
@@ -736,7 +735,7 @@ def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
         ]
         for fallback in fallback_paths:
             if Path(fallback).exists():
-                font = ImageFont.truetype(fallback, size=20)
+                font = ImageFont.truetype(fallback, size=font_size)
                 break
         else:
             raise FileNotFoundError(
