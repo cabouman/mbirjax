@@ -564,6 +564,8 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
     recon = jnp.transpose(recon, (2, 0, 1))
+    # Flip the slice axis to convert to right-handed coordinate system
+    recon = recon[::-1, :, :]
     recon = np.array(recon)
 
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
@@ -593,6 +595,7 @@ def import_recon_hdf5(file_path):
     """
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
+    recon = recon[::-1, :, :]
     recon = np.transpose(recon, axes=(1, 2, 0))
 
     return recon, recon_dict
