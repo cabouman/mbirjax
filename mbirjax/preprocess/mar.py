@@ -192,8 +192,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
         plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = mjp.segment_plastic_metal_dual(recon)
 
         ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
-        ideal_metal1_sino = metal1_scale * ct_model.forward_project(jax.device_put(metal1_mask, device)).reshape(-1)
-        ideal_metal2_sino = metal2_scale * ct_model.forward_project(jax.device_put(metal2_mask, device)).reshape(-1)
+        ideal_metal1_sino = ct_model.forward_project(jax.device_put(metal1_mask*recon, device)).reshape(-1)
+        ideal_metal2_sino = ct_model.forward_project(jax.device_put(metal2_mask*recon, device)).reshape(-1)
 
         p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
         m1_norm = jnp.max(jnp.abs(ideal_metal1_sino))
@@ -308,9 +308,11 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
         corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, order=order, include_const=include_const)
-
+        # jnp.save(f'/home/li5273/Desktop/data/output/0703/improve_new/corrected_sinogram_{i}', corrected_sinogram)
         # Reconstruct Corrected Sinogram
         recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_pct)
+
+        # jnp.save(f'/home/li5273/Desktop/data/output/0703/improve_new/recon_{i}', recon)
 
         if verbose > 0:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
