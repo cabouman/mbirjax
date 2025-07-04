@@ -16,6 +16,7 @@ experiments/output/*
 *.pdf
 *.pptx
 *.h5
+*.hdf5
 *.gif
 *.mp4
 
