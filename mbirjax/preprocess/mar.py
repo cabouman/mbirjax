@@ -244,8 +244,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     elif len(order) == 5:
         metal_start_idx = metal1_cross_order + metal2_cross_order + metal_both_cross_order - 2
         metal_sino = jnp.zeros_like(y)
-        for idx in range(metal_start_idx, order_total):
-            metal_sino += theta[idx] * H[idx]
+        for order, idx in enumerate(range(metal_start_idx, metal_start_idx + metal1_order)):
+            metal_sino += theta[idx] * m1 ** (order + 1)
+        for order, idx in enumerate(range(metal_start_idx + metal1_order, order_total)):
+            metal_sino += theta[idx] * m2 ** (order + 1)
+
         linear_plastic_coef = (
             sum(theta[i] * (m1 ** i) for i in range(metal1_cross_order)) +
             sum(theta[i + metal1_cross_order - 1] * (m2 ** i) for i in range(1, metal2_cross_order)) +
