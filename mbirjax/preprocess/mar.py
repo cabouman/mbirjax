@@ -192,8 +192,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
         plastic_mask, metal1_mask, metal2_mask, plastic_scale, metal1_scale, metal2_scale = mjp.segment_plastic_metal_dual(recon)
 
         ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+        del plastic_mask
         ideal_metal1_sino = ct_model.forward_project(jax.device_put(metal1_mask*recon, device)).reshape(-1)
+        del metal1_mask
         ideal_metal2_sino = ct_model.forward_project(jax.device_put(metal2_mask*recon, device)).reshape(-1)
+        del metal2_mask
 
         p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
         m1_norm = jnp.max(jnp.abs(ideal_metal1_sino))
@@ -244,10 +247,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order
     elif len(order) == 5:
         metal_start_idx = metal1_cross_order + metal2_cross_order + metal_both_cross_order - 2
         metal_sino = jnp.zeros_like(y)
-        for order, idx in enumerate(range(metal_start_idx, metal_start_idx + metal1_order)):
-            metal_sino += theta[idx] * m1 ** (order + 1)
-        for order, idx in enumerate(range(metal_start_idx + metal1_order, order_total)):
-            metal_sino += theta[idx] * m2 ** (order + 1)
+        del H, ideal_plastic_sino
+        for order_of_metal, idx in enumerate(range(metal_start_idx, metal_start_idx + metal1_order)):
+            metal_sino += theta[idx] * m1 ** (order_of_metal + 1)
+        for order_of_metal, idx in enumerate(range(metal_start_idx + metal1_order, order_total)):
+            metal_sino += theta[idx] * m2 ** (order_of_metal + 1)
 
         linear_plastic_coef = (
             sum(theta[i] * (m1 ** i) for i in range(metal1_cross_order)) +
