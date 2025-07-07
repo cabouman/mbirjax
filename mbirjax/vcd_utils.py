@@ -649,7 +649,7 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(option, recon_shape, words, fill_rate=0.05, font_size=20):
+def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_size=20):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
