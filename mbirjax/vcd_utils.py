@@ -649,46 +649,41 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(option, recon_shape):
+def gen_translation_phantom(option, recon_shape, words, fill_rate=0.05, font_size=20):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
     Args:
         option (str): Phantom type to generate. Options are 'dots' or 'text'.
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
+        words (list[str]): List of ASCII words to render.
+        fill_rate (float, optional): Fill rate of the reconstruction volume. Default is 0.05.
+        font_size (int, optional): Font size of the ASCII words. Default is 20.
 
     Returns:
         np.ndarray: Generated phantom volume.
     """
     if option == 'dots':
-        return gen_dot_phantom(recon_shape)
+        return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        num_rows = recon_shape[0]
-        words = ["Purdue", "Presents", "Translation", "Tomography"]
-        positions = [
-            (num_rows // 5 * 1, recon_shape[1] // 2, recon_shape[2] // 2),
-            (num_rows // 5 * 2, recon_shape[1] // 2, recon_shape[2] // 2),
-            (num_rows // 5 * 3, recon_shape[1] // 2, recon_shape[2] // 2),
-            (num_rows // 5 * 4, recon_shape[1] // 2, recon_shape[2] // 2),
-        ]
-        return gen_text_phantom(recon_shape, words, positions)
+        return gen_text_phantom(recon_shape, words, font_size)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
 
-def gen_dot_phantom(recon_shape):
+def gen_dot_phantom(recon_shape, fill_rate):
     """
     Generate a synthetic ground truth reconstruction volume.
 
     Args:
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
+        fill_rate (float): Fill rate of the reconstruction volume.
 
     Returns:
         np.ndarray: Ground truth reconstruction volume with sparse binary features.
     """
     np.random.seed(42)
     gt_recon = np.zeros(recon_shape, dtype=np.float32)
-    fill_rate = 0.05
 
     y_pad = recon_shape[0] // 6
     central_start = y_pad
@@ -706,27 +701,28 @@ def gen_dot_phantom(recon_shape):
     return gt_recon
 
 
-def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
+def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
     Args:
         recon_shape (tuple[int, int, int]): Shape of the phantom volume (num_rows, num_cols, num_slices).
         words (list[str]): List of ASCII words to render.
-        positions (list[tuple[int, int, int]]): List of (row, col, slice) positions corresponding to each word.
-        array_size (int, optional): Size of the 2D square image used to render each word. Default is 256.
+        font_size (int): Font size of ASCII words.
         font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
 
     Returns:
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
-    assert len(words) == len(positions), "Number of words must match number of positions."
+    positions = []
+    for i in range(1, len(words) + 1):
+        positions.append((recon_shape[0] // (len(words) + 1) * i, recon_shape[1] // 2, recon_shape[2] // 2))
 
     array_size = np.minimum(recon_shape[1], recon_shape[2])
 
     phantom = np.zeros(recon_shape, dtype=np.float32)
     try:
-        font = ImageFont.truetype(font_path, size=20)
+        font = ImageFont.truetype(font_path, size=font_size)
     except OSError:
         from pathlib import Path
         fallback_paths = [
@@ -736,7 +732,7 @@ def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
         ]
         for fallback in fallback_paths:
             if Path(fallback).exists():
-                font = ImageFont.truetype(fallback, size=20)
+                font = ImageFont.truetype(fallback, size=font_size)
                 break
         else:
             raise FileNotFoundError(
@@ -753,8 +749,8 @@ def gen_text_phantom(recon_shape, words, positions, font_path="DejaVuSans.ttf"):
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
 
-        x = (array_size - text_width) // 2
-        y = (array_size - text_height) // 2
+        x = (array_size - text_width) // 2 - text_box[0]
+        y = (array_size - text_height) // 2 - text_box[1]
         draw.text((x, y), word, fill=1, font=font)
 
         word_array = np.array(img.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT))
