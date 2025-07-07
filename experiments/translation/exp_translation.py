@@ -19,6 +19,7 @@ def main():
     # Set recon parameters
     sharpness = 1.0
     phantom_type = "text"   # Can be "dots" or "text"
+    words = ["Purdue", "Presents", "Translation", "Tomography"] # List of words to render in the text phantom
 
     # Generate translation vectors
     translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
@@ -37,7 +38,7 @@ def main():
     mj.display_translation_vectors(translation_vectors, recon_shape)
 
     # Generate ground truth phantom
-    gt_recon = mj.gen_translation_phantom(option=phantom_type, recon_shape=recon_shape)
+    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
