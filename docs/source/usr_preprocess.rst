@@ -47,13 +47,14 @@ MAR utilities
 .. autofunction:: recon_BH_plastic_metal
 
 
-Stripe/Ring Removal
--------------------
+Stripe/Ring/Offset Removal
+-------------------------
 
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: remove_all_stripe
 .. autofunction:: remove_stripe_fw
+.. autofunction:: remove_sino_offset
 
 
 Segmentation functions
