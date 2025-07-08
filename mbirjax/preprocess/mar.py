@@ -157,10 +157,6 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         metals.append(sino / norm)
     del metal_masks
 
-    # --- Build H^T H and H^T y incrementally ---
-    Hty = []
-    HtH = []
-
     H_cols = []
 
     # Term 0: p
@@ -185,6 +181,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         H_cols.append(jnp.ones_like(p))
 
     order_total = len(H_cols)
+    HtH = jnp.zeros((order_total, order_total))
+    Hty = jnp.zeros(order_total)
     # Compute H^T y and H^T H
     for i in range(order_total):
         Hty = Hty.at[i].set(jnp.dot(H_cols[i], y))
