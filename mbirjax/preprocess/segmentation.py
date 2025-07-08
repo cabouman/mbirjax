@@ -1,7 +1,6 @@
 import numpy as np
-from jax import numpy as jnp
-import mbirjax as mj
-from .utilities import apply_cylindrical_mask
+import jax.numpy as jnp
+import mbirjax.preprocess as mjp
 
 
 def multi_threshold_otsu(image, classes=2, num_bins=1024):
@@ -210,10 +209,10 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
         ...                 slice_label=['Plastic', 'Metal'],
         ...                 title='Plastic and Metal Masks')
     """
-    from mbirjax.preprocess.utilities import _compute_scaling_factor
     # Determine class thresholds based on the 3-classes
     # Remove any flash from the boundary of the recon
-    recon = apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
+    recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
+                                       bottom_margin=bottom_margin)
     thresholds = multi_threshold_otsu(recon, classes=3)
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
@@ -223,8 +222,8 @@ def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=
     metal_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
 
     # Scale factors that match the unitary masks to the reconstruction
-    plastic_scale = _compute_scaling_factor(recon, plastic_mask)
-    metal_scale = _compute_scaling_factor(recon, metal_mask)
+    plastic_scale = mjp.compute_scaling_factor(recon, plastic_mask)
+    metal_scale = mjp.compute_scaling_factor(recon, metal_mask)
 
     return plastic_mask, metal_mask, plastic_scale, metal_scale
 

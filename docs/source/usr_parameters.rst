@@ -19,6 +19,7 @@ sharpness
 :Type: float (Defaults to 1.0)
 
 Specifies the sharpness of the reconstruction. Larger values produce sharper images. Smaller values produce softer images.
+(For advanced users: This actually controls the underlying parameter ``sigma_x``.)
 
 .. _param-snr_db:
 
@@ -28,6 +29,16 @@ snr_db
 
 Specifies the assumed signal-to-noise ratio in dB of the sinogram data. Larger values produce sharper and more edgy images.
 Smaller values produce softer and less edgy images.
+(For advanced users: This parameter actually controls the underlying parameter ``sigma_y``.)
+
+.. _param-qggmrf_nbr_wts:
+
+qggmrf_nbr_wts
+""""""""""""""
+:Type: list (num_rows, num_cols, num_slices)
+
+This parameter controls the relative QGGMRF regularization strength along the row, column, and slice direction.
+``qggmrf_nbr_wts = [1.0, 1.0, 1.0]`` corresponds to isotropic regularization.
 
 .. _param-verbose:
 

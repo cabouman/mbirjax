@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.5"
+version = "0.6.6"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -20,8 +20,8 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "jax<=0.5.3",
-    "jaxlib<=0.5.3",
+    "jax",
+    "jaxlib",
     "matplotlib",
     "numpy",
     "setuptools",
@@ -31,7 +31,9 @@ dependencies = [
     "h5py",
     "dm-pix",
     "tqdm",
-    "easygui"
+    "easygui",
+    "gdown",
+    "pywavelets"
 ]
 
 [project.optional-dependencies]

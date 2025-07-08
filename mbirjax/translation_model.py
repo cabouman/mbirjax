@@ -17,8 +17,8 @@ class TranslationModel(mbirjax.TomographyModel):
     translations instead of rotations during image acquisition. The forward and backward projections are computed using
     per-view translation vectors.
 
-    Parameters should generally be set using `set_params`, except for core geometry parameters which must be passed
-    during initialization.
+    Note: This geometry reduces regularization along the row (y) direction by setting `qggmrf_nbr_wts=(0.5, 1, 1)`,
+    which helps compensates for anisotropy intrinsic to the translation geometry.
 
     Args:
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
@@ -29,6 +29,12 @@ class TranslationModel(mbirjax.TomographyModel):
             Positive x shifts the object left, z shifts up, and y shifts away from the source.
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
+
+
+    Usage Notes:
+        - Reconstruction parameters should typically be set using `set_params`.
+        - The row voxel thickness can be adjusted with `delta_recon_row`, while the voxel column and slice spacing
+          can be controlled via the base parameter `delta_voxel`.
 
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
@@ -44,10 +50,10 @@ class TranslationModel(mbirjax.TomographyModel):
             model = TranslationModel(
                 sinogram_shape=sinogram_shape,
                 translation_vectors=translation_vectors,
-                source_detector_dist=1000.0,
+                source_detector_dist=500.0,
                 source_iso_dist=500.0
             )
-            model.set_params(delta_voxel=1.0)
+            model.set_params(delta_recon_row=2.0)
             model.auto_set_recon_size(sinogram_shape)
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):

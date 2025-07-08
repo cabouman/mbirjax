@@ -96,7 +96,8 @@ class TestVCD(unittest.TestCase):
 
         if geometry_type == 'translation':
             recon_shape = ct_model.get_params('recon_shape')
-            phantom = mj.gen_translation_phantom(option='text', recon_shape=recon_shape)
+            words = ["Purdue", "Presents", "Translation", "Tomography"]
+            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
         else:
             phantom = ct_model.gen_modified_3d_sl_phantom()
 

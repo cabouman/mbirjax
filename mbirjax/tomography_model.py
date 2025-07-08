@@ -1785,19 +1785,32 @@ class TomographyModel(ParameterHandler):
 
     def scale_recon_shape(self, row_scale=1.0, col_scale=1.0, slice_scale=1.0):
         """
-        Scale the recon shape by the given factors.  This can be used before starting a reconstruction to improve the
-        reconstruction when part of the object projects outside the detector.
+        Scale the reconstruction shape by the given scale factors.
+
+        This can be used before starting a reconstruction to improve results when part of the object
+        projects outside the detector. The method updates the internal `recon_shape` parameter.
 
         Args:
-            row_scale (float): Scale for the recon rows.
-            col_scale (float): Scale for the recon columns.
-            slice_scale (float): Scale for the recon slices.
+            row_scale (float): Scale factor for the number of rows in the reconstruction.
+            col_scale (float): Scale factor for the number of columns in the reconstruction.
+            slice_scale (float): Scale factor for the number of slices in the reconstruction.
+
+        Returns:
+            tuple[int, int, int]: A 3-tuple representing the number of pixels added to the
+            (rows, columns, slices) dimensions due to scaling.
+
+        Example:
+            >>> old_shape = model.get_params('recon_shape')
+            >>> added_padding = model.scale_recon_shape(row_scale=1.2, col_scale=1.1)
+            >>> new_shape = model.get_params('recon_shape')
+            >>> print(f"Shape increased by: {added_padding}")
         """
-        num_rows, num_cols, num_slices = self.get_params('recon_shape')
-        num_rows = int(num_rows * row_scale)
-        num_cols = int(num_cols * col_scale)
-        num_slices = int(num_slices * slice_scale)
-        self.set_params(recon_shape=(num_rows, num_cols, num_slices))
+        old_rows, old_cols, old_slices = self.get_params('recon_shape')
+        new_rows = int(old_rows * row_scale)
+        new_cols = int(old_cols * col_scale)
+        new_slices = int(old_slices * slice_scale)
+        self.set_params(recon_shape=(new_rows, new_cols, new_slices))
+        return new_rows - old_rows, new_cols - old_cols, new_slices - old_slices
 
 
 from functools import partial
