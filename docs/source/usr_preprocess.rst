@@ -48,7 +48,7 @@ MAR utilities
 
 
 Stripe/Ring/Offset Removal
--------------------------
+--------------------------
 
 .. currentmodule:: mbirjax.preprocess
 
