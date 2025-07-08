@@ -119,108 +119,131 @@ def BH_correction(sino, alpha, batch_size=64):
     return corrected_sino
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, order=(3, 4), include_const=False):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=(3, 4), include_const=False):
     """
-    Beam-hardening correction for objects containing a combination of plastic and metal.
-
-    The function takes the measured sinogram and initial reconstruction as input, and it returns a corrected sinogram.
-    It is designed to reduce metal artifacts for scans of objects made from a combination of plastic and metal material.
-    The metal and plastic materials are each assumed to be composed of a single material.
-    However, it should work fine for a combination of different plastics as long as their optical density properites do not vary too much.
-
-    Note:
-        The corrected sinogram should result in a more accurate reconstruction of the plastic, but may not accurately reconstruct the metal portion.
+    Beam-hardening correction for plastic and multiple metal components.
 
     Args:
-        ct_model:
-            Object with `forward_project` method and `main_device` attribute.
-        measured_sino (jnp.ndarray):
-            Raw sinogram data of shape (views, rows, cols).
-        recon (jnp.ndarray):
-            Reconstructed volume array corresponding to `measured_sino`.
-        epsilon (float, optional):
-            Tolerance for regularization.
+        ct_model: Object with forward_project method and main_device attribute.
+        measured_sino (jnp.ndarray): Raw sinogram.
+        recon (jnp.ndarray): Reconstructed volume.
+        epsilon (float): Regularization strength.
+        num_metal (int): Number of metal materials to segment.
+        order (Tuple[int, int]): (cross_order, metal_order)
+        include_const (bool): Whether to include a constant term.
 
     Returns:
-        corrected_sino (jnp.ndarray):
-            Beam-hardening corrected sinogram, same shape as `measured_sino`.
-
-    Example:
-        >>> corrected = correct_BH_plastic_metal(ct_model, measured_sino, recon)
+        corrected_sino (jnp.ndarray): Beam-hardening corrected sinogram.
     """
-    # Segment recon into plastic and metal regions
-    plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
-
-    # Forward project idealized plastic and metal components
+    cross_order, metal_order = order
     device = ct_model.main_device
-    ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
-    ideal_metal_sino = metal_scale * ct_model.forward_project(jax.device_put(metal_mask, device)).reshape(-1)
     y = measured_sino.reshape(-1)
 
-    # Compute normalized plastic and metal sinograms with max amplitude = 1
+    # --- Segment ---
+    plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
+
+    # --- Project ---
+    ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+    del plastic_mask
     p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
-    m_normalization = jnp.max(jnp.abs(ideal_metal_sino))
     p = ideal_plastic_sino / p_normalization
-    m = ideal_metal_sino / m_normalization
 
-    # Set order of models
-    cross_order, metal_order = order
+    metal_sinos = []
+    metals = []
+    for mask, scale in zip(metal_masks, metal_scales):
+        sino = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
+        norm = jnp.max(jnp.abs(sino))
+        metal_sinos.append(sino)
+        metals.append(sino / norm)
+    del metal_masks
 
-    # Build H matrix
-    H = [p * m ** i for i in range(cross_order)]  # p, p*m, ..., p*m^(cross_order-1)
-    H += [m ** i for i in range(1, metal_order)]  # m, m^2, ..., m^(metal_order-1)
+    # --- Build H^T H and H^T y incrementally ---
+    Hty = []
+    HtH = []
 
-    # Include constant if desired
+    H_cols = []
+
+    # Term 0: p
+    H_cols.append(p)
+
+    # Terms 1 to N*cross_order: p * m_i^j
+    for m in metals:
+        for j in range(1, cross_order):
+            H_cols.append(p * (m ** j))
+
+    # Joint cross terms: p * prod(m_i^j) for j = 1 to cross_order - 1
+    for j in range(1, cross_order):
+        joint = p * jnp.prod(jnp.stack([m**j for m in metals]), axis=0)
+        H_cols.append(joint)
+
+    # Metal-only terms: m_i^j for j = 1 to metal_order - 1
+    for m in metals:
+        for j in range(1, metal_order):
+            H_cols.append(m ** j)
+
     if include_const:
-        H.append(jnp.ones_like(p))  # constant term at the end
+        H_cols.append(jnp.ones_like(p))
 
-    # Compute H^t H and H^t y
-    order_total = len(H)
-    HtH = jnp.zeros((order_total, order_total))
-    Hty = jnp.zeros(order_total)
+    # Compute H^T y and H^T H
+    for i in range(len(H_cols)):
+        h_i = H_cols[i]
+        Hty.append(jnp.dot(h_i, y))
+        row = [jnp.dot(h_i, h_j) for h_j in H_cols]
+        HtH.append(row)
 
-    for i in range(order_total):
-        Hty = Hty.at[i].set(jnp.dot(H[i], y))
-        for j in range(order_total):
-            HtH = HtH.at[i, j].set(jnp.dot(H[i], H[j]))
+    Hty = jnp.array(Hty)
+    HtH = jnp.array(HtH)
 
-    # Regularize and solve for least square value of theta that minimizes || y - H theta ||^2
+    # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
-    HtH_reg = HtH + (epsilon ** 2) * sigma_max * jnp.eye(order_total)
+    HtH_reg = HtH + (epsilon ** 2) * sigma_max * jnp.eye(len(Hty))
     theta = jnp.linalg.solve(HtH_reg, Hty)
 
-    # Separate metal terms
-    metal_start_idx = cross_order
+    # --- Build correction ---
+    idx = 0
+    # Term 0: p
+    linear_plastic_coef = theta[idx] * jnp.ones_like(p)
+    idx += 1
+
+    # p * m_i^j terms
+    for m in metals:
+        for j in range(1, cross_order):
+            linear_plastic_coef += theta[idx] * (m ** j)
+            idx += 1
+
+    # joint p * m1^j * ... * mn^j terms
+    for j in range(1, cross_order):
+        joint = jnp.prod(jnp.stack([m ** j for m in metals]), axis=0)
+        linear_plastic_coef += theta[idx] * joint
+        idx += 1
+
+    # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
-    for idx in range(metal_start_idx, order_total):
-        metal_sino += theta[idx] * H[idx]
+    for m in metals:
+        for j in range(1, metal_order):
+            metal_sino += theta[idx] * (m ** j)
+            idx += 1
 
-    # Build linear plastic scaling denominator
-    linear_plastic_coef = jnp.zeros_like(p)
-    for idx in range(cross_order):
-        linear_plastic_coef += theta[idx] * (m ** idx)
+    # constant
+    if include_const:
+        metal_sino += theta[-1]
 
+    # Regularize
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
     linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
 
-    # Numerator: subtract metal + constant if included
-    numerator = y - metal_sino
-    if include_const:
-        numerator -= theta[-1]
+    # Compute corrected plastic sinogram
+    corrected_plastic_sino = p_normalization * (y - metal_sino) / linear_plastic_coef
 
-    # Compute BH corrected version of plastic sinogram with metal removed
-    corrected_plastic_sino = p_normalization * numerator / linear_plastic_coef
-
-    # Combine corrected plastic and metal sinogram and reshape
-    corrected_sino_flat = corrected_plastic_sino + ideal_metal_sino
+    corrected_sino_flat = corrected_plastic_sino + sum(metal_sinos)
     corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
-
     return corrected_sino
 
 
 
+
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_pct=0.5, verbose=0,
-                           order=(3, 4), include_const=False):
+                           num_metal=1, order=(3, 4), include_const=False):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
@@ -234,6 +257,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         num_BH_iterations (int, optional): Number of beam hardening correction and reconstruction iterations to perform. Defaults to 3.
         stop_threshold_pct (float, optional): Threshold for stopping reconstruction iterations based on relative change in reconstruction. Defaults to 0.5.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
+        num_metal (int): Number of metal materials to segment.
         order (list, optional):
             List of two integers specifying the order of polynomial terms for plastic and metal components respectively.
             Defaults to [3, 4].
@@ -253,16 +277,17 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, order=order, include_const=include_const)
+        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, include_const=include_const)
 
         # Reconstruct Corrected Sinogram
         recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_pct)
 
         if verbose > 0:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
-            plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
-            mj.slice_viewer(plastic_mask, metal_mask, vmin=0, vmax=1.0,
-                            slice_label=['Plastic Mask', 'Metal Mask'],
+            plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
+            labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
+            mj.slice_viewer(plastic_mask, *metal_masks, vmin=0, vmax=1.0,
+                            slice_label=labels,
                             title=f'Iteration {i + 1}: Comparison of Plastic and Metal Masks')
 
     return recon
