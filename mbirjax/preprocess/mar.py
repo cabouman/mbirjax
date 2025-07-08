@@ -168,9 +168,10 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
             H_cols.append(p * (m ** j))
 
     # Joint cross terms: p * prod(m_i^j) for j = 1 to cross_order - 1
-    for j in range(1, cross_order):
-        joint = p * jnp.prod(jnp.stack([m**j for m in metals]), axis=0)
-        H_cols.append(joint)
+    if num_metal > 1:
+        for j in range(1, cross_order):
+            joint = p * jnp.prod(jnp.stack([m**j for m in metals]), axis=0)
+            H_cols.append(joint)
 
     # Metal-only terms: m_i^j for j = 1 to metal_order - 1
     for m in metals:
@@ -207,10 +208,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
             idx += 1
 
     # joint p * m1^j * ... * mn^j terms
-    for j in range(1, cross_order):
-        joint = jnp.prod(jnp.stack([m ** j for m in metals]), axis=0)
-        linear_plastic_coef += theta[idx] * joint
-        idx += 1
+    if num_metal > 1:
+        for j in range(1, cross_order):
+            joint = jnp.prod(jnp.stack([m ** j for m in metals]), axis=0)
+            linear_plastic_coef += theta[idx] * joint
+            idx += 1
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
