@@ -151,7 +151,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     metal_sinos = []
     metals = []
     for mask, scale in zip(metal_masks, metal_scales):
-        sino = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
+        sino = ct_model.forward_project(jax.device_put(mask*recon, device)).reshape(-1)
         norm = jnp.max(jnp.abs(sino))
         metal_sinos.append(sino)
         metals.append(sino / norm)
@@ -184,15 +184,12 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     if include_const:
         H_cols.append(jnp.ones_like(p))
 
+    order_total = len(H_cols)
     # Compute H^T y and H^T H
-    for i in range(len(H_cols)):
-        h_i = H_cols[i]
-        Hty.append(jnp.dot(h_i, y))
-        row = [jnp.dot(h_i, h_j) for h_j in H_cols]
-        HtH.append(row)
-
-    Hty = jnp.array(Hty)
-    HtH = jnp.array(HtH)
+    for i in range(order_total):
+        Hty = Hty.at[i].set(jnp.dot(H_cols[i], y))
+        for j in range(order_total):
+            HtH = HtH.at[i, j].set(jnp.dot(H_cols[i], H_cols[j]))
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
