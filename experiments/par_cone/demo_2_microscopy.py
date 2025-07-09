@@ -13,7 +13,7 @@ if __name__ == "__main__":
     num_det_rows = 40
     num_det_channels = 256
     sharpness = 0.0
-    num_iterations = 25
+    num_iterations = 20
     
     # These can be adjusted to describe the geometry in the cone beam case.
     source_detector_dist = 4 * num_det_channels
@@ -36,7 +36,10 @@ if __name__ == "__main__":
     print(recon_shape)
 
     # Generate 3D Shepp Logan phantom
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    # Generate 3D Shepp Logan phantom
+    print('Creating phantom')
+    recon_shape = ct_model.get_params("recon_shape")
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 
     # Generate synthetic sinogram data
     sinogram = ct_model.forward_project(phantom)

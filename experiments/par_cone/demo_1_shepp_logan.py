@@ -44,7 +44,8 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    recon_shape = ct_model.get_params("recon_shape")
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
@@ -72,8 +73,8 @@ if __name__ == "__main__":
     # Use export/import functions to write out recon to disk
     import os
     os.makedirs('output', exist_ok=True)
-    mj.export_recon_hdf5('output/recon_hdf5', recon)
-    recon, _ = mj.import_recon_hdf5('output/recon_hdf5')
+    mj.export_recon_hdf5('output/recon.h5', recon)
+    recon, _ = mj.import_recon_hdf5('output/recon.h5')
 
     # Display results
     mj.slice_viewer(phantom, recon, title='Phantom (left) vs MBIR Recon (right)')
