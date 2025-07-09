@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 import mbirjax as mj
+import mbirjax.utilities
 
 """**Set the geometry parameters**"""
 
@@ -42,7 +43,7 @@ print('Generating data')
 np.random.seed(0)
 
 recon_shape = (num_det_channels, num_det_channels, num_det_rows)
-phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 phantom = phantom + dc_offset
 phantom = np.tile(phantom, (num_tiles, num_tiles, num_tiles))
 #

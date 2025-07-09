@@ -1,14 +1,14 @@
-==============
-Display and IO
-==============
+=================
+General Utilities
+=================
 
-MBIRJAX includes utilities to view 3D data slice-by-slice and to save and load `.hdf5` files and to download and extract `.tar` files.
+MBIRJAX contains utilities for viewing, downloading, exporting/importing, and generating synthetic data.
 
 Saving and loading models and reconstructions is handled through TomographyModel: :ref:`SaveLoadDocs`.
 
 
-Display Functions
------------------
+3D Data Viewer
+--------------
 
 .. autofunction:: mbirjax.viewer.slice_viewer
 
@@ -29,3 +29,13 @@ The functions here are for direct interactions with files.
 .. autofunction:: mbirjax.utilities.load_data_hdf5
 .. autofunction:: mbirjax.utilities.export_recon_hdf5
 .. autofunction:: mbirjax.utilities.import_recon_hdf5
+
+
+Synthetic Data Generation
+-------------------------
+
+.. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_reference
+.. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range
+.. autofunction:: mbirjax.utilities.gen_translation_phantom
+.. autofunction:: mbirjax.utilities.generate_demo_data
+

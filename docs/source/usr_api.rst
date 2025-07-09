@@ -65,8 +65,8 @@ Parameter handling uses the following primary methods.
    usr_parallel_beam_model
    usr_cone_beam_model
    usr_translation_model
-   usr_preprocess
    usr_denoising
+   usr_preprocess
    usr_utilities
 
 Preprocessing

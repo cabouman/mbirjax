@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import os
 import mbirjax
+import mbirjax.utilities
 import vcd_coimg_utils as vcu
 
 if __name__ == "__main__":
@@ -32,7 +33,7 @@ if __name__ == "__main__":
     parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+    phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
     center_slice = num_phantom_slices // 2
     phantom = phantom[:, :, center_slice:center_slice+1]
     phantom_fft = np.fft.fftn(phantom[:, :, 0])

@@ -6,6 +6,7 @@ import time
 import matplotlib.pyplot as plt
 import gc
 import mbirjax.parallel_beam
+import mbirjax.utilities
 import vcd_coimg_utils
 
 if __name__ == "__main__":
@@ -36,7 +37,7 @@ if __name__ == "__main__":
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mbirjax.gen_cube_phantom(recon_shape)
+    phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels
     num_subsets = 1
