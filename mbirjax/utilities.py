@@ -986,7 +986,7 @@ def generate_demo_data(
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     device = ct_model_for_generation.main_device
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
+        phantom = generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
     elif object_type == ObjectType.CUBE:
         phantom = gen_cube_phantom(recon_shape, device=device)
     else:
