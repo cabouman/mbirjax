@@ -96,7 +96,7 @@ In this case, the reconstruction solves the optimization problem:
 where the quantities correspond to the following python variables:
 
 * :math:`v` corresponds to ``prox_image``
-* :math:`\sigma_p` corresponds to ``sigma_p``
+* :math:`\sigma_p` corresponds to ``sigma_prox``
 
 
 Vectorized Coordinate Descent (VCD)
