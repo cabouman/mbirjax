@@ -49,9 +49,9 @@ print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
 
 # view back projection
 recon_rows, recon_cols, recon_slices = recon_shape
-control_back_projection = jax.device_put(control_back_projection, pixel_indices.device)
+pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.main_device)
 row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
-recon = jnp.zeros(recon_shape, device=pixel_indices.device)
+recon = jnp.zeros(recon_shape, device=back_projection_model.main_device)
 recon = recon.at[row_index, col_index].set(control_back_projection)
 mj.slice_viewer(recon, slice_axis=2, title='Control Back Projection')
 
