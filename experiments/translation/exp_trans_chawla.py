@@ -19,10 +19,10 @@ def main():
     # Set recon parameters
     sharpness = 1.0
     phantom_type = "text"   # Can be "dots" or "text"
-    words = ["Purdue"]      # List of words to render in the text phantom
+    words = ['P', 'ℙ']     # List of words to render in the text phantom
 
     # Calculate physical parameters
-    mag_physical = source_detector_dist_mm / detector_pixel_pitch_mm
+    mag_physical = source_detector_dist_mm / source_iso_dist_mm
     detect_pixel_pitch_at_iso_mm = detector_pixel_pitch_mm / mag_physical
 
     # Compute geometry parameters in ALU
@@ -40,7 +40,8 @@ def main():
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     tct_model.set_params(sharpness=sharpness)
-    recon_shape = tct_model.scale_recon_shape(row_scale=0.5, col_scale= 0.5)
+    tct_model.scale_recon_shape(col_scale= 0.5, slice_scale=0.5)
+    recon_shape = tct_model.get_params('recon_shape')
 
     # Print model parameters
     tct_model.print_params()
@@ -48,7 +49,7 @@ def main():
     mj.display_translation_vectors(translation_vectors, recon_shape)
 
     # Generate ground truth phantom
-    gt_recon = mbirjax.utilities.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words)
+    gt_recon = mbirjax.utilities.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words, font_size=1000)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
