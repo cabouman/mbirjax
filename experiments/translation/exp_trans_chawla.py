@@ -18,6 +18,7 @@ def main():
 
     # Set recon parameters
     sharpness = 1.0
+    delta_recon_row = 10
     phantom_type = "text"   # Can be "dots" or "text"
     words = ['P', 'U']     # List of words to render in the text phantom
 
@@ -46,8 +47,8 @@ def main():
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_det_dist, source_iso_dist=source_iso_dist)
     tct_model.set_params(sharpness=sharpness)
-    tct_model.scale_recon_shape(col_scale= 1.0, slice_scale=1.0)
     recon_shape = tct_model.get_params('recon_shape')
+    tct_model.set_params(delta_recon_row=delta_recon_row)
 
     # Print parameters
     tct_model.print_params()
