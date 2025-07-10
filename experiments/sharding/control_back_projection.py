@@ -8,9 +8,9 @@ import jax
 mj.get_memory_stats()
 
 # sinogram shape
-num_views = 100
-num_det_rows = 100
-num_det_channels = 100
+num_views = 1000
+num_det_rows = 1000
+num_det_channels = 1000
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
 # angles
@@ -56,9 +56,10 @@ recon = recon.at[row_index, col_index].set(control_back_projection)
 mj.slice_viewer(recon, slice_axis=2, title='Control Back Projection')
 
 # save back projection
-control_back_projection = np.array(control_back_projection)
-hash_digest = hashlib.sha256(control_back_projection.tobytes()).hexdigest()
+control_back_projection_recon = np.array(recon)
+print("control_back_projection_recon.shape", control_back_projection_recon.shape)
+hash_digest = hashlib.sha256(control_back_projection_recon.tobytes()).hexdigest()
 print("hash_digest", hash_digest)
-file_path = f"output/control_back_projection_{hash_digest[:8]}.npy"
+file_path = f"output/control_back_projection_recon_{hash_digest[:8]}.npy"
 print(f"Control back projection being saved to file {file_path}")
-np.save(file_path, control_back_projection)
+np.save(file_path, control_back_projection_recon)
