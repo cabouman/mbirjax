@@ -166,7 +166,8 @@ class TranslationModel(mbirjax.TomographyModel):
         cube = max_translation - min_translation
 
         # Compute recon_box = (width, height) of the reconstruction box in voxels
-        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
+        #recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
+        recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / delta_voxel)
 
         # Use a heuristic to determine a reasonable number of slices
         num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
