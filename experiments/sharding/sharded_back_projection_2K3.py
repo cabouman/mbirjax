@@ -45,17 +45,3 @@ elapsed = time.time() - time0
 
 mj.get_memory_stats()
 print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
-
-# view back projection
-recon_rows, recon_cols, recon_slices = recon_shape
-pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.main_device)
-sharded_back_projection_2k3 = jnp.zeros((recon_rows*recon_cols,recon_slices), device=back_projection_model.main_device).at[pixel_indices].add(sharded_back_projection_2k3)
-sharded_back_projection_2k3 = back_projection_model.reshape_recon(sharded_back_projection_2k3)
-mj.slice_viewer(sharded_back_projection_2k3, slice_axis=0, title='Sharded Back Projection 2K^3')
-
-# # save back projection
-# sharded_back_projection_2k3 = np.array(sharded_back_projection_2k3)
-# hash_digest = hashlib.sha256(sharded_back_projection_2k3.tobytes()).hexdigest()
-# file_path = f"output/sharded_back_projection_2k3{hash_digest[:8]}.npy"
-# print(f"Sharded back projection being saved to file {file_path}")
-# np.save(file_path, sharded_back_projection_2k3)
