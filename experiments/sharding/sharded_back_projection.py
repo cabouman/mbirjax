@@ -59,6 +59,7 @@ mj.slice_viewer(sharded_back_projection, slice_axis=0, title='Sharded Back Proje
 # save back projection
 sharded_back_projection = np.array(sharded_back_projection)
 hash_digest = hashlib.sha256(sharded_back_projection.tobytes()).hexdigest()
+print("hash_digest", hash_digest)
 file_path = f"output/sharded_back_projection_{hash_digest[:8]}.npy"
 print(f"Sharded back projection being saved to file {file_path}")
 np.save(file_path, sharded_back_projection)
