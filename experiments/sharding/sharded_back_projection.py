@@ -16,34 +16,32 @@ sinogram_shape = (num_views, num_det_rows, num_det_channels)
 # angles
 start_angle = -np.pi * (1/2)
 end_angle = np.pi * (1/2)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+
+# Generate simulated data
+_, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
+angles = params['angles']
 
 # recon model
 back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
-back_projection_model.set_params(sharpness=0.0)
+sinogram = jax.device_put(sinogram, device=back_projection_model.sinogram_device)
 
 # Print out model parameters
 back_projection_model.print_params()
 
-# Generate simulated data
-_, sinogram, _ = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
-                                                  num_views=num_views, num_det_rows=num_det_rows,
-                                                  num_det_channels=num_det_channels)
-sinogram = jax.device_put(sinogram, device=back_projection_model.sinogram_device)
-
 # get partition pixel indices
 recon_shape, granularity = back_projection_model.get_params(['recon_shape', 'granularity'])
-partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
-pixel_indices = partitions[0][0]
+pixel_indices = mj.gen_full_indices(recon_shape)
 pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.worker)
 
-############################### SHARDED ###############################
-print("Starting sharded back projection")
+############################### SHARDING ###############################
+print("Starting sharding back projection")
 
 time0 = time.time()
-sharded_back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices,
+sharding_back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices,
                                                                     output_device=back_projection_model.main_device)
-sharded_back_projection.block_until_ready()
+sharding_back_projection.block_until_ready()
 elapsed = time.time() - time0
 
 mj.get_memory_stats()
@@ -52,14 +50,16 @@ print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
 # view back projection
 recon_rows, recon_cols, recon_slices = recon_shape
 pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.main_device)
-sharded_back_projection = jnp.zeros((recon_rows*recon_cols,recon_slices), device=back_projection_model.main_device).at[pixel_indices].add(sharded_back_projection)
-sharded_back_projection = back_projection_model.reshape_recon(sharded_back_projection)
-mj.slice_viewer(sharded_back_projection, slice_axis=0, title='Sharded Back Projection')
+row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
+recon = jnp.zeros(recon_shape, device=back_projection_model.main_device)
+recon = recon.at[row_index, col_index].set(sharding_back_projection)
+mj.slice_viewer(recon, slice_axis=2, title='Sharding Back Projection')
 
 # save back projection
-sharded_back_projection = np.array(sharded_back_projection)
-hash_digest = hashlib.sha256(sharded_back_projection.tobytes()).hexdigest()
+sharding_back_projection_recon = np.array(recon)
+print("sharding_back_projection_recon.shape", sharding_back_projection_recon.shape)
+hash_digest = hashlib.sha256(sharding_back_projection_recon.tobytes()).hexdigest()
 print("hash_digest", hash_digest)
-file_path = f"output/sharded_back_projection_{hash_digest[:8]}.npy"
-print(f"Sharded back projection being saved to file {file_path}")
-np.save(file_path, sharded_back_projection)
+file_path = f"output/sharding_back_projection_recon_{hash_digest[:8]}.npy"
+print(f"Sharding back projection being saved to file {file_path}")
+np.save(file_path, sharding_back_projection_recon)
