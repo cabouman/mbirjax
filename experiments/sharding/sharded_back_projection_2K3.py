@@ -32,6 +32,7 @@ sinogram = jnp.ones_like(2, shape=sinogram_shape, device=back_projection_model.s
 recon_shape, granularity = back_projection_model.get_params(['recon_shape', 'granularity'])
 partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
 pixel_indices = partitions[0][0]
+print("pixel_indices.shape", pixel_indices.shape)
 pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.worker)
 
 ############################### SHARDED ###############################
