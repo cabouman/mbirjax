@@ -71,6 +71,7 @@ class TomographyModel(ParameterHandler):
         self.main_device, self.sinogram_device, self.worker = None, None, None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
+        self.prox_data = None
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -962,8 +963,89 @@ class TomographyModel(ParameterHandler):
         warnings.warn('direct_filter not implemented for TomographyModel.')
         return jnp.zeros_like(sinogram, device=self.sinogram_device)
 
+    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
+                         compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
+        """
+        Do the device management and parameter initialization needed for recon and prox_map.
+
+        Args:
+            See :meth:`recon` for arguments.
+
+        Returns:
+            sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params
+        """
+
+        # Initialize logging for this run
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        self.logger.info('GPU used for: {}'.format(self.use_gpu))
+        self.logger.info('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
+        self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
+
+        # Generate set of voxel partitions
+        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
+                                                    use_ror_mask=self.use_ror_mask)
+        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+
+        # Generate sequence of partitions to use
+        partition_sequence = self.get_params('partition_sequence')
+        partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
+        partition_sequence = partition_sequence[first_iteration:]
+        regularization_params = None
+
+        try:
+            # Check that sinogram and weights are not taking up GPU space
+            if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
+                sinogram = jax.device_put(sinogram, self.sinogram_device)
+            if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
+                weights = jax.device_put(weights, self.sinogram_device)
+            if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
+                init_recon = jax.device_put(init_recon, self.main_device)
+
+            # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
+            regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
+
+            if compute_prior_loss:
+                msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
+                msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
+                self.logger.warning(msg)
+
+        except MemoryError as e:
+            self.logger.error('Insufficient CPU memory')
+            raise e
+        except JaxRuntimeError as e:
+            self._handle_jax_error(e)
+
+        return sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params
+
+    def _handle_jax_error(self, e):
+        """
+        Internal helper method to handle JAX errors.
+        Args:
+            e (JaxRuntimeError): The error to handle
+
+        Returns:
+            Nothing, but re-raises JaxRuntimeError.
+        """
+
+        self.logger.error(e)
+        if self.gpu_memory > 0:
+            if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
+                self.logger.error('Insufficient memory for jax (likely insufficient CPU memory)')
+            else:
+                self.logger.error('Insufficient memory for jax (likely insufficient GPU memory)')
+                if self.use_gpu == 'full':
+                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
+                elif self.use_gpu == 'sinograms':
+                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
+        else:
+            self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
+
+        raise e
+
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
-              compute_prior_loss=False, num_iterations=None, logfile_path='./logs/recon.log', print_logs=True):
+              compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -979,7 +1061,6 @@ class TomographyModel(ParameterHandler):
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
-            num_iterations (int, optional): This option is deprecated and will be used to set max_iterations if this is not None.  Defaults to None.
             logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
@@ -992,47 +1073,10 @@ class TomographyModel(ParameterHandler):
                     * 'recon_logs'
                     * 'model_params'
         """
-        if num_iterations is not None:
-            warnings.warn('num_iterations has been deprecated and will be removed in a future release.\n'
-                          'In the current run, the value of num_iterations will be used to set max_iterations.')
-            max_iterations = num_iterations
-
-        # Initialize logging for this run
-        if first_iteration == 0 or self.logger is None:
-            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
-        self.logger.info('GPU used for: {}'.format(self.use_gpu))
-        self.logger.info('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
-        self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
-
+        sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params = (
+            self.initialize_recon(sinogram, weights, init_recon, max_iterations, first_iteration,
+                                  compute_prior_loss, logfile_path, print_logs))
         try:
-
-            # Check that sinogram and weights are not taking up GPU space
-            if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
-                sinogram = jax.device_put(sinogram, self.sinogram_device)
-            if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
-                weights = jax.device_put(weights, self.sinogram_device)
-            if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
-                init_recon = jax.device_put(init_recon, self.main_device)
-
-            # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
-            if compute_prior_loss:
-                msg = 'Computing the prior loss on every iteration uses significant memory and computing power.\n'
-                msg += 'Set compute_prior_loss=False for most applications aside from debugging and demos.'
-                self.logger.warning(msg)
-
-            regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
-
-            # Generate set of voxel partitions
-            recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-            partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
-                                                        use_ror_mask=self.use_ror_mask)
-            partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
-
-            # Generate sequence of partitions to use
-            partition_sequence = self.get_params('partition_sequence')
-            partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
-            partition_sequence = partition_sequence[first_iteration:]
-
             # Compute reconstruction
             recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, weights=weights,
                                                  init_recon=init_recon, compute_prior_loss=compute_prior_loss,
@@ -1057,20 +1101,7 @@ class TomographyModel(ParameterHandler):
             self.logger.error('Insufficient CPU memory')
             raise e
         except JaxRuntimeError as e:
-            self.logger.error(e)
-            if self.gpu_memory > 0:
-                if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
-                    self.logger.error('Insufficient memory for jax (likely insufficient CPU memory)')
-                else:
-                    self.logger.error('Insufficient memory for jax (likely insufficient GPU memory)')
-                    if self.use_gpu == 'full':
-                        self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
-                    elif self.use_gpu == 'sinograms':
-                        self.logger.error(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
-            else:
-                self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
-
-            raise e
+            self._handle_jax_error(e)
 
         if logfile_path:
             self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
@@ -1386,7 +1417,7 @@ class TomographyModel(ParameterHandler):
                                                                            qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
-                prior_hess = sigma_prox ** 2
+                prior_hess = 1 / (sigma_prox ** 2)
                 prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
             # prior_grad = prior_grad.block_until_ready()
             # times[time_index] += time.time() - time_start
@@ -1656,8 +1687,8 @@ class TomographyModel(ParameterHandler):
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
-    def prox_map(self, prox_input, sinogram, weights=None, init_recon=None, stop_threshold_change_pct=0.2,
-                 max_iterations=3, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
+    def prox_map(self, prox_input, sinogram, sigma_prox=None, weights=None, init_recon=None, do_initialization=True, stop_threshold_change_pct=0.2,
+                 max_iterations=3, first_iteration=0, logfile_path='./logs/prox.log', print_logs=True):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -1665,8 +1696,11 @@ class TomographyModel(ParameterHandler):
         Args:
             prox_input (jax array): proximal map input with same shape as reconstruction.
             sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            sigma_prox (None or float, optional): The standard deviation of the proximal map prior term.  If None, then set automatically from the sinogram.  Defaults to None.
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
+            do_initialization (bool, optional):  If true, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
+                Set to False if initialization has already been performed on this sinogram, and prox_input and init_recon are on main_device and sinogram and weights are on sinogram_device.
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
@@ -1674,26 +1708,63 @@ class TomographyModel(ParameterHandler):
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
         Returns:
-            [recon, fm_rmse]: reconstruction and array of loss for each iteration.
+            (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
+                - recon (jax array): the reconstruction volume
+                - recon_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
+                    * 'recon_params'
+                    * 'notes'
+                    * 'recon_logs'
+                    * 'model_params'
         """
-        # TODO:  Refactor to operate on a subset of pixels and to use previous state
-        # Generate set of voxel partitions
-        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
+        compute_prior_loss = False
+        prior_loss = [0]
+        if do_initialization:
+            if isinstance(prox_input, type(jnp.zeros(1))) and list(prox_input.devices())[0] != self.main_device:
+                prox_input = jax.device_put(prox_input, self.main_device)
 
-        # Generate sequence of partitions to use
-        partition_sequence = self.get_params('partition_sequence')
-        partition_sequence = mj.gen_partition_sequence(partition_sequence, max_iterations=max_iterations)
-        partition_sequence = partition_sequence[first_iteration:]
-        # Initialize logging for this run
-        if first_iteration == 0 or self.logger is None:
-            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
-        # Compute reconstruction
-        recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, stop_threshold_change_pct,
-                                             weights=weights, init_recon=init_recon, prox_input=prox_input,
-                                             first_iteration=first_iteration)
+            sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params = (
+                self.initialize_recon(sinogram, weights, init_recon, max_iterations, first_iteration,
+                                      compute_prior_loss, logfile_path, print_logs))
+            self.prox_data = (partitions, partition_sequence, granularity, regularization_params)
+        else:
+            partitions, partition_sequence, granularity, regularization_params = self.prox_data
 
-        return recon, loss_vectors
+        if sigma_prox is not None:  # Override the auto sigma_prox if needed
+            regularization_params['sigma_prox'] = sigma_prox
+            self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=self.get_params('auto_regularize_flag'))
+
+        # Compute proximal map
+        try:
+
+            recon, loss_vectors = self.vcd_recon(sinogram, partitions, partition_sequence, stop_threshold_change_pct,
+                                                 weights=weights, init_recon=init_recon, prox_input=prox_input,
+                                                 first_iteration=first_iteration)
+
+            # Return num_iterations, granularity, partition_sequence, fm_rmse values, regularization_params
+            partition_sequence = [int(val) for val in partition_sequence]
+            fm_rmse = [float(val) for val in loss_vectors[0]]
+            stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
+            alpha_values = [float(val) for val in loss_vectors[3]]
+            num_iterations = len(fm_rmse)
+            recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
+                                  regularization_params, stop_threshold_change_pct, alpha_values]
+            recon_params = ReconParams(*tuple(recon_param_values))._asdict()
+
+        except MemoryError as e:
+            self.logger.error('Insufficient CPU memory')
+            raise e
+        except JaxRuntimeError as e:
+            self._handle_jax_error(e)
+
+        if logfile_path:
+            self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
+
+        for h in list(self.logger.handlers):  # Make sure the log files are up to date
+            h.flush()
+
+        notes = 'Prox completed: {}\n\n'.format(datetime.datetime.now())
+        recon_dict = self.get_recon_dict(recon_params, notes=notes)
+        return recon, recon_dict
 
     def gen_weights_mar(self, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
         """
