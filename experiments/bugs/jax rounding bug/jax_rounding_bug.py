@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import mbirjax.parallel_beam
 import jax
 
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 jax.config.update("jax_default_matmul_precision", "highest")
 if __name__ == "__main__":
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     # Generate phantom
     recon_shape = ct_model.get_params('recon_shape')
-    phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+    phantom = mju.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels and get the voxel cylinders
     full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)[0]

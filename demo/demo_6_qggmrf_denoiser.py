@@ -7,7 +7,7 @@ This code demonstrates the use of the qggmrf denoiser.
 
 import numpy as np
 import mbirjax as mj
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 """**Set the geometry parameters**"""
 
@@ -25,7 +25,7 @@ stop_threshold_change_pct = 0.1
 
 # Get some noisy data
 recon_shape = (num_det_channels, num_det_channels, num_det_rows)
-phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+phantom = mju.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 phantom_noisy = phantom + sigma_noise_added * np.random.randn(*recon_shape)
 
 denoiser = mj.QGGMRFDenoiser(phantom.shape)

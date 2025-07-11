@@ -27,7 +27,7 @@ import numpy as np
 import time
 import pprint
 import mbirjax as mj
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 """**Set the geometry parameters**"""
 

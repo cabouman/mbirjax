@@ -6,7 +6,7 @@ import mbirjax.parallel_beam
 from scipy.sparse.linalg import svds, eigsh, aslinearoperator, LinearOperator
 import jax
 
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 if __name__ == "__main__":
     """
@@ -31,7 +31,7 @@ if __name__ == "__main__":
         # Generate phantom
         recon_shape = parallel_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range((num_det_channels, num_det_channels, num_det_channels))
+        phantom = mju.generate_3d_shepp_logan_low_dynamic_range((num_det_channels, num_det_channels, num_det_channels))
         phantom = phantom[:, :, num_det_channels // 2]
 
         # Generate indices of pixels

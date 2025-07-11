@@ -1701,7 +1701,7 @@ class TomographyModel(ParameterHandler):
             sigma_prox (None or float, optional): The standard deviation of the proximal map prior term.  If None, then set automatically from the sinogram.  Defaults to None.
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
-            do_initialization (bool, optional):  If true, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
+            do_initialization (bool, optional):  If True, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
                 Set to False if initialization has already been performed on this sinogram, and prox_input and init_recon are on main_device and sinogram and weights are on sinogram_device.
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.

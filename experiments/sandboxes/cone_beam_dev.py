@@ -11,7 +11,7 @@ import mbirjax
 import jax.numpy as jnp
 import jax
 
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 if __name__ == "__main__":
 
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     recon_shape = conebeam_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
     with jax.default_device(main_device):
-        phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+        phantom = mju.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels and sinogram
         full_indices = mbirjax.gen_full_indices(recon_shape)

@@ -4,7 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax
-import mbirjax.utilities
+import mbirjax.utilities as mju
 
 
 class TestProjectors(unittest.TestCase):
@@ -156,7 +156,7 @@ class TestProjectors(unittest.TestCase):
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
-        phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+        phantom = mju.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels and get the voxel cylinders
         full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)[0]
@@ -213,7 +213,7 @@ class TestProjectors(unittest.TestCase):
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+        phantom = mju.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels
         num_subsets = 1
