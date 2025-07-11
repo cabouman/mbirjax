@@ -146,8 +146,30 @@ def _generate_polynomial_combinations(num_terms, max_order):
     generate_recursive([], num_terms)
     return combinations
 
+def _compute_HTH_efficient(p, M):
+    p = p.reshape(-1, 1)
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=(3, 4), include_const=False):
+    # Precompute quantities
+    pTp = jnp.dot(p.T, p)
+    pTM = jnp.dot(p.T, M)
+    MTp = jnp.dot(M.T, p)
+    MTM = jnp.dot(M.T, M)
+
+    pM = p * M
+    pMTpM = jnp.dot(pM.T, pM)
+    pMTp = jnp.dot(pM.T, p)
+    pMTM = jnp.dot(pM.T, M)
+
+    # Use jnp.block for cleaner assembly
+    HTH = jnp.block([
+        [pTp, pTp * pTM, pTM],
+        [pTp * MTp, pMTpM, pMTM],
+        [MTp, pMTM.T, MTM]
+    ])
+
+    return HTH
+
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=3, include_const=False):
     """
     Beam-hardening correction for plastic and multiple metal components.
 
@@ -157,13 +179,13 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         recon (jnp.ndarray): Reconstructed volume.
         epsilon (float): Regularization strength.
         num_metal (int): Number of metal materials to segment.
-        order (Tuple[int, int]): (cross_order, metal_order)
+        order (int]): Maximum total degree of the polynomial
         include_const (bool): Whether to include a constant term.
 
     Returns:
         corrected_sino (jnp.ndarray): Beam-hardening corrected sinogram.
     """
-    cross_order, metal_order = order
+    order_list = _generate_polynomial_combinations(num_metal, order)
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
@@ -190,33 +212,45 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     # Term 0: p
     H_cols.append(p)
 
-    # Terms 1 to N*cross_order: p * m_i^j
-    for m in metals:
-        for j in range(1, cross_order):
-            H_cols.append(p * (m ** j))
-
-    # Joint cross terms: p * prod(m_i^j) for j = 1 to cross_order - 1
-    if num_metal > 1:
-        for j in range(1, cross_order):
-            joint = p * jnp.prod(jnp.stack([m**j for m in metals]), axis=0)
-            H_cols.append(joint)
-
-    # Metal-only terms: m_i^j for j = 1 to metal_order - 1
-    for m in metals:
-        for j in range(1, metal_order):
-            H_cols.append(m ** j)
+    metal_terms = []  # e.g., [m1**1 * m2**0, m1**0 * m2**1, m1**1 * m2**1, ...]
+    for exponents in order_list:
+        term = jnp.ones_like(metals[0])
+        for m, exp in zip(metals, exponents):
+            if exp > 0:
+                term *= m ** exp
+        metal_terms.append(term)
 
     if include_const:
         H_cols.append(jnp.ones_like(p))
 
-    order_total = len(H_cols)
-    HtH = jnp.zeros((order_total, order_total))
-    Hty = jnp.zeros(order_total)
-    # Compute H^T y and H^T H
-    for i in range(order_total):
-        Hty = Hty.at[i].set(jnp.dot(H_cols[i], y))
-        for j in range(order_total):
-            HtH = HtH.at[i, j].set(jnp.dot(H_cols[i], H_cols[j]))
+    poly_length = len(metal_terms)
+    metal_terms = jnp.stack(metal_terms)
+
+    HtH_size = 1 + 2 * poly_length + (1 if include_const else 0)
+    Hty = jnp.zeros(HtH_size)
+    HtH = jnp.zeros((HtH_size, HtH_size))
+
+    # Index mapping:
+    # 0: p
+    # 1 ~ N: p * metal terms
+    # N+1 ~ 2N: metal terms
+    # optional last: constant
+
+    # Compute Hty
+    # Set p term
+    Hty = Hty.at[0].set(jnp.dot(p, y))
+
+    p_metal_dots = jnp.dot(p * metal_terms, y)
+    Hty = Hty.at[1:1 + poly_length].set(p_metal_dots)
+
+    metal_dots = jnp.dot(metal_terms, y)
+    Hty = Hty.at[1 + poly_length:1 + 2 * poly_length].set(metal_dots)
+
+    # Constant term if needed
+    if include_const:
+        Hty = Hty.at[-1].set(jnp.sum(y))
+
+    HtH = _compute_HTH_efficient(p, metal_terms)
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
@@ -224,30 +258,12 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     theta = jnp.linalg.solve(HtH_reg, Hty)
 
     # --- Build correction ---
-    idx = 0
     # Term 0: p
-    linear_plastic_coef = theta[idx] * jnp.ones_like(p)
-    idx += 1
-
-    # p * m_i^j terms
-    for m in metals:
-        for j in range(1, cross_order):
-            linear_plastic_coef += theta[idx] * (m ** j)
-            idx += 1
-
-    # joint p * m1^j * ... * mn^j terms
-    if num_metal > 1:
-        for j in range(1, cross_order):
-            joint = jnp.prod(jnp.stack([m ** j for m in metals]), axis=0)
-            linear_plastic_coef += theta[idx] * joint
-            idx += 1
+    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:,n] for n in range(poly_length))
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
-    for m in metals:
-        for j in range(1, metal_order):
-            metal_sino += theta[idx] * (m ** j)
-            idx += 1
+    metal_sino = sum(theta[n + 1 + poly_length] * metal_terms[:,n] for n in range(poly_length))
 
     # constant
     if include_const:
@@ -263,8 +279,6 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     corrected_sino_flat = corrected_plastic_sino + sum(metal_sinos)
     corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
     return corrected_sino
-
-
 
 
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_pct=0.5, verbose=0,
