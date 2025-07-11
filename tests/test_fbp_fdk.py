@@ -37,9 +37,12 @@ class TestFBPReconstruction(unittest.TestCase):
                                                 source_iso_dist=self.source_iso_dist)
 
         # Generate 3D Shepp-Logan phantom and sinogram
-        self.fbp_phantom = self.parallel_model.gen_modified_3d_sl_phantom()
+        phantom_shape = self.parallel_model.get_params('recon_shape')
+        self.fbp_phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
         self.fbp_sino = self.parallel_model.forward_project(self.fbp_phantom)
-        self.fdk_phantom = self.cone_model.gen_modified_3d_sl_phantom()
+
+        phantom_shape = self.cone_model.get_params('recon_shape')
+        self.fdk_phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
         self.fdk_sino = self.cone_model.forward_project(self.fdk_phantom)
 
         # Set tolerances for the metrics - FBP is deterministic, so results should never go above these.

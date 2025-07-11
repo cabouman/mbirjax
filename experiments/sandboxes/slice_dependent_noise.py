@@ -75,7 +75,8 @@ else:
 
 # Generate 3D Shepp Logan phantom
 print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
+phantom_shape = ct_model_for_generation.get_params('recon_shape')
+phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 phantom = phantom[:, :, 40:-40]
 # mj.slice_viewer(phantom)
 

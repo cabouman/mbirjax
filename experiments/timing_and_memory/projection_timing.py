@@ -51,7 +51,8 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     gpu = jax.devices('gpu')[0]
     cpu = jax.devices('cpu')[0]

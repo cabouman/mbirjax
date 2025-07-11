@@ -27,7 +27,8 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = cone_model.gen_modified_3d_sl_phantom()
+    phantom_shape = cone_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # View the phantom
     mj.slice_viewer(phantom, phantom.transpose((1, 2, 0)), title='Phantom axial and coronal', slice_label='View')

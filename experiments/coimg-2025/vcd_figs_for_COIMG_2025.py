@@ -27,7 +27,8 @@ if __name__ == "__main__":
     ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     sinogram = ct_model.forward_project(phantom)

@@ -40,9 +40,6 @@ num_views = 400
 num_det_rows = 20
 num_det_channels = 400
 
-start_angle = - np.pi / 2
-end_angle = np.pi / 2
-
 """**Data generation:** For demo purposes, we create a phantom and then project it to create a sinogram.
 
 For this demo we use the default recon shape for parallel beam.
@@ -51,20 +48,17 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 
 """
 
-# Initialize sinogram
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+# Choose the geometry type
+model_type = 'parallel'  # 'cone' or 'parallel'
+object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
-ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
+# Generate simulated data
+# In a real application you would not have the phantom, but we include it here for later display purposes
+phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
+angles = params['angles']
 
-# Generate large 3D Shepp Logan phantom
-print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
-
-# Generate synthetic sinogram data
-print('Creating sinogram')
-sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.asarray(sinogram)
 
 # View sinogram
 title='Original sinogram\nVery few rows to allow for fast execution'
@@ -79,21 +73,28 @@ As in demo_2_large_object, this will yield artifacts because some of the informa
 
 # Initialize model for reconstruction.
 weights = None
-ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
+# ####################
+# Use the parameters to get the data and initialize the model for reconstruction.
+if model_type == 'cone':
+    source_detector_dist = params['source_detector_dist']
+    source_iso_dist = params['source_iso_dist']
+    ct_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+else:
+    ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
 # Print model parameters
-ct_model_for_recon.print_params()
+ct_model.print_params()
 
 sharpness = -0.5
 recon_row_scale = 0.5
 recon_col_scale = 0.5
-ct_model_for_recon.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
+ct_model.scale_recon_shape(row_scale=recon_row_scale, col_scale=recon_col_scale)
 
-ct_model_for_recon.set_params(sharpness=sharpness)
+ct_model.set_params(sharpness=sharpness)
 
 print('Starting cropped center recon')
 time0 = time.time()
-recon, recon_dict = ct_model_for_recon.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 recon.block_until_ready()
 elapsed = time.time() - time0
 
@@ -107,7 +108,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 title = 'Cropped center recon with sharpness = {:.1f}: Phantom (left) vs VCD Recon (right)'.format(sharpness)
 title += '\nThis recon does not include all pixels used to generate the sinogram.'
 title += '\nThe missing pixels lead to an intensity shift (adjust intensity to [0, 1]) and a bright outer ring.'
-recon_shape = ct_model_for_recon.get_params('recon_shape')
+recon_shape = ct_model.get_params('recon_shape')
 recon_radius = [length // 2 for length in recon_shape]
 start_inds = [phantom.shape[j] // 2 - recon_radius[j] for j in range(2)]
 end_inds = [start_inds[j] + recon_shape[j] for j in range(2)]

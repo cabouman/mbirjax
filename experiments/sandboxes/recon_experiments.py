@@ -73,7 +73,8 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
     mj.slice_viewer(phantom, phantom.transpose((0, 2, 1)),
                          title='Phantom\nLeft: single phantom slice (axial)    Right: single phantom row (coronal)',
                          slice_label='Phantom slice', slice_label2='Phantom row', slice_axis2=0)

@@ -17,9 +17,9 @@ class TestVCD(unittest.TestCase):
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
-        parallel_tolerances = {'nrmse': 0.15, 'max_diff': 0.38, 'pct_95': 0.04}
-        cone_tolerances = {'nrmse': 0.19, 'max_diff': 0.56, 'pct_95': 0.05}
-        translation_tolerances = {'nrmse': 0.8, 'max_diff': 1.05, 'pct_95': 0.03}
+        parallel_tolerances = {'nrmse': 0.1, 'max_diff': 0.3, 'pct_95': 0.04}
+        cone_tolerances = {'nrmse': 0.12, 'max_diff': 0.5, 'pct_95': 0.03}
+        translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.7, 'pct_95': 0.11}
         self.all_tolerances = [parallel_tolerances, cone_tolerances, translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
@@ -99,7 +99,8 @@ class TestVCD(unittest.TestCase):
             words = ["Purdue", "Presents", "Translation", "Tomography"]
             phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
         else:
-            phantom = ct_model.gen_modified_3d_sl_phantom()
+            phantom_shape = ct_model.get_params('recon_shape')
+            phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
         # Generate synthetic sinogram data
         print('  Creating sinogram')

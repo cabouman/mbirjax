@@ -39,7 +39,7 @@ ct_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_
 # Generate a simple phantom
 print('Creating phantom')
 recon_shape = ct_model.get_params('recon_shape')
-phantom = np.zeros(recon_shape)  # ct_model.gen_modified_3d_sl_phantom()
+phantom = np.zeros(recon_shape)
 phantom[20, 30, 20] = 1
 phantom[20, 30, 40] = 2
 phantom[20, 30, 55] = 3

@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     recon_shape = ct_model.get_params('recon_shape')
-    phantom = np.zeros(recon_shape)  # ct_model.gen_modified_3d_sl_phantom()
+    phantom = np.zeros(recon_shape)
     phantom[16:48, 16:48, 16:48] = 1
 
     # Generate synthetic sinogram data
