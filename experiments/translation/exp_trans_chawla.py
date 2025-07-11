@@ -11,6 +11,7 @@ def main():
     z_space_mm = 14
     num_x_translations = 5
     num_z_translations = 3
+    row_pitch_scaling_factor = 1.0
 
     # Define detector size
     num_det_rows = 1944
@@ -18,7 +19,6 @@ def main():
 
     # Set recon parameters
     sharpness = 1.0
-    delta_recon_row = 10
     phantom_type = "text"   # Can be "dots" or "text"
     words = ['P', 'U']     # List of words to render in the text phantom
 
@@ -48,6 +48,9 @@ def main():
     tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_det_dist, source_iso_dist=source_iso_dist)
     tct_model.set_params(sharpness=sharpness)
     recon_shape = tct_model.get_params('recon_shape')
+
+    # Change row pitch based on user preference
+    delta_recon_row = row_pitch_scaling_factor * tct_model.get_params("delta_recon_row")
     tct_model.set_params(delta_recon_row=delta_recon_row)
 
     # Print parameters
