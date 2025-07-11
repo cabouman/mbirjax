@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
-    # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)

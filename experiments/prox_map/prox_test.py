@@ -31,7 +31,7 @@ if __name__ == "__main__":
     sinogram = parallel_model.forward_project(phantom)
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)

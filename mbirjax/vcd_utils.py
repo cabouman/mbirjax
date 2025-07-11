@@ -320,10 +320,28 @@ def gen_full_indices(recon_shape, use_ror_mask=True):
 
 def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
     """
-    Implementation of TomographyModel.gen_weights_mar.  If metal_threshold is not provided, it will be estimated using
-     Otsu's method.  If init_recon is provided, it will be used along with metal threshold to estimate the region
-     containing metal, and this metal region will be forward projected, with the projection used to estimate the weights.
-    The weights are placed on ct_model.main_device.
+    Generates the weights used for reducing metal artifacts in MBIR reconstruction.
+
+    This function computes sinogram weights that help to reduce metal artifacts.
+    More specifically, it computes weights with the form:
+
+        weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) ) )
+
+    delta(metal) denotes a binary mask indicating the sino entries that contain projections of metal.
+    Providing ``init_recon`` yields better metal artifact reduction.
+    If not provided, the metal segmentation is generated directly from the sinogram.
+
+    Args:
+        sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+        init_recon (jax array, optional): An initial reconstruction used to identify metal voxels. If not provided, Otsu's method is used to directly segment sinogram into metal regions.
+        metal_threshold (float, optional): Values in ``init_recon`` above ``metal_threshold`` are classified as metal. If not provided, Otsu's method is used to segment ``init_recon``.
+        beta (float, optional): Scalar value in range :math:`>0`.
+            A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
+        gamma (float, optional): Scalar value in range :math:`>=0`.
+            A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
+
+    Returns:
+        (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
     """
     # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method.
     if init_recon is None:
@@ -352,4 +370,51 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     # weights for undistorted sino entries
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
 
+    return weights
+
+
+def gen_weights(sinogram, weight_type):
+    """
+    Compute the optional weights used in MBIR reconstruction.
+
+    Args:
+        sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+        weight_type (string): Type of noise model used for data
+                - weight_type = 'unweighted' => return numpy.ones(sinogram.shape).
+                - weight_type = 'transmission' => return numpy.exp(-sinogram).
+                - weight_type = 'transmission_root' => return numpy.exp(-sinogram/2).
+                - weight_type = 'emission' => return 1/(numpy.absolute(sinogram) + 0.1).
+
+    Returns:
+        (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+
+    Raises:
+        Exception: Raised if ``weight_type`` is not one of the above options.
+    """
+    weight_list = []
+    num_views = sinogram.shape[0]
+    batch_size = 128
+    main_device = jax.devices('cpu')[0]
+    try:
+        gpus = jax.devices('gpu')
+        worker_device = gpus[0]
+    except RuntimeError:
+        worker_device = main_device
+
+    for i in range(0, num_views, batch_size):
+        sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], worker_device)
+
+        if weight_type == 'unweighted':
+            weights = jnp.ones(sino_batch.shape)
+        elif weight_type == 'transmission':
+            weights = jnp.exp(-sino_batch)
+        elif weight_type == 'transmission_root':
+            weights = jnp.exp(-sino_batch / 2)
+        elif weight_type == 'emission':
+            weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
+        else:
+            raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
+        weight_list.append(jax.device_put(weights, main_device))
+
+    weights = jnp.concatenate(weight_list, axis=0)
     return weights

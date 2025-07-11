@@ -85,7 +85,7 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # Generate weights array
-    weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db, verbose=1)

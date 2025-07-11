@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import time
 import os
-import mbirjax
+import mbirjax as mj
 
 target_gb = 40
 
@@ -90,7 +90,7 @@ def worker_main(v, r, c):
                                          source_iso_dist=source_iso_dist)
         ct_model.set_params(use_gpu='sinograms', verbose=0)
         ct_model.view_batch_size_for_vmap = b
-        weights = ct_model.gen_weights(sino, weight_type='unweighted')
+        weights = mj.gen_weights(sino, weight_type='unweighted')
 
         # Run the computation and block until complete.
         time0 = time.time()

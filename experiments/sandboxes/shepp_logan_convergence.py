@@ -100,7 +100,7 @@ def main():
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
-    # weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set parameters
     partition_sequence = ct_model_for_recon.get_params('partition_sequence')

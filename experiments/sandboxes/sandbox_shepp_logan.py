@@ -58,7 +58,7 @@ else:
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
 weights = None
-# weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+# weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.

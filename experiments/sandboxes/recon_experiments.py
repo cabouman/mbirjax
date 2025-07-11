@@ -88,7 +88,7 @@ if __name__ == "__main__":
     mj.slice_viewer(sinogram, title=title, slice_label='View', slice_axis=0)
 
     # Generate weights array
-    weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)

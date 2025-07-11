@@ -18,6 +18,8 @@ from jax.errors import JaxRuntimeError
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
+
+import mbirjax
 import mbirjax as mj
 from mbirjax import ParameterHandler
 
@@ -1769,36 +1771,11 @@ class TomographyModel(ParameterHandler):
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         return recon, recon_dict
 
-    def gen_weights_mar(self, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
+    @staticmethod
+    def gen_weights(sinogram, weight_type):
         """
-        Generates the weights used for reducing metal artifacts in MBIR reconstruction.
+        DEPRECATED:  Use :func:`mbirjax.gen_weights` instead.
 
-        This function computes sinogram weights that help to reduce metal artifacts.
-        More specifically, it computes weights with the form:
-
-            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) ) )
-
-        delta(metal) denotes a binary mask indicating the sino entries that contain projections of metal.
-        Providing ``init_recon`` yields better metal artifact reduction.
-        If not provided, the metal segmentation is generated directly from the sinogram.
-
-        Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            init_recon (jax array, optional): An initial reconstruction used to identify metal voxels. If not provided, Otsu's method is used to directly segment sinogram into metal regions.
-            metal_threshold (float, optional): Values in ``init_recon`` above ``metal_threshold`` are classified as metal. If not provided, Otsu's method is used to segment ``init_recon``.
-            beta (float, optional): Scalar value in range :math:`>0`.
-                A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
-            gamma (float, optional): Scalar value in range :math:`>=0`.
-                A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
-
-        Returns:
-            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
-        """
-        return mj.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
-                                       beta=beta, gamma=gamma)
-
-    def gen_weights(self, sinogram, weight_type):
-        """
         Compute the optional weights used in MBIR reconstruction.
 
         Args:
@@ -1815,26 +1792,8 @@ class TomographyModel(ParameterHandler):
         Raises:
             Exception: Raised if ``weight_type`` is not one of the above options.
         """
-        weight_list = []
-        num_views = sinogram.shape[0]
-        batch_size = self.view_batch_size_for_vmap
-        for i in range(0, num_views, batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], self.worker)
-
-            if weight_type == 'unweighted':
-                weights = jnp.ones(sino_batch.shape)
-            elif weight_type == 'transmission':
-                weights = jnp.exp(-sino_batch)
-            elif weight_type == 'transmission_root':
-                weights = jnp.exp(-sino_batch / 2)
-            elif weight_type == 'emission':
-                weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
-            else:
-                raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
-            weight_list.append(jax.device_put(weights, self.sinogram_device))
-
-        weights = jnp.concatenate(weight_list, axis=0)
-        return weights
+        warnings.warn('TomographyModel.gen_weights() is deprecated and will be removed in a future release.  Use mbirjax.gen_weights() instead.')
+        return mj.gen_weights(sinogram, weight_type)
 
     def gen_modified_3d_sl_phantom(self):
         """
