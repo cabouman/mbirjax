@@ -5,8 +5,7 @@ import jax
 import time
 import matplotlib.pyplot as plt
 import gc
-import mbirjax.parallel_beam
-import mbirjax.utilities as mju
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -31,20 +30,20 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # parallel_model = mbirjax.ParallelBeamModel.from_file('params_parallel.yaml')
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    # parallel_model = mj.ParallelBeamModel.from_file('params_parallel.yaml')
+    parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
     # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mju.gen_cube_phantom(recon_shape)
+    phantom = mj.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels
     num_subsets = 1
-    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+    full_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
     num_subsets = 5
-    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+    subset_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
@@ -57,7 +56,7 @@ if __name__ == "__main__":
     # Determine resulting number of views, slices, and channels and image size
     print('Sinogram shape: {}'.format(sinogram.shape))
     print('Memory stats after forward projection')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
 
     # Get the vector of indices
     indices = jnp.arange(num_recon_rows * num_recon_cols)
@@ -72,7 +71,7 @@ if __name__ == "__main__":
     bp = parallel_model.sparse_back_project(sinogram, indices[0])
     print('Recon shape: ({}, {}, {})'.format(num_recon_rows, num_recon_cols, num_recon_slices))
     print('Memory stats after back projection')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
     # ##########################
     # Test the adjoint property
     # Get a random 3D phantom to test the adjoint property
@@ -177,6 +176,6 @@ if __name__ == "__main__":
     plt.pause(2)
 
     print('Final memory stats:')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
     input('Press return to exit')
     a = 0

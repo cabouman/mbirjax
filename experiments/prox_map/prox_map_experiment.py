@@ -1,7 +1,7 @@
 import numpy as np
 import time
 import jax.numpy as jnp
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up the model
-    ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    ct_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # View sinogram
-    # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    # mj.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     # ##########################
 
     # Display results
-    mbirjax.slice_viewer(prox_input, prox_recon0, recon, prox_recon1, data_dicts=[None, recon_dict, prox_recon_dict0, prox_recon_dict1],
+    mj.slice_viewer(prox_input, prox_recon0, recon, prox_recon1, data_dicts=[None, recon_dict, prox_recon_dict0, prox_recon_dict1],
                          title='prox input, prox: 0.0001, recon, prox: 10000', vmin=-0.1, vmax=1.2)
 
 

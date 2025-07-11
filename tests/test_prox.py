@@ -1,7 +1,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 
@@ -36,7 +36,7 @@ class TestProx(unittest.TestCase):
         end_angle = np.pi
 
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
-        ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
 
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')

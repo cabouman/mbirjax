@@ -46,7 +46,7 @@ def display_images_for_abstract(image1, image2, image3, labels, fig_title=None, 
         fig.colorbar(a2, cax=cbar_ax)
 
     plt.show()
-    figure_folder_name = mbirjax.make_figure_folder()
+    figure_folder_name = mj.make_figure_folder()
     os.makedirs(figure_folder_name, exist_ok=True)
     fig.savefig(os.path.join(figure_folder_name, fig_title + '.png'), bbox_inches='tight')
 

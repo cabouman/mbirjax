@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 import mbirjax.preprocess.utilities as preprocess
 
@@ -55,7 +55,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.maximum_intensity = 4.0
 
         # Initialize CT model
-        self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
+        self.cone_model = mj.ConeBeamModel(self.sinogram_shape,
                                                 self.angles,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)

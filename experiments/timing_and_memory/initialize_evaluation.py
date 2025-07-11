@@ -12,7 +12,7 @@ def initialize_evaluation(eval_type_index, num_views, num_channels, num_det_rows
     time_values = np.zeros_like(mem_values)
     max_percent_used_gb = 0
 
-    m1 = mbirjax.get_memory_stats(print_results=False)
+    m1 = mj.get_memory_stats(print_results=False)
     max_avail_gb = m1[0]['bytes_limit'] / (1024 ** 3)
 
     filename = 'GB_secs_used_for_' + eval_types[eval_type_index]

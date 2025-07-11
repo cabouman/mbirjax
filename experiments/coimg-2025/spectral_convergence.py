@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import os
 import mbirjax
-import mbirjax.utilities as mju
+import mbirjax as mj
 import vcd_coimg_utils as vcu
 
 if __name__ == "__main__":
@@ -30,17 +30,17 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    parallel_model = mj.ParallelBeamModel(sinogram_shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = mju.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
     center_slice = num_phantom_slices // 2
     phantom = phantom[:, :, center_slice:center_slice+1]
     phantom_fft = np.fft.fftn(phantom[:, :, 0])
     phantom_fft = np.fft.fftshift(phantom_fft)
 
     # Save the phantom and fft
-    figure_folder_name = mbirjax.make_figure_folder()
+    figure_folder_name = mj.make_figure_folder()
     plt.imshow(phantom, cmap='grey')
     fig_title = 'phantom'
     plt.title(fig_title)
@@ -108,18 +108,18 @@ if __name__ == "__main__":
         vcu.display_images_for_abstract(gd_residual_fft[cur_iter], vcd_residual_fft[cur_iter], icd_residual_fft[cur_iter],
                                         labels=labels, fig_title=fig_title, vmax=60, cmap='viridis', show_colorbar=True)
 
-    # mbirjax.slice_viewer(vcd_recons, gd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, gd right', slice_label='Iteration')
-    # mbirjax.slice_viewer(vcd_residual, gd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, gd right', slice_label='Iteration')
-    # mbirjax.slice_viewer(vcd_residual_fft, gd_residual_fft, title='Residual |FFT| in dB\nVCD left, GD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
+    # mj.slice_viewer(vcd_recons, gd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, gd right', slice_label='Iteration')
+    # mj.slice_viewer(vcd_residual, gd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, gd right', slice_label='Iteration')
+    # mj.slice_viewer(vcd_residual_fft, gd_residual_fft, title='Residual |FFT| in dB\nVCD left, GD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
     #
-    # mbirjax.slice_viewer(vcd_recons, icd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, icd right', slice_label='Iteration')
-    # mbirjax.slice_viewer(vcd_residual, icd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, icd right', slice_label='Iteration')
-    # mbirjax.slice_viewer(vcd_residual_fft, icd_residual_fft, title='Residual |FFT| in dB\nVCD left, ICD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
+    # mj.slice_viewer(vcd_recons, icd_recons, slice_axis=0, vmin=0, vmax=1, title='Recon, vcd left, icd right', slice_label='Iteration')
+    # mj.slice_viewer(vcd_residual, icd_residual, slice_axis=0, vmin=-1, vmax=1, title='Residual recon, vcd left, icd right', slice_label='Iteration')
+    # mj.slice_viewer(vcd_residual_fft, icd_residual_fft, title='Residual |FFT| in dB\nVCD left, ICD right', slice_axis=0, slice_label='Iteration', vmin=0, vmax=60)
     # cur_recon_params = cur_recon_dict['recon_params']
     # fm_rmse_vcd = cur_recon_params['fm_rmse']
     # prior_loss_vcd = cur_recon_params['prior_loss']
     # default_partition_sequence = parallel_model.get_params('partition_sequence')
-    # partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
+    # partition_sequence = mj.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
     # granularity_sequence_vcd = granularity[partition_sequence]
 
     a = 0

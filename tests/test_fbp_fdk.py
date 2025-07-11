@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 
@@ -30,8 +30,8 @@ class TestFBPReconstruction(unittest.TestCase):
         self.fdk_angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
         # Initialize both models
-        self.parallel_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.fbp_angles)
-        self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
+        self.parallel_model = mj.ParallelBeamModel(self.sinogram_shape, self.fbp_angles)
+        self.cone_model = mj.ConeBeamModel(self.sinogram_shape,
                                                 self.fdk_angles,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)

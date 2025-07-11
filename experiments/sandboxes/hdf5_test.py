@@ -5,8 +5,6 @@ import numpy as np
 import time
 import jax.numpy as jnp
 import mbirjax as mj
-import mbirjax.preprocess as mjp
-import mbirjax.utilities as mju
 
 """**Set the geometry parameters**"""
 
@@ -91,8 +89,8 @@ elapsed = time.time() - time0
 
 # ##########################
 # Test HDF5 import/export functions
-mju.export_recon_to_hdf5(filename='../data/recon.h5', recon=recon, recon_description="Test FDK reconstruction")
-data = mju.import_recon_from_hdf5('./data/recon.h5')
+mj.export_recon_to_hdf5(filename='../data/recon.h5', recon=recon, recon_description="Test FDK reconstruction")
+data = mj.import_recon_from_hdf5('./data/recon.h5')
 recon2 = data['recon']
 print(data['recon'].shape)
 print(data['recon_description'])
@@ -102,4 +100,4 @@ print(data['alu_description'])
 # Display results
 #mj.slice_viewer(recon, recon2, title="Original Recon (left) vs HDF5 Recon (right)")
 
-mju.HDF5Browser()
+mj.HDF5Browser()

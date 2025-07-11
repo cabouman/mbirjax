@@ -5,8 +5,7 @@ import jax
 import time
 import matplotlib.pyplot as plt
 import gc
-import mbirjax.parallel_beam
-import mbirjax.utilities as mju
+import mbirjax as mj
 import vcd_coimg_utils
 
 if __name__ == "__main__":
@@ -30,20 +29,20 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # parallel_model = mbirjax.ParallelBeamModel.from_file('params_parallel.yaml')
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    # parallel_model = mj.ParallelBeamModel.from_file('params_parallel.yaml')
+    parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
     # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = mju.gen_cube_phantom(recon_shape)
+    phantom = mj.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels
     num_subsets = 1
-    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+    full_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
     num_subsets = 5
-    subset_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+    subset_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
 
     # Get the vector of indices
     indices = jnp.arange(num_recon_rows * num_recon_cols)
@@ -75,7 +74,7 @@ if __name__ == "__main__":
     ax[1].legend(['AtAx / max, restricted to a line', 'C / |v - v0|, clipped'])
     ax[1].set_ylim(top=10)
     ax[1].set_title('Slice of AtAx')
-    fig_folder = mbirjax.make_figure_folder()
+    fig_folder = mj.make_figure_folder()
     plt.savefig(os.path.join(fig_folder, 'AtAx_normalized.png'), bbox_inches='tight')
     plt.show()
 

@@ -3,7 +3,6 @@ import numpy as np
 
 import time
 import matplotlib.pyplot as plt
-import mbirjax
 
 # import os
 # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".03"
@@ -11,7 +10,7 @@ import mbirjax
 import jax.numpy as jnp
 import jax
 
-import mbirjax.utilities as mju
+import mbirjax as mj
 
 if __name__ == "__main__":
 
@@ -79,17 +78,17 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    conebeam_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_distance, source_iso_distance)
+    conebeam_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_distance, source_iso_distance)
     # conebeam_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     # Generate phantom
     recon_shape = conebeam_model.get_params('recon_shape')
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
     with jax.default_device(main_device):
-        phantom = mju.gen_cube_phantom(recon_shape)
+        phantom = mj.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels and sinogram
-        full_indices = mbirjax.gen_full_indices(recon_shape)
+        full_indices = mj.gen_full_indices(recon_shape)
         full_indices = np.array(full_indices[:num_indices])
         voxel_values = np.array(conebeam_model.get_voxels_at_indices(phantom, full_indices))
 
@@ -98,25 +97,25 @@ if __name__ == "__main__":
 
     # New version
     print('Starting first projection')
-    mbirjax.get_memory_stats()
+    mj.get_memory_stats()
     time0 = time.time()
     sinogram0 = conebeam_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
     elapsed = time.time() - time0
     print('Pre-compile forward project time = {:.5f} sec'.format(elapsed))
-    mbirjax.get_memory_stats()
+    mj.get_memory_stats()
 
-    # mbirjax.slice_viewer(sinogram0, slice_axis=0)
+    # mj.slice_viewer(sinogram0, slice_axis=0)
     exit(0)
 
     num_projected_views = len(view_indices) if len(view_indices) != 0 else num_views
     print('Starting forward projection with {} views out of {} total'.format(num_projected_views, num_views))
     view_subset_sinogram = conebeam_model.sparse_forward_project(voxel_values[0], full_indices[0], view_indices=view_indices)
-    # mbirjax.slice_viewer(view_subset_sinogram, slice_axis=0, slice_label='View')
+    # mj.slice_viewer(view_subset_sinogram, slice_axis=0, slice_label='View')
 
     # Determine resulting number of views, slices, and channels and image size
     print('View subset sinogram shape: {}'.format(view_subset_sinogram.shape))
     print('Memory stats after forward projection')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
 
     # Get the vector of indices
     indices = jnp.arange(num_recon_rows * num_recon_cols)
@@ -128,7 +127,7 @@ if __name__ == "__main__":
     bp = conebeam_model.sparse_back_project(view_subset_sinogram, indices[0], view_indices=view_indices)
     print('Recon shape: ({}, {}, {})'.format(num_recon_rows, num_recon_cols, num_recon_slices))
     print('Memory stats after back projection')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
     # ##########################
     # Test the adjoint property
     # Get a random 3D phantom to test the adjoint property
@@ -214,7 +213,7 @@ if __name__ == "__main__":
     print('Done')
 
     print('Memory stats after all multiple projections')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
 
     # ##########################
     # Show the forward and back projection from a single pixel
@@ -241,6 +240,6 @@ if __name__ == "__main__":
     plt.pause(2)
 
     print('Final memory stats:')
-    mbirjax.get_memory_stats(print_results=True)
+    mj.get_memory_stats(print_results=True)
     input('Press return to exit')
     a = 0

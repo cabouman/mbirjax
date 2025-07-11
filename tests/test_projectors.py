@@ -3,8 +3,7 @@ import unittest
 import numpy as np
 import jax
 import jax.numpy as jnp
-import mbirjax
-import mbirjax.utilities as mju
+import mbirjax as mj
 
 
 class TestProjectors(unittest.TestCase):
@@ -20,7 +19,7 @@ class TestProjectors(unittest.TestCase):
     def setUp(self):
         """Set up before each test method."""
         # Choose the geometry type
-        self.geometry_types = mbirjax._utils._geometry_types_for_tests
+        self.geometry_types = mj._utils._geometry_types_for_tests
 
         # Set parameters
         self.num_views = 64
@@ -63,13 +62,13 @@ class TestProjectors(unittest.TestCase):
 
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
-            ct_model = mbirjax.ConeBeamModel(self.sinogram_shape, self.angles,
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
-            ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
         elif geometry_type == 'translation':
-            ct_model = mbirjax.TranslationModel(self.sinogram_shape, self.translation_vectors,
+            ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
         else:
@@ -132,7 +131,7 @@ class TestProjectors(unittest.TestCase):
             new_model = new_model.from_file(filename)
 
         # Compare parameters
-        same_params = mbirjax.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
+        same_params = mj.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
         assert same_params
 
         # Do a forward and back projection with loaded model
@@ -156,10 +155,10 @@ class TestProjectors(unittest.TestCase):
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
-        phantom = mju.gen_cube_phantom(recon_shape)
+        phantom = mj.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels and get the voxel cylinders
-        full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)[0]
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1)[0]
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
         # Compute forward projection with all the views at once
@@ -193,7 +192,7 @@ class TestProjectors(unittest.TestCase):
         #     recon1 = recon1.at[row_index0, col_index0].set(back_projection_stitched)
         #     title = 'Standard backprojection (left) and \nabs diff with back projection via multiple view subsets (right)'
         #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs'
-        #     mbirjax.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
+        #     mj.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
         back_view_batch_test_result = np.sum(proj_diff > 1e-4) < 1000 and np.amax(proj_diff) < 0.2
         self.assertTrue(back_view_batch_test_result)
 
@@ -213,11 +212,11 @@ class TestProjectors(unittest.TestCase):
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mju.gen_cube_phantom(recon_shape)
+        phantom = mj.gen_cube_phantom(recon_shape)
 
         # Generate indices of pixels
         num_subsets = 1
-        full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
 
         # Generate sinogram data
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]

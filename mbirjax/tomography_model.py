@@ -19,7 +19,6 @@ from jax.errors import JaxRuntimeError
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
-import mbirjax.utilities as mju
 from mbirjax import ParameterHandler
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
@@ -1845,7 +1844,7 @@ class TomographyModel(ParameterHandler):
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
         recon_shape = self.get_params('recon_shape')
-        phantom = mju.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
         return phantom
 
     def reshape_recon(self, recon):

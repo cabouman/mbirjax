@@ -5,7 +5,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
-import mbirjax.utilities as mju
 
 
 class TestVCD(unittest.TestCase):
@@ -60,7 +59,7 @@ class TestVCD(unittest.TestCase):
         z_spacing = 22
 
         # Generate translation vectors
-        translation_vectors = mju.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
+        translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
         self.translation_vectors = translation_vectors
 
     def get_model(self, geometry_type):
@@ -98,7 +97,7 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'translation':
             recon_shape = ct_model.get_params('recon_shape')
             words = ["Purdue", "Presents", "Translation", "Tomography"]
-            phantom = mju.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
+            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
         else:
             phantom = ct_model.gen_modified_3d_sl_phantom()
 
