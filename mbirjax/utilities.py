@@ -700,8 +700,8 @@ def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_siz
     Generate a synthetic ground truth phantom based on the selected option.
 
     Args:
-        option (str): Phantom type to generate. Options are 'dots' or 'text'.
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
+        option (str): Phantom type to generate. Options are 'dots' or 'text'.
         words (list[str]): List of ASCII words to render.
         fill_rate (float, optional): Fill rate of the reconstruction volume. Default is 0.05.
         font_size (int, optional): Font size of the ASCII words. Default is 20.
@@ -761,8 +761,9 @@ def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
     positions = []
-    for i in range(1, len(words) + 1):
-        positions.append((recon_shape[0] // (len(words) + 1) * i, recon_shape[1] // 2, recon_shape[2] // 2))
+    row_positions = np.linspace(0, recon_shape[0] - 1, len(words) + 2)[1:-1]
+    for r in row_positions:
+        positions.append((int(round(r)), recon_shape[1] // 2, recon_shape[2] // 2))
 
     array_size = np.minimum(recon_shape[1], recon_shape[2])
 

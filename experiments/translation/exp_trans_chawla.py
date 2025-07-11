@@ -4,23 +4,39 @@ import mbirjax.preprocess as mjp
 
 def main():
     # Define geometry
-    source_iso_dist = 64
-    source_detector_dist = 64
+    source_det_dist_mm = 190
+    source_iso_dist_mm = 70
+    det_pixel_pitch_mm = 75 / 1000
+    x_space_mm = 11.4
+    z_space_mm = 14
+    num_x_translations = 5
+    num_z_translations = 3
+    row_pitch_scaling_factor = 1.0
 
     # Define detector size
-    num_det_rows = 128
-    num_det_channels = 128
-
-    # Define view sampling parameters
-    num_x_translations = 7
-    num_z_translations = 7
-    x_spacing = 22
-    z_spacing = 22
+    num_det_rows = 1944
+    num_det_channels = 3072
 
     # Set recon parameters
     sharpness = 1.0
     phantom_type = "text"   # Can be "dots" or "text"
-    words = ["Purdue", "Presents", "Translation", "Tomography"] # List of words to render in the text phantom
+    words = ['P', 'U']     # List of words to render in the text phantom
+
+    # Calculate physical parameters
+    mag_physical = source_det_dist_mm / source_iso_dist_mm
+    det_pixel_pitch_at_iso_mm = det_pixel_pitch_mm / mag_physical
+    det_height_at_iso = det_pixel_pitch_at_iso_mm * num_det_rows
+    det_width_at_iso = det_pixel_pitch_at_iso_mm * num_det_channels
+
+    print("Magnification:", mag_physical)
+    print("Detector pixel pitch at ISO (mm):", det_pixel_pitch_at_iso_mm)
+    print("Detector height and width at ISO in mm:", det_height_at_iso, det_width_at_iso)
+
+    # Compute geometry parameters in ALU
+    source_iso_dist = source_iso_dist_mm / det_pixel_pitch_at_iso_mm
+    source_det_dist = source_iso_dist
+    x_spacing = x_space_mm / det_pixel_pitch_at_iso_mm
+    z_spacing = z_space_mm / det_pixel_pitch_at_iso_mm
 
     # Generate translation vectors
     translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
@@ -29,9 +45,16 @@ def main():
     sino_shape = (translation_vectors.shape[0], num_det_rows, num_det_channels)
 
     # Initialize model for reconstruction.
-    tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    tct_model = mj.TranslationModel(sino_shape, translation_vectors, source_detector_dist=source_det_dist, source_iso_dist=source_iso_dist)
     tct_model.set_params(sharpness=sharpness)
     recon_shape = tct_model.get_params('recon_shape')
+
+    # Change row pitch based on user preference
+    delta_recon_row = row_pitch_scaling_factor * tct_model.get_params("delta_recon_row")
+    tct_model.set_params(delta_recon_row=delta_recon_row)
+
+    # Print parameters
+    tct_model.print_params()
 
     # Print model parameters
     tct_model.print_params()
@@ -39,7 +62,7 @@ def main():
     mj.display_translation_vectors(translation_vectors, recon_shape)
 
     # Generate ground truth phantom
-    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words)
+    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words, font_size=800)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
