@@ -8,12 +8,12 @@ if __name__ == "__main__":
     This is a script to develop, debug, and tune the parallel beam mbirjax code.
     """
     # Choose the geometry type
-    geometry_type = 'cone'
+    geometry_type = 'parallel'
 
     print('Using {} geometry.'.format(geometry_type))
 
     # Set parameters
-    num_views = 1
+    num_views = 64
     view_angle = np.pi / 2
     num_det_rows = 40
     num_det_channels = 64
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # View sinogram
-    mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
@@ -59,16 +59,27 @@ if __name__ == "__main__":
 
     # ##########################
     # Perform VCD reconstruction
-    prox_input = phantom  # jnp.zeros_like(phantom)
-    time0 = time.time()
-    recon, recon_params = ct_model.prox_map(prox_input / 2, sinogram, weights=weights, max_iterations=10, init_recon=prox_input, first_iteration=3)
+    prox_input = phantom + 0.1 * (phantom > 0)  # jnp.zeros_like(phantom)
 
-    recon.block_until_ready()
-    elapsed = time.time() - time0
-    print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+    ct_model.set_params(sharpness=6, snr_db=60)
+    recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=20, first_iteration=0,
+                                       stop_threshold_change_pct=0.01)
+
+    # Do a prox map with small sigma_prox to return very nearly the prox_input
+    prox_recon0, prox_recon_dict0 = ct_model.prox_map(prox_input, sinogram, weights=weights, sigma_prox=1e-6, max_iterations=20,
+                                                      first_iteration=0, init_recon=prox_input)
+
+    # Do a prox map with large sigma_prox to return very nearly the same as a recon with small prior
+    prox_recon1, prox_recon_dict1 = ct_model.prox_map(prox_input, sinogram, weights=weights, sigma_prox=1e6, max_iterations=20,
+                                                      first_iteration=0, init_recon=recon)
+
+    print(np.linalg.norm(prox_recon0 - prox_input) / np.linalg.norm(prox_input))
+    print(np.linalg.norm(prox_recon1 - recon) / np.linalg.norm(recon))
+    print(ct_model.get_params('sigma_prox'))
     # ##########################
 
     # Display results
-    mbirjax.slice_viewer(phantom-recon, title='Phantom (left) vs VCD Recon (right)', vmin=-0.1, vmax=0.5)
+    mbirjax.slice_viewer(prox_input, prox_recon0, recon, prox_recon1, data_dicts=[None, recon_dict, prox_recon_dict0, prox_recon_dict1],
+                         title='prox input, prox: 0.0001, recon, prox: 10000', vmin=-0.1, vmax=1.2)
 
 
