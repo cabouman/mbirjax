@@ -1731,6 +1731,7 @@ class TomographyModel(ParameterHandler):
 
         if sigma_prox is not None:  # Override the auto sigma_prox if needed
             regularization_params['sigma_prox'] = sigma_prox
+            self_sigma_prox = self.get_params('sigma_prox')
             self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=self.get_params('auto_regularize_flag'))
 
         # Compute proximal map
@@ -1749,6 +1750,7 @@ class TomographyModel(ParameterHandler):
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
                                   regularization_params, stop_threshold_change_pct, alpha_values]
             recon_params = ReconParams(*tuple(recon_param_values))._asdict()
+            self.set_params(no_warning=True, sigma_prox=self_sigma_prox)
 
         except MemoryError as e:
             self.logger.error('Insufficient CPU memory')
