@@ -30,7 +30,7 @@ if __name__ == "__main__":
     
     See also tests/test_projectors.py: verify_view_batching
     
-    Replace the default version of parallel_beam.py with the version in the folder bugs/jax rounding bug to
+    Replace the default version of parallel_beam.py with the version in the folder bugs/aliasing bug to
     see the effect of inconsistent rounding.  
     """
 
