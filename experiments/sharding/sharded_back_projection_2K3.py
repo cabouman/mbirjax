@@ -38,10 +38,15 @@ pixel_indices = jax.device_put(pixel_indices, device=back_projection_model.worke
 ############################### SHARDED ###############################
 print("Starting sharded back projection")
 
-time0 = time.time()
-sharded_back_projection_2k3 = back_projection_model.sparse_back_project(sinogram, pixel_indices,
-                                                                    output_device=back_projection_model.main_device)
+
+sharded_back_projection_2k3 = back_projection_model.sparse_back_project(sinogram, pixel_indices, output_device=back_projection_model.main_device)
 sharded_back_projection_2k3.block_until_ready()
+
+time0 = time.time()
+
+sharded_back_projection_2k3 = back_projection_model.sparse_back_project(sinogram, pixel_indices, output_device=back_projection_model.main_device)
+sharded_back_projection_2k3.block_until_ready()
+
 elapsed = time.time() - time0
 
 mj.get_memory_stats()
