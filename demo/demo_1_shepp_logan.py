@@ -27,7 +27,6 @@ import numpy as np
 import time
 import pprint
 import mbirjax as mj
-import mbirjax.utilities
 
 """**Set the geometry parameters**"""
 
@@ -44,8 +43,8 @@ num_det_channels = 128
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
-                                                                 num_views=num_views, num_det_rows=num_det_rows,
-                                                                 num_det_channels=num_det_channels)
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
 angles = params['angles']
 
 # View the sinogram
@@ -65,7 +64,7 @@ else:
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
 weights = None
-# weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+# weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
 # Set reconstruction parameter values
 # Increase sharpness by 1 or 2 to get clearer edges, possibly with more high-frequency artifacts.

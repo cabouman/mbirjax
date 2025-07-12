@@ -32,8 +32,6 @@ for direct (non-iterative) reconstruction in the case of many views and low-nois
    mbirjax.TomographyModel.prox_map
    mbirjax.TomographyModel.forward_project
    mbirjax.TomographyModel.back_project
-   mbirjax.TomographyModel.gen_weights
-   mbirjax.TomographyModel.gen_weights_mar
    mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
 Parameter Handling
@@ -66,8 +64,8 @@ Parameter handling uses the following primary methods.
    usr_cone_beam_model
    usr_translation_model
    usr_denoising
-   usr_preprocess
    usr_utilities
+   usr_preprocess
 
 Preprocessing
 -------------

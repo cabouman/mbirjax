@@ -2,8 +2,7 @@ import numpy as np
 import os
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 
 def display_slices_for_abstract( recon1, recon2, recon3, labels, fig_title=None):
@@ -71,21 +70,22 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist,
+        ct_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist,
                                          source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+        ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     sinogram = ct_model.forward_project(phantom)
 
     # Generate weights array
-    weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db, verbose=1)
@@ -160,12 +160,12 @@ if __name__ == "__main__":
     fm_losses = [fm_rmse_alt_1, fm_rmse_default, fm_rmse_alt_2]
     prior_losses = [prior_loss_alt_1, prior_loss_default, prior_loss_alt_2]
     # labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256),
+    mj.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256),
                                       loss_ylim=(0.1, 15), fig_title=fig_title)
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
-    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
+    partitions_fig = mj.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
-    mbirjax.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
+    mj.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)

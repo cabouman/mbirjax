@@ -55,7 +55,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             ct_model.set_params(sharpness=sharpness, verbose=1)
 
             # Generate weights and run reconstruction
-            weights = ct_model.gen_weights(sino, weight_type='transmission_root')
+            weights = mj.gen_weights(sino, weight_type='transmission_root')
             recon, recon_dict = ct_model.recon(sino, weights=weights)
     """
     print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")

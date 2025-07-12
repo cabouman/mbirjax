@@ -91,9 +91,9 @@ def BH_correction(sino, alpha, batch_size=64):
             Beam hardening corrected sinogram.
 
     Example:
-        >>> from mbirjax.preprocess import BH_correction
+        >>> import mbirjax.preprocess as mjp
         >>> alpha = [1.0, 0.2, 0.1]  # Correction: sino + 0.2 * sino^2 + 0.1 * sino^3
-        >>> corrected_sino = BH_correction(sino, alpha)
+        >>> corrected_sino = mjp.BH_correction(sino, alpha)
     """
     # Ensure inputs are JAX arrays
     sino = jnp.asarray(sino)

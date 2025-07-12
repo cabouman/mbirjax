@@ -1,5 +1,5 @@
 import numpy as np
-import mbirjax
+import mbirjax as mj
 
 
 if __name__ == "__main__":
@@ -12,7 +12,7 @@ if __name__ == "__main__":
 
     num_subsets = 2
 
-    ror_mask = mbirjax.get_2d_ror_mask(image_shape)
+    ror_mask = mj.get_2d_ror_mask(image_shape)
 
     # bn_size = 256
     # filename = 'HDR_L_{}'.format(bn_size)
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     # pattern = np.load(filename + '.npy').astype(np.uint16)
     # np.savetxt('bn256.py', pattern, fmt='%d,', header='import numpy as np\nbn256 = np.array([',
     #            footer='], dtype=float).reshape((256, 256))', delimiter='', comments='')
-    pattern = mbirjax.bn256.bn256
+    pattern = mj.bn256.bn256
 
     bin_boundaries = np.linspace(0, 2**16, num_subsets + 1, endpoint=True)
 
@@ -143,9 +143,9 @@ if __name__ == "__main__":
 
     full_mask_fft = np.fft.fft2(full_mask)
     full_mask_fft = np.fft.fftshift(full_mask_fft, axes=(1, 2))
-    # mbirjax.slice_viewer(np.real(full_mask_fft), np.imag(full_mask_fft), slice_axis=0)
+    # mj.slice_viewer(np.real(full_mask_fft), np.imag(full_mask_fft), slice_axis=0)
     full_mask_fft = 20 * np.log10(np.abs(full_mask_fft) + 1e-12)
     # print('Number of points = {}'.format(np.sum(subsets, axis=(1, 2))))
-    mbirjax.slice_viewer(40 * full_mask, full_mask_fft, slice_axis=0, slice_label='Subset',
+    mj.slice_viewer(40 * full_mask, full_mask_fft, slice_axis=0, slice_label='Subset',
                          title='Subset mask and FFT in dB', vmin=0, vmax=60)
 

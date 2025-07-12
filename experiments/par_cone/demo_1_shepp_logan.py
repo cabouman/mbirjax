@@ -2,8 +2,6 @@ import numpy as np
 import pprint
 import jax.numpy as jnp
 import mbirjax as mj
-import mbirjax.preprocess as mjp
-import mbirjax.utilities
 
 if __name__ == "__main__":
     """
@@ -46,7 +44,7 @@ if __name__ == "__main__":
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     recon_shape = ct_model.get_params("recon_shape")
-    phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
@@ -57,7 +55,7 @@ if __name__ == "__main__":
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
-    # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)

@@ -1,7 +1,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 
@@ -36,11 +36,12 @@ class TestProx(unittest.TestCase):
         end_angle = np.pi
 
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
-        ct_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.angles)
+        ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
 
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')
-        phantom = ct_model.gen_modified_3d_sl_phantom()
+        phantom_shape = ct_model.get_params('recon_shape')
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
         # Generate synthetic sinogram data
         print('  Creating sinogram')
@@ -52,13 +53,28 @@ class TestProx(unittest.TestCase):
         # ##########################
         # Evaluating the proximal map
         print('  Starting proximal map')
-        prox_input = phantom
-        recon, recon_params = ct_model.prox_map(prox_input, sinogram, max_iterations=5, init_recon=prox_input)
-        recon.block_until_ready()
+        prox_input = phantom + 0.1 * (phantom > 0)
 
-        max_diff = np.amax(np.abs(phantom - recon))
-        tolerance = 1e-5
-        self.assertTrue(max_diff < tolerance)
+        ct_model.set_params(sharpness=6, snr_db=60)
+        recon, recon_dict = ct_model.recon(sinogram, max_iterations=20, first_iteration=0,
+                                           stop_threshold_change_pct=0.01)
+
+        # Do a prox map with small sigma_prox to return very nearly the prox_input
+        prox_recon0, prox_recon_dict0 = ct_model.prox_map(prox_input, sinogram, sigma_prox=1e-6,
+                                                          max_iterations=20,
+                                                          first_iteration=0, init_recon=prox_input)
+
+        # Do a prox map with large sigma_prox to return very nearly the same as a recon with small prior
+        prox_recon1, prox_recon_dict1 = ct_model.prox_map(prox_input, sinogram, sigma_prox=1e6,
+                                                          max_iterations=20,
+                                                          first_iteration=0, init_recon=recon)
+
+        small_sigma_nrmse = np.linalg.norm(prox_recon0 - prox_input) / np.linalg.norm(prox_input)
+        large_sigma_nrmse = np.linalg.norm(prox_recon1 - recon) / np.linalg.norm(recon)
+        tolerance = 2e-5
+        self.assertTrue(small_sigma_nrmse < tolerance)
+        tolerance = 3e-4
+        self.assertTrue(large_sigma_nrmse < tolerance)
 
 
 if __name__ == '__main__':

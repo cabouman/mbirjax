@@ -2,8 +2,7 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -38,16 +37,16 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
     recon_shape = ct_model.get_params('recon_shape')
-    phantom = np.zeros(recon_shape)  # ct_model.gen_modified_3d_sl_phantom()
+    phantom = np.zeros(recon_shape)
     phantom[16:48, 16:48, 16:48] = 1
 
     # Generate synthetic sinogram data
@@ -55,11 +54,11 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
 
     # View sinogram
-    mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    mj.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
-    # weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)
@@ -90,5 +89,5 @@ if __name__ == "__main__":
     print('95% of recon pixels are within {} of phantom'.format(pct_95))
 
     # Display results
-    mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    mj.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
 

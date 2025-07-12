@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 
@@ -30,16 +30,19 @@ class TestFBPReconstruction(unittest.TestCase):
         self.fdk_angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
         # Initialize both models
-        self.parallel_model = mbirjax.ParallelBeamModel(self.sinogram_shape, self.fbp_angles)
-        self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
+        self.parallel_model = mj.ParallelBeamModel(self.sinogram_shape, self.fbp_angles)
+        self.cone_model = mj.ConeBeamModel(self.sinogram_shape,
                                                 self.fdk_angles,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
 
         # Generate 3D Shepp-Logan phantom and sinogram
-        self.fbp_phantom = self.parallel_model.gen_modified_3d_sl_phantom()
+        phantom_shape = self.parallel_model.get_params('recon_shape')
+        self.fbp_phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
         self.fbp_sino = self.parallel_model.forward_project(self.fbp_phantom)
-        self.fdk_phantom = self.cone_model.gen_modified_3d_sl_phantom()
+
+        phantom_shape = self.cone_model.get_params('recon_shape')
+        self.fdk_phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
         self.fdk_sino = self.cone_model.forward_project(self.fdk_phantom)
 
         # Set tolerances for the metrics - FBP is deterministic, so results should never go above these.

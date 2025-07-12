@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 import mbirjax.preprocess.utilities as preprocess
 
@@ -55,7 +55,7 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.maximum_intensity = 4.0
 
         # Initialize CT model
-        self.cone_model = mbirjax.ConeBeamModel(self.sinogram_shape,
+        self.cone_model = mj.ConeBeamModel(self.sinogram_shape,
                                                 self.angles,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
@@ -72,7 +72,8 @@ class TestNSIPreprocessing(unittest.TestCase):
         row0 = round(self.crop_pixels_top)
         border_width = self.edge_width
 
-        self.phantom = self.cone_model.gen_modified_3d_sl_phantom()
+        phantom_shape = self.cone_model.get_params('recon_shape')
+        self.phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
         sino_gt = self.cone_model.forward_project(self.phantom)
 
         # Mask the borders as needed

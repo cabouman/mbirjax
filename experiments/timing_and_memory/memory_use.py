@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import time
 import os
-import mbirjax
+import mbirjax as mj
 
 target_gb = 40
 
@@ -85,12 +85,12 @@ def worker_main(v, r, c):
         source_detector_dist = 4 * c
         source_iso_dist = source_detector_dist
 
-        ct_model = mbirjax.ConeBeamModel(sino.shape, angles,
+        ct_model = mj.ConeBeamModel(sino.shape, angles,
                                          source_detector_dist=source_detector_dist,
                                          source_iso_dist=source_iso_dist)
         ct_model.set_params(use_gpu='sinograms', verbose=0)
         ct_model.view_batch_size_for_vmap = b
-        weights = ct_model.gen_weights(sino, weight_type='unweighted')
+        weights = mj.gen_weights(sino, weight_type='unweighted')
 
         # Run the computation and block until complete.
         time0 = time.time()
@@ -105,7 +105,7 @@ def worker_main(v, r, c):
         elapsed_time1 = elapsed_time0
 
         # Retrieve memory stats.
-        stats = mbirjax.get_memory_stats(print_results=False)
+        stats = mj.get_memory_stats(print_results=False)
         peak_memory = stats[0]['peak_bytes_in_use'] / (1024 ** 3)
         avail_memory = stats[0]['bytes_limit'] / (1024 ** 3)
         return peak_memory, avail_memory, elapsed_time0, elapsed_time1

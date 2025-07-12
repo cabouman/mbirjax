@@ -176,7 +176,7 @@ def main():
     # Generate phantom - all zero except a small cube
     recon_shape = (num_det_channels, num_det_channels, num_det_rows)
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom = torch.zeros(recon_shape, device=output_device)  #mbirjax.gen_cube_phantom(recon_shape)
+    phantom = torch.zeros(recon_shape, device=output_device)  #mj.gen_cube_phantom(recon_shape)
     i, j, k = recon_shape[0]//3, recon_shape[1]//2, recon_shape[2]//2
     phantom[i:i+5, j:j+5, k:k+5] = 1.0
 
@@ -206,7 +206,7 @@ def main():
         print('Used {:.2f}GB of {:.2f}GB total memory'.format(mem_used_gb, total_gb))
 
     # import mbirjax
-    # mbirjax.slice_viewer(sinogram.detach().cpu().numpy(), slice_axis=0)
+    # mj.slice_viewer(sinogram.detach().cpu().numpy(), slice_axis=0)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax.parallel_beam
+import mbirjax as mj
 import jax
 
-import mbirjax.utilities
+import mbirjax as mj
 
 jax.config.update("jax_default_matmul_precision", "highest")
 if __name__ == "__main__":
@@ -53,14 +53,14 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up the model
-    ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+    ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
 
     # Generate phantom
     recon_shape = ct_model.get_params('recon_shape')
-    phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+    phantom = mj.gen_cube_phantom(recon_shape)
 
     # Generate indices of pixels and get the voxel cylinders
-    full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets=1)[0]
+    full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1)[0]
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
     # Compute forward projection with all the views at once
@@ -89,5 +89,5 @@ if __name__ == "__main__":
     recon1 = recon1.at[row_index1, col_index1].set(back_projection1)
 
     title = 'Back projections of the same data, but with a set of \npixels that is one more in the right figure than in the left'
-    mbirjax.slice_viewer(recon0[20:40, 20:40, :], recon1[20:40, 20:40, :], slice_axis=2, title=title)
+    mj.slice_viewer(recon0[20:40, 20:40, :], recon1[20:40, 20:40, :], slice_axis=2, title=title)
 

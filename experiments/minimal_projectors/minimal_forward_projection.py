@@ -199,7 +199,7 @@ def main():
     recon_shape = (num_det_channels, num_det_channels, num_det_rows)
     num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
     with jax.default_device(output_device):
-        phantom = jnp.zeros(recon_shape)  #mbirjax.gen_cube_phantom(recon_shape)
+        phantom = jnp.zeros(recon_shape)  #mj.gen_cube_phantom(recon_shape)
         i, j, k = recon_shape[0]//3, recon_shape[1]//2, recon_shape[2]//2
         phantom = phantom.at[i:i+5, j:j+5, k:k+5].set(1.0)
 
@@ -224,7 +224,7 @@ def main():
         get_memory_stats(print_results=True)
 
     # import mbirjax
-    # mbirjax.slice_viewer(sinogram, slice_axis=0)
+    # mj.slice_viewer(sinogram, slice_axis=0)
 
 
 if __name__ == "__main__":
