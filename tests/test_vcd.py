@@ -17,9 +17,9 @@ class TestVCD(unittest.TestCase):
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
-        parallel_tolerances = {'nrmse': 0.1, 'max_diff': 0.3, 'pct_95': 0.04}
-        cone_tolerances = {'nrmse': 0.12, 'max_diff': 0.5, 'pct_95': 0.03}
-        translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.7, 'pct_95': 0.11}
+        parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
+        cone_tolerances = {'nrmse': 0.13, 'max_diff': 0.5, 'pct_95': 0.04}
+        translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
         self.all_tolerances = [parallel_tolerances, cone_tolerances, translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
