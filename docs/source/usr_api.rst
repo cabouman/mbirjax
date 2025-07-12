@@ -32,13 +32,28 @@ for direct (non-iterative) reconstruction in the case of many views and low-nois
    mbirjax.TomographyModel.prox_map
    mbirjax.TomographyModel.forward_project
    mbirjax.TomographyModel.back_project
-   mbirjax.TomographyModel.gen_modified_3d_sl_phantom
+
+Denoising
+---------
+
+See :ref:`DenoisingDocs` for details on Denoising Functions.
+These includes functions for computing the MAP denoiser using the qGGMRF prior and a 3D median filter.
+
+.. autosummary::
+
+   mbirjax.QGGMRFDenoiser.denoise
+
+The median filter is implemented in jax using a fixed 3x3x3 neighborhood with replicated edges at the boundary.
+
+.. autosummary::
+
+   mbirjax.denoising.median_filter3d
 
 Parameter Handling
 ------------------
 
-See the :ref:`Primary Parameters <ParametersDocs>` page for a description of the primary parameters.
-Parameter handling uses the following primary methods.
+See :ref:`Primary Parameters <ParametersDocs>` page for a description of the primary parameters.
+Users can set, get, and printout parameters using the following primary methods.
 
 .. autosummary::
 
@@ -67,56 +82,11 @@ Parameter handling uses the following primary methods.
    usr_utilities
    usr_preprocess
 
-Preprocessing
--------------
-
-Preprocessing functions are implemented in :ref:`PreprocessDocs`. This includes various methods to compute and correct the sinogram data as needed.
-The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
-`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo.
-
-.. autosummary::
-
-   preprocess.nsi.compute_sino_and_params
-   preprocess.nsi.load_scans_and_params
-
-The remaining functions can be used for multiple types of scan data.
-
-.. autosummary::
-
-   preprocess.compute_sino_transmission
-   preprocess.interpolate_defective_pixels
-   preprocess.correct_det_rotation_and_background
-   preprocess.estimate_background_offset
-
-Denoising
----------
-
-MBIRJAX includes a Bayesian MAP denoising using the qGGMRF prior and a 3D median filter.
-
-Bayesian denoising is implemented via the class :class:`QGGMRFDenoiser` with a using the QGGMRF prior loss function, which promotes
-nearby voxels to have similar values while preserving edges.  Using :math:`Q(v)` to denote the loss function, the
-denoiser is
-
-        .. math::
-
-            F(x) = \arg\min_v \left\{ Q(v) + \frac{1}{2}\|v - x\|^{2} \right\}.
-
-.. autosummary::
-
-   QGGMRFDenoiser.denoise
-
-The median filter is implemented in jax using a fixed 3x3x3 neighborhood with replicated edges at the boundary.
-
-.. autosummary::
-
-   median_filter3d
-
-Saving, Loading, and Display
-----------------------------
+Saving and Loading
+------------------
 
 * Saving and loading of the parameters needed to define a model are implemented in :meth:`TomographyModel.to_file` and :meth:`TomographyModel.from_file`.
 * Saving and loading of the data and the dict of parameters/logs returned from :meth:`TomographyModel.recon` are implemented in :meth:`TomographyModel.save_recon_hdf5` and :meth:`TomographyModel.load_recon_hdf5`.
-* Display of reconstructions and parameters/log dict is handled by :func:`viewer.slice_viewer`, which can be given these objects directly or which can be used to load hdf5 files interactively.
 
 .. autosummary::
 
@@ -124,6 +94,35 @@ Saving, Loading, and Display
    TomographyModel.from_file
    TomographyModel.save_recon_hdf5
    TomographyModel.load_recon_hdf5
+
+
+Utilities
+---------
+
+See :ref:`Utilities` for details on Utility Functions.
+These include variety of functions for viewing, generating weights, exporting/importing data, and generating synthetic data.
+
+.. autosummary::
+
    viewer.slice_viewer
+   vcd_utils.gen_weights
+   vcd_utils.gen_weights_mar
+   utilities.download_and_extract
+   utilities.export_recon_hdf5
+   utilities.import_recon_hdf5
+   utilities.generate_3d_shepp_logan_low_dynamic_range
+
+
+Preprocessing
+-------------
+
+See :ref:`PreprocessDocs` for details on Preprocessing Functions.
+These functions various methods to compute and correct the sinogram data as needed.
+The following are functions specific to NSI scanners.  See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
+`mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo.
+
+It also includes functions for processing cone beam and parallel beam data to remove artifacts from metal, detector defects.
+
+It also includes functions for optimal view selection.
 
 
