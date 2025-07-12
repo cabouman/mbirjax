@@ -375,21 +375,35 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
 def gen_weights(sinogram, weight_type):
     """
-    Compute the optional weights used in MBIR reconstruction.
+    Compute optional weights used in MBIR reconstruction based on the noise model.
+
+    The weights should be proportional to the inverse variance of the noise for each sinogram entry.
+    They can be used to improve reconstruction quality.
 
     Args:
-        sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-        weight_type (string): Type of noise model used for data
-                - weight_type = 'unweighted' => return numpy.ones(sinogram.shape).
-                - weight_type = 'transmission' => return numpy.exp(-sinogram).
-                - weight_type = 'transmission_root' => return numpy.exp(-sinogram/2).
-                - weight_type = 'emission' => return 1/(numpy.absolute(sinogram) + 0.1).
+        sinogram (jax.Array): A 3D JAX array of shape (num_views, num_det_rows, num_det_channels)
+            representing the sinogram.
+        weight_type (str): The type of noise model to use for weighting. Must be one of:
+            - 'unweighted': Use uniform weights (all ones).
+            - 'transmission': Use exponential decay, `exp(-sinogram)`.
+            - 'transmission_root': Use square-root decay, `exp(-sinogram / 2)`.
+            - 'emission': Use reciprocal decay, `1 / (abs(sinogram) + 0.1)`.
 
     Returns:
-        (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+        jax.Array: A 3D array of weights with the same shape as the input sinogram.
 
     Raises:
-        Exception: Raised if ``weight_type`` is not one of the above options.
+        Exception: If `weight_type` is not one of the supported options.
+
+    Note:
+        For transmission noise models, sinogram values should not be excessively large (e.g., > 5),
+        as this corresponds to near-zero transmission, which is not physically meaningful in typical X-ray imaging.
+
+    Example:
+        >>> sinogram = jnp.ones((180, 64, 128))
+        >>> weights = gen_weights(sinogram, weight_type='transmission_root')
+        >>> weights.shape
+        (180, 64, 128)
     """
     weight_list = []
     num_views = sinogram.shape[0]
