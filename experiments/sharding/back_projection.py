@@ -5,8 +5,10 @@ import time
 import jax.numpy as jnp
 import mbirjax as mj
 import jax
+import csv
 
-def back_project(size, gpus=None):
+
+def back_project(size, gpus=None, output_filepath='output.csv'):
 
     # sinogram shape
     num_views = size
@@ -49,15 +51,38 @@ def back_project(size, gpus=None):
     back_projection.block_until_ready()
     elapsed = time.time() - time0
 
-    mj.get_memory_stats()
+    mem_stats = mj.get_memory_stats()
+
+    row = [
+        size,
+        gpus,
+        elapsed,
+        mem_stats[0]['peak_bytes_in_use'],
+        mem_stats[1]['peak_bytes_in_use'],
+        mem_stats[2]['peak_bytes_in_use'],
+        mem_stats[3]['peak_bytes_in_use'],
+        mem_stats[4]['peak_bytes_in_use'],
+        mem_stats[5]['peak_bytes_in_use'],
+        mem_stats[6]['peak_bytes_in_use'],
+        mem_stats[7]['peak_bytes_in_use'],
+    ]
+
+    # with open(output_filepath, "a", newline="") as f:
+    #     writer = csv.writer(f)
+    #     writer.writerow(row)
+
     print('Elapsed time for back projection is {:.3f} seconds'.format(elapsed))
 
 if __name__ == "__main__":
 
+    size=256
+    gpus=8
+    output_filepath = '../output/output.csv'
 
-    size = int(sys.argv[1])
-    gpus = int(sys.argv[2])
+    # size = int(sys.argv[1])
+    # gpus = int(sys.argv[2])
+    # output_filepath = sys.argv[3]
 
     print("size:", size, "gpus:", gpus)
 
-    back_project(size, gpus=gpus)
+    back_project(size, gpus=gpus, output_filepath=output_filepath)
