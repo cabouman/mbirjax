@@ -234,6 +234,13 @@ class TomographyModel(ParameterHandler):
         # 'sharding':
         if use_gpu == 'sharding':
 
+            # TODO: remove this test code after tests are complete
+            try:
+                gpus = gpus[:self.force_num_gpus]
+                print(f'Forcing number of gpus to {len(gpus)}.')
+            except AttributeError:
+               print(f'No forced number of gpus. Using all {len(gpus)} gpus.')
+
             # sharding requires the number of views to be a multiple of the number of gpus
             # pad with zero weighted views
             num_gpus = len(gpus)
