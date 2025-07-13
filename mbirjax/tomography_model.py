@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import mbirjax
 import mbirjax as mj
 from mbirjax import ParameterHandler
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
@@ -139,6 +140,9 @@ class TomographyModel(ParameterHandler):
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
         use_gpu = self.get_params('use_gpu')
+
+        use_gpu = 'sharding' # TODO: remove this hardcoding
+
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
@@ -229,8 +233,6 @@ class TomographyModel(ParameterHandler):
 
         # 'sharding':
         if use_gpu == 'sharding':
-
-            print("\n\n SHARDING \n\n")
 
             # sharding requires the number of views to be a multiple of the number of gpus
             # pad with zero weighted views
