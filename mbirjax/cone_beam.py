@@ -153,9 +153,9 @@ class ConeBeamModel(TomographyModel):
         else:
             source_to_iso_dist = source_detector_dist / magnification
             # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
             min_magnification = source_detector_dist / source_to_farthest_pixel
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
