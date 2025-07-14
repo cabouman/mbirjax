@@ -3,7 +3,7 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import os
 
 # Set the GPU memory fraction for JAX
@@ -42,16 +42,17 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+        ct_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                          source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     gpu = jax.devices('gpu')[0]
     cpu = jax.devices('cpu')[0]
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
     phantom = jax.device_put(phantom, jax.devices('cpu')[0])
 
-    full_indices = mbirjax.gen_full_indices(phantom.shape)
+    full_indices = mj.gen_full_indices(phantom.shape)
     voxel_values = ct_model.get_voxels_at_indices(phantom, full_indices)
     _ = ct_model.sparse_forward_project(voxel_values, full_indices).block_until_ready()
 
@@ -119,10 +120,10 @@ if __name__ == "__main__":
     elapsed = time.time() - time0
     print('Per backward = {:.6f}'.format(elapsed / 3))
 
-    mbirjax.get_memory_stats()
+    mj.get_memory_stats()
     exit(0)
     # View sinogram
-    # mbirjax.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
+    # mj.slice_viewer(sinogram, title='Original sinogram', slice_axis=0, slice_label='View')
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify as desired.
     weights = None
@@ -143,10 +144,10 @@ if __name__ == "__main__":
 
     recon.block_until_ready()
     elapsed = time.time() - time0
-    mbirjax.get_memory_stats()
+    mj.get_memory_stats()
     print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
     # ##########################
-    # mbirjax.get_memory_stats()
+    # mj.get_memory_stats()
 
     # Print out parameters used in recon
     # recon_params = recon_dict['recon_params']
@@ -163,4 +164,4 @@ if __name__ == "__main__":
     print('95% of recon pixels are within {} of phantom'.format(pct_95))
 
     # Display results
-    # mbirjax.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')
+    # mj.slice_viewer(phantom, recon, title='Phantom (left) vs VCD Recon (right)')

@@ -2,8 +2,6 @@ import numpy as np
 import mbirjax as mj
 import unittest
 
-import mbirjax.utilities
-
 
 class TestProx(unittest.TestCase):
     """
@@ -41,7 +39,7 @@ class TestProx(unittest.TestCase):
 
         # Get some noisy data
         recon_shape = (num_det_channels, num_det_channels, num_det_rows)
-        phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
         phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
 
         denoiser = mj.QGGMRFDenoiser(phantom.shape)

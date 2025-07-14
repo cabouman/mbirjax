@@ -44,7 +44,8 @@ def load_data_hdf5(file_path):
         ValueError: If more than one dataset is not found in the file.
 
     Example:
-        >>> recon, recon_dict = mbirjax.utilities.load_data_hdf5("output/recon_volume.h5")
+        >>> import mbirjax as mj
+        >>> recon, recon_dict = mj.load_data_hdf5("output/recon_volume.h5")
         >>> recon.shape
         (64, 256, 256)
     """
@@ -122,7 +123,7 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         >>> recon, recon_dict = ct_model.recon(sinogram)
         >>> recon_info = {'ALU units': '0.3mm', 'sinogram name': 'test part 038'}
         >>> file_path = './output/test_part_038.yaml'
-        >>> mbirjax.utilities.save_data_hdf5(file_path, recon, recon_info)
+        >>> mj.save_data_hdf5(file_path, recon, recon_info)
     """
     # Ensure output directory exists
     mj.makedirs(file_path)

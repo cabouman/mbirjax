@@ -3,8 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import jax.numpy as jnp
 import time
-import mbirjax
-import mbirjax.utilities
+import mbirjax as mj
 
 
 def create_tiled_heatmap(plot_values, outer_labels, outer_values, inner_labels, inner_values,
@@ -139,10 +138,10 @@ if __name__ == "__main__":
     vmin = -3.5
     vmax = 1.5
 
-    if mbirjax.get_memory_stats() is None:
+    if mj.get_memory_stats() is None:
         raise EnvironmentError('This script is for gpu only.')
 
-    m1 = mbirjax.get_memory_stats()
+    m1 = mj.get_memory_stats()
     max_avail_gb = m1[0]['bytes_limit'] / (1024 ** 3)
 
     # Make room for the data
@@ -163,12 +162,12 @@ if __name__ == "__main__":
 
                     # Set up parallel beam model
                     sinogram_shape = (nv, nr, nc)
-                    parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+                    parallel_model = mj.ParallelBeamModel(sinogram_shape, angles)
                     parallel_model.set_params(pixel_batch_size=pixel_batch_size)
 
                     # Generate phantom for forward projection
                     recon_shape = parallel_model.get_params('recon_shape')
-                    phantom = mbirjax.utilities.gen_cube_phantom(recon_shape)
+                    phantom = mj.gen_cube_phantom(recon_shape)
 
                     # Get a subset of the given size
                     indices = np.arange(ni, dtype=int)
@@ -179,7 +178,7 @@ if __name__ == "__main__":
                         print('Initial forward projection for memory: nv={}, nc={}, nr={}, ni={}'.format(nv, nc, nr, ni))
                         try:
                             sinogram = parallel_model.forward_project(voxel_values, indices)
-                            m1 = mbirjax.get_memory_stats()
+                            m1 = mj.get_memory_stats()
                             peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
                         except:
                             print('Out of memory')
@@ -207,7 +206,7 @@ if __name__ == "__main__":
                             sinogram = np.ones((nv, nr, nc))
                         try:
                             bp = parallel_model.back_project(sinogram, indices)
-                            m1 = mbirjax.get_memory_stats()
+                            m1 = mj.get_memory_stats()
                             peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
                         except:
                             print('Out of memory')
@@ -228,7 +227,7 @@ if __name__ == "__main__":
                         print('Elapsed time = {}'.format(time_diff_secs))
 
 
-    m1 = mbirjax.get_memory_stats()
+    m1 = mj.get_memory_stats()
     peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
     max_percent_used_gb = 100 * peak_mem_gb / max_avail_gb
     print('Max percentage GB used = {}%'.format(max_percent_used_gb))

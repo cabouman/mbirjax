@@ -57,21 +57,18 @@ Note:  the sliders on the viewer won't work in notebook form.  For that you'll n
 
 """
 
-# Initialize sinogram
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
-angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+# Choose the geometry type - for wrong rotation, only conebeam geometry will have a problem.
+model_type = 'cone'
+object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
-ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles,
-                                                source_detector_dist, source_iso_dist)
 
-# Generate 3D Shepp Logan phantom
-print('Creating phantom')
-phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
+# Generate simulated data
+# In a real application you would not have the phantom, but we include it here for later display purposes
+phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
+                                                  num_views=num_views, num_det_rows=num_det_rows,
+                                                  num_det_channels=num_det_channels)
+angles = params['angles']
 
-# Generate synthetic sinogram data
-print('Creating sinogram')
-sinogram = ct_model_for_generation.forward_project(phantom)
-sinogram = np.asarray(sinogram)
 
 # View sinogram
 title='Original sinogram'
@@ -83,11 +80,11 @@ Here we do a standard reconstruction with the correct specification of angles.
 """
 
 print('\nStarting recon with correct rotation\n')
-ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+ct_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist,
                                             source_iso_dist=source_iso_dist)
-ct_model_for_recon.set_params(sharpness=sharpness)
+ct_model.set_params(sharpness=sharpness)
 
-recon_correct, recon_dict_correct = ct_model_for_recon.recon(sinogram)
+recon_correct, recon_dict_correct = ct_model.recon(sinogram)
 
 recon_params_correct = recon_dict_correct['recon_params']
 pprint.pprint(recon_params_correct, compact=True)
@@ -96,9 +93,9 @@ pprint.pprint(recon_params_correct, compact=True)
 
 print('\nStarting recon with incorrect rotation\n')
 angles_reversed = angles[::-1]
-ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles_reversed, source_detector_dist=source_detector_dist,
+ct_model = mj.ConeBeamModel(sinogram.shape, angles_reversed, source_detector_dist=source_detector_dist,
                                             source_iso_dist=source_iso_dist)
-recon_incorrect, recon_dict_incorrect = ct_model_for_recon.recon(sinogram)
+recon_incorrect, recon_dict_incorrect = ct_model.recon(sinogram)
 
 recon_params_incorrect = recon_dict_incorrect['recon_params']
 pprint.pprint(recon_params_incorrect, compact=True)

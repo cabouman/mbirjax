@@ -1,6 +1,8 @@
-=================
-General Utilities
-=================
+.. _Utilities:
+
+=========
+Utilities
+=========
 
 MBIRJAX contains utilities for viewing, downloading, exporting/importing, and generating synthetic data.
 
@@ -16,6 +18,14 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 
 .. image:: https://www.math.purdue.edu/~buzzard/images/slice_viewer_demo.gif
    :alt: An animated image of the slice viewer.
+
+
+Weight Generation
+-----------------
+
+.. autofunction:: mbirjax.vcd_utils.gen_weights
+.. autofunction:: mbirjax.vcd_utils.gen_weights_mar
+
 
 IO Functions
 ------------

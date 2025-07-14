@@ -25,7 +25,6 @@ import time
 import pprint
 import jax.numpy as jnp
 import mbirjax as mj
-import mbirjax.utilities
 
 """**Set the geometry parameters**"""
 
@@ -66,7 +65,7 @@ phantom_rows = int(num_det_channels * phantom_row_scale)
 phantom_cols = int(num_det_channels * phantom_col_scale)
 phantom_slices = num_det_rows
 phantom_shape = (phantom_rows, phantom_cols, phantom_slices)
-phantom = mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
 # Generate synthetic sinogram data
 print('Creating sinogram')

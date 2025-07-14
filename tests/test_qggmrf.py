@@ -1,7 +1,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 from mbirjax import b_tilde_by_definition, compute_surrogate_and_grad, compute_qggmrf_grad_and_hessian
@@ -45,7 +45,7 @@ class TestQGGMRF(unittest.TestCase):
             recon_alpha_eps = recon_alpha + epsilon * delta
 
             x_prime = recon0
-            gradient0, _ = mbirjax.qggmrf_gradient_and_hessian_at_indices(recon0.reshape(flat_shape), recon_shape,
+            gradient0, _ = mj.qggmrf_gradient_and_hessian_at_indices(recon0.reshape(flat_shape), recon_shape,
                                                                                  pixel_indices, qggmrf_params)
             _, gradient0 = compute_surrogate_and_grad(recon0, x_prime, qggmrf_params)
             _, gradient_delta = compute_surrogate_and_grad(delta, x_prime, qggmrf_params)
@@ -70,7 +70,7 @@ class TestQGGMRF(unittest.TestCase):
         qggmrf_params = (b, sigma_x, p, q, T)
 
         # Get the calculated value of b_tilde
-        b_tilde_2 = mbirjax.get_2_b_tilde(delta, b[0], qggmrf_params)
+        b_tilde_2 = mj.get_2_b_tilde(delta, b[0], qggmrf_params)
 
         # Compute b_tilde from Eq. 8.19 and Table 8.1 in FCI
         # b_tilde = b = rho'(delta) / (2 delta)
@@ -128,7 +128,7 @@ class TestQGGMRF(unittest.TestCase):
         )
         pixel_indices = np.arange(flat_recon.shape[0])
 
-        grad0, hess0 = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+        grad0, hess0 = mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
                                                                              qggmrf_params)
         assert (jnp.allclose(grad0, grad_ref))
         assert (jnp.allclose(hess0, hess_ref))
@@ -149,7 +149,7 @@ class TestQGGMRF(unittest.TestCase):
         recon0 = np.random.rand(*recon_shape)
         flat_recon0 = recon0.reshape((-1, recon_shape[2]))
         pixel_indices = np.arange(flat_recon0.shape[0])
-        grad0, hess0 = mbirjax.qggmrf_gradient_and_hessian_at_indices(flat_recon0, recon_shape, pixel_indices,
+        grad0, hess0 = mj.qggmrf_gradient_and_hessian_at_indices(flat_recon0, recon_shape, pixel_indices,
                                                                              qggmrf_params)
 
         # Then get a perturbation to verify a finite difference approximation
@@ -158,8 +158,8 @@ class TestQGGMRF(unittest.TestCase):
             epsilon = 1e-7
             recon1 = recon0 + epsilon * delta
 
-            loss0 = mbirjax.qggmrf_loss(recon0, qggmrf_params)
-            loss1 = mbirjax.qggmrf_loss(recon1, qggmrf_params)
+            loss0 = mj.qggmrf_loss(recon0, qggmrf_params)
+            loss1 = mj.qggmrf_loss(recon1, qggmrf_params)
 
             # Verify (loss(x + eps * delta) - loss(x)) / epsilon = grad(x)^T delta
             finite_diff = (loss1 - loss0) / epsilon

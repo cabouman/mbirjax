@@ -1,5 +1,4 @@
 import mbirjax as mj
-import mbirjax.preprocess as mjp
 
 
 def main():

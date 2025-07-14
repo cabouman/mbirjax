@@ -1,8 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 from scipy.sparse.linalg import svds, eigsh, aslinearoperator, LinearOperator
 import jax
 
@@ -109,7 +108,7 @@ if __name__ == "__main__":
         angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
         # Set up parallel beam model
-        parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+        parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
         recon_shape = parallel_model.get_params('recon_shape')
         hess = parallel_model.compute_hessian_diagonal()[:, :, 0].reshape((-1, 1))
 
@@ -148,10 +147,10 @@ if __name__ == "__main__":
         scale = np.amax(bp)
         title = 'AtA PSF in space: output scaled by 1 / {:.1f}'.format(scale)
         title += '\nLeft: single point in space, Right: AtA of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, bp / scale, title=title)
+        mj.slice_viewer(deltas, bp / scale, title=title)
         title = 'AtA PSF in space: output in log10'.format(scale)
         title += '\nLeft: single point in space, Right: AtA of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.log10(np.clip(bp / scale, clip_min, 1)), title=title)
+        mj.slice_viewer(deltas, np.log10(np.clip(bp / scale, clip_min, 1)), title=title)
 
         ######################
         # Get psf in frequency
@@ -159,7 +158,7 @@ if __name__ == "__main__":
         fourier_images = np.fft.fft2(deltas_shift, axes=(0, 1))
         title = 'fftshift Fourier frequency and corresponding real(FFT)'
         title += '\nLeft: single point in frequency, Right: real(FFT) of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.real(fourier_images), slice_axis=2, title=title)
+        mj.slice_viewer(deltas, np.real(fourier_images), slice_axis=2, title=title)
         fft_images_phantom = fourier_images[:, :, :num_det_rows]
 
         # Generate sinogram data
@@ -181,11 +180,11 @@ if __name__ == "__main__":
         scale = np.amax(np.abs(bp_fft))
         title = '|AtA frequency transfer function|: output scaled by 1 / {:.1f}'.format(scale)
         title += '\nLeft: single point in frequency, Right: |IFFT(AtA(FFT))| of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.abs(bp_fft) / scale, title=title,
+        mj.slice_viewer(deltas, np.abs(bp_fft) / scale, title=title,
                              vmin=0, vmax=1, cmap='viridis')
         title = '|AtA frequency transfer function|: output in log10'
         title += '\nLeft: single point in frequency, Right: |IFFT(AtA(FFT))| of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
+        mj.slice_viewer(deltas, np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
                              title=title, cmap='viridis')
 
         ######################################
@@ -200,11 +199,11 @@ if __name__ == "__main__":
         scale = np.amax(np.abs(prior_fft))
         title = '|Prior step frequency transfer function|: output scaled by 1 / {:.1f}'.format(scale)
         title += '\nLeft: single point in frequency, Right: |FFT(prior step(FFT))| of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.abs(prior_fft) / scale, title=title,
+        mj.slice_viewer(deltas, np.abs(prior_fft) / scale, title=title,
                              vmin=0, vmax=1, cmap='viridis')
         title = '|Prior step frequency transfer function|: output in log10'.format(scale)
         title += '\nLeft: single point in frequency, Right: log10|FFT(prior step(FFT))| of that point, g={}'.format(g)
-        mbirjax.slice_viewer(deltas, np.log10(np.clip(np.abs(prior_fft), clip_min, None)),
+        mj.slice_viewer(deltas, np.log10(np.clip(np.abs(prior_fft), clip_min, None)),
                              title=title, cmap='viridis')
 
         bp_fft_flat = bp_fft.reshape((-1, bp_fft.shape[2]))
@@ -221,16 +220,16 @@ if __name__ == "__main__":
         plt.legend(['AtA', 'Prior'])
         title = 'log10 of |freq transfer function|\nLeft: AtA, Right: Prior'
         title += '\nEach row is one input frequency, each column one ouptut frequency'
-        mbirjax.slice_viewer(bp_fft_flat_log10, prior_fft_flat_log10, cmap='viridis',title=title)
+        mj.slice_viewer(bp_fft_flat_log10, prior_fft_flat_log10, cmap='viridis',title=title)
 
         gammas = np.linspace(0, 2, 20)
         weighted_sum = bp_fft_flat[:, :, None] + prior_fft_flat[:, :, None] * gammas[None, None, :]
         joint_transfer_log10 = np.log10(np.clip(np.abs(weighted_sum), clip_min, None))
         title = 'log10 of |freq trans func| of AtA + gamma * prior'
         title += '\nAdjust the slider to change gamma'
-        mbirjax.slice_viewer(joint_transfer_log10, title=title, slice_label='10 * gamma =', cmap='viridis')
+        mj.slice_viewer(joint_transfer_log10, title=title, slice_label='10 * gamma =', cmap='viridis')
 
-        mbirjax.slice_viewer(np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
+        mj.slice_viewer(np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
                              np.log10(np.clip(np.abs(prior_fft), clip_min, None)),
                              title='Forward (left) and prior (right) PSF in frequency with output in log10')
         a = 0

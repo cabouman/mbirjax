@@ -142,7 +142,7 @@ class QGGMRFDenoiser(TomographyModel):
     def denoise(self, image, sigma_noise=None, use_ror_mask=False, init_image=None, max_iterations=15,
                 stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
         """
-        Use the VCD algorithm with the QGGMRF loss to denoise a 3D image (volume).
+        Compute the MAP denoiser assuming AWGN and the 3D qGGMRF prior.
 
         With default settings, and with X a clean image and W equal to AWGN of standard deviation sigma_noise,
         the result of :meth:`denoise` applied to X+W is the MAP estimate of the denoised image using the
