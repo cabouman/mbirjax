@@ -161,7 +161,7 @@ def _compute_HTH_efficient(p, M, include_constant=False):
     """
     p = p.reshape(-1, 1)  # Ensure shape (N, 1)
     N, k = M.shape
-    pM = p * M            # (N, k)
+    pM = p[:, None] * M            # (N, k)
 
     # Basic inner products
     pTp = jnp.dot(p.T, p)               # (1,1)
@@ -264,19 +264,26 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # Compute Hty
     # Set p term
-    Hty = Hty.at[0].set(jnp.dot(p, y))
+    Hty = Hty.at[0].set(jnp.dot(p[:, None], y))
 
-    p_metal_dots = jnp.dot(p * metal_terms, y)
+    p_metal_dots = jnp.dot((p[:, None] * metal_terms).T, y)
     Hty = Hty.at[1:1 + poly_length].set(p_metal_dots)
 
-    metal_dots = jnp.dot(metal_terms, y)
+    metal_dots = jnp.dot(metal_terms.T, y)
     Hty = Hty.at[1 + poly_length:1 + 2 * poly_length].set(metal_dots)
 
     # Constant term if needed
     if include_const:
         Hty = Hty.at[-1].set(jnp.sum(y))
 
-    HtH = _compute_HTH_efficient(p, metal_terms, include_const)
+    # HtH = _compute_HTH_efficient(p, metal_terms, include_const)
+    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms, metal_terms], axis=1)
+
+    if include_const:
+        ones_col = jnp.ones((p.shape[0], 1))  # shape (N, 1)
+        H = jnp.concatenate([H, ones_col], axis=1)
+
+    HtH = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
