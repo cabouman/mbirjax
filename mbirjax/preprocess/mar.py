@@ -146,28 +146,54 @@ def _generate_polynomial_combinations(num_terms, max_order):
     generate_recursive([], num_terms)
     return combinations
 
-def _compute_HTH_efficient(p, M):
-    p = p.reshape(-1, 1)
+def _compute_HTH_efficient(p, M, include_constant=False):
+    """
+    Compute H^T H where H = [p, p*M, M, (optional 1)]
 
-    # Precompute quantities
-    pTp = jnp.dot(p.T, p)
-    pTM = jnp.dot(p.T, M)
-    MTp = jnp.dot(M.T, p)
-    MTM = jnp.dot(M.T, M)
+    Args:
+        p (jnp.ndarray): Shape (N, 1) or (N,)
+        M (jnp.ndarray): Shape (N, k)
+        include_constant (bool): Whether to append a column of ones to H
 
-    pM = p * M
-    pMTpM = jnp.dot(pM.T, pM)
-    pMTp = jnp.dot(pM.T, p)
-    pMTM = jnp.dot(pM.T, M)
+    Returns:
+        H^T H matrix: Shape (2k+1 [+1], 2k+1 [+1])
+    """
+    p = p.reshape(-1, 1)  # Ensure shape (N, 1)
+    N, k = M.shape
+    pM = p * M            # (N, k)
 
-    # Use jnp.block for cleaner assembly
-    HTH = jnp.block([
-        [pTp, pTp * pTM, pTM],
-        [pTp * MTp, pMTpM, pMTM],
-        [MTp, pMTM.T, MTM]
+    # Basic inner products
+    pTp = jnp.dot(p.T, p)               # (1,1)
+    pTpM = jnp.dot(p.T, pM)             # (1,k)
+    pTM = jnp.dot(p.T, M)               # (1,k)
+    pMTpM = jnp.dot(pM.T, pM)           # (k,k)
+    pMTM = jnp.dot(pM.T, M)             # (k,k)
+    MTM = jnp.dot(M.T, M)               # (k,k)
+
+    # Top block
+    top = jnp.block([
+        [pTp, pTpM, pTM],
+        [pTpM.T, pMTpM, pMTM],
+        [pTM.T, pMTM.T, MTM]
     ])
 
-    return HTH
+    if include_constant:
+        ones = jnp.ones((N, 1))
+        sum_p = jnp.dot(p.T, ones)              # (1,1)
+        sum_pM = jnp.dot(pM.T, ones)            # (k,1)
+        sum_M = jnp.dot(M.T, ones)              # (k,1)
+        total = jnp.array([[N]])                # (1,1)
+
+        # Append last row and column
+        last_col = jnp.concatenate([sum_p, sum_pM, sum_M], axis=0)  # (2k+1, 1)
+        last_row = last_col.T                                       # (1, 2k+1)
+        top = jnp.block([
+            [top, last_col],
+            [last_row, total]
+        ])
+
+    return top
+
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=3, include_const=False):
     """
@@ -219,11 +245,10 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
             if exp > 0:
                 term *= m ** exp
         metal_terms.append(term)
-
+    poly_length = len(metal_terms)
     if include_const:
         H_cols.append(jnp.ones_like(p))
 
-    poly_length = len(metal_terms)
     metal_terms = jnp.stack(metal_terms)
 
     HtH_size = 1 + 2 * poly_length + (1 if include_const else 0)
@@ -250,7 +275,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     if include_const:
         Hty = Hty.at[-1].set(jnp.sum(y))
 
-    HtH = _compute_HTH_efficient(p, metal_terms)
+    HtH = _compute_HTH_efficient(p, metal_terms, include_const)
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
