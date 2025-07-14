@@ -122,22 +122,23 @@ def BH_correction(sino, alpha, batch_size=64):
 
 def _generate_polynomial_combinations(num_terms, max_order):
     """
-    Generate all combinations of polynomial powers.
+    Generate all combinations of polynomial powers up to a total degree,
+    excluding the all-zero combination.
 
     Args:
         num_terms (int): Number of variables/terms (e.g., 2 for x, y or 3 for x, y, z).
         max_order (int): Maximum total degree of the polynomial.
 
     Returns:
-        list[tuple[int]]: List of tuples where each tuple represents powers of variables.
-            For example, (1, 2) means x^1 * y^2.
+        list[tuple[int]]: List of tuples representing powers (excluding all-zeros).
     """
 
     combinations = []
 
     def generate_recursive(current_combination, remaining_terms):
         if remaining_terms == 0:
-            combinations.append(tuple(current_combination))
+            if any(power != 0 for power in current_combination):  # Exclude (0,0,...,0)
+                combinations.append(tuple(current_combination))
             return
 
         for power in range(max_order + 1):
@@ -249,7 +250,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     if include_const:
         H_cols.append(jnp.ones_like(p))
 
-    metal_terms = jnp.stack(metal_terms)
+    metal_terms = jnp.stack(metal_terms, axis=1)
 
     HtH_size = 1 + 2 * poly_length + (1 if include_const else 0)
     Hty = jnp.zeros(HtH_size)
