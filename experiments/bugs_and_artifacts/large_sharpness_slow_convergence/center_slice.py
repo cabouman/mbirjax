@@ -31,9 +31,12 @@ if __name__ == "__main__":
     print('Creating sinogram')
     sinogram = ct_model.forward_project(phantom)
     sinogram = np.asarray(sinogram)
-    recon, recon_dict = ct_model.recon(sinogram, max_iterations=5)
-    error_sino = ct_model.forward_project(recon) - sinogram
-    mj.slice_viewer(recon.transpose((2, 0, 1)), error_sino, data_dicts=[recon_dict, None],
+
+    recon0, recon_dict0 = ct_model.recon(sinogram, max_iterations=15, stop_threshold_change_pct=1e-6)
+    error_sino0 = ct_model.forward_project(recon0) - sinogram
+    recon1, recon_dict1 = ct_model.recon(sinogram, max_iterations=150, stop_threshold_change_pct=1e-6)
+    error_sino1 = ct_model.forward_project(recon1) - sinogram
+    mj.slice_viewer(recon0.transpose((2, 0, 1)), error_sino0, recon1.transpose((2, 0, 1)), error_sino1, data_dicts=[recon_dict0, None, recon_dict1, None],
                     slice_axis=0, vmin=-0.001, vmax=0.001,
-                    title='Recon top view (left) and error sinogram (right)\nChange slice to see slice-dependent noise associated \nwith horizontal stripes in error sinogram.')
+                    title='Recon top view and error sinogram: 15 iterations left and 150 iterations right \nChange slice to see slice-dependent noise associated \nwith horizontal stripes in error sinogram.')
 
