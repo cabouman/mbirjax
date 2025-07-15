@@ -264,7 +264,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # Compute Hty
     # Set p term
-    Hty = Hty.at[0].set(jnp.dot(p[:, None], y))
+    Hty = Hty.at[0].set(jnp.dot(p, y))
 
     p_metal_dots = jnp.dot((p[:, None] * metal_terms).T, y)
     Hty = Hty.at[1:1 + poly_length].set(p_metal_dots)
@@ -283,7 +283,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         ones_col = jnp.ones((p.shape[0], 1))  # shape (N, 1)
         H = jnp.concatenate([H, ones_col], axis=1)
 
-    HtH = jnp.dot(H.T, H)
+    with jax.default_device(jax.devices("cpu")[0]):
+        HtH = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
