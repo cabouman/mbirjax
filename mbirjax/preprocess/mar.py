@@ -283,8 +283,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         ones_col = jnp.ones((p.shape[0], 1))  # shape (N, 1)
         H = jnp.concatenate([H, ones_col], axis=1)
 
-    with jax.default_device(jax.devices("cpu")[0]):
-        HtH = jnp.dot(H.T, H)
+    HtH = jax.device_put(jnp.dot(H.T, H), jax.devices("cpu")[0])
     del H
 
     # --- Solve for theta ---
