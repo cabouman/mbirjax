@@ -285,11 +285,13 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     with jax.default_device(jax.devices("cpu")[0]):
         HtH = jnp.dot(H.T, H)
+    del H
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
     HtH_reg = HtH + (epsilon ** 2) * sigma_max * jnp.eye(len(Hty))
     theta = jnp.linalg.solve(HtH_reg, Hty)
+    print(f'theta = {theta}')
 
     # --- Build correction ---
     # Term 0: p
