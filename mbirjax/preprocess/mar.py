@@ -277,14 +277,19 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         Hty = Hty.at[-1].set(jnp.sum(y))
 
     # HtH = _compute_HTH_efficient(p, metal_terms, include_const)
-    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms, metal_terms], axis=1)
+    with jax.default_device(jax.devices("cpu")[0]):
+        # Build H on CPU
+        H_base = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms, metal_terms], axis=1)
+        if include_const:
+            ones_col = jnp.ones((p.shape[0], 1))
+            H = jnp.concatenate([H_base, ones_col], axis=1)
+        else:
+            H = H_base
+        # Compute H^T H on CPU
+        HtH_cpu = jnp.dot(H.T, H)
 
-    if include_const:
-        ones_col = jnp.ones((p.shape[0], 1))  # shape (N, 1)
-        H = jnp.concatenate([H, ones_col], axis=1)
-
-    HtH = jax.device_put(jnp.dot(H.T, H), jax.devices("cpu")[0])
-    del H
+    # Move result back to GPU
+    HtH = jax.device_put(HtH_cpu, jax.devices("gpu")[0])
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
