@@ -624,6 +624,58 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
+    # def sparse_forward_project(self, voxel_values, indices, output_device=None):
+    #
+    #     # Batch the views and pixels
+    #     sinogram_shape = self.get_params('sinogram_shape')
+    #     num_views = sinogram_shape[0]
+    #
+    #     max_views = num_views
+    #     max_pixels = self.pixels_per_batch
+    #
+    #     view_batch_indices = jnp.arange(num_views, step=max_views)
+    #     view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
+    #
+    #     num_pixels = len(indices)
+    #     pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+    #     pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
+    #
+    #     # Create the output sinogram
+    #     sinogram = []
+    #     projector_params = self.projector_params
+    #     view_params_array = jax.device_put(self.get_params('view_params_array'), device=self.sharded_worker)
+    #
+    #     # Loop over the view batches
+    #     for j, view_index_start in enumerate(view_batch_indices[:-1]):
+    #         # Send a batch of views to worker
+    #         view_index_end = view_batch_indices[j + 1]
+    #         cur_view_batch = jnp.zeros([view_index_end - view_index_start, sinogram_shape[1], sinogram_shape[2]],
+    #                                    device=self.sharded_worker)
+    #         cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+    #
+    #         # Loop over pixel batches
+    #         for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
+    #             # Send a batch of pixels to worker
+    #             pixel_index_end = pixel_batch_indices[k + 1]
+    #             cur_voxel_batch, cur_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
+    #                                                                indices[pixel_index_start:pixel_index_end]],
+    #                                                               self.replicated_worker)
+    #
+    #             def forward_project_pixel_batch_local(view, view_params):
+    #                 # Add the forward projection to the given existing view
+    #                 return self.forward_project_pixel_batch_to_one_view(cur_voxel_batch, cur_index_batch, view_params,
+    #                                                                     projector_params, view)
+    #
+    #             view_map = jax.vmap(forward_project_pixel_batch_local)
+    #             cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
+    #
+    #         # sinogram.append(jax.device_put(cur_view_batch, output_device))
+    #         print("YOU SHOULD ONLY SEE THIS ONCE!!!!!")
+    #         sinogram = cur_view_batch
+    #
+    #     # sinogram = jnp.concatenate(sinogram)
+    #     return sinogram
+
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
