@@ -2,13 +2,17 @@ import sys
 import hashlib
 import numpy as np
 import time
-import jax.numpy as jnp
-import mbirjax as mj
+import os
+
 import jax
 import csv
 
 
 def back_project(size, gpus=None, output_filepath='output.csv'):
+
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+    import jax.numpy as jnp
+    import mbirjax as mj
 
     # sinogram shape
     num_views = size
