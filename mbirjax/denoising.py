@@ -20,6 +20,8 @@ class QGGMRFDenoiser(TomographyModel):
     def __init__(self, image_shape):
 
         view_params_name = 'None'
+        if len(image_shape) != 3:
+            raise ValueError('image_shape must be 3-dimensional. Got image_shape={}. To denoise a 2D image, use shape (1, m, n).'.format(image_shape))
         super().__init__(image_shape, view_params_name=view_params_name, sigma_noise=None)
         self.use_ror_mask = False
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
@@ -105,7 +107,7 @@ class QGGMRFDenoiser(TomographyModel):
         # return typical_image_value
 
         inds = np.where(support_indicator)
-        inds = [np.clip(inds[j], 1, None) for j in range(len(inds))]
+
         vals = np.stack([noisy_image[inds[0], inds[1], inds[2]],
                         noisy_image[inds[0]-1, inds[1], inds[2]],
                         noisy_image[inds[0], inds[1]-1, inds[2]],

@@ -11,8 +11,8 @@ else:
     try:
         matplotlib.use('TkAgg')
     except ImportError:
-        matplotlib.use('Agg')  # Fallback
-        warnings.warn("TkAgg not available. Falling back to Agg.")
+        # matplotlib.use('Agg')  # Fallback
+        warnings.warn("TkAgg not available for matplotlib. slice_viewer menus may not display correctly.")
 
 # Now it's safe to import pyplot
 import matplotlib.pyplot as plt

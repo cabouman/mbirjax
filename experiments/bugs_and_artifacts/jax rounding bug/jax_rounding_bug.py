@@ -8,7 +8,7 @@ import mbirjax as mj
 jax.config.update("jax_default_matmul_precision", "highest")
 if __name__ == "__main__":
     """
-    This is a script to demonstrate that rounding errors in jax can cause very odd bugs. 
+    This is a script to demonstrate that rounding errors in jax can cause very odd bugs_and_artifacts. 
 
     Jax compiles code to XLA, and different branches through the code can lead to different values for the same
     variable.  In the code below, different slicing of the the input pixels leads the to different values of the
@@ -30,7 +30,7 @@ if __name__ == "__main__":
     
     See also tests/test_projectors.py: verify_view_batching
     
-    Replace the default version of parallel_beam.py with the version in the folder bugs/jax rounding bug to
+    Replace the default version of parallel_beam.py with the version in the folder bugs_and_artifacts/jax rounding bug to
     see the effect of inconsistent rounding.  
     """
 

@@ -191,7 +191,7 @@ class TestProjectors(unittest.TestCase):
         #     recon1 = jnp.zeros(recon_shape)
         #     recon1 = recon1.at[row_index0, col_index0].set(back_projection_stitched)
         #     title = 'Standard backprojection (left) and \nabs diff with back projection via multiple view subsets (right)'
-        #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs'
+        #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs_and_artifacts'
         #     mj.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
         back_view_batch_test_result = np.sum(proj_diff > 1e-4) < 1000 and np.amax(proj_diff) < 0.2
         self.assertTrue(back_view_batch_test_result)

@@ -4,6 +4,29 @@
 This code demonstrates the use of the qggmrf denoiser.
 
 """
+import numpy as np
+import mbirjax as mj
+import matplotlib.pyplot as plt
+
+img_in = np.zeros((1, 128, 128))
+
+img_in[:, 32:96, 32: 96] = 1
+
+img_in += np.random.randn(1, 128, 128)
+
+# img_in = strain_comps_recon[2]
+
+denoiser = mj.QGGMRFDenoiser(img_in.shape)
+img_out, _ = denoiser.denoise(np.copy(img_in), stop_threshold_change_pct=0, max_iterations=100,
+                              print_logs=True)
+
+print('Estimated noise = {}'.format(denoiser.get_params('sigma_noise')))
+plt.imshow(img_in[0])
+plt.show()
+
+plt.imshow(img_out[0])
+plt.show()
+
 import time
 
 import numpy as np
