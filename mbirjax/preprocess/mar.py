@@ -246,7 +246,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
     # HtH = _compute_HTH_efficient(p, metal_terms, num_cross_terms, include_const)
-    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:num_cross_terms], metal_terms], axis=1)
+    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
     if include_const:
         ones_col = jnp.ones((p.shape[0], 1))
         H = jnp.concatenate([H, ones_col], axis=1)
@@ -261,7 +261,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # --- Build correction ---
     # Term 0: p
-    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:, :,n] for n in range(num_cross_terms))
+    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:, n] for n in range(num_cross_terms))
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
