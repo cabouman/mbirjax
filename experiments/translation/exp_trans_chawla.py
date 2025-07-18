@@ -9,7 +9,7 @@ def main():
     det_pixel_pitch_mm = 75 / 1000
     x_space_mm = 11.4
     z_space_mm = 14
-    num_x_translations = 3
+    num_x_translations = 5
     num_z_translations = 3
 
     # Define detector size
