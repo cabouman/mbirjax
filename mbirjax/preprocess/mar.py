@@ -152,7 +152,7 @@ def _generate_polynomial_combinations(num_terms, max_order):
     return combinations
 
 
-def _compute_HTH_efficient(plastic_term, metal_terms, num_cross_terms, include_constant=False):
+def _compute_hth_efficient(plastic_term, metal_terms, num_cross_terms, include_constant=False):
     if include_constant:
         metal_terms = jnp.concatenate([metal_terms, jnp.ones_like(plastic_term)], axis=1)
         cross_terms = plastic_term[:, None] * metal_terms[:num_cross_terms]
@@ -187,7 +187,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     Returns:
         corrected_sino (jnp.ndarray): Beam-hardening corrected sinogram.
     """
-    order_list = _generate_polynomial_combinations(num_metal, order)
+    metal_exponent_list = _generate_polynomial_combinations(num_metal, order)
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
@@ -210,53 +210,52 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     del metal_masks
 
     metal_terms = []  # e.g., [m1**1 * m2**0, m1**0 * m2**1, m1**1 * m2**1, ...]
-    for exponents in order_list:
+    for exponents in metal_exponent_list:
         term = jnp.ones_like(metals[0])
         for m, exp in zip(metals, exponents):
             if exp > 0:
                 term *= m ** exp
         metal_terms.append(term)
-    num_metal_terms = len(metal_terms)
-
     metal_terms = jnp.stack(metal_terms, axis=1)
 
-    HtH_size = 1 + 2 * num_metal_terms + (1 if include_const else 0)
-    Hty = jnp.zeros(HtH_size)
-    HtH = jnp.zeros((HtH_size, HtH_size))
+    num_metal_terms = len(metal_exponent_list)
+    num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
+
+    hty_size = 1 + num_cross_terms + num_metal_terms + (1 if include_const else 0)
+    hty = jnp.zeros(hty_size)
 
     # Index mapping:
     # 0: p
-    # 1 ~ N: p * metal terms
-    # N+1 ~ 2N: metal terms
+    # 1 ~ num_cross_terms: p * metal terms
+    # num_cross_terms+1 ~ num_cross_terms+N: metal terms
     # optional last: constant
-
-    # Compute Hty
+        
+    # Compute hty
     # Set p term
-    Hty = Hty.at[0].set(jnp.dot(p, y))
+    hty = hty.at[0].set(jnp.dot(p, y))
 
-    p_metal_dots = jnp.dot((p[:, None] * metal_terms).T, y)
-    Hty = Hty.at[1:1 + num_metal_terms].set(p_metal_dots)
+    p_metal_dots = jnp.dot((p[:, None] * metal_terms[:, :num_cross_terms]).T, y)
+    hty = hty.at[1:1 + num_metal_terms].set(p_metal_dots)
 
     metal_dots = jnp.dot(metal_terms.T, y)
-    Hty = Hty.at[1 + num_metal_terms:1 + 2 * num_metal_terms].set(metal_dots)
+    hty = hty.at[1 + num_metal_terms:1 + 2 * num_metal_terms].set(metal_dots)
 
     # Constant term if needed
     if include_const:
-        Hty = Hty.at[-1].set(jnp.sum(y))
+        hty = hty.at[-1].set(jnp.sum(y))
 
-    num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
-    # HtH = _compute_HTH_efficient(p, metal_terms, num_cross_terms, include_const)
+    # hth = _compute_hth_efficient(p, metal_terms, num_cross_terms, include_const)
     H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
     if include_const:
         ones_col = jnp.ones((p.shape[0], 1))
         H = jnp.concatenate([H, ones_col], axis=1)
 
-    HtH = jnp.dot(H.T, H)
+    hth = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
-    sigma_max = jnp.linalg.norm(HtH, ord=2)
-    HtH_reg = HtH + (epsilon ** 2) * sigma_max * jnp.eye(len(Hty))
-    theta = jnp.linalg.solve(HtH_reg, Hty)
+    sigma_max = jnp.linalg.norm(hth, ord=2)
+    hth_reg = hth + (epsilon ** 2) * sigma_max * jnp.eye(len(hty))
+    theta = jnp.linalg.solve(hth_reg, hty)
     print(f'theta = {theta}')
 
     # --- Build correction ---
