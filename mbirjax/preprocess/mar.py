@@ -261,7 +261,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # --- Build correction ---
     # Term 0: p
-    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:,n] for n in range(num_cross_terms))
+    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:, :,n] for n in range(num_cross_terms))
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
