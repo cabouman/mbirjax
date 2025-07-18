@@ -125,8 +125,8 @@ Assumed standard deviation of sinogram noise.
 
 .. _param-sigma_p:
 
-sigma_p
-"""""""
+sigma_prox
+""""""""""
 :Type: float (Defaults to 1.0)
 
 Proximal map parameter.

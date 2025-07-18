@@ -2,8 +2,7 @@ import numpy as np
 import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -22,16 +21,17 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_modified_3d_sl_phantom()
+    phantom_shape = parallel_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     recon_3d = parallel_model.reshape_recon(recon)
 
     # Display results
-    mbirjax.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
+    mj.slice_viewer(phantom, recon_3d, title='Phantom (left) vs VCD Recon (right)')
 
     # You can also display individual slides with the sinogram
-    #mbirjax.display_slices(phantom, sinogram, recon_3d)
+    #mj.display_slices(phantom, sinogram, recon_3d)

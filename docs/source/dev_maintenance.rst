@@ -81,6 +81,18 @@ Follow steps 0-3 as above.  Then continue from step 4.
 
 7. Verify that the `corresponding build <https://readthedocs.org/projects/mbirjax/builds/>`__ of the MBIRJAX documentation has built correctly.
 
+Installing a specified branch
+-----------------------------
+
+Sometimes it's helpful to install a specific branch directly from github.  You can do this with one of the following commands (include [cuda12] to install on a GPU machine)::
+
+    # For CPU installation:
+    pip install git+https://github.com/cabouman/mbirjax.git@<branch_name>
+
+    # For GPU installation:
+    pip install "mbirjax[cuda12] @ git+https://github.com/cabouman/mbirjax.git@<branch_name>"
+
+
 Reference
 ---------
 

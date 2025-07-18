@@ -2,8 +2,7 @@ import numpy as np
 import time
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 
 def display_slices_for_abstract( recon1, recon2, recon3, labels) :
@@ -48,16 +47,17 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, np.pi, num_views, endpoint=False)
 
     # Set up parallel beam model
-    parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = parallel_model.gen_modified_3d_sl_phantom()
+    phantom_shape = parallel_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     sinogram = parallel_model.forward_project(phantom)
 
     # Generate weights array
-    weights = parallel_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     parallel_model.set_params(sharpness=sharpness, verbose=1)
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     fm_rmse_vcd = recon_params_vcd['fm_rmse']
     prior_loss_vcd = recon_params_vcd['prior_loss']
     default_partition_sequence = parallel_model.get_params('partition_sequence')
-    partition_sequence = mbirjax.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
+    partition_sequence = mj.gen_partition_sequence(default_partition_sequence, max_iterations=max_iterations)
     granularity_sequence_vcd = granularity[partition_sequence]
 
     # Perform GD reconstruction
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     recon_params_prev_default = recon_dict_prev_default['recon_params']
     fm_rmse_prev_default = recon_params_prev_default['fm_rmse']
     prior_loss_prev_default = recon_params_prev_default['prior_loss']
-    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
+    partition_sequence = mj.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
     granularity_sequence_prev_default = granularity[partition_sequence]
 
     # Perform CD reconstruction
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     recon_params_cd = recon_dict_cd['recon_params']
     fm_rmse_cd = recon_params_cd['fm_rmse']
     prior_loss_cd = recon_params_cd['prior_loss']
-    partition_sequence = mbirjax.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
+    partition_sequence = mj.gen_partition_sequence(partition_sequence=partition_sequence, max_iterations=max_iterations)
     granularity_sequence_cd = granularity[partition_sequence]
     # ##########################
 
@@ -111,11 +111,11 @@ if __name__ == "__main__":
     fm_losses = [fm_rmse_prev_default, fm_rmse_vcd, fm_rmse_cd]
     prior_losses = [prior_loss_prev_default, prior_loss_vcd, prior_loss_cd]
     labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
+    mj.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 256), loss_ylim=(0.1, 15))
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
-    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
+    partitions_fig = mj.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
-    mbirjax.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
+    mj.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)

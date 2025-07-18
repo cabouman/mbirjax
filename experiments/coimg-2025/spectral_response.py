@@ -1,10 +1,11 @@
 import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mbirjax
-import mbirjax.parallel_beam
+import mbirjax as mj
 from scipy.sparse.linalg import svds, eigsh, aslinearoperator, LinearOperator
 import jax
+
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -24,17 +25,17 @@ if __name__ == "__main__":
         angles = jnp.linspace(start_angle, jnp.pi, num_views, endpoint=False)
 
         # Set up parallel beam model
-        parallel_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+        parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
         # Generate phantom
         recon_shape = parallel_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mbirjax.generate_3d_shepp_logan_low_dynamic_range((num_det_channels,num_det_channels,num_det_channels))
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range((num_det_channels, num_det_channels, num_det_channels))
         phantom = phantom[:, :, num_det_channels // 2]
 
         # Generate indices of pixels
         num_subsets = 4
-        full_indices = mbirjax.gen_pixel_partition(recon_shape, num_subsets)[0]
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets)[0]
 
         # Generate sinogram data
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
@@ -96,8 +97,8 @@ if __name__ == "__main__":
             u, s, vh = svds(AtAx_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=True, solver='propack')
             vh = vh[::-1, :]
             u = u[:, ::-1]
-            # mbirjax.slice_viewer(vh.reshape(num_sing_values, num_det_channels, num_det_channels), slice_axis=0)
-            # mbirjax.slice_viewer(u.reshape((num_det_channels, num_det_channels, num_sing_values)), slice_axis=2)
+            # mj.slice_viewer(vh.reshape(num_sing_values, num_det_channels, num_det_channels), slice_axis=0)
+            # mj.slice_viewer(u.reshape((num_det_channels, num_det_channels, num_sing_values)), slice_axis=2)
         else:
             s = svds(AtAx_linear_operator, k=num_sing_values, tol=1e-6, return_singular_vectors=False, solver='propack')
 
@@ -148,7 +149,7 @@ if __name__ == "__main__":
         vm = np.zeros((vh_m.shape[0], np.prod(phantom.shape)))
         vm[:, mask_indices] = vh_m
         vm = vm.reshape((vm.shape[0],) + phantom.shape)
-        mbirjax.slice_viewer(vm, slice_axis=0, title='Eigenimages for masked A matrix, {} subsets'.format(num_subsets))
+        mj.slice_viewer(vm, slice_axis=0, title='Eigenimages for masked A matrix, {} subsets'.format(num_subsets))
 
         fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(10, 10))
         plt.suptitle('recon_shape={}; masking with {} subsets'.format(recon_shape, num_subsets))

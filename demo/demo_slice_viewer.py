@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax.parallel_beam
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -23,18 +23,19 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up parallel beam model
-    cone_model = mbirjax.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+    cone_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = cone_model.gen_modified_3d_sl_phantom()
+    phantom_shape = cone_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # View the phantom
-    mbirjax.slice_viewer(phantom, phantom.transpose((1, 2, 0)), title='Phantom axial and coronal', slice_label='View')
+    mj.slice_viewer(phantom, phantom.transpose((1, 2, 0)), title='Phantom axial and coronal', slice_label='View')
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = cone_model.forward_project(phantom)
 
     # View sinogram
-    mbirjax.slice_viewer(sinogram, title='Sinogram', slice_axis=0)
+    mj.slice_viewer(sinogram, title='Sinogram', slice_axis=0)

@@ -373,3 +373,34 @@ def remove_stripe_fw(sino, wavelet_filter_name="db5", sigma=2):
         sino = sino.at[:, m, :].set(sino_slice[shift_val:views + shift_val, 0:num_columns])
 
     return sino
+
+def remove_sino_offset(sino):
+    """
+    Remove additive offsets in the sinogram caused by material outside the field of view.
+
+    This function corrects each row of the sinogram so that the sum over channels is constant
+    across views and equal to the minimum sum observed across all views.
+
+    Args:
+        sino (jax.Array): Sinogram with shape (num_views, num_rows, num_channels).
+
+    Returns:
+        jax.Array: Corrected sinogram with the same shape as the input.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> import mbirjax.preprocess as mjp
+        >>> sino = jnp.ones((180, 128, 256)) + jnp.linspace(0, 1, 180)[:, None, None]
+        >>> corrected_sino = mjp.remove_sino_offset(sino)
+    """
+    # Compute the average over channels: shape [view, row]
+    sino_channel_avg = jnp.mean(sino, axis=2)
+
+    # Compute the minimum of the channel average across views: shape [row]
+    sino_min_channel_avg = jnp.min(sino_channel_avg, axis=0)
+
+    # Compute corrected sinogram
+    sino_corrected = sino - sino_channel_avg[:, :, None] + sino_min_channel_avg[None, :, None]
+
+    return sino_corrected
+

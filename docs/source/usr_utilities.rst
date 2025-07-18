@@ -1,14 +1,16 @@
-==============
-Display and IO
-==============
+.. _Utilities:
 
-MBIRJAX includes utilities to view 3D data slice-by-slice and to save and load `.hdf5` files and to download and extract `.tar` files.
+=========
+Utilities
+=========
+
+MBIRJAX contains utilities for viewing, downloading, exporting/importing, and generating synthetic data.
 
 Saving and loading models and reconstructions is handled through TomographyModel: :ref:`SaveLoadDocs`.
 
 
-Display Functions
------------------
+3D Data Viewer
+--------------
 
 .. autofunction:: mbirjax.viewer.slice_viewer
 
@@ -16,6 +18,14 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 
 .. image:: https://www.math.purdue.edu/~buzzard/images/slice_viewer_demo.gif
    :alt: An animated image of the slice viewer.
+
+
+Weight Generation
+-----------------
+
+.. autofunction:: mbirjax.vcd_utils.gen_weights
+.. autofunction:: mbirjax.vcd_utils.gen_weights_mar
+
 
 IO Functions
 ------------
@@ -29,3 +39,13 @@ The functions here are for direct interactions with files.
 .. autofunction:: mbirjax.utilities.load_data_hdf5
 .. autofunction:: mbirjax.utilities.export_recon_hdf5
 .. autofunction:: mbirjax.utilities.import_recon_hdf5
+
+
+Synthetic Data Generation
+-------------------------
+
+.. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_reference
+.. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range
+.. autofunction:: mbirjax.utilities.gen_translation_phantom
+.. autofunction:: mbirjax.utilities.generate_demo_data
+

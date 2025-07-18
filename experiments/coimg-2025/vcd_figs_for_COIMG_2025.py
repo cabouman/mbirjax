@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-import mbirjax.parallel_beam
+import mbirjax as mj
 import vcd_coimg_utils as vcu
 
 
@@ -24,10 +24,11 @@ if __name__ == "__main__":
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # Set up the model
-    ct_model = mbirjax.ParallelBeamModel(sinogram.shape, angles)
+    ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
     # Generate 3D Shepp Logan phantom
-    phantom = ct_model.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     sinogram = ct_model.forward_project(phantom)
@@ -100,12 +101,12 @@ if __name__ == "__main__":
     fm_losses = [fm_rmse_alt_1, fm_rmse_default, fm_rmse_alt_2]
     prior_losses = [prior_loss_alt_1, prior_loss_default, prior_loss_alt_2]
     # labels = ['Gradient Descent', 'Vectorized Coordinate Descent', 'Coordinate Descent']
-    mbirjax.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 400),
+    mj.plot_granularity_and_loss(granularity_sequences, fm_losses, prior_losses, labels, granularity_ylim=(0, 400),
                                       loss_ylim=(0.01, 20), fig_title=fig_title)
 
     # Generate sequence of partition images for Figure 1
     recon_shape = (32, 32, 1)
-    partitions_fig = mbirjax.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
+    partitions_fig = mj.gen_set_of_pixel_partitions(recon_shape=recon_shape, granularity=[1, 4, 16, 64, 256])
 
     # Plot the set of partitions
-    mbirjax.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)
+    mj.debug_plot_partitions(partitions=partitions_fig, recon_shape=recon_shape)

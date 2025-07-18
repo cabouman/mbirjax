@@ -30,27 +30,27 @@ class TestProx(unittest.TestCase):
         """
         Verify that the denoiser works.
         """
-        num_det_rows = 100
-        num_det_channels = 100
-        max_iterations = 20
-        stop_threshold_change_pct = 0.1
-        sigma_noise = 0.1
-        sharpness = 0.0
+        for image_shape in [(1, 100, 100), (100, 100, 100)]:
 
-        # Get some noisy data
-        recon_shape = (num_det_channels, num_det_channels, num_det_rows)
-        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape)
-        phantom_noisy = phantom + sigma_noise * np.random.randn(*recon_shape)
+            max_iterations = 20
+            stop_threshold_change_pct = 0.1
+            sigma_noise = 0.1
+            sharpness = 0.0
 
-        denoiser = mj.QGGMRFDenoiser(phantom.shape)
-        denoiser.set_params(sharpness=sharpness)
-        sigma_noise = 0.1
-        phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, sigma_noise,
-                                                        max_iterations=max_iterations,
-                                                        stop_threshold_change_pct=stop_threshold_change_pct)
-        nrmse = np.linalg.norm(phantom_denoised - phantom) / np.linalg.norm(phantom)
-        tolerance = 0.2
-        self.assertTrue(nrmse < tolerance)
+            # Get some noisy data
+            phantom = np.zeros(image_shape)
+            phantom[:, image_shape[1]//3:2*image_shape[1]//3, image_shape[2]//3:2*image_shape[2]//3] = 1
+            phantom_noisy = phantom + sigma_noise * np.random.randn(*image_shape)
+
+            denoiser = mj.QGGMRFDenoiser(phantom.shape)
+            denoiser.set_params(sharpness=sharpness)
+            sigma_noise = 0.1
+            phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, sigma_noise,
+                                                            max_iterations=max_iterations,
+                                                            stop_threshold_change_pct=stop_threshold_change_pct)
+            nrmse = np.linalg.norm(phantom_denoised - phantom) / np.linalg.norm(phantom)
+            tolerance = 0.2
+            self.assertTrue(nrmse < tolerance)
 
     def test_median_filter_3d(self):
         a = np.arange(3 * 3 * 3).reshape((3, 3, 3))

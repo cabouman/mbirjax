@@ -1,7 +1,7 @@
 import numpy as np
 import time
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 
 if __name__ == "__main__":
     """
@@ -35,9 +35,9 @@ if __name__ == "__main__":
 
     # Set up the model
     if geometry_type == 'cone':
-        ct_model = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -73,8 +73,9 @@ if __name__ == "__main__":
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model.gen_modified_3d_sl_phantom()
-    mbirjax.slice_viewer(phantom, phantom.transpose((0, 2, 1)),
+    phantom_shape = ct_model.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+    mj.slice_viewer(phantom, phantom.transpose((0, 2, 1)),
                          title='Phantom\nLeft: single phantom slice (axial)    Right: single phantom row (coronal)',
                          slice_label='Phantom slice', slice_label2='Phantom row', slice_axis2=0)
     # Generate synthetic sinogram data
@@ -84,10 +85,10 @@ if __name__ == "__main__":
 
     # View sinogram
     title = 'Original sinogram ({} geometry, {} views)'.format(geometry_type, num_views)
-    mbirjax.slice_viewer(sinogram, title=title, slice_label='View', slice_axis=0)
+    mj.slice_viewer(sinogram, title=title, slice_label='View', slice_axis=0)
 
     # Generate weights array
-    weights = ct_model.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set reconstruction parameter values
     ct_model.set_params(sharpness=sharpness, verbose=1)
@@ -126,7 +127,7 @@ if __name__ == "__main__":
         print('Final RMSE = {:.3f}'.format(recon_params['fm_rmse'][-1]))
         print('Final prior loss = {:.3f}'.format(recon_params['prior_loss'][-1]))
         print('Elapsed time for recon is {:.3f} seconds'.format(elapsed), file=file)
-        mbirjax.get_memory_stats(print_results=True, file=file)
+        mj.get_memory_stats(print_results=True, file=file)
         print('-------------------------', file=file)
 
     print_summary()
@@ -137,6 +138,6 @@ if __name__ == "__main__":
 
     # Display results
     title = 'VCD recon ({} geometry, {} views)\nLeft: single recon slice (axial)    Right: single recon row (coronal)'.format(geometry_type, num_views)
-    mbirjax.slice_viewer(recon, recon.transpose((0, 2, 1)), title=title,
+    mj.slice_viewer(recon, recon.transpose((0, 2, 1)), title=title,
                          slice_label='Recon slice', slice_label2='Recon row', slice_axis2=0)
 
