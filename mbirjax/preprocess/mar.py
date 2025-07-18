@@ -122,22 +122,23 @@ def BH_correction(sino, alpha, batch_size=64):
 
 def _generate_polynomial_combinations(num_terms, max_order):
     """
-    Generate all combinations of polynomial powers up to a total degree,
-    excluding the all-zero combination.
+    Generate all combinations of polynomial powers such that the total degree
+    (sum of exponents) is <= max_order, excluding the all-zero combination.
+    The combinations are sorted in increasing order of total degree.
 
     Args:
-        num_terms (int): Number of variables/terms (e.g., 2 for x, y or 3 for x, y, z).
+        num_terms (int): Number of variables (e.g., 2 for x, y).
         max_order (int): Maximum total degree of the polynomial.
 
     Returns:
-        list[tuple[int]]: List of tuples representing powers (excluding all-zeros).
+        list[tuple[int]]: List of exponent tuples representing valid terms.
     """
-
     combinations = []
 
     def generate_recursive(current_combination, remaining_terms):
         if remaining_terms == 0:
-            if any(power != 0 for power in current_combination):  # Exclude (0,0,...,0)
+            total_degree = sum(current_combination)
+            if 0 < total_degree <= max_order:
                 combinations.append(tuple(current_combination))
             return
 
@@ -145,7 +146,11 @@ def _generate_polynomial_combinations(num_terms, max_order):
             generate_recursive(current_combination + [power], remaining_terms - 1)
 
     generate_recursive([], num_terms)
+
+    # Sort by total degree (sum of powers)
+    combinations.sort(key=lambda x: sum(x))
     return combinations
+
 
 def _compute_HTH_efficient(p, M, include_constant=False):
     """
@@ -246,13 +251,13 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
             if exp > 0:
                 term *= m ** exp
         metal_terms.append(term)
-    poly_length = len(metal_terms)
+    num_metal_terms = len(metal_terms)
     if include_const:
         H_cols.append(jnp.ones_like(p))
 
     metal_terms = jnp.stack(metal_terms, axis=1)
 
-    HtH_size = 1 + 2 * poly_length + (1 if include_const else 0)
+    HtH_size = 1 + 2 * num_metal_terms + (1 if include_const else 0)
     Hty = jnp.zeros(HtH_size)
     HtH = jnp.zeros((HtH_size, HtH_size))
 
@@ -267,29 +272,23 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     Hty = Hty.at[0].set(jnp.dot(p, y))
 
     p_metal_dots = jnp.dot((p[:, None] * metal_terms).T, y)
-    Hty = Hty.at[1:1 + poly_length].set(p_metal_dots)
+    Hty = Hty.at[1:1 + num_metal_terms].set(p_metal_dots)
 
     metal_dots = jnp.dot(metal_terms.T, y)
-    Hty = Hty.at[1 + poly_length:1 + 2 * poly_length].set(metal_dots)
+    Hty = Hty.at[1 + num_metal_terms:1 + 2 * num_metal_terms].set(metal_dots)
 
     # Constant term if needed
     if include_const:
         Hty = Hty.at[-1].set(jnp.sum(y))
 
     # HtH = _compute_HTH_efficient(p, metal_terms, include_const)
-    with jax.default_device(jax.devices("cpu")[0]):
-        # Build H on CPU
-        H_base = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms, metal_terms], axis=1)
-        if include_const:
-            ones_col = jnp.ones((p.shape[0], 1))
-            H = jnp.concatenate([H_base, ones_col], axis=1)
-        else:
-            H = H_base
-        # Compute H^T H on CPU
-        HtH_cpu = jnp.dot(H.T, H)
+    num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
+    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:num_cross_terms], metal_terms], axis=1)
+    if include_const:
+        ones_col = jnp.ones((p.shape[0], 1))
+        H = jnp.concatenate([H, ones_col], axis=1)
 
-    # Move result back to GPU
-    HtH = jax.device_put(HtH_cpu, jax.devices("gpu")[0])
+    HtH = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
     sigma_max = jnp.linalg.norm(HtH, ord=2)
@@ -299,11 +298,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # --- Build correction ---
     # Term 0: p
-    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:,n] for n in range(poly_length))
+    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:,n] for n in range(num_cross_terms))
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
-    metal_sino = sum(theta[n + 1 + poly_length] * metal_terms[:,n] for n in range(poly_length))
+    metal_sino = sum(theta[n + 1 + num_metal_terms] * metal_terms[:,n] for n in range(num_metal_terms))
 
     # constant
     if include_const:
