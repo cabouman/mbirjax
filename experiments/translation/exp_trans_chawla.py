@@ -58,6 +58,7 @@ def main():
 
     # Change row pitch to be 1/2 object thickness
     tct_model.set_params(delta_recon_row=object_thickness_mm_ALU/2.0)
+    tct_model.set_params(qggmrf_nbr_wts=[1.0,1.0,0.1])
 
     # Print model parameters and display translation array
     tct_model.print_params()
