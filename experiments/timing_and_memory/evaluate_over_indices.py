@@ -1,4 +1,4 @@
-import mbirjax
+import mbirjax as mj
 import numpy as np
 import jax.numpy as jnp
 import time
@@ -8,7 +8,7 @@ import jax
 
 def evaluate_over_indices(filename, nv, nc, nr):
 
-    if mbirjax.get_memory_stats(print_results=False) is None:
+    if mj.get_memory_stats(print_results=False) is None:
         raise EnvironmentError('This script is for gpu only.')
 
     print('Loading {}'.format(filename))
@@ -37,7 +37,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
 
         # Set up parallel beam
         sinogram_shape = (nv, nr, nc)
-        parallel_model = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        parallel_model = mj.ParallelBeamModel(sinogram_shape, angles)
 
         parallel_model.pixel_batch_size_for_vmap = ni
         parallel_model.views_per_batch = nv
@@ -56,7 +56,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
                 'Initial forward projection for memory: nr={}, nc={}, nv={}, ni={}'.format(nr, nc, nv, ni))
             try:
                 sinogram = parallel_model.sparse_forward_project(voxel_values, indices)
-                m1 = mbirjax.get_memory_stats()
+                m1 = mj.get_memory_stats()
                 peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
             except MemoryError as e:
                 print('Out of memory')
@@ -82,7 +82,7 @@ def evaluate_over_indices(filename, nv, nc, nr):
             sinogram = np.ones((nv, nr, nc))
             try:
                 bp = parallel_model.sparse_back_project(sinogram, indices)
-                m1 = mbirjax.get_memory_stats()
+                m1 = mj.get_memory_stats()
                 peak_mem_gb = m1[0]['peak_bytes_in_use'] / (1024 ** 3)
             except MemoryError as e:
                 print('Out of memory')

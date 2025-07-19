@@ -28,7 +28,7 @@ import numpy as np
 import time
 import pprint
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import matplotlib.pyplot as plt
 
 """**Set the geometry parameters**"""
@@ -69,15 +69,16 @@ def main():
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     if geometry_type == 'cone':
-        ct_model_for_generation = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     elif geometry_type == 'parallel':
-        ct_model_for_generation = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
     # Generate 3D Shepp Logan phantom
     print('Creating phantom')
-    phantom = ct_model_for_generation.gen_modified_3d_sl_phantom()
+    phantom_shape = ct_model_for_generation.get_params('recon_shape')
+    phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
 
     # Generate synthetic sinogram data
     print('Creating sinogram')
@@ -86,20 +87,20 @@ def main():
 
     # View sinogram
     title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.'
-    # mbirjax.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
+    # mj.slice_viewer(sinogram, slice_axis=0, title=title, slice_label='View')
 
     """**Initialize for the reconstruction**"""
 
     # ####################
     # Initialize the model for reconstruction.
     if geometry_type == 'cone':
-        ct_model_for_recon = mbirjax.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
+        ct_model_for_recon = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
     else:
-        ct_model_for_recon = mbirjax.ParallelBeamModel(sinogram_shape, angles)
+        ct_model_for_recon = mj.ParallelBeamModel(sinogram_shape, angles)
 
     # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed.
     weights = None
-    # weights = ct_model_for_recon.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+    # weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     # Set parameters
     partition_sequence = ct_model_for_recon.get_params('partition_sequence')
@@ -186,7 +187,7 @@ def main():
     plt.legend(['Default', 'New varying sharpness/snr_db'])
     plt.show(block=True)
     # plt.axis((0, iterations_per_step * len(default_nrmse), 0, 0.3))
-    mbirjax.slice_viewer(recon, recon - baseline, title='New recon (left) and (new recon) - baseline (right)')
+    mj.slice_viewer(recon, recon - baseline, title='New recon (left) and (new recon) - baseline (right)')
 
 
 def recon_by_continuation(ct_model_for_recon, sinogram, weights,

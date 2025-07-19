@@ -29,9 +29,9 @@ class ParallelBeamModel(TomographyModel):
     --------
     Initialize a parallel beam model with specific angles and sinogram shape:
 
-    >>> import mbirjax
+    >>> import mbirjax as mj
     >>> angles = jnp.array([0, jnp.pi/4, jnp.pi/2])
-    >>> model = mbirjax.ParallelBeamModel((180, 256, 10), angles)
+    >>> model = mj.ParallelBeamModel((180, 256, 10), angles)
 
     See Also
     --------

@@ -1,7 +1,7 @@
 import warnings
 import numpy as np
 import jax.numpy as jnp
-import mbirjax
+import mbirjax as mj
 import unittest
 
 
@@ -21,7 +21,7 @@ class TestUtilities(unittest.TestCase):
     def test_parameter_names(self):
 
         print('Testing consistency of parameter names in ParameterHandler')
-        consistent = mbirjax._utils.update_param_literal(verify_match_and_exit=True)
+        consistent = mj._utils.update_param_literal(verify_match_and_exit=True)
         if not consistent:
             warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamNames in ParameterHandler')
         assert consistent
@@ -50,20 +50,20 @@ class TestUtilities(unittest.TestCase):
         # Single input, single output
         target = data_to_batch
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.concatenate_function_in_batches(identity, data_to_batch, batch_size)
+            output = mj.concatenate_function_in_batches(identity, data_to_batch, batch_size)
             assert (jnp.allclose(output, target))
 
         # Single input, multiple outputs
         target = data_to_batch, 2 * data_to_batch
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.concatenate_function_in_batches(two_output, data_to_batch, batch_size)
+            output = mj.concatenate_function_in_batches(two_output, data_to_batch, batch_size)
             assert (jnp.allclose(output[0], target[0]))
             assert (jnp.allclose(output[1], target[1]))
 
         # Multiple inputs, multiple and different sized outputs
         input_data = (data_to_batch, data_to_batch)
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.concatenate_function_in_batches(different_outputs, input_data, batch_size)
+            output = mj.concatenate_function_in_batches(different_outputs, input_data, batch_size)
             num_batches = jnp.ceil(input_data[0].shape[0] / batch_size).astype(int)
             target = 3 * data_to_batch, jnp.ones(fixed_output_size * num_batches)
             assert (jnp.allclose(output[0], target[0]))
@@ -93,13 +93,13 @@ class TestUtilities(unittest.TestCase):
         # Single input, single output
         target = jnp.sum(data_to_batch)
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.sum_function_in_batches(simple_sum, data_to_batch, batch_size)
+            output = mj.sum_function_in_batches(simple_sum, data_to_batch, batch_size)
             assert(jnp.allclose(output, target))
 
         # Single input, multiple outputs
         target = jnp.sum(data_to_batch), jnp.sum(2 * data_to_batch)
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.sum_function_in_batches(two_output_sum, data_to_batch, batch_size)
+            output = mj.sum_function_in_batches(two_output_sum, data_to_batch, batch_size)
             assert (jnp.allclose(output[0], target[0]))
             assert (jnp.allclose(output[1], target[1]))
 
@@ -108,7 +108,7 @@ class TestUtilities(unittest.TestCase):
         mult_factor = 3
         extra_args = (mult_factor, )
         for batch_size in [batch_size_even, batch_size_odd]:
-            output = mbirjax.sum_function_in_batches(different_outputs, input_data, batch_size, extra_args)
+            output = mj.sum_function_in_batches(different_outputs, input_data, batch_size, extra_args)
             num_batches = jnp.ceil(input_data[0].shape[0] / batch_size).astype(int)
             target = jnp.sum((mult_factor + 1) * data_to_batch), jnp.ones(fixed_output_size) * num_batches
             assert (jnp.allclose(output[0], target[0]))

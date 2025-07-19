@@ -18,6 +18,8 @@ from jax.errors import JaxRuntimeError
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
+
+import mbirjax
 import mbirjax as mj
 from mbirjax import ParameterHandler
 
@@ -1148,13 +1150,14 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         num_recon_slices = recon_shape[2]
 
+        scale_recon_to_sinogram = True if init_recon is None else False
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             self.logger.info('Starting direct recon for initial reconstruction')
             with jax.default_device(self.sinogram_device):
                 init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
-        elif isinstance(init_recon, int) and init_recon == 0:
-            init_recon = jnp.zeros(recon_shape, device=self.main_device)
+        elif isinstance(init_recon, int):
+            init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
         # Make sure that init_recon has the correct shape and type
         if init_recon.shape != recon_shape:
@@ -1173,7 +1176,7 @@ class TomographyModel(ParameterHandler):
         else:
             weighted_error_sinogram = error_sinogram
         wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
-        if wtd_err_sino_norm > 0:
+        if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
             alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
         else:
             alpha = 1
@@ -1699,7 +1702,7 @@ class TomographyModel(ParameterHandler):
             sigma_prox (None or float, optional): The standard deviation of the proximal map prior term.  If None, then set automatically from the sinogram.  Defaults to None.
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
-            do_initialization (bool, optional):  If true, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
+            do_initialization (bool, optional):  If True, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
                 Set to False if initialization has already been performed on this sinogram, and prox_input and init_recon are on main_device and sinogram and weights are on sinogram_device.
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
@@ -1718,7 +1721,7 @@ class TomographyModel(ParameterHandler):
         """
         compute_prior_loss = False
         prior_loss = [0]
-        if do_initialization:
+        if do_initialization or self.prox_data is None:
             if isinstance(prox_input, type(jnp.zeros(1))) and list(prox_input.devices())[0] != self.main_device:
                 prox_input = jax.device_put(prox_input, self.main_device)
 
@@ -1729,9 +1732,9 @@ class TomographyModel(ParameterHandler):
         else:
             partitions, partition_sequence, granularity, regularization_params = self.prox_data
 
+        self_sigma_prox = self.get_params('sigma_prox')
         if sigma_prox is not None:  # Override the auto sigma_prox if needed
             regularization_params['sigma_prox'] = sigma_prox
-            self_sigma_prox = self.get_params('sigma_prox')
             self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=self.get_params('auto_regularize_flag'))
 
         # Compute proximal map
@@ -1768,36 +1771,11 @@ class TomographyModel(ParameterHandler):
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         return recon, recon_dict
 
-    def gen_weights_mar(self, sinogram, init_recon=None, metal_threshold=None, beta=1.0, gamma=3.0):
+    @staticmethod
+    def gen_weights(sinogram, weight_type):
         """
-        Generates the weights used for reducing metal artifacts in MBIR reconstruction.
+        DEPRECATED:  Use :func:`mbirjax.gen_weights` instead.
 
-        This function computes sinogram weights that help to reduce metal artifacts.
-        More specifically, it computes weights with the form:
-
-            weights = exp( -(sinogram/beta) * ( 1 + gamma * delta(metal) ) )
-
-        delta(metal) denotes a binary mask indicating the sino entries that contain projections of metal.
-        Providing ``init_recon`` yields better metal artifact reduction.
-        If not provided, the metal segmentation is generated directly from the sinogram.
-
-        Args:
-            sinogram (jax array): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            init_recon (jax array, optional): An initial reconstruction used to identify metal voxels. If not provided, Otsu's method is used to directly segment sinogram into metal regions.
-            metal_threshold (float, optional): Values in ``init_recon`` above ``metal_threshold`` are classified as metal. If not provided, Otsu's method is used to segment ``init_recon``.
-            beta (float, optional): Scalar value in range :math:`>0`.
-                A larger ``beta`` improves the noise uniformity, but too large a value may increase the overall noise level.
-            gamma (float, optional): Scalar value in range :math:`>=0`.
-                A larger ``gamma`` reduces the weight of sinogram entries with metal, but too large a value may reduce image quality inside the metal regions.
-
-        Returns:
-            (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
-        """
-        return mj.gen_weights_mar(self, sinogram, init_recon=init_recon, metal_threshold=metal_threshold,
-                                       beta=beta, gamma=gamma)
-
-    def gen_weights(self, sinogram, weight_type):
-        """
         Compute the optional weights used in MBIR reconstruction.
 
         Args:
@@ -1814,34 +1792,20 @@ class TomographyModel(ParameterHandler):
         Raises:
             Exception: Raised if ``weight_type`` is not one of the above options.
         """
-        weight_list = []
-        num_views = sinogram.shape[0]
-        batch_size = self.view_batch_size_for_vmap
-        for i in range(0, num_views, batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], self.worker)
-
-            if weight_type == 'unweighted':
-                weights = jnp.ones(sino_batch.shape)
-            elif weight_type == 'transmission':
-                weights = jnp.exp(-sino_batch)
-            elif weight_type == 'transmission_root':
-                weights = jnp.exp(-sino_batch / 2)
-            elif weight_type == 'emission':
-                weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
-            else:
-                raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
-            weight_list.append(jax.device_put(weights, self.sinogram_device))
-
-        weights = jnp.concatenate(weight_list, axis=0)
-        return weights
+        warnings.warn('TomographyModel.gen_weights() is deprecated and will be removed in a future release.  Use mbirjax.gen_weights() instead.')
+        return mj.gen_weights(sinogram, weight_type)
 
     def gen_modified_3d_sl_phantom(self):
         """
+        DEPRECATED:  This method has been deprecated and will be removed in a future release.
+        Instead, use :func:`mbirjax.generate_3d_shepp_logan_low_dynamic_range`
+
         Generates a simplified, low-dynamic range version of the 3D Shepp-Logan phantom.
 
         Returns:
             ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
         """
+        warnings.warn('This method has been deprecated and will be removed in a future release.  Instead, use mbirjax.generate_3d_shepp_logan_low_dynamic_range()')
         recon_shape = self.get_params('recon_shape')
         phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
         return phantom

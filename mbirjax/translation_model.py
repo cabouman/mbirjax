@@ -153,11 +153,21 @@ class TranslationModel(mbirjax.TomographyModel):
         # Calculate the width and height of the detector in ALU
         detect_box = jnp.array([delta_det_channel*num_det_channels, delta_det_row*num_det_rows])
 
-        # Compute 1/2 the cone angle in radians
-        half_cone_angle = jnp.arctan2(jnp.max(detect_box), 2*source_detector_dist)
+        # Compute cone_slope = tan(cone_angle/2) along the x and z directions
+        cone_slope = (detect_box/2) / source_detector_dist
+
+        # Compute detector pixel pitch at iso
+        # Note that this may differ from delta_voxel
+        # However, we will use det_pixel_pitch_iso to calculate both the number rows and their pitch
+        det_pixel_pitch_iso_vec = jnp.array([delta_det_row, delta_det_channel])/magnification
+        det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
 
         # Compute the row pitch based on a heuristic
-        delta_recon_row = np.sqrt(2) * (delta_voxel / jnp.tan(half_cone_angle))
+        # This results in isotrqopic voxels when cone_angle/2 > 63 deg
+        #ToDo: There will be problems if cone_slope is small or zero. Discuss with Greg.
+        nominal_row_pitch = 2.0*det_pixel_pitch_iso_vec/cone_slope
+        nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
+        delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso) # Ensure that the row resolution is not higher than the (x,z) detector resolution
         delta_recon_row = float(delta_recon_row)
 
         # Compute cube = (width, depth, height) of the scanned region in ALU
@@ -165,12 +175,18 @@ class TranslationModel(mbirjax.TomographyModel):
         min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
         cube = max_translation - min_translation
 
-        # Compute recon_box = (width, height) of the reconstruction box in voxels
-        recon_box = jnp.ceil((jnp.array([cube[0], cube[2]]) + detect_box/magnification/2)/delta_voxel)
+        # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
+        # Nominal voxels are the voxels that would result using the detector pitch at iso
+        recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
 
-        # Use a heuristic to determine a reasonable number of slices
-        num_recon_rows = jnp.ceil((num_views*num_det_channels*num_det_rows)/(recon_box[0]*recon_box[1]))
-        # Make sure the object extends no further than half way to the source
+        # ************ Use a heuristic to determine a reasonable number of rows *************
+        # Compute the number of unknown pixels per view
+        num_pixels_per_view = ((recon_box[0] + num_det_rows)*(recon_box[1] + num_det_channels)) / num_views
+        num_measurements_per_view = num_det_channels*num_det_rows
+        # Select the number of rows to match the number of unknowns to the number of measurements
+        num_recon_rows = jnp.ceil( num_measurements_per_view / num_pixels_per_view )
+
+        # Make sure the object extends no further than halfway to the source
         max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
         if max_recon_rows < 1:
             print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")

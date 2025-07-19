@@ -7,19 +7,17 @@ Demos and FAQs
 Demos
 -----
 
-Here are some demos to illustrate the basics of MBIRJAX along with some more advanced features.
+The basic demo below illustrates some of the features of MBIRJAX:
 
-1. **Basic Demo:** `Jupyter notebook <https://colab.research.google.com/drive/1zG_H6CDjuQxeMRQHan3XEyX2YVKcSSNC?usp=drive_link>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_1_shepp_logan.py>`__
-2. **Large Object:**  `Jupyter notebook <https://colab.research.google.com/drive/1-kk_HeR8Y8f6pZ2zjTza8NTEpAgwgVRB?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_2_large_object.py>`__
-3. **Cropped Center:**  `Jupyter notebook <https://colab.research.google.com/drive/1WQwIJ_mDcuMMcWseM66aRPvtv6FmMWF-?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_3_cropped_center.py>`__
-4. **Wrong Rotation:**  `Jupyter notebook <https://colab.research.google.com/drive/1Gd-fMm3XK1WBsuJUklHdZ-4jjsvdpeIT?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_4_wrong_rotation_direction.py>`__
-5. **FBP/FDK:**  `Jupyter notebook <https://colab.research.google.com/drive/10ZiCSk1C9D4Fb7Uv6jTtQYxF2lKjmbyh?usp=sharing>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_5_fbp_fdk.py>`__
+* **Basic Demo:** `Jupyter notebook <https://colab.research.google.com/drive/1zG_H6CDjuQxeMRQHan3XEyX2YVKcSSNC?usp=drive_link>`__ or `Python script <https://github.com/cabouman/mbirjax/blob/main/demo/demo_1_shepp_logan.py>`__
 
-First browse the notebooks, then copy and run in your own notebook environment,
-or follow the installation instructions at :ref:`InstallationDocs` and run the scripts directly.
+First browse the notebook, then copy and run in your own notebook environment,
+or follow the installation instructions at :ref:`InstallationDocs` and run the script directly.
 
 Then adjust some of the parameters to better understand how the code works.
 If you have a GPU, you can increase the problem size by changing ``num_views``, ``num_det_rows``, and ``num_det_channels``.
+
+There are more demos here: `MBIRJAX demos <https://github.com/cabouman/mbirjax/blob/main/demo/>`__
 
 The separate repo `mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ provides a wider variety of examples using real data.
 
