@@ -184,7 +184,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     metal_sinos = []
     metals = []
     for mask, scale in zip(metal_masks, metal_scales):
-        sino = ct_model.forward_project(jax.device_put(mask*recon, device)).reshape(-1)
+        sino = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
         norm = jnp.max(jnp.abs(sino))
         metal_sinos.append(sino)
         metals.append(sino / norm)
