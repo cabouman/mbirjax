@@ -1,3 +1,4 @@
+import sys
 import os
 import time
 import numpy as np
@@ -83,12 +84,9 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
 
 if __name__ == "__main__":
 
-    size=256 # the sinogram and recon will have shape (size, size, size)
-    num_gpus=4
-    output_filepath = '../output/output.csv'
+    size = int(sys.argv[1])
+    num_gpus = int(sys.argv[2])
+    output_filepath = sys.argv[3]
 
-    # size = int(sys.argv[1])
-    # num_gpus = int(sys.argv[2])
-    # output_filepath = sys.argv[3]
-
+    # the sinogram and recon will have shape (size, size, size)
     back_project(size, num_gpus, output_filepath=output_filepath)
