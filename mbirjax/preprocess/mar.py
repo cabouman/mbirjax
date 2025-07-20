@@ -152,26 +152,6 @@ def _generate_polynomial_combinations(num_terms, max_order):
     return combinations
 
 
-def _compute_HTH_efficient(plastic_term, metal_terms, num_cross_terms, include_constant=False):
-    plastic_term = plastic_term.reshape(-1, 1)
-    if include_constant:
-        metal_terms = jnp.concatenate([metal_terms, jnp.ones_like(plastic_term).reshape(-1, 1)], axis=1)
-    cross_terms = plastic_term[:, None] * metal_terms[:, :num_cross_terms]
-    ptp = jnp.dot(plastic_term.T, plastic_term)
-    ptc = jnp.dot(plastic_term.T, cross_terms)
-    ptm = jnp.dot(plastic_term.T, metal_terms)
-    ctc = jnp.dot(cross_terms.T, cross_terms)
-    ctm = jnp.dot(cross_terms.T, metal_terms)
-    mtm = jnp.dot(metal_terms.T, metal_terms)
-    hth = jnp.block([
-        [ptp, ptc, ptm],
-        [ptc.T, ctc, ctm],
-        [ptm.T, ctm.T, mtm]
-    ])
-
-    return hth
-
-
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=3, include_const=False):
     """
     Beam-hardening correction for plastic and multiple metal components.
@@ -248,8 +228,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     # HtH = _compute_HTH_efficient(p, metal_terms, num_cross_terms, include_const)
     H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
     if include_const:
-        ones_col = jnp.ones((p.shape[0], 1))
-        H = jnp.concatenate([H, ones_col], axis=1)
+        H = jnp.concatenate([H, jnp.ones_like(p).reshape(-1, 1)], axis=1)
 
     HtH = jnp.dot(H.T, H)
 
