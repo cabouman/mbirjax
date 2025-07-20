@@ -231,8 +231,6 @@ class TomographyModel(ParameterHandler):
         # 'sharding':
         if use_gpu == 'sharding':
 
-            print(f"THERE ARE {len(gpus)} GPUS")
-
             # sharding requires the number of views to be a multiple of the number of gpus
             # pad with zero weighted views
             num_gpus = len(gpus)
