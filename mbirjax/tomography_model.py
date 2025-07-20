@@ -140,7 +140,6 @@ class TomographyModel(ParameterHandler):
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
         use_gpu = self.get_params('use_gpu')
-
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
@@ -741,7 +740,7 @@ class TomographyModel(ParameterHandler):
         If weights is None, then constant weights 1 will be used
 
         Args:
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.which p
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
             output_device (jax device): Device on which to put the output
 
         Returns:
@@ -803,7 +802,7 @@ class TomographyModel(ParameterHandler):
 
         if use_gpu not in ['sharding', 'automatic', 'full', 'sinograms', 'projections', 'none']:
             error_message = "use_gpu must be one of \n"
-            error_message += " 'sharding' (EXPERIMENTAL: code will try to use multiple GPUs ),\n'"
+            error_message += " 'sharding' (EXPERIMENTAL: code will try to use multiple GPUs),\n'"
             error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
             error_message += " 'full' (use gpu for all calculations),\n"
             error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
