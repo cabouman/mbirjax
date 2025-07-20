@@ -4,13 +4,15 @@ import numpy as np
 import time
 import os
 
-import jax
 import csv
 
 
 def back_project(size, gpus=None, output_filepath='output.csv'):
 
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+    visible_devices = ",".join([str(x) for x in range(gpus)])
+    print(visible_devices)
+    os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+
     import jax.numpy as jnp
     import mbirjax as mj
 
@@ -28,7 +30,6 @@ def back_project(size, gpus=None, output_filepath='output.csv'):
     # recon model
     back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
     back_projection_model.set_params(sharpness=0.0)
-    back_projection_model.force_num_gpus = gpus
     back_projection_model.set_devices_and_batch_sizes()
 
     # Print out model parameters
@@ -57,19 +58,19 @@ def back_project(size, gpus=None, output_filepath='output.csv'):
 
     mem_stats = mj.get_memory_stats()
 
-    row = [
-        size,
-        gpus,
-        elapsed,
-        mem_stats[0]['peak_bytes_in_use'],
-        mem_stats[1]['peak_bytes_in_use'],
-        mem_stats[2]['peak_bytes_in_use'],
-        mem_stats[3]['peak_bytes_in_use'],
-        mem_stats[4]['peak_bytes_in_use'],
-        mem_stats[5]['peak_bytes_in_use'],
-        mem_stats[6]['peak_bytes_in_use'],
-        mem_stats[7]['peak_bytes_in_use'],
-    ]
+    # row = [
+    #     size,
+    #     gpus,
+    #     elapsed,
+    #     mem_stats[0]['peak_bytes_in_use'],
+    #     mem_stats[1]['peak_bytes_in_use'],
+    #     mem_stats[2]['peak_bytes_in_use'],
+    #     mem_stats[3]['peak_bytes_in_use'],
+    #     mem_stats[4]['peak_bytes_in_use'],
+    #     mem_stats[5]['peak_bytes_in_use'],
+    #     mem_stats[6]['peak_bytes_in_use'],
+    #     mem_stats[7]['peak_bytes_in_use'],
+    # ]
 
     # with open(output_filepath, "a", newline="") as f:
     #     writer = csv.writer(f)
@@ -80,7 +81,7 @@ def back_project(size, gpus=None, output_filepath='output.csv'):
 if __name__ == "__main__":
 
     size=256
-    gpus=8
+    gpus=4
     output_filepath = '../output/output.csv'
 
     # size = int(sys.argv[1])
@@ -90,3 +91,5 @@ if __name__ == "__main__":
     print("size:", size, "gpus:", gpus)
 
     back_project(size, gpus=gpus, output_filepath=output_filepath)
+
+    print()
