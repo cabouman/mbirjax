@@ -153,20 +153,21 @@ def _generate_polynomial_combinations(num_terms, max_order):
 
 
 def _compute_HTH_efficient(plastic_term, metal_terms, num_cross_terms, include_constant=False):
+    plastic_term = plastic_term.reshape(-1, 1)
     if include_constant:
-        metal_terms = jnp.concatenate([metal_terms, jnp.ones_like(plastic_term)], axis=1)
-        cross_terms = plastic_term[:, None] * metal_terms[:num_cross_terms]
-        ptp = jnp.dot(plastic_term.T, plastic_term)
-        ptc = jnp.dot(plastic_term.T, cross_terms)
-        ptm = jnp.dot(plastic_term.T, metal_terms)
-        ctc = jnp.dot(cross_terms.T, cross_terms)
-        ctm = jnp.dot(cross_terms.T, metal_terms)
-        mtm = jnp.dot(metal_terms.T, metal_terms)
-        hth = jnp.block([
-            [ptp, ptc, ptm],
-            [ptc.T, ctc, ctm],
-            [ptm.T, ctm.T, mtm]
-        ])
+        metal_terms = jnp.concatenate([metal_terms, jnp.ones_like(plastic_term).reshape(-1, 1)], axis=1)
+    cross_terms = plastic_term[:, None] * metal_terms[:, :num_cross_terms]
+    ptp = jnp.dot(plastic_term.T, plastic_term)
+    ptc = jnp.dot(plastic_term.T, cross_terms)
+    ptm = jnp.dot(plastic_term.T, metal_terms)
+    ctc = jnp.dot(cross_terms.T, cross_terms)
+    ctm = jnp.dot(cross_terms.T, metal_terms)
+    mtm = jnp.dot(metal_terms.T, metal_terms)
+    hth = jnp.block([
+        [ptp, ptc, ptm],
+        [ptc.T, ctc, ctm],
+        [ptm.T, ctm.T, mtm]
+    ])
 
     return hth
 
@@ -235,10 +236,10 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     Hty = Hty.at[0].set(jnp.dot(p, y))
 
     p_metal_dots = jnp.dot((p[:, None] * metal_terms[:, :num_cross_terms]).T, y)
-    Hty = Hty.at[1:1 + num_metal_terms].set(p_metal_dots)
+    Hty = Hty.at[1:1 + num_cross_terms].set(p_metal_dots)
 
     metal_dots = jnp.dot(metal_terms.T, y)
-    Hty = Hty.at[1 + num_metal_terms:1 + 2 * num_metal_terms].set(metal_dots)
+    Hty = Hty.at[1 + num_cross_terms: Hty_size].set(metal_dots)
 
     # Constant term if needed
     if include_const:
