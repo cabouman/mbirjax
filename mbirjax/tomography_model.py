@@ -141,8 +141,6 @@ class TomographyModel(ParameterHandler):
         gb = 1024 ** 3
         use_gpu = self.get_params('use_gpu')
 
-        use_gpu = 'sharding' # TODO: remove this hardcoding
-
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
@@ -234,12 +232,7 @@ class TomographyModel(ParameterHandler):
         # 'sharding':
         if use_gpu == 'sharding':
 
-            # TODO: remove this test code after tests are complete
-            try:
-                gpus = gpus[:self.force_num_gpus]
-                print(f'Forcing number of gpus to {len(gpus)}.')
-            except AttributeError:
-               print(f'No forced number of gpus. Using all {len(gpus)} gpus.')
+            print(f"THERE ARE {len(gpus)} GPUS")
 
             # sharding requires the number of views to be a multiple of the number of gpus
             # pad with zero weighted views
@@ -748,7 +741,7 @@ class TomographyModel(ParameterHandler):
         If weights is None, then constant weights 1 will be used
 
         Args:
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.which p
             output_device (jax device): Device on which to put the output
 
         Returns:
@@ -808,8 +801,9 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'sinograms', 'projections', 'none']:
+        if use_gpu not in ['sharding', 'automatic', 'full', 'sinograms', 'projections', 'none']:
             error_message = "use_gpu must be one of \n"
+            error_message += " 'sharding' (EXPERIMENTAL: code will try to use multiple GPUs ),\n'"
             error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
             error_message += " 'full' (use gpu for all calculations),\n"
             error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"

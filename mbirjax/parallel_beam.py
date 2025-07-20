@@ -45,11 +45,11 @@ class ParallelBeamModel(TomographyModel):
 
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
-    def __init__(self, sinogram_shape, angles):
+    def __init__(self, sinogram_shape, angles, **kwargs):
 
         angles = jnp.asarray(angles)
         view_params_name = 'angles'
-        super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
+        super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name, **kwargs)
 
     @overload
     def get_params(self, parameter_names: Union[ParallelBeamParamNames, list[ParallelBeamParamNames]]) -> Any: ...

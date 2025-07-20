@@ -28,9 +28,7 @@ def back_project(size, gpus=None, output_filepath='output.csv'):
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # recon model
-    back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
-    back_projection_model.set_params(sharpness=0.0)
-    back_projection_model.set_devices_and_batch_sizes()
+    back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles, sharpness=0.0, use_gpu='sharding')
 
     # Print out model parameters
     back_projection_model.print_params()
