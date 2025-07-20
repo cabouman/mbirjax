@@ -163,8 +163,9 @@ class TranslationModel(mbirjax.TomographyModel):
         det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
 
         # Compute the row pitch based on a heuristic
-        # This results in isotropic voxels when cone_angle/2 > 63 deg
-        nominal_row_pitch = det_pixel_pitch_iso_vec/(cone_slope/2.0)
+        # This results in isotrqopic voxels when cone_angle/2 > 63 deg
+        #ToDo: There will be problems if cone_slope is small or zero. Discuss with Greg.
+        nominal_row_pitch = 2.0*det_pixel_pitch_iso_vec/cone_slope
         nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
         delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso) # Ensure that the row resolution is not higher than the (x,z) detector resolution
         delta_recon_row = float(delta_recon_row)
