@@ -244,7 +244,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
-    metal_sino = sum(theta[n + 1 + num_metal_terms] * metal_terms[:,n] for n in range(num_metal_terms))
+    metal_sino = sum(theta[n + 1 + num_cross_terms] * metal_terms[:,n] for n in range(num_metal_terms))
 
     # constant
     if include_const:
