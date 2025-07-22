@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import dm_pix as pix
 import matplotlib.pyplot as plt
 import jax.scipy.optimize
 import mbirjax as mj
@@ -36,13 +35,19 @@ def main():
     print(f"\nOptimization completed in {result.nfev} function evaluations")
     print(f"Success: {result.success}")
     print(f"Number of iterations: {result.nit}")
-    print(f"Estimated shift: dx = {shift[0]:.2f}, dy = {shift[1]:.2f}")
+    print(f"Estimated shift: dx = {shift[1]:.2f}, dy = {shift[0]:.2f}")
     print(f"True shift: dx = {true_dx}, dy = {true_dy}")
     print(f"Final loss: {result.fun:.6f}")
 
     # Translate the moving image using final estimated shift
-    final_offset = jnp.array([-shift[0], -shift[1], 0.0])
-    registered_image = pix.affine_transform(translated_image, jnp.eye(3), offset=final_offset, order=1)
+    final_translation = jnp.array([-shift[0], -shift[1]])
+    registered_image = jax.image.scale_and_translate(translated_image,
+                                                     shape=translated_image.shape,
+                                                     spatial_dims=(0, 1),
+                                                     scale=jnp.array([1.0, 1.0]),
+                                                     translation=final_translation,
+                                                     method='linear',
+                                                     antialias=False)
 
     # Show registered image vs. original
     mj.slice_viewer(original_image, registered_image, title='Original Image (Left) and Registered Image (Right)', slice_axis=2)
