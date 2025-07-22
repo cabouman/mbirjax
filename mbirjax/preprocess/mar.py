@@ -202,8 +202,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     num_metal_terms = len(metal_exponent_list)
     num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
 
-    Hty_size = 1 + num_cross_terms + num_metal_terms + (1 if include_const else 0)
-    Hty = jnp.zeros(Hty_size)
+    # Hty_size = 1 + num_cross_terms + num_metal_terms + (1 if include_const else 0)
+    # Hty = jnp.zeros(Hty_size)
 
     # Index mapping:
     # 0: p
@@ -213,23 +213,26 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         
     # Compute Hty
     # Set p term
-    Hty = Hty.at[0].set(jnp.dot(p, y))
-
-    p_metal_dots = jnp.dot((p[:, None] * metal_terms[:, :num_cross_terms]).T, y)
-    Hty = Hty.at[1:1 + num_cross_terms].set(p_metal_dots)
-
-    metal_dots = jnp.dot(metal_terms.T, y)
-    Hty = Hty.at[1 + num_cross_terms: Hty_size].set(metal_dots)
-
-    # Constant term if needed
-    if include_const:
-        Hty = Hty.at[-1].set(jnp.sum(y))
+    # Hty = Hty.at[0].set(jnp.dot(p, y))
+    #
+    # p_metal_dots = jnp.dot((p[:, None] * metal_terms[:, :num_cross_terms]).T, y)
+    # Hty = Hty.at[1:1 + num_cross_terms].set(p_metal_dots)
+    #
+    # metal_dots = jnp.dot(metal_terms.T, y)
+    # Hty = Hty.at[1 + num_cross_terms: Hty_size].set(metal_dots)
+    #
+    # # Constant term if needed
+    # if include_const:
+    #     Hty = Hty.at[-1].set(jnp.sum(y))
 
     # HtH = _compute_HTH_efficient(p, metal_terms, num_cross_terms, include_const)
     H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
     if include_const:
         H = jnp.concatenate([H, jnp.ones_like(p).reshape(-1, 1)], axis=1)
 
+    H_cpu = jax.device_put(H, device=jax.devices("cpu")[0])
+    y_cpu = jax.device_put(y, device=jax.devices("cpu")[0])
+    Hty = jnp.dot(H_cpu.T, y_cpu)
     HtH = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
