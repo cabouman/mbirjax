@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import dm_pix as pix
 
 
 def create_test_image(size=64):
@@ -29,9 +28,14 @@ def apply_translation(original_image, dy, dx):
     Returns:
         jax.array: Transformed image
     """
-    matrix = jnp.eye(3)
-    offset = jnp.array([dy, dx, 0.0])
-    return pix.affine_transform(original_image, matrix, offset=offset, order=1)
+    translated_image = jax.image.scale_and_translate(original_image,
+                                                     shape=original_image.shape,
+                                                     spatial_dims=(0, 1),
+                                                     scale=jnp.array([1.0, 1.0]),
+                                                     translation=jnp.array([dy, dx]),
+                                                     method="linear",
+                                                     antialias=False)
+    return translated_image
 
 
 def loss_fn(shift, original_image, translated_image):
@@ -46,7 +50,11 @@ def loss_fn(shift, original_image, translated_image):
         jax.array: MSE between image_fixed and image_moving
     """
     dy, dx = shift
-    offset = jnp.array([-dy, -dx, 0.0])
-    matrix = jnp.eye(3)
-    adjusted_image = pix.affine_transform(translated_image, matrix, offset=offset, order=1)
-    return jnp.mean((original_image - adjusted_image) ** 2)
+    adjusted_image = jax.image.scale_and_translate(translated_image,
+                                                   shape=translated_image.shape,
+                                                   spatial_dims=(0, 1),
+                                                   scale=jnp.array([1.0, 1.0]),
+                                                   translation=jnp.array([-dy, -dx]),
+                                                   method="linear",
+                                                   antialias=False)
+    return jnp.mean((adjusted_image - original_image) ** 2)
