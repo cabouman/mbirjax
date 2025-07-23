@@ -17,23 +17,23 @@ def main():
     initial_shift = jnp.array([0.0, 0.0])
 
     # Generate the reference image and the image to be aligned with it
-    original_image = create_reference_image(size=size, option=image_type)
-    translated_image = apply_translation(original_image, true_dy, true_dx)
+    reference_image = create_reference_image(size=size, option=image_type)
+    translated_image = apply_translation(reference_image, true_dy, true_dx)
 
     # Visualize the fixed and moving images
-    mj.slice_viewer(original_image, translated_image, title='Original Image (Left) and Translated Image (Right)', slice_axis=2)
+    mj.slice_viewer(reference_image, translated_image, title='Reference Image (Left) and Translated Image (Right)', slice_axis=2)
 
     # Test gradients
-    test_shift = jnp.array([0.0, 0.0])
-    grads = jax.grad(loss_fn)(test_shift, original_image, translated_image)
+    test_shift = jnp.array([1.0, 1.0])
+    grads = jax.grad(loss_fn)(test_shift, reference_image, translated_image)
     print("===============Test Gradients============")
     print("Gradient of loss function with respect to shift:", grads)
 
-    # Compute the optimization using scipy.optimize.minimize
+    # Perform the optimization using scipy.optimize.minimize
     result = jax.scipy.optimize.minimize(
         fun=loss_fn,
         x0=initial_shift,
-        args=(original_image, translated_image),
+        args=(reference_image, translated_image),
         method='BFGS'
     )
 
@@ -57,7 +57,7 @@ def main():
                                                      antialias=False)
 
     # Show registered image vs. original
-    mj.slice_viewer(original_image, registered_image, title='Original Image (Left) and Registered Image (Right)', slice_axis=2)
+    mj.slice_viewer(reference_image, registered_image, title='Reference Image (Left) and Registered Image (Right)', slice_axis=2)
 
 
 if __name__ == '__main__':
