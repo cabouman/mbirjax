@@ -2,27 +2,57 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-
-def create_random_intensity_square_image(size=64, seed=0):
+def create_reference_image(option, size=64, sigma=4.0):
     """
-    Create a square image with random intensity values in a square region.
+    Create a reference image based on the selected option
 
     Args:
-        size (int): Size of the square image.
-        seed (int): Random seed for reproducibility.
+        size (integer): the size of the test image
+        sigma (float): the standard deviation of the Gaussian
+        option (str): Image type to generate. Options are 'gaussian' or 'constant'.
 
     Returns:
-        np.ndarray: Generated test image with random intensities in a square.
+        np.ndarray: Generated reference image.
     """
-    rng = np.random.default_rng(seed)
+    if option == 'gaussian':
+        return create_gaussian_square_image(size=size, sigma=sigma)
+    elif option == 'constant':
+        return create_constant_square_image(size=size)
+    else:
+        raise ValueError(f"Unsupported image option: {option}")
+
+
+def create_gaussian_square_image(size=64, sigma=4.0):
+    """
+    Create an image with a 2D Gaussian centered in a square region.
+
+    Args:
+        size (integer): the size of the test image
+        sigma (float): the standard deviation of the Gaussian
+
+    Returns:
+        np.ndarray: (size, size, 1)
+    """
     image = np.zeros((size, size), dtype=np.float32)
 
     # Define square region
-    x_start, x_end = 20, 40
-    y_start, y_end = 20, 40
+    square_size = size // 3
+    x_start = (size - square_size) // 2
+    x_end = x_start + square_size
+    y_start = (size - square_size) // 2
+    y_end = y_start + square_size
 
-    # Fill region with random values in [0, 1)
-    image[x_start:x_end, y_start:y_end] = rng.random((x_end - x_start, y_end - y_start))
+    # Create 2D Gaussian grid
+    x = np.linspace(-1, 1, square_size)
+    y = np.linspace(-1, 1, square_size)
+    xv, yv = np.meshgrid(x, y)
+    gaussian = np.exp(-(xv ** 2 + yv ** 2) / (2 * (sigma / 10.0) ** 2))  # normalize sigma to [0, 1] scale
+
+    # Normalize to [0, 1]
+    gaussian = (gaussian - gaussian.min()) / (gaussian.max() - gaussian.min())
+
+    # Insert into image
+    image[x_start:x_end, y_start:y_end] = gaussian
 
     return image[..., None]
 
@@ -37,8 +67,16 @@ def create_constant_square_image(size=64):
     Returns:
         jax.array: Generated test image
     """
-    image = jnp.zeros((size, size))
-    image = image.at[20:40, 20:40].set(1.0)
+    image = np.zeros((size, size))
+
+    # Define square region
+    square_size = size // 3
+    x_start = (size - square_size) // 2
+    x_end = x_start + square_size
+    y_start = (size - square_size) // 2
+    y_end = y_start + square_size
+
+    image[x_start:x_end, y_start:y_end] = 1.0
     return image[..., None]
 
 

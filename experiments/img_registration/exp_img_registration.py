@@ -6,8 +6,9 @@ from img_registration_utils import *
 
 
 def main():
-    # Define the size of test images
+    # Define the size and type of test images
     size = 64
+    image_type = "gaussian" # Can be "gaussian" or "constant"
 
     # Define the ground truth shift in x and y axis
     true_dy, true_dx = 3.0, -2.0
@@ -16,7 +17,7 @@ def main():
     initial_shift = jnp.array([0.0, 0.0])
 
     # Generate the reference image and the image to be aligned with it
-    original_image = create_constant_square_image(size=size)
+    original_image = create_reference_image(size=size, option=image_type)
     translated_image = apply_translation(original_image, true_dy, true_dx)
 
     # Visualize the fixed and moving images
@@ -25,6 +26,7 @@ def main():
     # Test gradients
     test_shift = jnp.array([0.0, 0.0])
     grads = jax.grad(loss_fn)(test_shift, original_image, translated_image)
+    print("===============Test Gradients============")
     print("Gradient of loss function with respect to shift:", grads)
 
     # Compute the optimization using scipy.optimize.minimize
@@ -36,6 +38,7 @@ def main():
     )
 
     shift = result.x
+    print("\n===============Optimization Results=============")
     print(f"Optimization status: {result.status}")
     print(f"Success: {result.success}")
     print(f"Number of iterations: {result.nit}")
