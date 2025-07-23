@@ -235,7 +235,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # --- Solve for theta ---
     scaling_const = jnp.trace(HtH) / H.shape[1]
-    HtH_reg = HtH + epsilon * scaling_const * jnp.eye(len(Hty))
+    HtH_reg = HtH + (epsilon ** 2) * scaling_const * jnp.eye(len(Hty))
     theta = jnp.linalg.solve(HtH_reg, Hty)
     print(f'theta = {theta}')
 
