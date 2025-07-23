@@ -1,0 +1,1000 @@
+   59  git push
+   60  [200~    git push --set-upstream origin sharding_dev/stable
+   61  git push --set-upstream upstream sharding_dev/stable
+   62  cdls
+   63  ls
+   64  ls -la
+   65  cd .git
+   66  ls
+   67  cd hooks/
+   68  ls
+   69  vim pre-push
+   70  cd ..
+   71  git push --set-upstream upstream sharding_dev/stable
+   72  ls
+   73  clear
+   74  git branch -vv
+   75  cd .git
+   76  cd hooks/
+   77  ls
+   78  cat pre-push
+   79  vim pre-push
+   80  cd ..
+   81  ls
+   82  clear
+   83  ls
+   84  pwd
+   85  git push
+   86  startup
+   87  conda activate mbirjax
+   88  clear
+   89  pip install -e .
+   90  cd experiments/
+   91  cd ..
+   92  cd demo/
+   93  ls
+   94  python3 demo_1_shepp_logan.py 
+   95  clear
+   96  python3 demo_1_shepp_logan.py 
+   97  cd .git
+   98  ls
+   99  cd ../..
+  100  ls
+  101  clear
+  102  cd mbirjax
+  103  ls
+  104  cd .git/
+  105  ls
+  106  cd hooks/
+  107  ls
+  108  vim pre-push
+  109  git push
+  110  ls
+  111  vim pre-push
+  112  cd ..
+  113  git status
+  114  clear
+  115  exit
+  116  git branch -vv
+  117  ls
+  118  cd repos/
+  119  ls
+  120  cd mbirjax
+  121  ls
+  122  git branch -vv
+  123  pwd
+  124  cd ..
+  125  clear
+  126  ls -la
+  127  cd caden-cardell-mbirjax/
+  128  ls
+  129  git status
+  130  git branch -vv
+  131  git checkout demo-1-sharding-2
+  132  git push
+  133  git checkout origin/demo-1-sharding-control
+  134  git push
+  135  clar
+  136  git status
+  137  ls
+  138  git branch -vv
+  139  git checkout demo-1-sharding-control
+  140  git push
+  141  git branch -vv
+  142  cd ..
+  143  rm -rf caden-cardell-mbirjax/
+  144  clear
+  145  ls -la
+  146  mkdir output
+  147  mv control_back_projection_recon_27c4a43a.npy output
+  148  mv sharding_back_projection_recon_9470fe24.npy output
+  149  ls
+  150  clear
+  151  cd mbirjax
+  152  ls
+  153  git wroktree remove ../mbirjax-control/
+  154  git worktree remove ../mbirjax-control/
+  155  git status
+  156  cd ..
+  157  ls
+  158  cd mbirjax/
+  159  ls
+  160  git branch -vv
+  161  git branch -D sharding/control
+  162  clear
+  163  git branch -vv
+  164  git branch -D main
+  165  git branch -vv
+  166  git branch -D sharding/forward_projection
+  167  git branch -vv
+  168  git push -u origin sharding_dev/stable
+  169  git branch
+  170  git branch -vv
+  171  git push -u upstream sharding_dev/stable
+  172  git branch --set-upstream-to=upstream/sharding_dev/stable
+  173  git branch -vv
+  174  git fetch
+  175  git branch -vv
+  176  clear
+  177  git log
+  178  clear
+  179  git branch -vv
+  180  git branch --set-upstream-to=upstream/sharding_dev/sparse_back_project
+  181  git brnach -vv
+  182  git branch -vv
+  183  git push -u upstream sharding_dev/sparse_back_project
+  184  git branch -vv
+  185  git branch -D sharding_dev/set_devices_and_batch_sizes
+  186  clear
+  187  git branch -vv
+  188  git checkout cardell_dev -- expirements/sharding
+  189  git checkout cardell_dev -- experiments/sharding
+  190  conda activate mbirjax
+  191  clear
+  192  pwd
+  193  pip install -e .
+  194  cd experiments/sharding/
+  195  ls
+  196  clear
+  197  python3 back_projection.py 
+  198  clear
+  199  python3 back_projection.py 
+  200  python3 back_projection.py 1 1
+  201  python3 back_projection.py 128 1
+  202  exit
+  203  worker8
+  204  exit
+  205  cd repos/mbirjax/experiments/sharding/
+  206  clear
+  207  ls
+  208  chmod +x test.sh 
+  209  ./test.sh 
+  210  alias_help
+  211  ./test.sh 
+  212  conda activate mbirjax
+  213  cd ..
+  214  ls
+  215  cd ..
+  216  ls
+  217  pip install -e .
+  218  cd experiments/
+  219  ls
+  220  cd ls
+  221  cd sharding/
+  222  ls
+  223  ./test.sh 
+  224  ./test.sh >> ../output/output.log
+  225  ls
+  226  cd ..
+  227  ls
+  228  cd output/
+  229  ls
+  230  cat output.csv 
+  231  exit
+  232  worker8
+  233  ls
+  234  cd ..
+  235  cd sharding/
+  236  ls
+  237  ./test.sh 
+  238  cd sharding/
+  239  exit
+  240  ls
+  241  cd repos/
+  242  ls
+  243  cd mbirjax/
+  244  ls
+  245  cd experiments/
+  246  cd output/
+  247  ls
+  248  cat output.csv 
+  249  worker8
+  250  exit
+  251  my quota
+  252  myquota
+  253  worker8
+  254  worker
+  255  ls
+  256  git fetch
+  257  cd repos/mbirjax/
+  258  git fetch
+  259  git merge prerelease
+  260  ls
+  261  cd dev_scripts/
+  262  ls
+  263  . clean_install_all.sh 
+  264  ls
+  265  cd ..
+  266  ls
+  267  cd mbirjax/
+  268  pip install -e .
+  269  clear
+  270  cd experiments/
+  271  ls
+  272  cd sharding/
+  273  ls
+  274  python3 back_projection.py 
+  275  which python
+  276  conda activate mbirjax
+  277  which python
+  278  conda deactivate
+  279  cd ..
+  280  cd ../dev_scripts/
+  281  ls
+  282  . deep_clean_conda.sh 
+  283  . clean_install_all.sh 
+  284  which python
+  285  which python3
+  286  ls
+  287  cd ..
+  288  ls
+  289  cd mbirjax
+  290  ls
+  291  cd e
+  292  ls
+  293  cd ..
+  294  cd experiments/
+  295  ls
+  296  cd sharding/
+  297  ls
+  298  python3 back_projection.py 
+  299  cd ..
+  300  ls
+  301  cd ..
+  302  pip install -e .
+  303  cd experiments/sharding/
+  304  python3 back_projection.py 
+  305  cd ..
+  306  ls
+  307  cd ..
+  308  pip install -e .[cuda12]
+  309  python3 back_projection.py 
+  310  python3 experiments/sharding/back_projection.py 
+  311  pip install -e ".[cuda12]"
+  312  python3 experiments/sharding/back_projection.py 
+  313  pip install --upgrade --force-reinstall "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  314  python -c "import jax; print(jax.devices())"
+  315  conda list | grep cudnn
+  316  conda uninstall cudnn libcudnn
+  317  pip uninstall -y jax jaxlib jax-cuda12-plugin
+  318  pip install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  319  pip install -e ".[cuda12]"
+  320  python -c "import jax; print(jax.devices())"
+  321  ls
+  322  cd dev_scripts/
+  323  . deep_clean_conda.sh 
+  324  module load conda
+  325  module load cuda
+  326  module unload cuda
+  327  module load cuda/12.6.1
+  328  . clean_install_all.sh 
+  329  pip install -e ".[cuda12]"
+  330  ls
+  331  cd ..
+  332  ls
+  333  pip install -e ".[cuda12]"
+  334  python -c "import jax; print(jax.devices())"
+  335  nvcc --version
+  336  pip uninstall -y jax jaxlib jax-cuda12-plugin
+  337  pip cache purge
+  338  pip install --upgrade "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  339  python -c "import jax; print(jax.devices())"
+  340  export LD_LIBRARY_PATH=$(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+  341  python -c "import jax; print(jax.devices())"
+  342  vim ~/.bachrc
+  343  rm ~/.bachrc
+  344  vim ~/.bashrc
+  345  . ~/.bashrc 
+  346  clear
+  347  ls
+  348  cd experiments/sharding/
+  349  ls
+  350  python3 back_projection.py 
+  351  conda activatre mbirjas
+  352  conda activatre mbirjax
+  353  conda activate mbirjax
+  354  clear
+  355  python3 back_projection.py 
+  356  exit
+  357  worker8
+  358  exit
+  359  ls
+  360  cd repos/mbirjax/
+  361  conda activate mbirjax
+  362  clear
+  363  ls
+  364  cd experiments/sharding/
+  365  which python3
+  366  python3 back_projection.py 
+  367  ./back_projection_test.sh 
+  368  cuda/12.6.1
+  369  module load cuda/12.6.1
+  370  module unload cuda
+  371  module unload cuda/12.6.1
+  372  nvcc --version
+  373  module list
+  374  module load cuda/12.6.1
+  375  exit
+  376  cd repos/
+  377  cd mbirjax/
+  378  ls
+  379  cd ls
+  380  ls
+  381  cd experiments/
+  382  ls
+  383  echo $SHELL
+  384  ls
+  385  ls -la
+  386  exit
+  387  worker8
+  388  exit
+  389  ls
+  390  exit
+  391  help_alias
+  392  alias_help
+  393  exit
+  394  ls
+  395  echo
+  396  find .
+  397  /usr/bin/find . -maxdepth 1
+  398  cat
+  399  cat ~/.bashrc 
+  400  cd ~
+  401  ls
+  402  python3 -c "import os; print('\n'.join(os.listdir('.')[:100]))"
+  403  exit
+  404  ssh h010
+  405  clear
+  406  worker8
+  407  exit
+  408  ls 
+  409  cd ..
+  410  ls
+  411  cd ..
+  412  ls
+  413  cd ..
+  414  ls
+  415  cd ~
+  416  strace ls 2>&1 | grep getdents
+  417  cd /tmp
+  418  ls
+  419  env -i HOME=/tmp TERM=$TERM PS1='$ ' /bin/bash --noprofile --norc
+  420  su - ncardel
+  421  env
+  422  mv ~/.bashrc ~/.tmp_bashrc
+  423  cp 
+  424  cd /tmp
+  425  cd ~
+  426  cd ..
+  427  cd ncardel
+  428  cd ..
+  429  cd ncardel
+  430  cd ..
+  431  cd ncardel
+  432  ls
+  433  rm ~/.bashrc
+  434  worker1
+  435  sinteractive -A bouman -N1 -n14 --gpus-per-node=2 -q normal -p ai -t 04:00:00
+  436  squeue
+  437  ls
+  438  cat
+  439  mv
+  440  echo
+  441  echo > ~/.bashrc
+  442  exit
+  443  module load conda && module load cuda
+  444  ls
+  445  cd repos/
+  446  ls
+  447  cd mbirjax/
+  448  ls
+  449  cd experiments/
+  450  cd sharding/
+  451  ls
+  452  ./back_projection_test.sh 
+  453  exit
+  454  cat .bashrc
+  455  ls
+  456  ls -a ~ | grep bashrc
+  457  grep bashrc ~/.bash_history
+  458  sinteractive -A bouman -N1 -n42 --gpus-per-node=8 -q normal -p ai -t 04:00:00
+  459  exit
+  460  ls
+  461  module load conda && module load cuda
+  462  conda activate mbirjax
+  463  ls
+  464  cd sharding/
+  465  ls
+  466  cd ..
+  467  cd output/
+  468  ls
+  469  rm -rf .
+  470  cd ..
+  471  ls
+  472  cd output/
+  473  ls
+  474  rm back_project.log output.*
+  475  ls
+  476  cd ..
+  477  ls
+  478  cd sharding/
+  479  ./back_projection_test.sh 
+  480  which python3
+  481  python3 back_projection.py 
+  482  . back_projection_test.sh 
+  483  python3 back_projection.py 
+  484  LD_LIBRARY_PATH=$(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+  485  python3 back_projection.py 
+  486  sudo apt remove --purge libcudnn*
+  487  conda uninstall cudnn
+  488  clear
+  489  ldconfig -p | grep cudnn
+  490  ldd $(python -c 'import jaxlib; print(jaxlib.__file__)') | grep cudnn
+  491  module list
+  492  python -c "import jax; print(jax.devices())"
+  493  ls $CUDA_HOME/lib64/libcusparse*
+  494  export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+  495  which nvcc
+  496  python -c "import jax; print(jax.devices())"
+  497  ls $LD_LIBRARY_PATH
+  498  vim ~/.bashrc
+  499  python -c "import jax; print(jax.devices())"
+  500  vim ~/.bashrc
+  501  ls $CUDA_HOME/lib64/libcusparse*
+  502  vim ~/.bashrc
+  503  . ~/.bashrc 
+  504  module load conda && module load cuda
+  505  conda activate mbirjax
+  506  ls
+  507  python3 back_projection.py 
+  508  pip show jaxlib
+  509  pip uninstall jax jaxlib -y
+  510  pip install --upgrade "jax[cuda12_local]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  511  python3 back_projection.py 
+  512  ldd $(python -c "import jaxlib; print(jaxlib.__file__)")
+  513  ldd $(find $(python -c "import jaxlib; print(jaxlib.__path__[0])") -name "*.so" | head -n 1)
+  514  export LD_PRELOAD=/apps/gautschi/cuda/12.6/lib64/libcusparse.so.12
+  515  python3 back_projection.py 
+  516  mkdir -p ~/lib_fix
+  517  ln -s /apps/gautschi/cuda/12.6/lib64/libcusparse.so.12 ~/lib_fix/libcusparse.so.12
+  518  export LD_LIBRARY_PATH=~/lib_fix:$LD_LIBRARY_PATH
+  519  python3 back_projection.py 
+  520  export LD_LIBRARY_PATH=/path/to/cudnn/lib64:$LD_LIBRARY_PATH
+  521  python -c "import jax; print(jax.devices())"
+  522  module load cuda
+  523  python -c "import jax; print(jax.devices())"
+  524  module list
+  525  find /apps -name "libcudnn.so*" 2>/dev/null | grep -E "9\.1[0-9]|9\.[2-9]"
+  526  ls $(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib
+  527  exit
+  528  vim ~/.bashrc
+  529  ls -la
+  530  rm .bashrc.swp 
+  531  clear
+  532  cat .bash_profile 
+  533  clear
+  534  ls
+  535  vim .bashrc
+  536  . ~/.bashrc 
+  537  alias_help
+  538  clear
+  539  ls
+  540  vim .bashrc
+  541  . ~/bashrc
+  542  . ~/.bashrc
+  543  ls
+  544  cd repos/mbirjax/
+  545  ls
+  546  vim .bashrc
+  547  cd ~
+  548  vim .bashrc
+  549  . .bashrc 
+  550  cd repos/
+  551  cd mbirjax/
+  552  ls
+  553  cd experiments/
+  554  cat ~/.bashrc
+  555  clear
+  556  ls
+  557  worker8
+  558  exit
+  559  squeue -u $USER
+  560  clear
+  561  vim .bashrc
+  562  ls
+  563  cd repos/
+  564  ls
+  565  cd mbirjax/
+  566  ls
+  567  cd dev_scripts/
+  568  . deep_clean_conda.sh 
+  569  ls
+  570  clear
+  571  module load conda
+  572  module load cuda
+  573  conda create --name mbirjax python=3.10
+  574   conda activate mbirjax
+  575   pip install --upgrade ".[cuda12]"
+  576   pip install ".[cuda12]"
+  577  ls
+  578  cd ..
+  579  cd mbirjax/
+  580   pip install ".[cuda12]"
+  581  python -c "import jax; print(jax.devices())"
+  582  export LD_LIBRARY_PATH=$(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+  583  python -c "import jax; print(jax.devices())"
+  584  module load cuda
+  585  python -c "import jax; print(jax.devices())"
+  586  $(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib
+  587  pip install nvidia-cudnn-cu12==9.10.1.2
+  588  pip install nvidia-cudnn-cu12==9.11
+  589  pip install nvidia-cudnn-cu12==9.11.0.98
+  590  $(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cudnn/lib
+  591  python -c "import jax; print(jax.devices())"
+  592  ls /usr/local/cuda/lib64/libcusparse*
+  593  nvcc --version
+  594  module unload cuda
+  595  module load cuda/12.0
+  596  exit
+  597  module avail cuda
+  598  module avail conda
+  599  module load conda
+  600  module list
+  601  module avail --help
+  602  module help
+  603  module av cuda
+  604  ls /opt/modules/modulefiles
+  605  cd /opt
+  606  ls
+  607  cd modulefiles/
+  608  ls
+  609  cd Core/
+  610  ls
+  611  cd cu
+  612  ls -la
+  613  cd cuda
+  614  ls
+  615  cd ~/repos/
+  616  curl -L https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 -o /usr/local/bin/bazel
+  617  chmod +x /usr/local/bin/bazel
+  618  curl -L https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 -o /usr/local/bin/bazel
+  619  curl -L https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 -o bazel
+  620  chmod +x bazel
+  621  bazel version
+  622  ./bazel version
+  623  git clone https://github.com/google/jax.git
+  624  cd jax
+  625  ls
+  626  cd ..
+  627  ls
+  628  mv bazel /usr/local/bin/
+  629  sudo mv bazel /usr/local/bin/
+  630  ls
+  631  cd /
+  632  ls
+  633  cd usr/
+  634  ls
+  635  local
+  636  ls
+  637  cd bin
+  638  ls
+  639  cd ~
+  640  ls
+  641  ..
+  642  ls
+  643  cd ..
+  644  ls
+  645  cd ncardel/
+  646  ls
+  647  ls 
+  648  ls -la
+  649  cd .local
+  650  ls
+  651  cd bin/
+  652  ls
+  653  vm ~/repos/bazel .
+  654  mv ~/repos/bazel .
+  655  ls
+  656  which bazel
+  657  echo "export PATH=$HOME/.local/bin:$PATH" >> ~/.bashrc
+  658  . ~/.bashrc 
+  659  which bazel
+  660  bazel version
+  661  cd ~reppertm
+  662  cd ~/repos/
+  663  ls
+  664  cd output/
+  665  ls
+  666  cd ..
+  667  ls
+  668  cd mbirjax/
+  669  ls
+  670  cd ..
+  671  ls
+  672  cd output/
+  673  l
+  674  ld
+  675  ls
+  676  rm control_back_projection_recon_27c4a43a.npy sharding_back_projection_recon_9470fe24.npy 
+  677  cd ..
+  678  rmdir output/
+  679  ls
+  680  clear
+  681  cd jax
+  682  ls
+  683  pwd
+  684  git checkout jax-v0.4.25
+  685  export CUDA_HOME=/usr/local/cuda
+  686  export CUDNN_INSTALL_PATH=/usr/local/cuda
+  687  export PATH=$CUDA_HOME/bin:$PATH
+  688  export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+  689  pip install -U pip setuptools wheel
+  690  pip install -r build/build_requirements.txt
+  691  ls
+  692  pip install -U pip setuptools wheel
+  693  pip install numpy ninja opt_einsum
+  694  python build/build.py   --enable_cuda   --cuda_path=$CUDA_HOME   --cudnn_path=$CUDNN_INSTALL_PATH   --cuda_compute_capabilities="8.0"   --target_platform=linux_x86_64
+  695  python build/build.py   --enable_cuda   --cuda_path=$CUDA_HOME   --cudnn_path=$CUDNN_INSTALL_PATH   --cuda_compute_capabilities="8.0"
+  696  pip install build
+  697  python build/build.py   --enable_cuda   --cuda_path=$CUDA_HOME   --cudnn_path=$CUDNN_INSTALL_PATH   --cuda_compute_capabilities="8.0"
+  698  ls
+  699  cd ../re
+  700  ls
+  701  cd ..
+  702  ls
+  703  rm -rf jax
+  704  cd jax-tests/
+  705  git branch -vv
+  706  cd ..
+  707  rm -rf jax-tests/
+  708  ls
+  709  cd mbirjax/
+  710  ls
+  711  conda activate mbirjax
+  712  conda install "jaxlib=*=*cuda*" jax -c conda-forge
+  713  conda list
+  714  conda uninstall mbirjax
+  715  conda install ".[cuda12]"
+  716  pip install -e ".[cuda12]"
+  717  python -c "import jax; print(jax.devices())"
+  718  clear
+  719  ls
+  720  cd experiments/
+  721  ls
+  722  cd sharding/
+  723  ls
+  724  ./back_projection_test.sh 
+  725  exit
+  726  ls
+  727  worker8
+  728  exit
+  729  ls
+  730  module load conda && module load cuda
+  731  onda create --name test python=3.10
+  732  conda create --name test python=3.10
+  733  conda activate test
+  734  conda create --name test python=3.10
+  735  conda activate test
+  736  conda install "jaxlib=*=*cuda*" jax -c conda-forge
+  737  python -c "import jax; print(jax.devices())"
+  738  cd repos/
+  739  ls
+  740  cd mbirjax/
+  741  ls
+  742  pip install -e ".[cuda12]"
+  743  ls
+  744  cd experiments/
+  745  cd sharding/
+  746  ls
+  747  cat back_projection.py 
+  748  which python3
+  749  python3 back_projection.py 
+  750  exit
+  751  module load conda && module load cuda
+  752  conda activate test
+  753  cd repos/mbirjax/experiments/sharding/
+  754  python3 back_projection.py 
+  755  python -c "import jax; print(jax.devices())"
+  756  nvim .
+  757  python3 back_projection.py 
+  758  conda list
+  759  conda --help
+  760  conda deactivate
+  761  conda create --name test python=3.12
+  762  pip install -e ".[cuda12]"
+  763  cd ..
+  764  pip install -e ".[cuda12]"
+  765  python3 back_projection.py 
+  766  python3 experiments/sharding/back_projection.py 
+  767  conda install "jaxlib=*=*cuda*" jax -c conda-forge
+  768  python3 experiments/sharding/back_projection.py 
+  769  pip install -e ".[cuda12]"
+  770  python3 experiments/sharding/back_projection.py 
+  771  exirt
+  772  exit
+  773  alias_help
+  774  sinteractive -A bouman -N1 -n14 --gpus-per-node=1 -q normal -p ai -t 04:00:00
+  775  worker8
+  776  exit
+  777  vim ~/.bashrc
+  778  . ~/.bashrc
+  779  cat ~/.bashrc
+  780  startup_load
+  781  cd repos/mbirjax/
+  782  ls
+  783  git status
+  784  git diff
+  785  git status
+  786  git checkout prerelease 
+  787  git pull
+  788  clear
+  789  git status
+  790  git pull --force
+  791  git pull --rebase
+  792  git status
+  793  git branch -vv
+  794  clear
+  795  cd dev_scripts/
+  796  ls
+  797  . deep_clean_conda.sh 
+  798  . clean_install_all.sh 
+  799  cd ../demo/
+  800  s
+  801  ls
+  802  python -c "import jax; print(jax.devices())"
+  803  help
+  804  exit
+  805  worker8
+  806  exit
+  807  module load conda && module load cuda
+  808  conda create --name test
+  809  conda activate test
+  810  conda list
+  811  pip install -U "jax[cuda12]"
+  812  python -c "import jax; print(jax.devices())"
+  813  conda list
+  814  pip list
+  815  python3 -c "import jax; print(jax.devices())"
+  816  which python
+  817  python3 -m pip install -U "jax[cuda12]"
+  818  python3 -c "import jax; print(jax.devices())"
+  819  conda activate mbirjax
+  820  ls
+  821  cd repos/
+  822  ls
+  823  cd mbirjax/
+  824  ls
+  825  python3 -m pip install -U "jax[cuda12]"
+  826  python -c "import jax; print(jax.devices())"
+  827  conda activate test
+  828  python -c "import jax; print(jax.devices())"
+  829  ls
+  830  python3 -m pip install -U ".[cuda12]"
+  831  python -c "import jax; print(jax.devices())"
+  832  ls
+  833  cd experiments/
+  834  ls
+  835  git branch -vv
+  836  git checkout sharding_dev/sparse_back_project
+  837  cd sharding/
+  838  ls
+  839  python3 back_projection.py 
+  840  which python
+  841  which python3
+  842  python -c "import jax; print(jax.devices())"
+  843  python -c "from jax.errors import JaxRuntimeError"
+  844  python -c "import jax; jax.errors.JaxRuntimeError"
+  845  python -c "import jax; print(jax.errors)"
+  846  python3 back_projection.py 
+  847  exit
+  848  alias_help
+  849  sinteractive -A bouman -N1 -n21 --gpus-per-node=2 -q normal -p ai -t 04:00:00
+  850  sinteractive -A bouman -N1 -n28 --gpus-per-node=4 -q normal -p ai -t 04:00:00
+  851  exit
+  852  cd repos/mbirjax/
+  853  ls
+  854  clear
+  855  cd dev_scripts/
+  856  . deep_clean_conda.sh 
+  857  . clean_install_all.sh 
+  858  . deep_clean_conda.sh 
+  859  module load conda && module load cuda
+  860  . clean_install_all.sh 
+  861  ls
+  862  cd ../experiments/sharding/
+  863  ls
+  864  which python
+  865  python back_projection.py 
+  866  conda install -c nvidia cudnn=9.10.1
+  867  python back_projection.py 
+  868  pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  869  python back_projection.py 
+  870  pip install --upgrade jax jaxlib==0.7.0+cuda12.cudnn91 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  871  conda deactivate
+  872  conda activate mbirjax
+  873  python back_projection.py 
+  874  pip uninstall -y jax jaxlib
+  875  pip install jax==0.4.29 jaxlib==0.4.29+cuda12.cudnn91 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+  876  python -c "import jax; print(jax.lib.xla_bridge.get_backend().platform)"
+  877  python -c "import jax; print(jax.devices())"
+  878  find ~/.conda/envs/mbirjax/lib -name "libcudnn*.so*"
+  879  export LD_LIBRARY_PATH=$HOME/.conda/envs/mbirjax/lib:$LD_LIBRARY_PATH
+  880  python back_projection.py 
+  881  module avail
+  882  module avail cuda/
+  883  module avail cudnn
+  884  module avail cudnn/
+  885  module load cuda/12.9.0
+  886  module load cudnn/9.2.0.82-12
+  887  python back_projection.py 
+  888  cd ..
+  889  ls
+  890  cd ..
+  891  ls
+  892  cd dev_scripts/
+  893  ls
+  894  . deep_clean_conda.sh 
+  895  . clean_install_all.sh 
+  896  cd ../experiments/sharding/
+  897  python back_projection.py 
+  898  git status
+  899  git stash
+  900  git checkout prerelease 
+  901  git pull
+  902  ls -la
+  903  ls
+  904  cd ..
+  905  ls
+  906  cd .
+  907  cd ..
+  908  ls
+  909  cd dev_scripts/
+  910  . deep_clean_conda.sh 
+  911  . clean_install_all.sh 
+  912  ls
+  913  cd ../demo/
+  914  ls
+  915  python -c "import jax; print(jax.devices())"
+  916  exit
+  917  sinteractive -A bouman -N1 -n28 --gpus-per-node=2 -q normal -p ai -t 04:00:00
+  918  exit
+  919  cd repos/mbirjax/dev_scripts/
+  920  . deep_clean_conda.sh 
+  921  . clean_install_all.sh 
+  922  exit
+  923  sinteractive -A bouman -N1 -n28 --gpus-per-node=2 -q normal -p ai -t 04:00:00
+  924  exit
+  925  module load conda && module load cuda
+  926  cd repos/mbirjax/dev_scripts/
+  927  . deep_clean_conda.sh 
+  928  . clean_install_all.sh 
+  929  python -c "import jax; print(jax.devices())"
+  930  source deep_clean_conda.sh 
+  931  source clean_install_all.sh 
+  932  python -c "import jax; print(jax.devices())"
+  933  exit
+  934  sinteractive -A bouman -N1 -n28 --gpus-per-node=2 -q normal -p ai -t 04:00:00
+  935  exit
+  936  ssh h009
+  937  exit
+  938  alias_help
+  939  sinteractive -A bouman -N1 -n14 --gpus-per-node=1 -q normal -p ai -t 04:00:00
+  940  exit
+  941  module avail
+  942  sinteractive --help
+  943  exit
+  944  module load modtree/gpu
+  945  exit
+  946  vim .bashrc
+  947  exit
+  948  vim .bashrc
+  949  type pycharm
+  950  . ~/.bashrc
+  951  cat ~/.bashrc
+  952  vim .bashrc
+  953  cat ~/.bashrc
+  954  . ~/.bashrc
+  955  cat ~/.bashrc
+  956  . ~/.bashrc
+  957  cp ~/.bashrc ~/.bashrc.bak
+  958  vim ~/.bashrc
+  959  . ~/.bashrc
+  960  vim ~/.bashrc
+  961  dos2unix ~/.bashrc
+  962  . ~/.bashrc
+  963  sed -n '7p' ~/.bashrc | cat -A
+  964  vim ~/.bashrc
+  965  . ~/.bashrc
+  966  sed -n '7p' ~/.bashrc | cat -A
+  967  vim ~/.bashrc
+  968  . ~/.bashrc
+  969  exit
+  970  startup
+  971  cd ..
+  972  cd dev_scripts/
+  973  . deep_clean_conda.sh 
+  974  . clean_install_all.sh 
+  975  python -c "import jax; print(jax.devices())"
+  976  module load modtree/gpu
+  977  module load cuda/12.9.0
+  978  module load conda
+  979  export HTTPS_PROXY=squid.rcac.purdue.edu:3128
+  980  export HTTP_PROXY=squid.rcac.purdue.edu:3128
+  981  . deep_clean_conda.sh 
+  982  echo $PATH
+  983  exit
+  984  vim .bashrc
+  985  vim ~/.bashrc
+  986  . ~/.bashrc
+  987  type startup
+  988  type pycharm
+  989  startup
+  990  cd ~/repos/mbirjax/
+  991  cd dev_scripts/
+  992  . deep_clean_conda.sh 
+  993  cat ~/.bashrc
+  994  . clean_install_all.sh 
+  995  ls
+  996  python -c "import jax; print(jax.devices())"
+  997  . deep_clean_conda.sh 
+  998  worker8
+  999  cat startup.sh 
+ 1000  exit
+ 1001  cd ~
+ 1002  ls
+ 1003  module load modtree/gpu
+ 1004  module load conda
+ 1005  module load cuda/12.9.0
+ 1006  export HTTPS_PROXY=squid.rcac.purdue.edu:3128
+ 1007  export HTTP_PROXY=squid.rcac.purdue.edu:3128
+ 1008  conda create --name test python=3.10
+ 1009  conda activate test
+ 1010  pip install --upgrade "jax[cuda12]"
+ 1011  conda list
+ 1012  which python3
+ 1013  python3
+ 1014  pip install "mbirjax[cuda12]"
+ 1015  which python3
+ 1016  conda list
+ 1017  python3
+ 1018  cd repos/mbirjax/
+ 1019  git pull
+ 1020  git branch -vv
+ 1021  cd dev_scripts/
+ 1022  ls
+ 1023  . deep_clean_conda.sh 
+ 1024  . create_conda_test_environment.sh 
+ 1025  conda deactivate
+ 1026  conda activate test
+ 1027  conda list
+ 1028  cd ..
+ 1029  pip install -e ".[cuda12]"
+ 1030  which python3
+ 1031  python3
+ 1032  cd dev_scripts/
+ 1033  ls
+ 1034  . clean_install_all.sh 
+ 1035  python3
+ 1036  git checkout sharding_dev/sparse_back_project 
+ 1037  git status
+ 1038  ls
+ 1039  cd ../experiments/sharding/
+ 1040  ls
+ 1041  python3 back_projection.py 
+ 1042  pip list
+ 1043  pip uninstall mbirjax
+ 1044  cd ..
+ 1045  ls
+ 1046  pip install -e ".[cuda12]"
+ 1047  pip list
+ 1048  which python3
+ 1049  python3
+ 1050  cd experiments/sharding/
+ 1051  git status
+ 1052  git stash
+ 1053  git status
+ 1054  git stash pop
+ 1055  git status
+ 1056  git diff
+ 1057  python3 back_projection.py 
+ 1058  history > my_bash_history.txt

@@ -30,7 +30,8 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
     angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
 
     # recon model
-    back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles, sharpness=0.0, use_gpu='sharding')
+    back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
+    back_projection_model.set_params(sharpness=0.0, use_gpu='sharding') # TODO: in the __init__ method detect number of gpus and default to sharding if use_gpu has not been set
 
     # Print out model parameters
     print("MODEL PARAMS:")
@@ -84,9 +85,13 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
 
 if __name__ == "__main__":
 
-    size = int(sys.argv[1])
-    num_gpus = int(sys.argv[2])
-    output_filepath = sys.argv[3]
+    # size = int(sys.argv[1])
+    # num_gpus = int(sys.argv[2])
+    # output_filepath = sys.argv[3]
+
+    size = 256
+    num_gpus = 1
+    output_filepath = "../output/back_project.csv"
 
     # the sinogram and recon will have shape (size, size, size)
     back_project(size, num_gpus, output_filepath=output_filepath)
