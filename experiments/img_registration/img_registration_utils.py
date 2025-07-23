@@ -1,8 +1,33 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
-def create_test_image(size=64):
+def create_random_intensity_square_image(size=64, seed=0):
+    """
+    Create a square image with random intensity values in a square region.
+
+    Args:
+        size (int): Size of the square image.
+        seed (int): Random seed for reproducibility.
+
+    Returns:
+        np.ndarray: Generated test image with random intensities in a square.
+    """
+    rng = np.random.default_rng(seed)
+    image = np.zeros((size, size), dtype=np.float32)
+
+    # Define square region
+    x_start, x_end = 20, 40
+    y_start, y_end = 20, 40
+
+    # Fill region with random values in [0, 1)
+    image[x_start:x_end, y_start:y_end] = rng.random((x_end - x_start, y_end - y_start))
+
+    return image[..., None]
+
+
+def create_constant_square_image(size=64):
     """
     Create a test image containing a white square.
 

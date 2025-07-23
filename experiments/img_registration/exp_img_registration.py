@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import jax.scipy.optimize
 import mbirjax as mj
 from img_registration_utils import *
@@ -11,17 +10,22 @@ def main():
     size = 64
 
     # Define the ground truth shift in x and y axis
-    true_dy, true_dx = 5.0, -3.0
+    true_dy, true_dx = 3.0, -2.0
 
     # Initialize the shift parameters
     initial_shift = jnp.array([0.0, 0.0])
 
     # Generate the reference image and the image to be aligned with it
-    original_image = create_test_image(size=size)
+    original_image = create_constant_square_image(size=size)
     translated_image = apply_translation(original_image, true_dy, true_dx)
 
     # Visualize the fixed and moving images
     mj.slice_viewer(original_image, translated_image, title='Original Image (Left) and Translated Image (Right)', slice_axis=2)
+
+    # Test gradients
+    test_shift = jnp.array([0.0, 0.0])
+    grads = jax.grad(loss_fn)(test_shift, original_image, translated_image)
+    print("Gradient of loss function with respect to shift:", grads)
 
     # Compute the optimization using scipy.optimize.minimize
     result = jax.scipy.optimize.minimize(
@@ -32,7 +36,7 @@ def main():
     )
 
     shift = result.x
-    print(f"\nOptimization completed in {result.nfev} function evaluations")
+    print(f"Optimization status: {result.status}")
     print(f"Success: {result.success}")
     print(f"Number of iterations: {result.nit}")
     print(f"Estimated shift: dx = {shift[1]:.2f}, dy = {shift[0]:.2f}")
