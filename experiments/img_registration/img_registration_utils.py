@@ -1,19 +1,38 @@
 import jax
 import jax.numpy as jnp
+import dm_pix as pix
+import numpy as np
 
-
-def create_test_image(size=64):
+def create_test_image(size=64, white_ratio=0.2, seed=0):
     """
-    Create a test image containing a white square.
+    Create a test image with some random points in a certain region
 
     Args:
-        size (integer): the size of the test image
+        size (int): Size of the square image.
+        white_ratio (float): Fraction of pixels in the square region to set to 1.0.
+        seed (int): Random seed for reproducibility.
 
     Returns:
-        jax.array: Generated test image
+        np.ndarray: Generated test image with shape (size, size, 1)
     """
-    image = jnp.zeros((size, size))
-    image = image.at[20:40, 20:40].set(1.0)
+    # Initialize a black image
+    image = np.zeros((size, size), dtype=np.float32)
+
+    # Define white square region
+    x_start, x_end = 20, 40
+    y_start, y_end = 20, 40
+    square_h, square_w = x_end - x_start, y_end - y_start
+    total_square_pixels = square_h * square_w
+    num_white_pixels = int(total_square_pixels * white_ratio)
+
+    # Generate random coordinates within the square
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(total_square_pixels, size=num_white_pixels, replace=False)
+    coords = np.unravel_index(indices, (square_h, square_w))
+
+    # Set selected pixels to 1.0
+    image[x_start + coords[0], y_start + coords[1]] = 1.0
+
     return image[..., None]
 
 
@@ -28,14 +47,9 @@ def apply_translation(original_image, dy, dx):
     Returns:
         jax.array: Transformed image
     """
-    translated_image = jax.image.scale_and_translate(original_image,
-                                                     shape=original_image.shape,
-                                                     spatial_dims=(0, 1),
-                                                     scale=jnp.array([1.0, 1.0]),
-                                                     translation=jnp.array([dy, dx]),
-                                                     method="linear",
-                                                     antialias=False)
-    return translated_image
+    matrix = jnp.eye(3)
+    offset = jnp.array([dy, dx, 0.0])
+    return pix.affine_transform(original_image, matrix, offset=offset, order=1)
 
 
 def loss_fn(shift, original_image, translated_image):
@@ -50,11 +64,7 @@ def loss_fn(shift, original_image, translated_image):
         jax.array: MSE between image_fixed and image_moving
     """
     dy, dx = shift
-    adjusted_image = jax.image.scale_and_translate(translated_image,
-                                                   shape=translated_image.shape,
-                                                   spatial_dims=(0, 1),
-                                                   scale=jnp.array([1.0, 1.0]),
-                                                   translation=jnp.array([-dy, -dx]),
-                                                   method="linear",
-                                                   antialias=False)
-    return jnp.mean((adjusted_image - original_image) ** 2)
+    offset = jnp.array([-dy, -dx, 0.0])
+    matrix = jnp.eye(3)
+    adjusted_image = pix.affine_transform(translated_image, matrix, offset=offset, order=1)
+    return jnp.mean((original_image - adjusted_image) ** 2)
