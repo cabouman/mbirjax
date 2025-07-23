@@ -3,38 +3,82 @@ import jax.numpy as jnp
 import dm_pix as pix
 import numpy as np
 
-def create_test_image(size=64, white_ratio=0.2, seed=0):
+def create_reference_image(option, size=64, sigma=4.0):
     """
-    Create a test image with some random points in a certain region
+    Create a reference image based on the selected option
 
     Args:
-        size (int): Size of the square image.
-        white_ratio (float): Fraction of pixels in the square region to set to 1.0.
-        seed (int): Random seed for reproducibility.
+        size (integer): the size of the test image
+        sigma (float): the standard deviation of the Gaussian
+        option (str): Image type to generate. Options are 'gaussian' or 'constant'.
 
     Returns:
-        np.ndarray: Generated test image with shape (size, size, 1)
+        np.ndarray: Generated reference image.
     """
-    # Initialize a black image
+    if option == 'gaussian':
+        return create_gaussian_square_image(size=size, sigma=sigma)
+    elif option == 'constant':
+        return create_constant_square_image(size=size)
+    else:
+        raise ValueError(f"Unsupported image option: {option}")
+
+
+def create_gaussian_square_image(size=64, sigma=4.0):
+    """
+    Create an image with a 2D Gaussian centered in a square region.
+
+    Args:
+        size (integer): the size of the test image
+        sigma (float): the standard deviation of the Gaussian
+
+    Returns:
+        np.ndarray: (size, size, 1)
+    """
     image = np.zeros((size, size), dtype=np.float32)
 
-    # Define white square region
-    x_start, x_end = 20, 40
-    y_start, y_end = 20, 40
-    square_h, square_w = x_end - x_start, y_end - y_start
-    total_square_pixels = square_h * square_w
-    num_white_pixels = int(total_square_pixels * white_ratio)
+    # Define square region
+    square_size = size // 3
+    x_start = (size - square_size) // 2
+    x_end = x_start + square_size
+    y_start = (size - square_size) // 2
+    y_end = y_start + square_size
 
-    # Generate random coordinates within the square
-    rng = np.random.default_rng(seed)
-    indices = rng.choice(total_square_pixels, size=num_white_pixels, replace=False)
-    coords = np.unravel_index(indices, (square_h, square_w))
+    # Create 2D Gaussian grid
+    x = np.linspace(-1, 1, square_size)
+    y = np.linspace(-1, 1, square_size)
+    xv, yv = np.meshgrid(x, y)
+    gaussian = np.exp(-(xv ** 2 + yv ** 2) / (2 * (sigma / 10.0) ** 2))
 
-    # Set selected pixels to 1.0
-    image[x_start + coords[0], y_start + coords[1]] = 1.0
+    # Normalize to [0, 1]
+    gaussian = (gaussian - gaussian.min()) / (gaussian.max() - gaussian.min())
+
+    # Insert into image
+    image[x_start:x_end, y_start:y_end] = gaussian
 
     return image[..., None]
 
+
+def create_constant_square_image(size=64):
+    """
+    Create a test image containing a white square.
+
+    Args:
+        size (integer): the size of the test image
+
+    Returns:
+        jax.array: Generated test image
+    """
+    image = np.zeros((size, size))
+
+    # Define square region
+    square_size = size // 3
+    x_start = (size - square_size) // 2
+    x_end = x_start + square_size
+    y_start = (size - square_size) // 2
+    y_end = y_start + square_size
+
+    image[x_start:x_end, y_start:y_end] = 1.0
+    return image[..., None]
 
 def apply_translation(original_image, dy, dx):
     """
