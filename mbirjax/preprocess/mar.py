@@ -230,12 +230,20 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     if include_const:
         H = jnp.concatenate([H, jnp.ones_like(p).reshape(-1, 1)], axis=1)
 
+    cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
+    cross_degree = [1 + a + b for (a, b) in cross_exponent_list]
+    metal_degree = [a + b for (a, b) in metal_exponent_list]
+    weights = jnp.asarray([1] + cross_degree + metal_degree)
+    alpha = 1
+    weight_matrix = jnp.diag(1 + weights ** alpha)
+
     Hty = jnp.dot(H.T, y)
     HtH = jnp.dot(H.T, H)
 
     # --- Solve for theta ---
     scaling_const = jnp.trace(HtH) / H.shape[1]
-    HtH_reg = HtH + (epsilon ** 2) * scaling_const * jnp.eye(len(Hty))
+    lambda_reg = (epsilon ** 2) * scaling_const
+    HtH_reg = HtH + lambda_reg * weight_matrix
     theta = jnp.linalg.solve(HtH_reg, Hty)
     print(f'theta = {theta}')
 
