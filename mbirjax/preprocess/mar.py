@@ -230,9 +230,12 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     if include_const:
         H = jnp.concatenate([H, jnp.ones_like(p).reshape(-1, 1)], axis=1)
 
+    # Compute total degree for each cross term and metal term
     cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
-    cross_degree = [1 + a + b for (a, b) in cross_exponent_list]
-    metal_degree = [a + b for (a, b) in metal_exponent_list]
+    cross_degree = [1 + sum(exponents) for exponents in cross_exponent_list]
+    metal_degree = [sum(exponents) for exponents in metal_exponent_list]
+
+    # Combine into weights
     weights = jnp.asarray([1] + cross_degree + metal_degree)
     alpha = 1
     weight_matrix = jnp.diag(1 + weights ** alpha)
