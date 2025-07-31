@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-def create_reference_image(option, size=64, sigma=4.0):
+def create_reference_image(option, size=64, sigma=4.0, num_slices=1):
     """
     Create a reference image based on the selected option
 
@@ -15,109 +15,133 @@ def create_reference_image(option, size=64, sigma=4.0):
         np.ndarray: Generated reference image.
     """
     if option == 'gaussian':
-        return create_gaussian_square_image(size=size, sigma=sigma)
+        return create_gaussian_square_image(size=size, sigma=sigma, num_slices=num_slices)
     elif option == 'constant':
-        return create_constant_square_image(size=size)
+        return create_constant_square_image(size=size, num_slices=num_slices)
     else:
         raise ValueError(f"Unsupported image option: {option}")
 
 
-def create_gaussian_square_image(size=64, sigma=4.0):
+def create_gaussian_square_image(size=64, sigma=4.0, num_slices=1):
     """
     Create an image with a 2D Gaussian centered in a square region.
 
     Args:
         size (integer): the size of the test image
         sigma (float): the standard deviation of the Gaussian
+        num_slices (int): number of slices
 
     Returns:
         np.ndarray: (size, size, 1)
     """
-    image = np.zeros((size, size), dtype=np.float32)
+    gaussian_volume = np.zeros((num_slices, size, size), dtype=np.float32)
 
-    # Define square region
-    square_size = size // 3
-    x_start = (size - square_size) // 2
-    x_end = x_start + square_size
-    y_start = (size - square_size) // 2
-    y_end = y_start + square_size
+    for slice_idx in range(num_slices):
+        image = np.zeros((size, size), dtype=np.float32)
 
-    # Create 2D Gaussian grid
-    x = np.linspace(-1, 1, square_size)
-    y = np.linspace(-1, 1, square_size)
-    xv, yv = np.meshgrid(x, y)
-    gaussian = np.exp(-(xv ** 2 + yv ** 2) / (2 * (sigma / 10.0) ** 2))  # normalize sigma to [0, 1] scale
+        # Add slight variation to each slice
+        slice_sigma = sigma * (0.8 + 0.4 * slice_idx / max(1, num_slices - 1))
 
-    # Normalize to [0, 1]
-    gaussian = (gaussian - gaussian.min()) / (gaussian.max() - gaussian.min())
+        # Define square region
+        square_size = size // 3
+        x_start = (size - square_size) // 2
+        x_end = x_start + square_size
+        y_start = (size - square_size) // 2
+        y_end = y_start + square_size
 
-    # Insert into image
-    image[x_start:x_end, y_start:y_end] = gaussian
+        # Create 2D Gaussian grid
+        x = np.linspace(-1, 1, square_size)
+        y = np.linspace(-1, 1, square_size)
+        xv, yv = np.meshgrid(x, y)
+        gaussian = np.exp(-(xv ** 2 + yv ** 2) / (2 * (slice_sigma / 10.0) ** 2))
 
-    return image[..., None]
+        # Normalize to [0, 1]
+        gaussian = (gaussian - gaussian.min()) / (gaussian.max() - gaussian.min())
+
+        # Insert into image
+        image[x_start:x_end, y_start:y_end] = gaussian
+        gaussian_volume[slice_idx] = image
+
+    return jnp.array(gaussian_volume)
 
 
-def create_constant_square_image(size=64):
+def create_constant_square_image(size=64, num_slices=1):
     """
     Create a test image containing a white square.
 
     Args:
         size (integer): the size of the test image
+        num_slices (int): number of slices
 
     Returns:
         jax.array: Generated test image
     """
-    image = np.zeros((size, size))
+    square_volume = np.zeros((num_slices, size, size))
 
-    # Define square region
-    square_size = size // 3
-    x_start = (size - square_size) // 2
-    x_end = x_start + square_size
-    y_start = (size - square_size) // 2
-    y_end = y_start + square_size
+    for slice_idx in range(num_slices):
+        image = np.zeros((size, size))
 
-    image[x_start:x_end, y_start:y_end] = 1.0
-    return image[..., None]
+        # Define square region
+        square_size = size // 3
+        x_start = (size - square_size) // 2
+        x_end = x_start + square_size
+        y_start = (size - square_size) // 2
+        y_end = y_start + square_size
+
+        image[x_start:x_end, y_start:y_end] = 1.0
+        square_volume[slice_idx] = image
+
+    return jnp.array(square_volume)
 
 
-def apply_translation(original_image, dy, dx):
+def apply_translation(original_image, shifts):
     """
     Apply a translation on an image using dm_pix.affine_transform
     Args:
-        original_image (jax.array): Image to be transformed
-        dx (float): translation along x_axis
-        dy (float): translation along y_axis
+        original_image (jax.array): Image to be transformed with size (num_slices, num_rows, num_columns)
+        shifts (jax.Array): 2D array of shape (num_slices, 2) containing (dy, dx) for each slice
 
     Returns:
         jax.array: Transformed image
     """
-    translated_image = jax.image.scale_and_translate(original_image,
-                                                     shape=original_image.shape,
+    def translate_slice(img_slice, shift):
+        dy, dx = shift
+        translated_image = jax.image.scale_and_translate(img_slice,
+                                                     shape=img_slice.shape,
                                                      spatial_dims=(0, 1),
                                                      scale=jnp.array([1.0, 1.0]),
                                                      translation=jnp.array([dy, dx]),
                                                      method="linear",
                                                      antialias=False)
-    return translated_image
+        return translated_image
+
+    return jax.vmap(translate_slice, in_axes=(0, 0))(original_image, shifts)
 
 
-def loss_fn(shift, original_image, translated_image):
+def loss_fn(shifts_flatten, original_image, translated_image):
     """
     Compute the MSE between the fixed image and the moving image.
     Args:
-        shift (jax.array): Shift of the image in x and y axis
-        original_image (jax.array): Fixed image, assumed to be the reference position
-        translated_image (jax.array): the image to be aligned, assumed to be the shifted version of the fixed image
+        shifts_flatten (jax.Array): Flattened shifts array of shape (num_slices * 2,).
+        original_image (jax.array): Fixed image with shape (num_slices, num_rows, num_columns), assumed to be the reference position
+        translated_image (jax.array): the image to be aligned with shape (num_slices, num_rows, num_columns), assumed to be the shifted version of the fixed image
 
     Returns:
         jax.array: MSE between image_fixed and image_moving
     """
-    dy, dx = shift
-    adjusted_image = jax.image.scale_and_translate(translated_image,
-                                                   shape=translated_image.shape,
-                                                   spatial_dims=(0, 1),
-                                                   scale=jnp.array([1.0, 1.0]),
-                                                   translation=jnp.array([-dy, -dx]),
-                                                   method="linear",
-                                                   antialias=False)
-    return jnp.mean((adjusted_image - original_image) ** 2)
+    num_slices = original_image.shape[0]
+    shifts = shifts_flatten.reshape((num_slices, 2))
+
+    def loss_per_slice(shift, original_slice, translated_slice):
+        dy, dx = shift
+        adjusted_slice = jax.image.scale_and_translate(translated_slice,
+                                                       shape=translated_slice.shape,
+                                                       spatial_dims=(0, 1),
+                                                       scale=jnp.array([1.0, 1.0]),
+                                                       translation=jnp.array([-dy, -dx]),
+                                                       method="linear",
+                                                       antialias=False)
+        return jnp.mean((adjusted_slice - original_slice) ** 2)
+
+    per_slice_mse = jax.vmap(loss_per_slice, in_axes=(0, 0, 0))(shifts, original_image, translated_image)
+    return jnp.sum(per_slice_mse)
