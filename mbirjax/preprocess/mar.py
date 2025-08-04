@@ -241,18 +241,19 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     # Compute corrected plastic sinogram
     corrected_plastic_sino = p_normalization * (y - metal_sino) / linear_plastic_coef
 
-    # Compute scaling for corrected plastic sinogram
-    plastic_scale = mjp.compute_scaling_factor(y, corrected_plastic_sino)
+    # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
+    # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
+    metal_absent = jnp.ones_like(p)
+    for metal in metal_sinos:
+        metal_absent = metal_absent & (metal == 0)
+    condition = (p != 0) & metal_absent
+    plastic_only_indices = jnp.where(condition)[0]
+
+    plastic_scale = mjp.compute_scaling_factor(y[plastic_only_indices], corrected_plastic_sino[plastic_only_indices])
     scaled_corrected_plastic_sino = plastic_scale * corrected_plastic_sino
 
-    # Compute and apply separate scaling for each metal sinogram
-    scaled_metal_sinos = []
-    for metal_sino in metal_sinos:
-        metal_scale = mjp.compute_scaling_factor(y, metal_sino)
-        scaled_metal_sinos.append(metal_scale * metal_sino)
-
     # Combine all scaled components
-    corrected_sino_flat = scaled_corrected_plastic_sino + sum(scaled_metal_sinos)
+    corrected_sino_flat = scaled_corrected_plastic_sino + sum(metal_sinos)
 
     corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
     return corrected_sino
