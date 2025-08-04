@@ -154,18 +154,21 @@ def _generate_polynomial_combinations(num_terms, max_order):
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
     """
-    Beam-hardening correction for plastic and multiple metal components.
+    Perform beam hardening correction for CT sinograms with plastic and multiple metal components
+    using a polynomial fitting model with regularization.
 
     Args:
-        ct_model: Object with forward_project method and main_device attribute.
-        measured_sino (jnp.ndarray): Raw sinogram.
-        recon (jnp.ndarray): Reconstructed volume.
-        num_metal (int): Number of metal materials to segment.
-        order (int): Maximum total degree of the polynomial
-        beta (float): Regularization strength.
+        ct_model: CT model object with a `forward_project` method and a `main_device` attribute.
+        measured_sino (jnp.ndarray): Raw measured sinogram.
+        recon (jnp.ndarray): Reconstructed 3D volume used for segmentation of plastic and metal regions.
+        num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
+        order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
+        alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
+            higher-order terms more strongly. Defaults to 1.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.005.
 
     Returns:
-        corrected_sino (jnp.ndarray): Beam-hardening corrected sinogram.
+        jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
     """
     metal_exponent_list = _generate_polynomial_combinations(num_metal, order)
     device = ct_model.main_device
@@ -248,26 +251,36 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
-    This function repeatedly applies `BHC_plastic_metal()` and reconstructs from the corrected
-    sinogram to iteratively refine the reconstruction and reduce metal artifacts.
+    This function alternates between beam hardening correction (via `correct_BH_plastic_metal`)
+    and reconstruction, refining the image over several iterations to suppress metal-induced artifacts.
 
     Args:
-        ct_model: MBIRJAX cone beam model instance used for reconstruction.
-        sino (jnp.ndarray): Input sinogram data to be corrected.
+        ct_model: MBIRJAX cone beam model instance with `direct_recon` and `recon` methods.
+        sino (jnp.ndarray):  Input sinogram data to be corrected.
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
-        num_BH_iterations (int, optional): Number of beam hardening correction and reconstruction iterations to perform. Defaults to 3.
-        stop_threshold_pct (float, optional): Threshold for stopping reconstruction iterations based on relative change in reconstruction. Defaults to 0.5.
-        num_metal (int): Number of metal materials to segment.
-        order (list, optional):
-            List of two integers specifying the order of polynomial terms for plastic and metal components respectively.
-            Defaults to [3, 4].
+        num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
+        stop_threshold_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
+        num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
+        order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
+        alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
+            higher-order terms more strongly. Defaults to 1.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.005.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
 
     Returns:
-        jnp.ndarray: The final corrected reconstruction after iterative beam hardening correction.
+         jnp.ndarray: The final corrected reconstruction after iterative beam hardening correction.
 
     Example:
-        >>> recon = recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, verbose=1, order=3, include_const=False)
+        >>> recon = recon_BH_plastic_metal(
+        ...     ct_model, sino, weights,
+        ...     num_BH_iterations=3,
+        ...     stop_threshold_pct=0.5,
+        ...     num_metal=1,
+        ...     order=3,
+        ...     alpha=1,
+        ...     beta=0.005,
+        ...     verbose=1
+        ... )
         >>> mj.slice_viewer(recon)
     """
     if verbose > 0:
