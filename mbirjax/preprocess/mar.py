@@ -243,7 +243,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
     # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
     # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
-    metal_absent = jnp.ones_like(p)
+    metal_absent = jnp.ones_like(p, dtype=bool)
     for metal in metal_sinos:
         metal_absent = metal_absent & (metal == 0)
     condition = (p != 0) & metal_absent
