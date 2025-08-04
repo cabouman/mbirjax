@@ -152,7 +152,7 @@ def _generate_polynomial_combinations(num_terms, max_order):
     return combinations
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_metal=1, order=3, include_const=False):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
     """
     Beam-hardening correction for plastic and multiple metal components.
 
@@ -160,10 +160,9 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
         ct_model: Object with forward_project method and main_device attribute.
         measured_sino (jnp.ndarray): Raw sinogram.
         recon (jnp.ndarray): Reconstructed volume.
-        epsilon (float): Regularization strength.
         num_metal (int): Number of metal materials to segment.
-        order (int]): Maximum total degree of the polynomial
-        include_const (bool): Whether to include a constant term.
+        order (int): Maximum total degree of the polynomial
+        beta (float): Regularization strength.
 
     Returns:
         corrected_sino (jnp.ndarray): Beam-hardening corrected sinogram.
@@ -202,42 +201,16 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     num_metal_terms = len(metal_exponent_list)
     num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
 
-    # Hty_size = 1 + num_cross_terms + num_metal_terms + (1 if include_const else 0)
-    # Hty = jnp.zeros(Hty_size)
-
-    # Index mapping:
-    # 0: p
-    # 1 ~ num_cross_terms: p * metal terms
-    # num_cross_terms+1 ~ num_cross_terms+N: metal terms
-    # optional last: constant
-        
-    # Compute Hty
-    # Set p term
-    # Hty = Hty.at[0].set(jnp.dot(p, y))
-    #
-    # p_metal_dots = jnp.dot((p[:, None] * metal_terms[:, :num_cross_terms]).T, y)
-    # Hty = Hty.at[1:1 + num_cross_terms].set(p_metal_dots)
-    #
-    # metal_dots = jnp.dot(metal_terms.T, y)
-    # Hty = Hty.at[1 + num_cross_terms: Hty_size].set(metal_dots)
-    #
-    # # Constant term if needed
-    # if include_const:
-    #     Hty = Hty.at[-1].set(jnp.sum(y))
-
-    # HtH = _compute_HTH_efficient(p, metal_terms, num_cross_terms, include_const)
     H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
-    if include_const:
-        H = jnp.concatenate([H, jnp.ones_like(p).reshape(-1, 1)], axis=1)
 
     # Compute total degree for each cross term and metal term
     cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
     cross_degree = [1 + sum(exponents) for exponents in cross_exponent_list]
     metal_degree = [sum(exponents) for exponents in metal_exponent_list]
 
-    # Combine into weights
+    # Construct diagonal regularization weights: higher-degree terms are penalized more.
+    # This applies stronger regularization to higher-order terms when alpha > 0.
     weights = jnp.asarray([1] + cross_degree + metal_degree)
-    alpha = 1
     weight_matrix = jnp.diag(1 + weights ** alpha)
 
     Hty = jnp.dot(H.T, y)
@@ -245,7 +218,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
 
     # --- Solve for theta ---
     scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
-    lambda_reg = epsilon * scaling_const
+    lambda_reg = beta * scaling_const
     HtH_reg = HtH + lambda_reg * weight_matrix
     theta = jnp.linalg.solve(HtH_reg, Hty)
     print(f'theta = {theta}')
@@ -257,10 +230,6 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     # Metal-only sinogram
     metal_sino = jnp.zeros_like(y)
     metal_sino = sum(theta[n + 1 + num_cross_terms] * metal_terms[:,n] for n in range(num_metal_terms))
-
-    # constant
-    if include_const:
-        metal_sino += theta[-1]
 
     # Regularize
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
@@ -274,8 +243,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, epsilon=2e-4, num_m
     return corrected_sino
 
 
-def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_pct=0.5, verbose=0,
-                           num_metal=1, order=(3, 4), include_const=False):
+def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_pct=0.5,
+                           num_metal=1, order=3, alpha=1, beta=0.005, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
@@ -288,19 +257,17 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
         num_BH_iterations (int, optional): Number of beam hardening correction and reconstruction iterations to perform. Defaults to 3.
         stop_threshold_pct (float, optional): Threshold for stopping reconstruction iterations based on relative change in reconstruction. Defaults to 0.5.
-        verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
         num_metal (int): Number of metal materials to segment.
         order (list, optional):
             List of two integers specifying the order of polynomial terms for plastic and metal components respectively.
             Defaults to [3, 4].
-        include_const (bool, optional):
-            Whether to include a constant term in the model. Defaults to False.
+        verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
 
     Returns:
         jnp.ndarray: The final corrected reconstruction after iterative beam hardening correction.
 
     Example:
-        >>> recon = recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, verbose=1, order=[3,4], include_const=False)
+        >>> recon = recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, verbose=1, order=3, include_const=False)
         >>> mj.slice_viewer(recon)
     """
     if verbose > 0:
@@ -309,7 +276,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, include_const=include_const)
+        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta)
 
         # Reconstruct Corrected Sinogram
         recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_pct)
