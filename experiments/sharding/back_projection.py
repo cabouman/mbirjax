@@ -20,6 +20,8 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
     import jax.numpy as jnp
     import mbirjax as mj
 
+    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.90'
+
     # sinogram shape
     num_views, num_det_rows, num_det_channels = size, size, size
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
@@ -85,13 +87,14 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
 
 if __name__ == "__main__":
 
-    # size = int(sys.argv[1])
-    # num_gpus = int(sys.argv[2])
-    # output_filepath = sys.argv[3]
-
-    size = 256
-    num_gpus = 1
-    output_filepath = "../output/back_project.csv"
+    try:
+        size = int(sys.argv[1])
+        num_gpus = int(sys.argv[2])
+        output_filepath = sys.argv[3]
+    except:
+        size = 256
+        num_gpus = 2
+        output_filepath = "../output/back_project.csv"
 
     # the sinogram and recon will have shape (size, size, size)
     back_project(size, num_gpus, output_filepath=output_filepath)
