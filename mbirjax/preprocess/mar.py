@@ -120,14 +120,14 @@ def BH_correction(sino, alpha, batch_size=64):
     return corrected_sino
 
 
-def _generate_metal_combinations(num_terms, max_order):
+def _generate_metal_combinations(num_metal, max_order):
     """
     Generate all combinations of polynomial powers such that the total degree
     (sum of exponents) is <= max_order, excluding the all-zero combination.
     The combinations are sorted in increasing order of total degree.
 
     Args:
-        num_terms (int): Number of variables (e.g., 2 for x, y).
+        num_metal (int): Number of metals.
         max_order (int): Maximum total degree of the polynomial.
 
     Returns:
@@ -145,7 +145,7 @@ def _generate_metal_combinations(num_terms, max_order):
         for power in range(max_order + 1):
             generate_recursive(current_combination + [power], remaining_terms - 1)
 
-    generate_recursive([], num_terms)
+    generate_recursive([], num_metal)
 
     # Sort by total degree (sum of powers)
     combinations.sort(key=lambda x: sum(x))
