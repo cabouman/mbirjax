@@ -17,8 +17,9 @@ def main():
     num_det_channels = 3072
 
     # Define object parameters
+    num_pixels_in_object = 5
     phantom_type = "text"   # Can be "dots" or "text"
-    words = ['P', 'U']     # List of words to render in the text phantom
+    words = ['P'] * num_pixels_in_object     # List of words to render in the text phantom
     object_width_mm = 22
     object_thickness_mm = 2.15
 
@@ -56,8 +57,8 @@ def main():
     tct_model.set_params(sharpness=sharpness)
     recon_shape = tct_model.get_params('recon_shape')
 
-    # Change row pitch to be 1/2 object thickness
-    tct_model.set_params(delta_recon_row=object_thickness_ALU/2.0)
+    # Change row pitch to be 1/num_pixel_in_object * object thickness
+    tct_model.set_params(delta_recon_row=object_thickness_ALU/num_pixels_in_object)
     tct_model.set_params(qggmrf_nbr_wts=[1.0,1.0,0.1])
 
     # Print model parameters and display translation array
@@ -65,9 +66,11 @@ def main():
     mj.display_translation_vectors(translation_vectors, recon_shape)
 
     # Generate ground truth phantom
+    start_index = (recon_shape[0] - num_pixels_in_object) // 2
+    row_indices = list(range(start_index, start_index + num_pixels_in_object))
     gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words,
                                           font_size=object_width_ALU,
-                                          row_indices=[1, 4])
+                                          row_indices=row_indices)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)
