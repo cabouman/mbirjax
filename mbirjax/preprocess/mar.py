@@ -151,6 +151,7 @@ def _generate_metal_combinations(num_terms, max_order):
     combinations.sort(key=lambda x: sum(x))
     return combinations
 
+
 def _generate_basis_vectors(recon, num_metal, ct_model, device):
     """
     Segment plastic and metal regions from a reconstruction, project them,
@@ -184,6 +185,7 @@ def _generate_basis_vectors(recon, num_metal, ct_model, device):
 
     return p, metals
 
+
 def _get_column_H(col_index, p, metals, H_exponent_list):
     """
     Compute the col_index-th column of the basis matrix H.
@@ -210,6 +212,53 @@ def _get_column_H(col_index, p, metals, H_exponent_list):
         col *= metal ** exp
 
     return col
+
+def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, alpha, beta):
+    """
+    Estimate HᵗH and Hᵗy without constructing the full H matrix.
+
+    Args:
+        p (jnp.ndarray): Normalized plastic basis vector.
+        metals (list of jnp.ndarray): Normalized metal basis vectors.
+        y (jnp.ndarray): Measured sinogram.
+        H_exponent_list (list of tuple): Each tuple defines one column of H.
+
+    Returns:
+        theta ()
+    """
+    num_cols = len(H_exponent_list)
+
+    HtH = jnp.zeros((num_cols, num_cols))
+    Hty = jnp.zeros(num_cols)
+
+    # Compute the upper triangle of HtH and mirror it.
+    for i in range(num_cols):
+        h_i = _get_column_H(i, p, metals, H_exponent_list)
+        Hty = Hty.at[i].set(jnp.dot(h_i, y))
+        for j in range(i, num_cols):
+            h_j = _get_column_H(j, p, metals, H_exponent_list)
+            dot_ij = jnp.dot(h_i, h_j)
+            HtH = HtH.at[i, j].set(dot_ij)
+            if i != j:
+                HtH = HtH.at[j, i].set(dot_ij)
+
+    # Compute total degree for each cross term and metal term
+    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:num_cross_terms]]
+    metal_degree = [sum(exponent) for exponent in H_exponent_list[num_cross_terms:]]
+
+    # Construct diagonal regularization weights: higher-degree terms are penalized more.
+    # This applies stronger regularization to higher-order terms when alpha > 0.
+    # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
+    weights = jnp.asarray([1] + cross_degree + metal_degree)
+    weight_matrix = jnp.diag(1 + weights ** alpha)
+
+    # --- Solve for theta ---
+    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
+    lambda_reg = beta * scaling_const
+    HtH_reg = HtH + lambda_reg * weight_matrix
+    theta = jnp.linalg.solve(HtH_reg, Hty)
+
+    return theta
 
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
@@ -245,30 +294,14 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
-    # Unnormalized basis vectors p and [m_0, m_1, ...]
+    # Normalized basis vectors p and [m_0, m_1, ...]
     p, metal_basis = _generate_basis_vectors(recon, num_metal, ct_model, device)
     p_normalization = jnp.max(jnp.abs(p))
     metals_normalization = [jnp.max(jnp.abs(arr)) for arr in metal_basis]
     p = p / p_normalization
     metal_basis = [arr / norm for arr, norm in zip(metal_basis, metals_normalization)]
 
-    # Compute total degree for each cross term and metal term
-    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:num_cross_terms]]
-    metal_degree = [sum(exponent) for exponent in H_exponent_list[num_cross_terms:]]
-
-    # Construct diagonal regularization weights: higher-degree terms are penalized more.
-    # This applies stronger regularization to higher-order terms when alpha > 0.
-    weights = jnp.asarray([1] + cross_degree + metal_degree)
-    weight_matrix = jnp.diag(1 + weights ** alpha)
-
-    Hty = jnp.dot(H.T, y)
-    HtH = jnp.dot(H.T, H)
-
-    # --- Solve for theta ---
-    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
-    lambda_reg = beta * scaling_const
-    HtH_reg = HtH + lambda_reg * weight_matrix
-    theta = jnp.linalg.solve(HtH_reg, Hty)
+    theta = _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
     print(f'theta = {theta}')
 
     # --- Build correction ---
@@ -296,7 +329,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     plastic_scale = mjp.compute_scaling_factor(y[plastic_only_indices], corrected_plastic_sino[plastic_only_indices])
     scaled_corrected_plastic_sino = plastic_scale * corrected_plastic_sino
 
-    # Combine all scaled components
+    # Combine all scaled components, denormalize the metals
     corrected_sino_flat = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_basis, metals_normalization))
 
     corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
