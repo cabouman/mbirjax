@@ -106,7 +106,7 @@ def BH_correction(sino, alpha, batch_size=64):
         sino_batch = sino[i:i+batch_size]
 
         # Initialize corrected batch to the linear term (sino_batch)
-        corrected_batch = jnp.array(sino_batch)
+        corrected_batch = jnp.zeros_like(sino_batch)
 
         # Apply polynomial terms
         for k in range(len(alpha)):
