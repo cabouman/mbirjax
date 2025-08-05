@@ -215,16 +215,22 @@ def _get_column_H(col_index, p, metals, H_exponent_list):
 
 def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, alpha, beta):
     """
-    Estimate HᵗH and Hᵗy without constructing the full H matrix.
+    Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
+
+    This function avoids constructing the full H matrix by computing HtH and Hty using only the columns of H
+    as needed via `_get_column_H()`.
 
     Args:
         p (jnp.ndarray): Normalized plastic basis vector.
-        metals (list of jnp.ndarray): Normalized metal basis vectors.
+        metals (list of jnp.ndarray): List of normalized metal basis vectors.
         y (jnp.ndarray): Measured sinogram.
-        H_exponent_list (list of tuple): Each tuple defines one column of H.
+        H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the basis matrix H.
+        num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
+        alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
+        beta (float): Regularization strength scaling factor.
 
     Returns:
-        theta ()
+        theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
     """
     num_cols = len(H_exponent_list)
 
@@ -243,13 +249,13 @@ def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, al
                 HtH = HtH.at[j, i].set(dot_ij)
 
     # Compute total degree for each cross term and metal term
-    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:num_cross_terms]]
-    metal_degree = [sum(exponent) for exponent in H_exponent_list[num_cross_terms:]]
+    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:1+num_cross_terms]]
+    metal_degree = [sum(exponent) for exponent in H_exponent_list[1+num_cross_terms:]]
 
     # Construct diagonal regularization weights: higher-degree terms are penalized more.
     # This applies stronger regularization to higher-order terms when alpha > 0.
     # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
-    weights = jnp.asarray([1] + cross_degree + metal_degree)
+    weights = jnp.asarray(cross_degree + metal_degree)
     weight_matrix = jnp.diag(1 + weights ** alpha)
 
     # --- Solve for theta ---
@@ -284,12 +290,13 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     cross_exponent_list = _generate_metal_combinations(num_metal, order - 1)
     num_metal_terms = len(metal_exponent_list)
     num_cross_terms = len(cross_exponent_list)
+
     # Construct the exponent list for each column of the basis matrix H.
     # Each entry in H_exponent_list is a tuple representing the exponents of (p, m_0, m_1, ..., m_{num_metal-1}).
+    # - Linear plastic term: (1, 0, 0, ...)
     # - Cross terms: The leading 1 indicates the presence of a linear p term.
     # - Metal-only terms: The leading 0 indicates there is no p in the term.
-
-    H_exponent_list = [(1, *t) for t in cross_exponent_list] + [(0, *t) for t in metal_exponent_list]
+    H_exponent_list = [(1,) + (0,) * num_metal] + [(1, *t) for t in cross_exponent_list] + [(0, *t) for t in metal_exponent_list]
 
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
