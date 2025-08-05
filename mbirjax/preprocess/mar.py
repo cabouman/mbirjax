@@ -296,7 +296,10 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     # - Linear plastic term: (1, 0, 0, ...)
     # - Cross terms: The leading 1 indicates the presence of a linear p term.
     # - Metal-only terms: The leading 0 indicates there is no p in the term.
-    H_exponent_list = [(1,) + (0,) * num_metal] + [(1, *t) for t in cross_exponent_list] + [(0, *t) for t in metal_exponent_list]
+    H_exponent_list = (
+            [(1,) + (0,) * num_metal] +
+            [(1, *t) for t in cross_exponent_list] +
+            [(0, *t) for t in metal_exponent_list])
 
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
