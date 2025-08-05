@@ -171,6 +171,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
     """
     metal_exponent_list = _generate_polynomial_combinations(num_metal, order)
+    cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
@@ -202,12 +203,11 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     metal_terms = jnp.stack(metal_terms, axis=1)
 
     num_metal_terms = len(metal_exponent_list)
-    num_cross_terms = len(_generate_polynomial_combinations(num_metal, order-1))
+    num_cross_terms = len(cross_exponent_list)
 
     H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
 
     # Compute total degree for each cross term and metal term
-    cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
     cross_degree = [1 + sum(exponents) for exponents in cross_exponent_list]
     metal_degree = [sum(exponents) for exponents in metal_exponent_list]
 
@@ -231,7 +231,6 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:, n] for n in range(num_cross_terms))
 
     # Metal-only sinogram
-    metal_sino = jnp.zeros_like(y)
     metal_sino = sum(theta[n + 1 + num_cross_terms] * metal_terms[:,n] for n in range(num_metal_terms))
 
     # Regularize
