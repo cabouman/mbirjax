@@ -34,7 +34,7 @@ def main():
     z_spacing_ALU = z_space_mm * ALU_per_mm
     half_angle_rad = np.arctan2(max(num_det_rows, num_det_channels) / 2.0, source_iso_dist_ALU)
     object_width_ALU = object_width_mm * ALU_per_mm
-    object_thickness_mm_ALU = object_thickness_mm * ALU_per_mm
+    object_thickness_ALU = object_thickness_mm * ALU_per_mm
 
     # Print out important values in ALU
     print("ALU per mm:", ALU_per_mm)
@@ -43,7 +43,7 @@ def main():
     print("x,z spacing (ALU):", x_spacing_ALU, z_spacing_ALU)
     print("Half cone angle (deg):", np.rad2deg(half_angle_rad))
     print("Object width (ALU):", object_width_ALU)
-    print("Object thickness (ALU):", object_thickness_mm_ALU)
+    print("Object thickness (ALU):", object_thickness_ALU)
 
     # Generate translation vectors
     translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing_ALU, z_spacing_ALU)
@@ -57,7 +57,7 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Change row pitch to be 1/2 object thickness
-    tct_model.set_params(delta_recon_row=object_thickness_mm_ALU/2.0)
+    tct_model.set_params(delta_recon_row=object_thickness_ALU/2.0)
     tct_model.set_params(qggmrf_nbr_wts=[1.0,1.0,0.1])
 
     # Print model parameters and display translation array
