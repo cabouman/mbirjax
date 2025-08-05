@@ -120,7 +120,7 @@ def BH_correction(sino, alpha, batch_size=64):
     return corrected_sino
 
 
-def _generate_polynomial_combinations(num_terms, max_order):
+def _generate_metal_combinations(num_terms, max_order):
     """
     Generate all combinations of polynomial powers such that the total degree
     (sum of exponents) is <= max_order, excluding the all-zero combination.
@@ -151,6 +151,65 @@ def _generate_polynomial_combinations(num_terms, max_order):
     combinations.sort(key=lambda x: sum(x))
     return combinations
 
+def _generate_basis_vectors(recon, num_metal, ct_model, device):
+    """
+    Segment plastic and metal regions from a reconstruction, project them,
+    and return the unnormalized basis vectors for beam hardening modeling.
+
+    Args:
+        recon (jnp.ndarray): Reconstructed image.
+        num_metal (int): Number of metal types to segment.
+        ct_model: Forward projection model with a `.forward_project()` method.
+        device: JAX device to put the masks on for projection.
+
+    Returns:
+        p (jnp.ndarray): Unnormalized plastic basis vector (flattened sinogram).
+        metals (list of jnp.ndarray): List of unnormalized metal basis vectors.
+    """
+    # --- Segment ---
+    plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
+
+    # --- Project plastic ---
+    p = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+    del plastic_mask  # free memory
+
+    # --- Project metals ---
+    metals = []
+    for mask, scale in zip(metal_masks, metal_scales):
+        m = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
+        metals.append(m)
+        del mask  # free memory
+    del metal_masks  # free list of arrays
+
+    return p, metals
+
+def _get_column_H(col_index, p, metals, H_exponent_list):
+    """
+    Compute the col_index-th column of the basis matrix H.
+
+    The column is constructed as a monomial of the form:
+        H[:, col_index] = p^e0 * m_0^e1 * m_1^e2 * ... * m_{n-1}^en
+
+    where (e0, e1, ..., en) = H_exponent_list[col_index].
+
+    Args:
+        col_index (int): Index of the column to compute.
+        p (jnp.ndarray): Normalized plastic basis vector.
+        metals (list of jnp.ndarray): Normalized metal basis vectors [m_0, m_1, ..., m_{n-1}].
+        H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
+
+    Returns:
+        jnp.ndarray: The computed column of H (same shape as p and m_i).
+    """
+    exponents = H_exponent_list[col_index]
+    assert len(exponents) == 1 + len(metals), "Mismatch between exponent tuple and number of basis vectors."
+
+    col = p ** exponents[0]
+    for metal, exp in zip(metals, exponents[1:]):
+        col *= metal ** exp
+
+    return col
+
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
     """
@@ -170,46 +229,31 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
     """
-    metal_exponent_list = _generate_polynomial_combinations(num_metal, order)
-    cross_exponent_list = _generate_polynomial_combinations(num_metal, order-1)
+    # Construct the exponent list of the metal sinograms.
+    metal_exponent_list = _generate_metal_combinations(num_metal, order)
+    cross_exponent_list = _generate_metal_combinations(num_metal, order - 1)
+    num_metal_terms = len(metal_exponent_list)
+    num_cross_terms = len(cross_exponent_list)
+    # Construct the exponent list for each column of the basis matrix H.
+    # Each entry in H_exponent_list is a tuple representing the exponents of (p, m_0, m_1, ..., m_{num_metal-1}).
+    # - Cross terms: The leading 1 indicates the presence of a linear p term.
+    # - Metal-only terms: The leading 0 indicates there is no p in the term.
+
+    H_exponent_list = [(1, *t) for t in cross_exponent_list] + [(0, *t) for t in metal_exponent_list]
+
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
-    # --- Segment ---
-    plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
-
-    # --- Project ---
-    ideal_plastic_sino = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
-    del plastic_mask
-    p_normalization = jnp.max(jnp.abs(ideal_plastic_sino))
-    p = ideal_plastic_sino / p_normalization
-
-    metal_sinos = []
-    metals = []
-    for mask, scale in zip(metal_masks, metal_scales):
-        sino = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
-        norm = jnp.max(jnp.abs(sino))
-        metal_sinos.append(sino)
-        metals.append(sino / norm)
-    del metal_masks
-
-    metal_terms = []  # e.g., [m1**1 * m2**0, m1**0 * m2**1, m1**1 * m2**1, ...]
-    for exponents in metal_exponent_list:
-        term = jnp.ones_like(metals[0])
-        for m, exp in zip(metals, exponents):
-            if exp > 0:
-                term *= m ** exp
-        metal_terms.append(term)
-    metal_terms = jnp.stack(metal_terms, axis=1)
-
-    num_metal_terms = len(metal_exponent_list)
-    num_cross_terms = len(cross_exponent_list)
-
-    H = jnp.concatenate([p.reshape(-1, 1), p[:, None] * metal_terms[:, :num_cross_terms], metal_terms], axis=1)
+    # Unnormalized basis vectors p and [m_0, m_1, ...]
+    p, metal_basis = _generate_basis_vectors(recon, num_metal, ct_model, device)
+    p_normalization = jnp.max(jnp.abs(p))
+    metals_normalization = [jnp.max(jnp.abs(arr)) for arr in metal_basis]
+    p = p / p_normalization
+    metal_basis = [arr / norm for arr, norm in zip(metal_basis, metals_normalization)]
 
     # Compute total degree for each cross term and metal term
-    cross_degree = [1 + sum(exponents) for exponents in cross_exponent_list]
-    metal_degree = [sum(exponents) for exponents in metal_exponent_list]
+    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:num_cross_terms]]
+    metal_degree = [sum(exponent) for exponent in H_exponent_list[num_cross_terms:]]
 
     # Construct diagonal regularization weights: higher-degree terms are penalized more.
     # This applies stronger regularization to higher-order terms when alpha > 0.
@@ -243,7 +287,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
     # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
     metal_absent = jnp.ones_like(p, dtype=bool)
-    for metal in metal_sinos:
+    for metal in metal_basis:
         metal_absent = metal_absent & (metal == 0)
     condition = (p != 0) & metal_absent
     plastic_only_indices = jnp.where(condition)[0]
@@ -252,7 +296,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     scaled_corrected_plastic_sino = plastic_scale * corrected_plastic_sino
 
     # Combine all scaled components
-    corrected_sino_flat = scaled_corrected_plastic_sino + sum(metal_sinos)
+    corrected_sino_flat = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_basis, metals_normalization))
 
     corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
     return corrected_sino
