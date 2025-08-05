@@ -166,20 +166,21 @@ def _generate_basis_vectors(recon, num_metal, ct_model, device):
         p (jnp.ndarray): Unnormalized plastic basis vector (flattened sinogram).
         metals (list of jnp.ndarray): List of unnormalized metal basis vectors.
     """
-    # --- Segment ---
+    # --- Segment plastic and metal regions in the reconstruction ---
+    # plastic_mask: Mask for plastic regions.
+    # metal_masks: List of masks for each metal.
+    # plastic_scale: Scaling factor for the plastic region.
+    # metal_scales: List of scaling factors for each metal region.
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
 
-    # --- Project plastic ---
+    # --- Forward project, scale and vectorize plastic ---
     p = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
-    del plastic_mask  # free memory
 
-    # --- Project metals ---
+    # --- Forward project, scale and vectorize each metal in the metals list ---
     metals = []
     for mask, scale in zip(metal_masks, metal_scales):
         m = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
         metals.append(m)
-        del mask  # free memory
-    del metal_masks  # free list of arrays
 
     return p, metals
 
