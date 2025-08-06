@@ -267,18 +267,51 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
     return theta
 
 def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization):
+    """
+    Perform beam hardening correction on the plastic sinogram.
+
+    This function subtracts the metal-only contributions from the measured sinogram
+    and normalizes the result using the linear plastic component, yielding a corrected
+    sinogram that approximates the plastic-only contribution.
+
+    The correction is based on a polynomial basis matrix H whose columns correspond to:
+        - Plastic term: p
+        - Cross terms: p*m, p*m^2, ...
+        - Metal-only terms: m, m^2, m^3, ...
+
+    The H matrix looks like: [p, p*m, p*m^2, m, m^2, m^3]
+    The correction is applied as:
+        corrected_plastic = p_normalization * (y - H_metal·θ_m) / (H_plastic·θ_p)
+
+    Args:
+        y (jnp.ndarray): Measured sinogram.
+        p (jnp.ndarray): Normalized plastic-only sinogram.
+        metal_basis (list of jnp.ndarray): List of sinograms of different metals.
+        theta (jnp.ndarray): Estimated coefficients for the polynomial terms in H.
+        H_exponent_list (list of tuple): Exponent tuples defining each column of H.
+        num_cross_terms (int): Number of cross terms involving both p and metal.
+        num_metal_terms (int): Number of metal-only terms in H.
+        p_normalization (float): Normalization factor applied to p.
+
+    Returns:
+        corrected_plastic_sino (jnp.ndarray): Beam-hardening-corrected plastic sinogram.
+    """
+
+    # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
     linear_plastic_coef = jnp.zeros_like(y)
-    for i in range(0, num_cross_terms + 1):
-        # Use jnp.ones_like(measured_sino) to get the coefficient of p in the ith column of H.
+    for i in range(0, 1 + num_cross_terms):
+        # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
         linear_plastic_coef += theta[i] * _get_column_H(i, jnp.ones_like(y), metal_basis, H_exponent_list)
-    # Regularize
+
+    # Regularize small denominators to prevent division by near-zero
     denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
     linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
 
-    for j in range(num_cross_terms + 1, num_cross_terms + 1 + num_metal_terms):
+    # Subtract metal-only terms (from H columns after the cross terms)
+    for j in range(1 + num_cross_terms, 1 + num_cross_terms + num_metal_terms):
         y -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
-    # Compute corrected plastic sinogram
+    # Denormalize the corrected plastic sinogram
     corrected_plastic_sino = p_normalization * y / linear_plastic_coef
 
     return corrected_plastic_sino
