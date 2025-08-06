@@ -67,6 +67,58 @@ def graph_sparse_back_projection_time_vs_size_of_sinogram(filepath, output_direc
     plt.show()
 
 
+def graph_sparse_back_projection_peak_memory_vs_num_gpus(filepath, output_directory):
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Load the CSV file
+    df = pd.read_csv(filepath)
+
+    # Group data by size
+    grouped_by_size = {gpu: group.reset_index(drop=True) for gpu, group in df.groupby('size')}
+
+    plt.figure(figsize=(10, 6))
+    for sino_size, data in grouped_by_size.items():
+        peak_memory = []
+
+        for _, row in data.iterrows():
+            num_gpus = int(row['num_gpus'])
+            peak_memory_values = [
+                row[f'gpu{i}_peak_bytes'] for i in range(num_gpus)
+                if f'gpu{i}_peak_bytes' in row and not pd.isna(row[f'gpu{i}_peak_bytes'])
+            ]
+
+            if peak_memory_values:
+                total_peak = max(peak_memory_values)
+                normalized = total_peak
+            else:
+                normalized = np.nan
+
+            peak_memory.append(normalized)
+
+        plt.loglog(
+            data['num_gpus'],
+            peak_memory / peak_memory[0],
+            marker='o',
+            label=f'{sino_size}'
+        )
+
+    num_gpus = 1 + np.arange(8)
+    plt.loglog(num_gpus, 1 / num_gpus, marker='*', label=f'Reference 1 / x')
+    plt.xlabel('Number of GPUs')
+    plt.ylabel('Peak Memory Relative to Peak for 1 GPU')
+    plt.title('Sparse Back Projection Peak Memory vs Number of GPUs (loglog)')
+    plt.legend(title='Sinogram Size', loc='upper right')
+    plt.xticks([1, 2, 3, 4, 5, 6, 7, 8], ['1', '2', '3', '4', '5', '6', '7', '8'])
+    plt.yticks([0.1, 0.5, 1], ['0.1', '0.5', '1.0'])
+    plt.grid(True, which='both', axis='x')
+
+    plt.savefig(output_directory + '/graph_sparse_back_projection_peak_memory_vs_num_gpus.png', dpi=300, bbox_inches='tight')
+
+    plt.show()
+
+
 def graph_sparse_back_projection_peak_memory_vs_size_of_sinogram(filepath, output_directory):
 
     # Load the CSV file
@@ -117,58 +169,6 @@ def graph_sparse_back_projection_peak_memory_vs_size_of_sinogram(filepath, outpu
     plt.grid(True, which='both', axis='x')
 
     plt.savefig(output_directory + '/graph_sparse_back_projection_peak_memory_vs_size_of_sinogram.png', dpi=300, bbox_inches='tight')
-
-    plt.show()
-
-
-def graph_sparse_back_projection_peak_memory_vs_num_gpus(filepath, output_directory):
-    import pandas as pd
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    # Load the CSV file
-    df = pd.read_csv(filepath)
-
-    # Group data by size
-    grouped_by_size = {gpu: group.reset_index(drop=True) for gpu, group in df.groupby('size')}
-
-    plt.figure(figsize=(10, 6))
-    for sino_size, data in grouped_by_size.items():
-        peak_memory = []
-
-        for _, row in data.iterrows():
-            num_gpus = int(row['num_gpus'])
-            peak_memory_values = [
-                row[f'gpu{i}_peak_bytes'] for i in range(num_gpus)
-                if f'gpu{i}_peak_bytes' in row and not pd.isna(row[f'gpu{i}_peak_bytes'])
-            ]
-
-            if peak_memory_values:
-                total_peak = max(peak_memory_values)
-                normalized = total_peak
-            else:
-                normalized = np.nan
-
-            peak_memory.append(normalized)
-
-        plt.loglog(
-            data['num_gpus'],
-            peak_memory / peak_memory[0],
-            marker='o',
-            label=f'{sino_size}'
-        )
-
-    num_gpus = 1 + np.arange(8)
-    plt.loglog(num_gpus, 1 / num_gpus, marker='*', label=f'Reference 1 / x')
-    plt.xlabel('Number of GPUs')
-    plt.ylabel('Peak Memory Relative to Peak for 1 GPU')
-    plt.title('Sparse Back Projection Peak Memory vs Number of GPUs (loglog)')
-    plt.legend(title='Sinogram Size', loc='upper right')
-    plt.xticks([1, 2, 3, 4, 5, 6, 7, 8], ['1', '2', '3', '4', '5', '6', '7', '8'])
-    plt.yticks([0.1, 0.5, 1], ['0.1', '0.5', '1.0'])
-    plt.grid(True, which='both', axis='x')
-
-    plt.savefig(output_directory + '/graph_sparse_back_projection_peak_memory_vs_num_gpus.png', dpi=300, bbox_inches='tight')
 
     plt.show()
 
