@@ -1,31 +1,64 @@
+import sys
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 import numpy as np
 
+def get_experiment_params(experiment_name):
+    """Returns experiment-specific parameters."""
+    base_config = {
+        "source_det_dist_mm": 190,
+        "source_iso_dist_mm": 70,
+        "det_pixel_pitch_mm": 75 / 1000,
+        "x_view_space_mm": 11.4,
+        "z_view_space_mm": 14,
+        "num_x_translations": 5,
+        "num_z_translations": 3,
+        "num_det_rows": 1944,
+        "num_det_channels": 3072,
+        "num_pixels_in_object": 3,
+        "phantom_type": "text",
+        "text": ['P', 'P', 'P'],
+        "object_width_mm": 22,
+        "object_thickness_mm": 2.15,
+        "sharpness": 1.0,
+        "max_iterations": 15,
+    }
+
+    if experiment_name == "experiment1":
+        return base_config
+
+    elif experiment_name == "experiment2":
+        override_config = {
+            # Modify only what's different for experiment2
+            # Example: "phantom_type": "dots",
+        }
+        return {**base_config, **override_config}
+
+    else:
+        raise ValueError(f"Unknown experiment: {experiment_name}")
+
 def main():
-    # Define geometry
-    source_det_dist_mm = 190
-    source_iso_dist_mm = 70
-    det_pixel_pitch_mm = 75 / 1000
-    x_view_space_mm = 11.4
-    z_view_space_mm = 14
-    num_x_translations = 5
-    num_z_translations = 3
+    experiment = sys.argv[1] if len(sys.argv) > 1 else "experiment1"
+    params = get_experiment_params(experiment)
 
-    # Define detector size
-    num_det_rows = 1944
-    num_det_channels = 3072
+    # Set parameters for experiment
+    source_det_dist_mm = params["source_det_dist_mm"]
+    source_iso_dist_mm = params["source_iso_dist_mm"]
+    det_pixel_pitch_mm = params["det_pixel_pitch_mm"]
+    x_view_space_mm = params["x_view_space_mm"]
+    z_view_space_mm = params["z_view_space_mm"]
+    num_x_translations = params["num_x_translations"]
+    num_z_translations = params["num_z_translations"]
+    num_det_rows = params["num_det_rows"]
+    num_det_channels = params["num_det_channels"]
+    num_pixels_in_object = params["num_pixels_in_object"]
+    phantom_type = params["phantom_type"]
+    text = params["text"]
+    object_width_mm = params["object_width_mm"]
+    object_thickness_mm = params["object_thickness_mm"]
+    sharpness = params["sharpness"]
+    max_iterations = params["max_iterations"]
 
-    # Define object parameters
-    num_pixels_in_object = 3
-    phantom_type = "text"   # Can be "dots" or "text"
-    text_words = ['P'] * num_pixels_in_object     # List of words to render in the text phantom
-    object_width_mm = 22
-    object_thickness_mm = 2.15
-
-    # Set recon parameters
-    sharpness = 1.0
-    max_iterations = 15
 
     # Calculate physical parameters in ALU
     # Note: 1 ALU = detector pixel pitch at iso
@@ -82,7 +115,7 @@ def main():
     # Generate ground truth phantom
     text_start_index = (recon_shape[0] - num_pixels_in_object) // 2
     row_indices = list(range(text_start_index, text_start_index + num_pixels_in_object))
-    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, text=text_words,
+    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, text=text,
                                           font_size=object_width_ALU,
                                           text_row_indices=row_indices)
 
