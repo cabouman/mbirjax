@@ -38,7 +38,7 @@ def main():
     mj.display_translation_vectors(translation_vectors, recon_shape)
 
     # Generate ground truth phantom
-    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, words=words)
+    gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, text=words)
 
     # View test sample
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), title='Ground Truth Recon', slice_label='View', slice_axis=0)

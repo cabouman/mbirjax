@@ -696,17 +696,17 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_size=20, row_indices=None, horizontal_offset=0, vertical_offset=0):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
     Args:
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
         option (str): Phantom type to generate. Options are 'dots' or 'text'.
-        words (list[str]): List of ASCII words to render.
+        text (list[str]): List of ASCII text strings to render.
         fill_rate (float, optional): Fill rate of the reconstruction volume. Default is 0.05.
         font_size (int, optional): Font size of the ASCII words. Default is 20.
-        row_indices (list[int], optional): List of row indices where each word should be placed. Default is None.
+        text_row_indices (list[int], optional): List of row indices where each text string should be placed. Default is None.
                                            If None, words are automatically distributed evenly across the first dimension.
                                            Must have the same length as 'words' if provided.
         horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
@@ -718,7 +718,7 @@ def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_siz
     if option == 'dots':
         return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        return gen_text_phantom(recon_shape, words, font_size, row_indices, horizontal_offset, vertical_offset)
+        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
