@@ -50,9 +50,9 @@ def main():
     tct_model.set_params(sharpness=sharpness)
     recon_shape = tct_model.get_params('recon_shape')
 
-    # Change row pitch to be 1/num_pixel_in_object * object thickness
-    #recon_shape[0] = recon_shape[0] + int(np.ceiling(object_thickness_ALU))
-    #tct_model.set_params(recon_shape=recon_shape)
+    # Set number of rows in recon to match desired object thickness
+    recon_shape[0] = 3*int(object_thickness_ALU / delta_recon_row)
+    tct_model.set_params(recon_shape=recon_shape)
     tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(qggmrf_nbr_wts=[1.0, 1.0, 0.1])
 
