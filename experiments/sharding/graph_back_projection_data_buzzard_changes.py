@@ -3,6 +3,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def graph_sparse_back_projection_time_vs_num_gpus_loglog(filepath, output_directory):
+    # Load the CSV file
+    df = pd.read_csv(filepath)
+
+    # Group data by size
+    grouped_by_size = {gpu: group.reset_index(drop=True) for gpu, group in df.groupby('size')}
+
+    plt.figure(figsize=(10, 6))
+    for sino_size, data in grouped_by_size.items():
+        plt.loglog(data['num_gpus'], data['elapsed'] / data['elapsed'][0], marker='o', label=f'{sino_size}')
+    num_gpus = 1 + np.arange(8)
+    plt.loglog(num_gpus, 1 / num_gpus, marker='*', label=f'Reference 1 / x')
+
+    plt.xlabel('Number of GPUs')
+    plt.ylabel('Time relative to 1 GPU')
+    plt.title('Sparse Back Projection Relative Time vs Number of GPUs (loglog Scale)')
+
+    plt.legend(title='Sinogram Size', loc='lower left')
+    plt.grid(True, which='both', axis='x')
+    plt.xticks([1, 2, 3, 4, 5, 6, 7, 8], ['1', '2', '3', '4', '5', '6', '7', '8'])
+    plt.yticks([0.1, 0.5, 1], ['0.1', '0.5', '1.0'])
+
+    plt.savefig(output_directory + '/graph_sparse_back_projection_time_vs_num_gpus_loglog.png', dpi=300, bbox_inches='tight')
+
+    plt.show()
+
+
 def graph_sparse_back_projection_time_vs_size_of_sinogram(filepath, output_directory):
 
     # Load the CSV file
@@ -36,32 +63,6 @@ def graph_sparse_back_projection_time_vs_size_of_sinogram(filepath, output_direc
     plt.grid(True, which='both', axis='x')
 
     plt.savefig(output_directory + '/graph_sparse_back_projection_time_vs_size_of_sinogram.png', dpi=300, bbox_inches='tight')
-
-    plt.show()
-
-def graph_sparse_back_projection_time_vs_num_gpus_loglog(filepath, output_directory):
-    # Load the CSV file
-    df = pd.read_csv(filepath)
-
-    # Group data by size
-    grouped_by_size = {gpu: group.reset_index(drop=True) for gpu, group in df.groupby('size')}
-
-    plt.figure(figsize=(10, 6))
-    for sino_size, data in grouped_by_size.items():
-        plt.loglog(data['num_gpus'], data['elapsed'] / data['elapsed'][0], marker='o', label=f'{sino_size}')
-    num_gpus = 1 + np.arange(8)
-    plt.loglog(num_gpus, 1 / num_gpus, marker='*', label=f'Reference 1 / x')
-
-    plt.xlabel('Number of GPUs')
-    plt.ylabel('Time relative to 1 GPU')
-    plt.title('Sparse Back Projection Relative Time vs Number of GPUs (loglog Scale)')
-
-    plt.legend(title='Sinogram Size', loc='lower left')
-    plt.grid(True, which='both', axis='x')
-    plt.xticks([1, 2, 3, 4, 5, 6, 7, 8], ['1', '2', '3', '4', '5', '6', '7', '8'])
-    plt.yticks([0.1, 0.5, 1], ['0.1', '0.5', '1.0'])
-
-    plt.savefig(output_directory + '/graph_sparse_back_projection_time_vs_num_gpus_loglog.png', dpi=300, bbox_inches='tight')
 
     plt.show()
 
@@ -174,17 +175,17 @@ def graph_sparse_back_projection_peak_memory_vs_num_gpus(filepath, output_direct
 
 if __name__ == "__main__":
 
-    input_filepath = "./back_project.csv"
-    output_directory_path = "./output"
+    input_filepath = "../output/back_project.csv"
+    output_directory_path = "../output"
 
     # slide 5
     graph_sparse_back_projection_time_vs_num_gpus_loglog(input_filepath, output_directory_path)
 
-    # slide 4
-    graph_sparse_back_projection_time_vs_size_of_sinogram(input_filepath, output_directory_path)
-
-    # slide 7
-    graph_sparse_back_projection_peak_memory_vs_num_gpus(input_filepath, output_directory_path)
-
-    # slide 6
-    graph_sparse_back_projection_peak_memory_vs_size_of_sinogram(input_filepath, output_directory_path)
+    # # slide 4
+    # graph_sparse_back_projection_time_vs_size_of_sinogram(input_filepath, output_directory_path)
+    #
+    # # slide 7
+    # graph_sparse_back_projection_peak_memory_vs_num_gpus(input_filepath, output_directory_path)
+    #
+    # # slide 6
+    # graph_sparse_back_projection_peak_memory_vs_size_of_sinogram(input_filepath, output_directory_path)
