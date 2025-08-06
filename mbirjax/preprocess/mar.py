@@ -186,7 +186,7 @@ def _generate_basis_vectors(recon, num_metal, ct_model, device):
     return p, metals
 
 
-def _get_column_H(col_index, p, metals, H_exponent_list):
+def _get_column_H(col_index, p, metal_basis, H_exponent_list):
     """
     Compute the col_index-th column of the basis matrix H.
 
@@ -198,22 +198,22 @@ def _get_column_H(col_index, p, metals, H_exponent_list):
     Args:
         col_index (int): Index of the column to compute.
         p (jnp.ndarray): Normalized plastic basis vector.
-        metals (list of jnp.ndarray): Normalized metal basis vectors [m_0, m_1, ..., m_{n-1}].
+        metal_basis (list of jnp.ndarray): Normalized metal basis vectors [m_0, m_1, ..., m_{n-1}].
         H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
 
     Returns:
         jnp.ndarray: The computed column of H (same shape as p and m_i).
     """
     exponents = H_exponent_list[col_index]
-    assert len(exponents) == 1 + len(metals), "Mismatch between exponent tuple and number of basis vectors."
+    assert len(exponents) == 1 + len(metal_basis), "Mismatch between exponent tuple and number of basis vectors."
 
     col = p ** exponents[0]
-    for metal, exp in zip(metals, exponents[1:]):
+    for metal, exp in zip(metal_basis, exponents[1:]):
         col *= metal ** exp
 
     return col
 
-def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, alpha, beta):
+def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
     """
     Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
 
@@ -222,7 +222,7 @@ def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, al
 
     Args:
         p (jnp.ndarray): Normalized plastic basis vector.
-        metals (list of jnp.ndarray): List of normalized metal basis vectors.
+        metal_basis (list of jnp.ndarray): List of normalized metal basis vectors.
         y (jnp.ndarray): Measured sinogram.
         H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the basis matrix H.
         num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
@@ -239,10 +239,10 @@ def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, al
 
     # Compute the upper triangle of HtH and mirror it.
     for i in range(num_cols):
-        h_i = _get_column_H(i, p, metals, H_exponent_list)
+        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
         Hty = Hty.at[i].set(jnp.dot(h_i, y))
         for j in range(i, num_cols):
-            h_j = _get_column_H(j, p, metals, H_exponent_list)
+            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
             dot_ij = jnp.dot(h_i, h_j)
             HtH = HtH.at[i, j].set(dot_ij)
             if i != j:
@@ -265,6 +265,23 @@ def _estimate_BH_model_params(p, metals, y, H_exponent_list, num_cross_terms, al
     theta = jnp.linalg.solve(HtH_reg, Hty)
 
     return theta
+
+def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization):
+    linear_plastic_coef = jnp.zeros_like(y)
+    for i in range(0, num_cross_terms + 1):
+        # Use jnp.ones_like(measured_sino) to get the coefficient of p in the ith column of H.
+        linear_plastic_coef += theta[i] * _get_column_H(i, jnp.ones_like(y), metal_basis, H_exponent_list)
+    # Regularize
+    denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
+    linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
+
+    for j in range(num_cross_terms + 1, num_cross_terms + 1 + num_metal_terms):
+        y -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
+
+    # Compute corrected plastic sinogram
+    corrected_plastic_sino = p_normalization * y / linear_plastic_coef
+
+    return corrected_plastic_sino
 
 
 def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
@@ -296,6 +313,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     # - Linear plastic term: (1, 0, 0, ...)
     # - Cross terms: The leading 1 indicates the presence of a linear p term.
     # - Metal-only terms: The leading 0 indicates there is no p in the term.
+    # - Total number of columns: 1 + num_cross_terms + num_metal_terms.
     H_exponent_list = (
             [(1,) + (0,) * num_metal] +
             [(1, *t) for t in cross_exponent_list] +
@@ -304,7 +322,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     device = ct_model.main_device
     y = measured_sino.reshape(-1)
 
-    # Normalized basis vectors p and [m_0, m_1, ...]
+    # Get normalized basis vectors p and [m_0, m_1, ...]
     p, metal_basis = _generate_basis_vectors(recon, num_metal, ct_model, device)
     p_normalization = jnp.max(jnp.abs(p))
     metals_normalization = [jnp.max(jnp.abs(arr)) for arr in metal_basis]
@@ -314,19 +332,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     theta = _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
     print(f'theta = {theta}')
 
-    # --- Build correction ---
-    # Term 0: p
-    linear_plastic_coef = theta[0] * jnp.ones_like(p) + sum(theta[n + 1] * metal_terms[:, n] for n in range(num_cross_terms))
-
-    # Metal-only sinogram
-    metal_sino = sum(theta[n + 1 + num_cross_terms] * metal_terms[:,n] for n in range(num_metal_terms))
-
-    # Regularize
-    denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
-    linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
-
-    # Compute corrected plastic sinogram
-    corrected_plastic_sino = p_normalization * (y - metal_sino) / linear_plastic_coef
+    corrected_plastic_sino = _correct_plastic_sinogram(y, p, metal_basis, theta,H_exponent_list,
+                                                       num_cross_terms, num_metal_terms, p_normalization)
 
     # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
     # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
