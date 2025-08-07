@@ -14,6 +14,7 @@ Constructor
 .. autoclass:: mbirjax.TomographyModel
    :show-inheritance:
 
+
 Reconstruction and Projection
 -----------------------------
 
@@ -21,13 +22,15 @@ Reconstruction and Projection
 
 .. automethod:: mbirjax.TomographyModel.direct_recon
 
-.. automethod:: mbirjax.TomographyModel.scale_recon_shape
-
 .. automethod:: mbirjax.TomographyModel.prox_map
 
 .. automethod:: mbirjax.TomographyModel.forward_project
 
 .. automethod:: mbirjax.TomographyModel.back_project
+
+.. automethod:: mbirjax.TomographyModel.scale_recon_shape
+
+.. automethod:: mbirjax.TomographyModel.get_magnification
 
 .. _SaveLoadDocs:
 

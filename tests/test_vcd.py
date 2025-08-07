@@ -97,7 +97,7 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'translation':
             recon_shape = ct_model.get_params('recon_shape')
             words = ["Purdue", "Presents", "Translation", "Tomography"]
-            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
+            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', text=words)
         else:
             phantom_shape = ct_model.get_params('recon_shape')
             phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
