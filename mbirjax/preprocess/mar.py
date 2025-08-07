@@ -364,7 +364,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
     # Estimate beam hardening model parameters theta
     theta = _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
-    print(f'theta = {theta}')
+    # print(f'theta = {theta}')
 
     # Compute the corrected plastic sinogram
     corrected_plastic_sino = _correct_plastic_sinogram(y, p, metal_basis, theta,H_exponent_list,
