@@ -368,13 +368,14 @@ def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pi
 
 # ####### subroutines for loading scan images
 def read_scan_img(img_path):
-    """Reads a single scan image from an image path. This function is a subroutine to the function `read_scan_dir`.
+    """Reads a scan image (2D or 3D) from an image path and normalizes it to [0, 1]. This function is a subroutine to the
+        function `read_scan_dir`.
 
     Args:
         img_path (string): Path object or file object pointing to an image.
             The image type must be compatible with `PIL.Image.open()`. See `https://pillow.readthedocs.io/en/stable/reference/Image.html` for more details.
     Returns:
-        ndarray (float): 2D numpy array. A single scan image.
+        ndarray (float): Normalized 2D or 3D image as a NumPy array.
     """
     img = tifffile.imread(img_path)
 
