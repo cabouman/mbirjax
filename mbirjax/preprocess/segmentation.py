@@ -180,48 +180,81 @@ def _compute_within_class_variance(hist, thresholds):
 
 def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10):
     """
-    Segment a reconstruction into plastic and multiple metal masks using multi-threshold Otsu.
-
-    Args:
-        recon (jnp.ndarray): Reconstructed volume array.
-        num_metal (int): Number of metal materials to segment.
-        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
-        top_margin (int, optional): Number of slices to mask out from the top of the volume.
-        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
+    Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
 
     Returns:
-        Tuple[jnp.ndarray, List[jnp.ndarray], float, List[float]]:
-            - plastic_mask (jnp.ndarray): Binary mask for plastic regions.
-            - metal_masks (List[jnp.ndarray]): List of binary masks for each metal region.
-            - plastic_scale (float): Scaling factor for plastic region.
-            - metal_scales (List[float]): List of scaling factors for each metal region.
+        plastic_mask  : fractional mask for plastic (same shape as recon)
+        metal_masks   : list of fractional masks for each metal k=0..num_metal-1
+        plastic_scale : weighted scaling factor for plastic
+        metal_scales  : list of weighted scaling factors for each metal
     """
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                        bottom_margin=bottom_margin)
 
     # Compute thresholds using multi-threshold Otsu
-    thresholds = multi_threshold_otsu(recon, classes=num_metal + 2)
+    # Classes: [background, plastic, metal_0, metal_1, ...]
+    num_classes = num_metal + 2
+    thresholds = multi_threshold_otsu(recon, classes=num_classes)  # length K-1, ascending
 
-    # Plastic: lowest class
-    plastic_low_threshold = thresholds[0]
-    plastic_metal_threshold = thresholds[1]
+    # Assigns each voxel in `recon` to a bin index based on `thresholds`:
+    #   0            if value <= thresholds[0]
+    #   1            if thresholds[0] < value <= thresholds[1]
+    #   ...
+    #   K-1          if value > thresholds[-1]
+    cls = jnp.digitize(recon, thresholds)
 
-    # Create masks
-    plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
+    # Per-class mean/var (from hard labels) for the Gaussian weights
+    eps = 1e-6
+    means = []
+    variances = []
+
+    for class_idx in range(num_classes):
+        class_mask = (cls == class_idx)  # Boolean mask for this class
+        voxel_count = class_mask.sum().astype(recon.dtype)  # Number of voxels in the class
+
+        class_mean = jnp.sum(recon * class_mask) / (voxel_count + eps)
+        class_variance = jnp.sum(class_mask * (recon - class_mean) ** 2) / (voxel_count + eps)
+
+        means.append(class_mean)
+        variances.append(class_variance)
+
+    means = jnp.asarray(means)
+    variances = jnp.asarray(variances) + eps  # keep strictly positive
+
+    # Soft weights: only two nonzero per voxel (classes i and i+1 inside each bin)
+    weights = jnp.zeros((num_classes,) + recon.shape, dtype=recon.dtype)
+
+    # Below first threshold -> class 0 is 1
+    below = (cls == 0) & (recon <= thresholds[0])
+    weights = weights.at[0].set(jnp.where(below, 1.0, 0.0))
+
+    # Above last threshold -> class K-1 is 1
+    above = (cls == num_classes - 1) & (recon > thresholds[-1])
+    weights = weights.at[num_classes - 1].set(jnp.where(above, 1.0, 0.0))
+
+    # Inside each interior bin (t_i, t_{i+1}] -> mix class i and i+1
+    for i in range(num_classes - 1):
+        in_bin = (cls == i) & (recon > (thresholds[i - 1] if i > 0 else -jnp.inf)) & (
+            recon <= (thresholds[i] if i < num_classes - 1 else jnp.inf)
+        )
+        # Gaussian-like unnormalized likelihoods
+        wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / variances[i])
+        wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / variances[i + 1])
+        s = wi + wj + eps
+        wi, wj = wi / s, wj / s
+
+        # Write only on voxels in this bin
+        weights = weights.at[i].set(jnp.where(in_bin, wi, weights[i]))
+        weights = weights.at[i + 1].set(jnp.where(in_bin, wj, weights[i + 1]))
+
+    # Extract plastic and metal masks
+    plastic_mask = weights[1]
+    metal_masks = [weights[2 + k] for k in range(num_metal)]
+
+    # Weighted scaling (uses mask as weights).
+
     plastic_scale = mjp.compute_scaling_factor(recon, plastic_mask)
-
-    # Metal masks and scaling
-    metal_masks = []
-    metal_scales = []
-    for i in range(1, num_metal + 1):  # start from index 1
-        lower = thresholds[i]
-        upper = thresholds[i + 1] if i + 1 < len(thresholds) else jnp.inf
-        metal_mask = jnp.where((recon > lower) & (recon <= upper), 1.0, 0.0)
-        metal_masks.append(metal_mask)
-        metal_scales.append(mjp.compute_scaling_factor(recon, metal_mask))
+    metal_scales = [mjp.compute_scaling_factor(recon, m) for m in metal_masks]
 
     return plastic_mask, metal_masks, plastic_scale, metal_scales
-
-
-
