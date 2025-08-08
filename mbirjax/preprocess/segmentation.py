@@ -55,17 +55,12 @@ def _recursive_otsu(hist, num_thresholds):
     """
     Recursively applies Otsu's method to find the best thresholds for multiple classes.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    num_thresholds : int
-        Number of thresholds to find.
+    Args:
+        hist (ndarray): Histogram of the image.
+        num_thresholds (int): Number of thresholds to find.
 
-    Returns
-    -------
-    list
-        List of thresholds that divide the histogram into the specified number of classes.
+    Returns:
+        list: Threshold values that divide the histogram into the specified number of classes.
     """
     # Base case: no thresholds needed
     if num_thresholds == 0:
@@ -106,16 +101,13 @@ def _binary_threshold_otsu(hist):
     """
     Finds the best threshold for binary segmentation using Otsu's method.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
+    Args:
+        hist (ndarray): Histogram of the image.
 
-    Returns
-    -------
-    int
-        Best threshold for binary segmentation.
+    Returns:
+        int: Best threshold value for binary segmentation.
     """
+
     total = np.sum(hist)
     current_max, threshold = 0, 0
     sum_total, sum_foreground, weight_foreground, weight_background = 0, 0, 0, 0
@@ -150,17 +142,12 @@ def _compute_within_class_variance(hist, thresholds):
     """
     Computes the total within-class variance given a set of thresholds.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    thresholds : list
-        List of thresholds that divide the histogram into multiple classes.
+    Args:
+        hist (ndarray): Histogram of the image.
+        thresholds (list): Threshold values that divide the histogram into multiple classes.
 
-    Returns
-    -------
-    float
-        Total within-class variance.
+    Returns:
+        float: Total within-class variance.
     """
     total_variance = 0
     thresholds = [0] + thresholds + [len(hist)]
@@ -181,12 +168,19 @@ def _compute_within_class_variance(hist, thresholds):
 def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
+    Args:
+        recon (jnp.ndarray): Reconstructed volume array.
+        num_metal (int): Number of metal materials to segment.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
+        top_margin (int, optional): Number of slices to mask out from the top of the volume.
+        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
 
     Returns:
-        plastic_mask  : fractional mask for plastic (same shape as recon)
-        metal_masks   : list of fractional masks for each metal k=0..num_metal-1
-        plastic_scale : weighted scaling factor for plastic
-        metal_scales  : list of weighted scaling factors for each metal
+        Tuple[jnp.ndarray, List[jnp.ndarray], float, List[float]]:
+            plastic_mask (jnp.ndarray): fractional mask for plastic (same shape as recon)
+            metal_masks (List[jnp.ndarray]): list of fractional masks for each metal
+            plastic_scale (float): weighted scaling factor for plastic
+            metal_scales (List[float]): list of weighted scaling factors for each metal
     """
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
