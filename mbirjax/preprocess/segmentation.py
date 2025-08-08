@@ -165,12 +165,17 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 
 
-def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10):
+def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
     Args:
         recon (jnp.ndarray): Reconstructed volume array.
         num_metal (int): Number of metal materials to segment.
+        sharpness (float, optional): Controls the steepness of Gaussian weighting between adjacent
+            classes.
+            - sharpness = 1.0 → default smoothness.
+            - sharpness > 1.0 → steeper transitions, masks closer to binary.
+            - sharpness < 1.0 → flatter transitions, more blended masks.
         radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
         top_margin (int, optional): Number of slices to mask out from the top of the volume.
         bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
@@ -232,8 +237,8 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
         in_bin = (cls == i) & (recon > thresholds[i - 1]) & (
             recon <= thresholds[i])
         # Gaussian-like unnormalized likelihoods
-        wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / variances[i])
-        wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / variances[i + 1])
+        wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
+        wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
         s = wi + wj + eps
         wi, wj = wi / s, wj / s
 
