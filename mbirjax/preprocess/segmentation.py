@@ -196,7 +196,7 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     #   1            if thresholds[0] < value <= thresholds[1]
     #   ...
     #   K-1          if value > thresholds[-1]
-    cls = jnp.digitize(recon, thresholds)
+    cls = jnp.digitize(recon, jnp.array(thresholds))
 
     # Per-class mean/var (from hard labels) for the Gaussian weights
     eps = 1e-6
@@ -228,10 +228,9 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     weights = weights.at[num_classes - 1].set(jnp.where(above, 1.0, 0.0))
 
     # Inside each interior bin (t_i, t_{i+1}] -> mix class i and i+1
-    for i in range(num_classes - 1):
-        in_bin = (cls == i) & (recon > (thresholds[i - 1] if i > 0 else -jnp.inf)) & (
-            recon <= (thresholds[i] if i < num_classes - 1 else jnp.inf)
-        )
+    for i in range(1, num_classes - 1):
+        in_bin = (cls == i) & (recon > thresholds[i - 1]) & (
+            recon <= thresholds[i])
         # Gaussian-like unnormalized likelihoods
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / variances[i])
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / variances[i + 1])
