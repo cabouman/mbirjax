@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Exit on error
+set -e
+
+# Base and full versioning
+CUDNN_VERSION="9.11.0"
+CUDNN_FULL_VERSION="9.11.0.98"
+CUDA_VERSION="cuda12"
+
+# Define paths
+INSTALL_DIR="/scratch/gautschi/ncardel/cudnn/${CUDNN_VERSION}"
+MODULE_DIR="/scratch/gautschi/ncardel/modules/cudnn"
+MODULEFILE="${MODULE_DIR}/${CUDNN_VERSION}"
+
+# Construct download URL from components
+ARCHIVE_NAME="cudnn-linux-x86_64-${CUDNN_FULL_VERSION}_${CUDA_VERSION}-archive.tar.xz"
+CUDNN_URL="https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/${ARCHIVE_NAME}"
+ARCHIVE_NAME=$(basename "$CUDNN_URL")
+
+echo "=== Cleaning previous installation in $INSTALL_DIR"
+rm -rf "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+echo "=== Downloading cuDNN ${CUDNN_VERSION}"
+wget "$CUDNN_URL"
+
+echo "=== Extracting archive"
+tar -xf "$ARCHIVE_NAME"
+
+echo "=== Organizing files"
+mv cudnn-linux-x86_64-9.11.0.98_cuda12-archive/include include
+mv cudnn-linux-x86_64-9.11.0.98_cuda12-archive/lib lib
+rm -rf cudnn-linux-x86_64-9.11.0.98_cuda12-archive*
+rm -f "$ARCHIVE_NAME"
+
+echo "=== Creating modulefile directory at $MODULE_DIR"
+mkdir -p "$MODULE_DIR"
+
+echo "=== Writing modulefile to $MODULEFILE"
+cat << EOF > "$MODULEFILE"
+#%Module1.0
+proc ModulesHelp { } {
+    puts stderr "cuDNN ${CUDNN_VERSION} (local install)"
+}
+module-whatis "cuDNN ${CUDNN_VERSION} for CUDA 12.0 (user local)"
+
+set root ${INSTALL_DIR}
+prepend-path LD_LIBRARY_PATH \$root/lib
+prepend-path CPATH          \$root/include
+EOF
+
+echo -e "\n=== ✅ Done!"
+
+echo -e "\nTo make the module available, add this line to your ~/.bashrc or ~/.bash_profile:"
+echo "    module use /scratch/gautschi/ncardel/modules"
+echo -e "Then run:\n    source ~/.bashrc"
+echo -e "\nTo load cuDNN 9.11.0, use:\n    module load cudnn/9.11.0"
