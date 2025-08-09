@@ -50,6 +50,7 @@ class TomographyModel(ParameterHandler):
 
     Sets up the reconstruction size and parameters.
     """
+    print("\n\033[93m ━━━━━━━━━━━ NOTICE: TomographyModel has been modified to support sharding! ━━━━━━━━━━━ \033[0m\n")
 
     DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
 
