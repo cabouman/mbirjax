@@ -33,7 +33,7 @@ def back_project(size, num_gpus, output_filepath='output.csv'):
 
     # recon model
     back_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
-    back_projection_model.set_params(sharpness=0.0, use_gpu='sharding') # TODO: in the __init__ method detect number of gpus and default to sharding if use_gpu has not been set
+    back_projection_model.set_params(sharpness=0.0, use_gpu='automatic')
 
     # Print out model parameters
     print("MODEL PARAMS:")

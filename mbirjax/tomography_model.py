@@ -18,6 +18,7 @@ from jax.errors import JaxRuntimeError
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 import mbirjax
 import mbirjax as mj
@@ -227,8 +228,27 @@ class TomographyModel(ParameterHandler):
         frac_gpu_mem_to_use = 0.9
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
+        # 'automatic' and more than one GPU: Everything will be done with sharding
+        if use_gpu == 'automatic' and len(gpus) > 1:
+
+            # all views will be vmapped
+            self.view_batch_size_for_vmap = num_views
+
+            # FIXME: calculate this based off of actual memory
+            self.transfer_pixel_batch_size = 2000  # hard coded to a value that is known to work for now
+            mem_required_for_gpu = 0
+            mem_required_for_cpu = 0
+
+            # create devices and named shardings
+            devices = np.array(gpus).reshape((-1, 1))
+            mesh = Mesh(devices, ('views', 'rows'))
+
+            self.main_device = cpus[0]
+            self.sinogram_device = NamedSharding(mesh, P('views'))
+            self.worker = None  # the worker is not used
+
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
+        elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
             self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
@@ -645,30 +665,44 @@ class TomographyModel(ParameterHandler):
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        num_views = sinogram.shape[0]
-        if view_indices is None:
-            view_indices = jnp.arange(num_views)
-        num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        num_views, num_rows, num_channels = sinogram.shape
 
-        pixel_indices = jax.device_put(pixel_indices, self.worker)
-        num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
-        pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
+        # pixel batches need to be replicated so that all GPU devices have access to the same data
+        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
 
-        recon_shape = self.get_params('recon_shape')
+        # FIXME: remove view_indices, it isn't used anywhere and uses way more memory
+        #  the view indexing could be done outside this function
+        if view_indices is not None:
+            view_batch_start_indices = jnp.arange(view_indices, step=transfer_view_batch_size, dtype=int)
+            view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
+        else:
+            view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
+            view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
+
+        # determine pixel batch indices
         num_pixels = len(pixel_indices)
+        recon_shape = self.get_params('recon_shape')
         num_slices = recon_shape[2]
+
+        pixel_batch_start_indices = jnp.arange(num_pixels, step=transfer_pixel_batch_size, dtype=int)
+        pixel_batch_end_indices = jnp.concatenate([pixel_batch_start_indices[1:], num_pixels * jnp.ones(1, dtype=int)])
 
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        for view_indices_batch in view_indices_batched:
-            view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.worker)
+        import tqdm
+        for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
+
+            if view_indices is not None:
+                view_indices_batch = view_indices[view_index_start:view_index_end]
+                view_batch = jax.device_put(sinogram[view_indices_batch], self.sinogram_device)
+            else:
+                view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
+                view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.sinogram_device)
 
             # Loop over pixel batches
             voxel_batch_list = []
-            for pixel_index_batch in pixel_indices_batched:
-                # Back project a batch
+            for pixel_index_start, pixel_index_end in tqdm.tqdm(zip(pixel_batch_start_indices, pixel_batch_end_indices)):
+                pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], sinogram_device_replicated)
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
                                                                            view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
