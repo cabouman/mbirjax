@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 
 import mbirjax as mj
 import jax.numpy as jnp
-import tqdm  # Included in mbirjax
 
 
 def subsample_R_gamma(R, gamma, selected_indices):
@@ -168,7 +167,6 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
     return optimal_angle_inds, vcl_value
 
 
-
 def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed=None):
     """
     Compute the view basis functions and inner product vector (gamma) used in the VCLS algorithm.
@@ -188,6 +186,7 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
         >>> print(gamma.shape)
         (180, 1)
     """
+    import tqdm
     eps = 1e-12
 
     # Forward project the reference object
@@ -250,6 +249,7 @@ def compute_cov_matrix(num_views, data_store_dir, batch_size=100):
         (180, 180)
     """
 
+    import tqdm
     cov_matrix = np.zeros((num_views, num_views))
     num_batches = int(np.ceil(num_views / batch_size))
     batches = np.array_split(np.arange(num_views), num_batches)
