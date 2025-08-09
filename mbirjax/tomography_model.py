@@ -644,7 +644,7 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
         associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
@@ -670,14 +670,8 @@ class TomographyModel(ParameterHandler):
         # pixel batches need to be replicated so that all GPU devices have access to the same data
         sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
 
-        # FIXME: remove view_indices, it isn't used anywhere and uses way more memory
-        #  the view indexing could be done outside this function
-        if view_indices is not None:
-            view_batch_start_indices = jnp.arange(view_indices, step=transfer_view_batch_size, dtype=int)
-            view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
-        else:
-            view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
-            view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
+        view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
+        view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
 
         # determine pixel batch indices
         num_pixels = len(pixel_indices)
@@ -692,12 +686,8 @@ class TomographyModel(ParameterHandler):
         import tqdm
         for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
 
-            if view_indices is not None:
-                view_indices_batch = view_indices[view_index_start:view_index_end]
-                view_batch = jax.device_put(sinogram[view_indices_batch], self.sinogram_device)
-            else:
-                view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
-                view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.sinogram_device)
+            view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
+            view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.sinogram_device)
 
             # Loop over pixel batches
             voxel_batch_list = []
