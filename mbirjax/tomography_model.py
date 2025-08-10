@@ -1323,18 +1323,11 @@ class TomographyModel(ParameterHandler):
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
             nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_recon))
-            # es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
 
-            # Step 1: Square errors
+            # Take the norm so the final step is done on the main device for memory reasons
             square_step = error_sinogram * error_sinogram
-
-            # Step 2: Sum over axes 1 and 2
             sum_step = jnp.sum(square_step, axis=[1, 2])
-
-            # Step 3: Move to main device
             sum_step = jax.device_put(sum_step, device=self.main_device)
-
-            # Step 4: Sum over remaining axis and take sqrt
             total_sum = jnp.sum(sum_step)
             es_rmse = jnp.sqrt(total_sum) / jnp.sqrt(float(error_sinogram.size))
 
@@ -1780,19 +1773,16 @@ class TomographyModel(ParameterHandler):
             avg_weight = jnp.average(weights)
 
         if normalize:
-            # Step 1: Multiply first
+
+            # Normalize so the final step is done on the main device for memory reasons
             multiply_step = (error_sinogram * error_sinogram) * (weights / avg_weight)
-
-            # Step 2: Sum over axes 1 and 2
             sum_step = jnp.sum(multiply_step, axis=[1, 2])
-
-            # Step 3: Move to main device
             sum_step = jax.device_put(sum_step, device=cpu_device)
-
-            # Step 4: Mean over the remaining axis (axis 0), then sqrt
             loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(sum_step))
 
         else:
+
+            # Calculate the loss so the final step is done on the main device for memory reasons
             multiply_step = (error_sinogram * error_sinogram) * weights
             sum_step = jnp.sum(multiply_step, axis=[1, 2])
             sum_step = jax.device_put(sum_step, device=cpu_device)
