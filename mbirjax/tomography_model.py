@@ -655,7 +655,6 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jnp array): 3D jax array containing the full sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
             coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
             output_device (jax device, optional): Device on which to put the output
 
