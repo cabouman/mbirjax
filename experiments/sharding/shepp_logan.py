@@ -1,52 +1,27 @@
-# -*- coding: utf-8 -*-
-"""See the notebook version of this demo at:
-
-    https://colab.research.google.com/drive/1zG_H6CDjuQxeMRQHan3XEyX2YVKcSSNC
-
-**MBIRJAX: Basic Demo**
-
-See the [MBIRJAX documentation](https://mbirjax.readthedocs.io/en/latest/) for an overview and details.  
-
-This script demonstrates the basic MBIRJAX code by creating a 3D phantom inspired by Shepp-Logan, forward projecting it to create a sinogram, and then using MBIRJAX to perform a Model-Based, Multi-Granular Vectorized Coordinate Descent reconstruction.
-
-For the demo, we create some synthetic data by first making a phantom, then forward projecting it to obtain a sinogram.  
-
-In a real application, you would load your sinogram as a numpy array and use numpy.transpose if needed so that it
-has axes in the order (views, rows, channels).  For reference, assuming the rotation axis is vertical, then increasing the row index nominally moves down the rotation axis and increasing the channel index moves to the right as seen from the source.
-
-Select a GPU as runtime type for best performance.
-"""
-
 import numpy as np
 import time
-import pprint
+import pickle
 import mbirjax as mj
-import jax.numpy as jnp
 
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
 model_type = 'parallel'  # 'cone' or 'parallel'
-object_type = 'cube'  # 'shepp-logan' or 'cube'
 
-# Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
-# channels, then the generated phantom may not have an interior.
-num_views = 2000
-num_det_rows = 2000
-num_det_channels = 2000
-sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
-# load phantom and sinogram
-phantom = np.load("../experiments/output/phantom.npy")
-sinogram = np.load("../experiments/output/sinogram.npy")
+# load phantom, sinogram, and params
+output_directory = "/scratch/gautschi/ncardel"
+phantom = np.load(f"{output_directory}/phantom.npy")
+sinogram = np.load(f"{output_directory}/sinogram.npy")
+with open(f"{output_directory}/params.pkl", "rb") as f:
+    params = pickle.load(f)
 
-mj.get_memory_stats()
-
+sinogram_shape = sinogram.shape
 angles = params['angles']
 
 # View the sinogram
-# title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-# mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
+mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
