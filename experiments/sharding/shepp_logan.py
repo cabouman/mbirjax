@@ -23,28 +23,6 @@ import pprint
 import mbirjax as mj
 import jax.numpy as jnp
 
-def gen_cube_phantom(recon_shape, device=None):
-    """Code to generate a simple phantom """
-    # Compute phantom height and width
-    num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-    phantom_rows = num_recon_rows // 4  # Phantom height
-    phantom_cols = num_recon_cols // 4  # Phantom width
-
-    # Allocate phantom memory
-    phantom = np.zeros((num_recon_rows, num_recon_cols, num_recon_slices))
-
-    # Compute start and end locations
-    start_rows = (num_recon_rows - phantom_rows) // 2
-    stop_rows = (num_recon_rows + phantom_rows) // 2
-    start_cols = (num_recon_cols - phantom_cols) // 2
-    stop_cols = (num_recon_cols + phantom_cols) // 2
-    for slice_index in np.arange(num_recon_slices):
-        shift_cols = int(slice_index * phantom_cols / num_recon_slices)
-        phantom[start_rows:stop_rows, (shift_cols + start_cols):(shift_cols + stop_cols), slice_index] = 1.0 / max(
-            phantom_rows, phantom_cols)
-
-    return jnp.array(phantom, device=device)
-
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
@@ -58,11 +36,9 @@ num_det_rows = 2000
 num_det_channels = 2000
 sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
-# Generate simulated data
-# In a real application you would not have the phantom, but we include it here for later display purposes
-phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
-                                                  num_views=num_views, num_det_rows=num_det_rows,
-                                                  num_det_channels=num_det_channels)
+# load phantom and sinogram
+phantom = np.load("../experiments/output/phantom.npy")
+sinogram = np.load("../experiments/output/sinogram.npy")
 
 mj.get_memory_stats()
 
