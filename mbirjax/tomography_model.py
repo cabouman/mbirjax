@@ -1247,9 +1247,22 @@ class TomographyModel(ParameterHandler):
             weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
         else:
             weighted_error_sinogram = error_sinogram
-        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
+
+        # Take the sum so the final step is done on the main device for memory reasons
+        multiply_step = weighted_error_sinogram * error_sinogram
+        sum_step = jnp.sum(multiply_step, axis=[1, 2])
+        sum_step = jax.device_put(sum_step, device=self.main_device)
+        wtd_err_sino_norm = jnp.sum(sum_step)
+
         if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
-            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+
+            # Take the sum so the final step is done on the main device for memory reasons
+            multiply_step = weighted_error_sinogram * sinogram
+            sum_step = jnp.sum(multiply_step, axis=[1, 2])
+            sum_step = jax.device_put(sum_step, device=self.main_device)
+            numerator = jnp.sum(sum_step)
+            alpha = numerator / wtd_err_sino_norm
+
         else:
             alpha = 1
 
