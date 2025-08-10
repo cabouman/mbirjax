@@ -731,7 +731,10 @@ class TomographyModel(ParameterHandler):
         for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
 
             view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
-            view_batch = jax.device_put(sinogram[view_index_start:view_index_end], self.sinogram_device)
+            view_batch = sinogram
+
+            if view_batch.device != self.sinogram_device:
+                view_batch = jax.device_put(sinogram, self.sinogram_device)
 
             # Loop over pixel batches
             voxel_batch_list = []
