@@ -552,6 +552,16 @@ class TomographyModel(ParameterHandler):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
+    def get_geometry_parameters(self):
+        """
+        Function to get a list of the primary geometry parameters for given type of beam projection.
+
+        Returns:
+            namedtuple of required geometry parameters.
+        """
+        warnings.warn('geometry parameters not implemented for TomographyModel.')
+        return None
+
     def forward_project(self, recon):
         """
         Perform a full forward projection at all voxels in the field-of-view.
