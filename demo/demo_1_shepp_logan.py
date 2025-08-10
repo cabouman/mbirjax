@@ -30,9 +30,9 @@ object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 64
-num_det_rows = 40
-num_det_channels = 128
+num_views = 2000
+num_det_rows = 2000
+num_det_channels = 2000
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
@@ -66,7 +66,7 @@ weights = None
 # Sharnpess of -1 or 0 will yield softer edges and smoother interiors.
 # Values of sharpness above 3 may lead to slower convergence with high-frequency artifacts, particularly in the center slices in cone beam.
 sharpness = 1.0
-ct_model.set_params(sharpness=sharpness)
+ct_model.set_params(sharpness=sharpness, use_gpu='automatic')
 
 # Print out model parameters
 ct_model.print_params()

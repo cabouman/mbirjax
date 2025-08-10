@@ -245,7 +245,7 @@ class TomographyModel(ParameterHandler):
 
             self.main_device = cpus[0]
             self.sinogram_device = NamedSharding(mesh, P('views'))
-            self.worker = None  # the worker is not used
+            self.worker = self.sinogram_device  # the worker is not used
 
         # 'full':  Everything on GPU
         elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
@@ -682,7 +682,7 @@ class TomographyModel(ParameterHandler):
                 cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
 
             # sinogram.append(jax.device_put(cur_view_batch, output_device))
-            print("YOU SHOULD ONLY SEE THIS ONCE!!!!!")
+            # print("YOU SHOULD ONLY SEE THIS ONCE!!!!!")
             sinogram = cur_view_batch
 
         # sinogram = jnp.concatenate(sinogram)
@@ -1223,7 +1223,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             self.logger.info('Starting direct recon for initial reconstruction')
-            with jax.default_device(self.sinogram_device):
+            with jax.default_device(self.main_device):
                 init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
@@ -1320,7 +1320,21 @@ class TomographyModel(ParameterHandler):
             # Compute the stats and display as desired
             fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
             nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_recon))
-            es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
+            # es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
+
+            # Step 1: Square errors
+            square_step = error_sinogram * error_sinogram
+
+            # Step 2: Sum over axes 1 and 2
+            sum_step = jnp.sum(square_step, axis=[1, 2])
+
+            # Step 3: Move to main device
+            sum_step = jax.device_put(sum_step, device=self.main_device)
+
+            # Step 4: Sum over remaining axis and take sqrt
+            total_sum = jnp.sum(sum_step)
+            es_rmse = jnp.sqrt(total_sum) / jnp.sqrt(float(error_sinogram.size))
+
             alpha_values[i] = alpha
 
             if verbose >= 1:
@@ -1384,7 +1398,7 @@ class TomographyModel(ParameterHandler):
 
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
-        partition_worker = jax.device_put(partition, self.worker)
+        partition_worker = jax.device_put(partition, self.main_device)
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
@@ -1666,8 +1680,15 @@ class TomographyModel(ParameterHandler):
             tuple:
             forward_linear, forward_quadratic
         """
-        forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
-        forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
+        multiply_step = weighted_error_sinogram * delta_sinogram
+        sum_step = jnp.sum(multiply_step, axis=[1,2])
+        sum_step = jax.device_put(sum_step, device=self.main_device)
+        forward_linear = fm_constant * jnp.sum(sum_step)
+
+        multiply_step = delta_sinogram * delta_sinogram * weights
+        sum_step = jnp.sum(multiply_step, axis=[1,2])
+        sum_step = jax.device_put(sum_step, device=self.main_device)
+        forward_quadratic = fm_constant * jnp.sum(sum_step)
 
         # The code below does batching of the sinogram on the GPU, but in a comparison on a sinogram
         # of size 1800x512x512, it was noticeably faster to do the computation on the CPU.
@@ -1747,16 +1768,33 @@ class TomographyModel(ParameterHandler):
         Returns:
             float loss.
         """
+        cpu_device = jax.devices('cpu')[0]
+
         if weights is None:
             weights = 1
             avg_weight = 1
         else:
             avg_weight = jnp.average(weights)
+
         if normalize:
-            loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(
-                (error_sinogram * error_sinogram) * (weights / avg_weight)))
+            # Step 1: Multiply first
+            multiply_step = (error_sinogram * error_sinogram) * (weights / avg_weight)
+
+            # Step 2: Sum over axes 1 and 2
+            sum_step = jnp.sum(multiply_step, axis=[1, 2])
+
+            # Step 3: Move to main device
+            sum_step = jax.device_put(sum_step, device=cpu_device)
+
+            # Step 4: Mean over the remaining axis (axis 0), then sqrt
+            loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(sum_step))
+
         else:
-            loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
+            multiply_step = (error_sinogram * error_sinogram) * weights
+            sum_step = jnp.sum(multiply_step, axis=[1, 2])
+            sum_step = jax.device_put(sum_step, device=cpu_device)
+            loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum(sum_step)
+
         return loss
 
     def prox_map(self, prox_input, sinogram, sigma_prox=None, weights=None, init_recon=None, do_initialization=True, stop_threshold_change_pct=0.2,

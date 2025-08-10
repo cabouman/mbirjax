@@ -341,10 +341,10 @@ class ParallelBeamModel(TomographyModel):
         num_views = sinogram.shape[0]
         filtered_sino_list = []
         for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.main_device)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
             filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
+            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.main_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
         filtered_sinogram *= jnp.pi / num_views  # scaling term
         return filtered_sinogram
