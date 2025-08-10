@@ -507,7 +507,7 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = mj.Projectors(self)
 
     @staticmethod
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params, sinogram_view=None):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -520,6 +520,7 @@ class TomographyModel(ParameterHandler):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            sinogram_view (jax array): 2D array of shape (num_rows, num_channels) of sinogram view
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)

@@ -188,7 +188,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view=None):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -198,6 +198,7 @@ class ConeBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            sinogram_view (jax array): 2D array of shape (num_rows, num_channels) of sinogram view
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
