@@ -9,6 +9,8 @@ import mbirjax as mj
     issues with sharding and generating the test phantom and sinogram.
 """
 
+output_directory = "/scratch/gautschi/ncardel"
+
 # Choose the geometry type
 model_type = 'parallel'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
@@ -28,10 +30,10 @@ mj.slice_viewer(phantom, title="Phantom Test")
 mj.slice_viewer(sinogram, title="Sinogram Test")
 
 phantom = np.array(phantom)
-np.save("../output/phantom.npy", phantom)
+np.save(f"{output_directory}/phantom.npy", phantom)
 
 sinogram = np.array(sinogram)
-np.save("../output/sinogram.npy", sinogram)
+np.save(f"{output_directory}/sinogram.npy", sinogram)
 
-with open("../output/params.pkl", "wb") as f:
+with open(f"{output_directory}/params.pkl", "wb") as f:
     pickle.dump(params, f)
