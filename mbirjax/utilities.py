@@ -985,6 +985,7 @@ def generate_demo_data(
 
     # Generate phantom
     print('Creating phantom')
+    ct_model_for_generation.set_params(use_gpu='none')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     device = ct_model_for_generation.main_device
     if object_type == ObjectType.SHEPP_LOGAN:
@@ -997,7 +998,7 @@ def generate_demo_data(
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.asarray(sinogram)
+    # sinogram = np.asarray(sinogram)
 
     return phantom, sinogram, params
 
