@@ -607,7 +607,7 @@ class TomographyModel(ParameterHandler):
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
-    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
+    def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -616,7 +616,6 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             pixel_indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (jax array): Array of indices of views to project
             output_device (jax device): Device on which to put the output
 
         Returns:
