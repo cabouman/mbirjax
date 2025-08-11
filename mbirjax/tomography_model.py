@@ -235,7 +235,7 @@ class TomographyModel(ParameterHandler):
             self.view_batch_size_for_vmap = num_views
 
             # FIXME: calculate this based off of actual memory
-            self.transfer_pixel_batch_size = 500  # hard coded to a value that is known to work for now
+            self.transfer_pixel_batch_size = 1  # hard coded to a value that is known to work for now
             mem_required_for_gpu = 0
             mem_required_for_cpu = 0
 
@@ -1251,16 +1251,20 @@ class TomographyModel(ParameterHandler):
         # Take the sum so the final step is done on the main device for memory reasons
         multiply_step = weighted_error_sinogram * error_sinogram
         sum_step = jnp.sum(multiply_step, axis=[1, 2])
+        del multiply_step
         sum_step = jax.device_put(sum_step, device=self.main_device)
         wtd_err_sino_norm = jnp.sum(sum_step)
+        del sum_step
 
         if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
 
             # Take the sum so the final step is done on the main device for memory reasons
             multiply_step = weighted_error_sinogram * sinogram
             sum_step = jnp.sum(multiply_step, axis=[1, 2])
+            del multiply_step
             sum_step = jax.device_put(sum_step, device=self.main_device)
             numerator = jnp.sum(sum_step)
+            del sum_step
             alpha = numerator / wtd_err_sino_norm
 
         else:
@@ -1345,9 +1349,12 @@ class TomographyModel(ParameterHandler):
             # Take the norm so the final step is done on the main device for memory reasons
             square_step = error_sinogram * error_sinogram
             sum_step = jnp.sum(square_step, axis=[1, 2])
+            del square_step
             sum_step = jax.device_put(sum_step, device=self.main_device)
             total_sum = jnp.sum(sum_step)
+            del sum_step
             es_rmse = jnp.sqrt(total_sum) / jnp.sqrt(float(error_sinogram.size))
+            del total_sum
 
             alpha_values[i] = alpha
 
@@ -1795,16 +1802,20 @@ class TomographyModel(ParameterHandler):
             # Normalize so the final step is done on the main device for memory reasons
             multiply_step = (error_sinogram * error_sinogram) * (weights / avg_weight)
             sum_step = jnp.sum(multiply_step, axis=[1, 2])
+            del multiply_step
             sum_step = jax.device_put(sum_step, device=cpu_device)
             loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(sum_step))
+            del sum_step
 
         else:
 
             # Calculate the loss so the final step is done on the main device for memory reasons
             multiply_step = (error_sinogram * error_sinogram) * weights
             sum_step = jnp.sum(multiply_step, axis=[1, 2])
+            del multiply_step
             sum_step = jax.device_put(sum_step, device=cpu_device)
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum(sum_step)
+            del sum_step
 
         return loss
 
