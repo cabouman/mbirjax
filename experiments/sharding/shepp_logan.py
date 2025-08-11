@@ -21,8 +21,8 @@ sinogram = np.load(sinogram_filepath)
 with open(params_filepath, "rb") as f:
     params = pickle.load(f)
 
-# print("phantom.shape:", phantom.shape)
-# print("sinogram.shape:", sinogram.shape)
+print("phantom.shape:", phantom.shape)
+print("sinogram.shape:", sinogram.shape)
 print("params:", params.items())
 
 if 'source_detector_dist' in params.keys():
