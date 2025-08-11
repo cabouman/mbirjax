@@ -204,7 +204,6 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top
     cls = jnp.digitize(recon, jnp.array(thresholds))
 
     # Per-class mean/var (from hard labels) for the Gaussian weights
-    eps = 1e-6
     means = []
     variances = []
 
@@ -212,8 +211,8 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top
         class_mask = (cls == class_idx)  # Boolean mask for this class
         voxel_count = class_mask.sum().astype(recon.dtype)  # Number of voxels in the class
 
-        class_mean = jnp.sum(recon * class_mask) / (voxel_count + eps)
-        class_variance = jnp.sum(class_mask * (recon - class_mean) ** 2) / (voxel_count + eps)
+        class_mean = jnp.sum(recon * class_mask) / (voxel_count)
+        class_variance = jnp.sum(class_mask * (recon - class_mean) ** 2) / (voxel_count)
 
         means.append(class_mean)
         variances.append(class_variance)
@@ -239,7 +238,7 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top
         # Gaussian-like unnormalized likelihoods
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
-        s = wi + wj + eps
+        s = wi + wj
         wi, wj = wi / s, wj / s
 
         # Write only on voxels in this bin
