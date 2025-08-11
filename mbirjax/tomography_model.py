@@ -235,7 +235,7 @@ class TomographyModel(ParameterHandler):
             self.view_batch_size_for_vmap = num_views
 
             # FIXME: calculate this based off of actual memory
-            self.transfer_pixel_batch_size = 1  # hard coded to a value that is known to work for now
+            self.transfer_pixel_batch_size = 50  # hard coded to a value that is known to work for now
             mem_required_for_gpu = 0
             mem_required_for_cpu = 0
 

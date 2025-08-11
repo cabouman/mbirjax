@@ -8,7 +8,6 @@ import mbirjax as mj
 # Choose the geometry type
 model_type = 'parallel'  # 'cone' or 'parallel'
 
-
 # load phantom, sinogram, and params
 output_directory = "/scratch/gautschi/ncardel"
 phantom = np.load(f"{output_directory}/phantom.npy")
@@ -16,12 +15,16 @@ sinogram = np.load(f"{output_directory}/sinogram.npy")
 with open(f"{output_directory}/params.pkl", "rb") as f:
     params = pickle.load(f)
 
+print(params)
+
+mj.get_memory_stats()
+
 sinogram_shape = sinogram.shape
 angles = params['angles']
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+# mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
@@ -83,10 +86,11 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
-mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
+# mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
 # recon and recon_dict can be saved from the viewer or directly in code
-filepath = './output/demo1_recon.h5'
+
+filepath = f"{output_directory}/demo1_recon.h5"
 ct_model.save_recon_hdf5(filepath, recon, recon_dict)
 
 # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
