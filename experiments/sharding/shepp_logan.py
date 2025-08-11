@@ -86,7 +86,7 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
-# mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
+mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
 # recon and recon_dict can be saved from the viewer or directly in code
 
