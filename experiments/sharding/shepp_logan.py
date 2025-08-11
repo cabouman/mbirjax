@@ -5,17 +5,32 @@ import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
-# Choose the geometry type
-model_type = 'parallel'  # 'cone' or 'parallel'
-
 # load phantom, sinogram, and params
 output_directory = "/scratch/gautschi/ncardel"
-phantom = np.load(f"{output_directory}/phantom.npy")
-sinogram = np.load(f"{output_directory}/sinogram.npy")
-with open(f"{output_directory}/params.pkl", "rb") as f:
+
+phantom_filepath = f"{output_directory}/phantom.npy"
+sinogram_filepath = f"{output_directory}/sinogram.npy"
+params_filepath = f"{output_directory}/params.pkl"
+
+print("phantom_filepath:", phantom_filepath)
+print("sinogram_filepath:", sinogram_filepath)
+print("params_filepath:", params_filepath)
+
+phantom = np.load(phantom_filepath)
+sinogram = np.load(sinogram_filepath)
+with open(params_filepath, "rb") as f:
     params = pickle.load(f)
 
-print(params)
+# print("phantom.shape:", phantom.shape)
+# print("sinogram.shape:", sinogram.shape)
+print("params:", params.items())
+
+if 'source_detector_dist' in params.keys():
+    model_type = 'cone'
+else:
+    model_type = 'parallel'
+
+print("Detected model_type:", model_type)
 
 mj.get_memory_stats()
 
