@@ -1266,8 +1266,13 @@ class TomographyModel(ParameterHandler):
         else:
             alpha = 1
 
-        error_sinogram = sinogram - alpha * error_sinogram
         init_recon = alpha * init_recon
+
+        # alpha needs to be replicated so that all GPU devices have access to it
+        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
+        alpha = jax.device_put(alpha, device=sinogram_device_replicated)
+
+        error_sinogram = sinogram - alpha * error_sinogram
 
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
