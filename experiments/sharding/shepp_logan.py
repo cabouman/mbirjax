@@ -3,10 +3,21 @@ import time
 import pickle
 import mbirjax as mj
 
-"""**Set the geometry parameters**"""
+# SETUP
+# 1. Generate the pho\antom, sinogram, and params
+#    On the 'sharing_dev/stable' branch run the script 'expirements/sharding/shepp_logan_prep.py'
+#    This generates the phantom and sinogram using the CPU and saves them to the scratch directory.
+
+# 2. Set username
+USER = "ncardel" # change the user to your username
+
+# 3. Comment out or close the viewer
+
+
+###### The
 
 # load phantom, sinogram, and params
-output_directory = "/scratch/gautschi/ncardel"
+output_directory = f"/scratch/gautschi/{USER}"
 
 phantom_filepath = f"{output_directory}/phantom.npy"
 sinogram_filepath = f"{output_directory}/sinogram.npy"
