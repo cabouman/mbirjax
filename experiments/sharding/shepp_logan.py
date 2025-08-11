@@ -39,7 +39,7 @@ angles = params['angles']
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-# mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
@@ -99,14 +99,13 @@ recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct
 mj.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
+# recon and recon_dict can be saved from the viewer or directly in code
+filepath = f"{output_directory}/demo1_recon.h5"
+ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
 mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
-
-# recon and recon_dict can be saved from the viewer or directly in code
-
-filepath = f"{output_directory}/demo1_recon.h5"
-ct_model.save_recon_hdf5(filepath, recon, recon_dict)
 
 # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
 #  the model if desired. The load function can be used even without an existing instance of a ct model.
