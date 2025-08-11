@@ -219,7 +219,7 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top
         variances.append(class_variance)
 
     means = jnp.asarray(means)
-    variances = jnp.asarray(variances) + eps  # keep strictly positive
+    variances = jnp.asarray(variances)
 
     # Soft weights: only two nonzero per voxel (classes i and i+1 inside each bin)
     weights = jnp.zeros((num_classes,) + recon.shape, dtype=recon.dtype)

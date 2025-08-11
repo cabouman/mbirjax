@@ -374,7 +374,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
     metal_absent = jnp.ones_like(p, dtype=bool)
     for metal in metal_basis:
-        metal_absent = metal_absent & (metal == 0)
+        metal_absent = metal_absent & (metal < 1e-6)
     condition = (p != 0) & metal_absent
     plastic_only_indices = jnp.where(condition)[0]
 
