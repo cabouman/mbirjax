@@ -233,8 +233,8 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, radial_margin=10, top
 
     # Inside each interior bin (t_i, t_{i+1}] -> mix class i and i+1
     for i in range(1, num_classes - 1):
-        in_bin = (cls == i) & (recon > means[i - 1]) & (
-            recon <= means[i])
+        in_bin = (cls == i) & (recon > thresholds[i - 1]) & (
+            recon <= thresholds[i])
         # Gaussian-like unnormalized likelihoods
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
