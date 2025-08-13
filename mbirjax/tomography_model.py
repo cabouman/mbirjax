@@ -245,7 +245,7 @@ class TomographyModel(ParameterHandler):
 
             self.main_device = cpus[0]
             self.sinogram_device = NamedSharding(mesh, P('views'))
-            self.worker = self.sinogram_device  # the worker is not used
+            self.worker = None  # the worker is not used
 
         # 'full':  Everything on GPU
         elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
