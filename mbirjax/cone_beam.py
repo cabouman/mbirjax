@@ -213,7 +213,7 @@ class ConeBeamModel(TomographyModel):
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, angle, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params)
+        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params, sinogram_view)
 
         return sinogram_view
 
@@ -243,7 +243,7 @@ class ConeBeamModel(TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view=None):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -256,6 +256,7 @@ class ConeBeamModel(TomographyModel):
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            sinogram_view (jax array): 2D array of shape (num_rows, num_channels) of sinogram view
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -271,7 +272,8 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        if sinogram_view is None:
+            sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
