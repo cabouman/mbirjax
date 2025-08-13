@@ -225,13 +225,18 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
     # Soft weights: only two nonzero per voxel (classes i and i+1 inside each bin)
     weights = jnp.zeros((num_classes,) + recon.shape, dtype=recon.dtype)
 
-    # Below first threshold -> class 0 is 1
-    below = (cls == 0) & (recon <= thresholds[0])
-    weights = weights.at[0].set(jnp.where(below, 1.0, 0.0))
+    for i in range(num_classes):
+        if i == 0:
+            # First class: recon <= thresholds[0]
+            in_class = (cls == 0) & (recon <= thresholds[0])
+        elif i == num_classes - 1:
+            # Last class: recon > thresholds[-1]
+            in_class = (cls == num_classes - 1) & (recon > thresholds[-1])
+        else:
+            # Interior classes: thresholds[i-1] < recon <= thresholds[i]
+            in_class = (cls == i) & (recon > thresholds[i - 1]) & (recon <= thresholds[i])
 
-    # Above last threshold -> class K-1 is 1
-    above = (cls == num_classes - 1) & (recon > thresholds[-1])
-    weights = weights.at[num_classes - 1].set(jnp.where(above, 1.0, 0.0))
+        weights = weights.at[i].set(jnp.where(in_class, 1.0, 0.0))
 
     # Inside each interior bin (t_i, t_{i+1}] -> mix class i and i+1
     for i in range(0, num_classes - 1):
