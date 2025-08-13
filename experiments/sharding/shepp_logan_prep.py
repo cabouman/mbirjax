@@ -1,6 +1,7 @@
 import numpy as np
 import pickle
 import mbirjax as mj
+import time
 
 ######################### SETUP ############################
 
@@ -23,10 +24,19 @@ num_det_rows = 2000
 num_det_channels = 2000
 
 
-# Generate simulated data
+# Generate demo data
+print('Generating demo data')
+time0 = time.time()
+
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels)
+
+elapsed = time.time() - time0
+
+mj.get_memory_stats()
+
+print('Elapsed time for generating demo data is {:.3f} seconds'.format(elapsed))
 
 # save the phantom, sinogram, and params
 phantom = np.array(phantom)
