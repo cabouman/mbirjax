@@ -9,8 +9,8 @@ CUDNN_FULL_VERSION="9.11.0.98"
 CUDA_VERSION="cuda12"
 
 # Define paths
-INSTALL_DIR="/scratch/gautschi/ncardel/cudnn/${CUDNN_VERSION}"
-MODULE_DIR="/scratch/gautschi/ncardel/modules/cudnn"
+INSTALL_DIR="/depot/bouman/apps/cudnn/${CUDNN_VERSION}"
+MODULE_DIR="/depot/bouman/apps/modules"
 MODULEFILE="${MODULE_DIR}/${CUDNN_VERSION}"
 
 # Construct download URL from components
@@ -53,7 +53,6 @@ EOF
 
 echo -e "\n=== ✅ Done!"
 
-echo -e "\nTo make the module available, add this line to your ~/.bashrc or ~/.bash_profile:"
-echo "    module use /scratch/gautschi/ncardel/modules"
-echo -e "Then run:\n    source ~/.bashrc"
+echo -e "\nTo make the module available run"
+echo "    module use /depot/bouman/apps/modules"
 echo -e "\nTo load cuDNN 9.11.0, use:\n    module load cudnn/9.11.0"
