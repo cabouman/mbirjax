@@ -165,38 +165,20 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 
 
-def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial_margin=10, top_margin=10, bottom_margin=10):
+def _compute_class_mean_var(recon, num_classes, thresholds):
     """
-    Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
+    Compute per-class mean and variance of voxel intensities in `recon`, based on hard class assignments.
+
     Args:
-        recon (jnp.ndarray): Reconstructed volume array.
-        num_metal (int): Number of metal materials to segment.
-        sharpness (float, optional): Controls the steepness of Gaussian weighting between adjacent
-            classes.
-            - sharpness = 1.0 → default smoothness.
-            - sharpness > 1.0 → steeper transitions, masks closer to binary.
-            - sharpness < 1.0 → flatter transitions, more blended masks.
-                    soft_frac (float): Fraction of windowspixels to assign soft labels.
-        soft_frac (float): Fraction of pixels to assign soft labels.
-        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
-        top_margin (int, optional): Number of slices to mask out from the top of the volume.
-        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
+        recon (jnp.ndarray): The reconstructed volume array.
+        num_classes (int): Number of discrete classes.
+        thresholds (Sequence[float]): Thresholds defining the bin edges.
 
     Returns:
-        Tuple[jnp.ndarray, List[jnp.ndarray], float, List[float]]:
-            plastic_mask (jnp.ndarray): fractional mask for plastic (same shape as recon)
-            metal_masks (List[jnp.ndarray]): list of fractional masks for each metal
-            plastic_scale (float): weighted scaling factor for plastic
-            metal_scales (List[float]): list of weighted scaling factors for each metal
+        Tuple[jnp.ndarray, jnp.ndarray]:
+            - means: Array of per-class means.
+            - variances: Array of per-class variances.
     """
-    # Remove any flash from the boundary of the recon
-    recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
-                                       bottom_margin=bottom_margin)
-
-    # Compute thresholds using multi-threshold Otsu
-    # Classes: [background, plastic, metal_0, metal_1, ...]
-    num_classes = num_metal + 2
-    thresholds = multi_threshold_otsu(recon, classes=num_classes)  # length K-1, ascending
 
     # Assigns each voxel in `recon` to a bin index based on `thresholds`:
     #   0            if value <= thresholds[0]
@@ -222,23 +204,62 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
     means = jnp.asarray(means)
     variances = jnp.asarray(variances)
 
+    return means, variances
+
+
+def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial_margin=10, top_margin=10, bottom_margin=10):
+    """
+    Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
+    Args:
+        recon (jnp.ndarray): Reconstructed volume array.
+        num_metal (int): Number of metal materials to segment.
+        sharpness (float, optional): Controls the steepness of Gaussian weighting between adjacent
+            classes.
+            - sharpness = 1.0 → default smoothness.
+            - sharpness > 1.0 → steeper transitions, masks closer to binary.
+            - sharpness < 1.0 → flatter transitions, more blended masks.
+                    soft_frac (float): Fraction of windowspixels to assign soft labels.
+        soft_frac (float): Fraction of pixels to assign soft labels (recommended < 1.0 to avoid touching bin edges).
+        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
+        top_margin (int, optional): Number of slices to mask out from the top of the volume.
+        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
+
+    Returns:
+        Tuple[jnp.ndarray, List[jnp.ndarray], float, List[float]]:
+            plastic_mask (jnp.ndarray): fractional mask for plastic (same shape as recon)
+            metal_masks (List[jnp.ndarray]): list of fractional masks for each metal
+            plastic_scale (float): weighted scaling factor for plastic
+            metal_scales (List[float]): list of weighted scaling factors for each metal
+    """
+    # Remove any flash from the boundary of the recon
+    recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
+                                       bottom_margin=bottom_margin)
+
+    # Compute thresholds using multi-threshold Otsu
+    # Classes: [background, plastic, metal_0, metal_1, ...]
+    num_classes = num_metal + 2
+    thresholds = multi_threshold_otsu(recon, classes=num_classes)  # length K-1, ascending
+
+    means, variances = _compute_class_mean_var(recon, num_classes, thresholds)
+
     # Soft weights: only two nonzero per voxel (classes i and i+1 inside each bin)
     weights = jnp.zeros((num_classes,) + recon.shape, dtype=recon.dtype)
 
+    # Compute binary masks
     for i in range(num_classes):
         if i == 0:
             # First class: recon <= thresholds[0]
-            in_class = (cls == 0) & (recon <= thresholds[0])
+            in_class = recon <= thresholds[0]
         elif i == num_classes - 1:
             # Last class: recon > thresholds[-1]
-            in_class = (cls == num_classes - 1) & (recon > thresholds[-1])
+            in_class = recon > thresholds[-1]
         else:
             # Interior classes: thresholds[i-1] < recon <= thresholds[i]
-            in_class = (cls == i) & (recon > thresholds[i - 1]) & (recon <= thresholds[i])
+            in_class = (recon > thresholds[i - 1]) & (recon <= thresholds[i])
 
         weights = weights.at[i].set(jnp.where(in_class, 1.0, 0.0))
 
-    # Inside each interior bin (t_i, t_{i+1}] -> mix class i and i+1
+    # Inside each interior bin (t_i, t_{i+1}] -> assign soft labels
     for i in range(0, num_classes - 1):
         lower_range = thresholds[i] - soft_frac * (thresholds[i] - means[i]) if i > 0 else thresholds[0]
         upper_range = thresholds[i] + soft_frac * (means[i+1] - means[i]) if i < num_classes - 1 else thresholds[-1]
