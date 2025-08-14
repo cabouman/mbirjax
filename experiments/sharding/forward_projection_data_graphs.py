@@ -11,8 +11,22 @@ def graph_sparse_forward_projection_time_vs_num_gpus_loglog(filepath, output_dir
     grouped_by_size = {gpu: group.reset_index(drop=True) for gpu, group in df.groupby('size')}
 
     plt.figure(figsize=(10, 6))
+
     for sino_size, data in grouped_by_size.items():
-        plt.loglog(data['num_gpus'], data['elapsed'] / data['elapsed'][0], marker='o', label=f'{sino_size}')
+        print(data['elapsed'])
+        data = data[data['model_type'] != 'cone']
+        print(data['elapsed'])
+        first_time_elapse = data['elapsed'].iloc[0]
+        print(first_time_elapse)
+        time_elapsed = [time / first_time_elapse for time in data['elapsed']]
+        plt.loglog(data['num_gpus'], time_elapsed, marker='o', label=f'{sino_size}')
+
+    for sino_size, data in grouped_by_size.items():
+        data = data[data['model_type'] == 'cone']
+        first_time_elapse = data['elapsed'].iloc[0]
+        time_elapsed = [time / first_time_elapse for time in data['elapsed']]
+        plt.loglog(data['num_gpus'], time_elapsed, marker='x', label=f'{sino_size}')
+
     num_gpus = 1 + np.arange(8)
     plt.loglog(num_gpus, 1 / num_gpus, marker='*', label=f'Reference 1 / x')
 
@@ -41,9 +55,16 @@ def graph_sparse_forward_projection_time_vs_size_of_sinogram(filepath, output_di
     xtick_vals = [128, 256, 512, 1024, 2048]
 
     plt.figure(figsize=(10, 6))
+
     for gpu_count, data in grouped_by_num_gpus.items():
+        data = data[data['model_type'] != 'cone']
         plt.loglog(data['size'], data['elapsed'], marker='o', label=f'{gpu_count}')
-    plt.loglog(2000, 46.5, marker='*', color='#d62728', label=f'8 - 2K')
+
+    for gpu_count, data in grouped_by_num_gpus.items():
+        data = data[data['model_type'] == 'cone']
+        plt.loglog(data['size'], data['elapsed'], marker='x', label=f'{gpu_count}')
+
+    plt.loglog(2000, 55, marker='*', color='#d62728', label=f'8 - 2K')
 
     plt.loglog(xtick_vals, 0.01 * (np.array(xtick_vals) / xtick_vals[0]) ** 3, marker='*', label=f'Reference 0.1 * x**3')
 
@@ -81,6 +102,8 @@ def graph_sparse_forward_projection_peak_memory_vs_num_gpus(filepath, output_dir
     for sino_size, data in grouped_by_size.items():
         peak_memory = []
 
+        data = data[data['model_type'] != 'cone']
+
         for _, row in data.iterrows():
             num_gpus = int(row['num_gpus'])
             peak_memory_values = [
@@ -96,10 +119,43 @@ def graph_sparse_forward_projection_peak_memory_vs_num_gpus(filepath, output_dir
 
             peak_memory.append(normalized)
 
+        first_mem = peak_memory[0]
+        peak_memory = [mem / first_mem for mem in peak_memory]
+
         plt.loglog(
             data['num_gpus'],
-            peak_memory / peak_memory[0],
+            peak_memory ,
             marker='o',
+            label=f'{sino_size}'
+        )
+
+    for sino_size, data in grouped_by_size.items():
+        peak_memory = []
+
+        data = data[data['model_type'] == 'cone']
+
+        for _, row in data.iterrows():
+            num_gpus = int(row['num_gpus'])
+            peak_memory_values = [
+                row[f'gpu{i}_peak_bytes'] for i in range(num_gpus)
+                if f'gpu{i}_peak_bytes' in row and not pd.isna(row[f'gpu{i}_peak_bytes'])
+            ]
+
+            if peak_memory_values:
+                total_peak = max(peak_memory_values)
+                normalized = total_peak
+            else:
+                normalized = np.nan
+
+            peak_memory.append(normalized)
+
+        first_mem = peak_memory[0]
+        peak_memory = [mem / first_mem for mem in peak_memory]
+
+        plt.loglog(
+            data['num_gpus'],
+            peak_memory,
+            marker='x',
             label=f'{sino_size}'
         )
 
@@ -132,6 +188,8 @@ def graph_sparse_forward_projection_peak_memory_vs_size_of_sinogram(filepath, ou
     for gpu_count, data in grouped_by_num_gpus.items():
         peak_memory = []
 
+        data = data[data['model_type'] != 'cone']
+
         for _, row in data.iterrows():
             num_gpus = int(row['num_gpus'])
             peak_memory_values = [
@@ -149,6 +207,30 @@ def graph_sparse_forward_projection_peak_memory_vs_size_of_sinogram(filepath, ou
 
         peak_memory_GB = np.array(peak_memory) / (1024**3)
         plt.loglog(data['size'], peak_memory_GB, marker='o', label=f'{gpu_count}')
+
+
+    for gpu_count, data in grouped_by_num_gpus.items():
+        peak_memory = []
+
+        data = data[data['model_type'] == 'cone']
+
+        for _, row in data.iterrows():
+            num_gpus = int(row['num_gpus'])
+            peak_memory_values = [
+                row[f'gpu{i}_peak_bytes'] for i in range(num_gpus)
+                if f'gpu{i}_peak_bytes' in row and not pd.isna(row[f'gpu{i}_peak_bytes'])
+            ]
+
+            if peak_memory_values:
+                total_peak = max(peak_memory_values)
+                normalized = total_peak
+            else:
+                normalized = np.nan
+
+            peak_memory.append(normalized)
+
+        peak_memory_GB = np.array(peak_memory) / (1024**3)
+        plt.loglog(data['size'], peak_memory_GB, marker='x', label=f'{gpu_count}')
 
     plt.loglog(xtick_vals, 0.05 * (np.array(xtick_vals) / xtick_vals[0]) ** 2, marker='*', label=f'Reference 0.05 * x**2')
 
