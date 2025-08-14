@@ -10,7 +10,7 @@ CUDA_VERSION="cuda12"
 
 # Define paths
 INSTALL_DIR="/depot/bouman/apps/cudnn/${CUDNN_VERSION}"
-MODULE_DIR="/depot/bouman/apps/modules"
+MODULE_DIR="/depot/bouman/apps/modules/cudnn"
 MODULEFILE="${MODULE_DIR}/${CUDNN_VERSION}"
 
 # Construct download URL from components
