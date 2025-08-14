@@ -64,8 +64,6 @@ def graph_sparse_forward_projection_time_vs_size_of_sinogram(filepath, output_di
         data = data[data['model_type'] == 'cone']
         plt.loglog(data['size'], data['elapsed'], marker='x', label=f'{gpu_count}')
 
-    plt.loglog(2000, 55, marker='*', color='#d62728', label=f'8 - 2K')
-
     plt.loglog(xtick_vals, 0.01 * (np.array(xtick_vals) / xtick_vals[0]) ** 3, marker='*', label=f'Reference 0.1 * x**3')
 
     # Clearer, more descriptive axis labels and title
