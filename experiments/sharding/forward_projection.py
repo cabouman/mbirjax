@@ -11,7 +11,7 @@ warnings.filterwarnings(
     message="TkAgg not available. Falling back to Agg."
 )
 
-def forward_project(size, num_gpus, output_filepath='output.csv'):
+def forward_project(size, num_gpus, model_type, output_filepath='output.csv'):
 
     # set the visible cuda devices to 0 to num_gpus-1
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in range(num_gpus)])
@@ -33,6 +33,17 @@ def forward_project(size, num_gpus, output_filepath='output.csv'):
 
     # recon model
     forward_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
+    forward_projection_model.set_params(sharpness=0.0, use_gpu='automatic')
+
+    # recon model
+    if model_type == 'cone':
+        source_detector_dist = 4 * num_det_channels
+        source_iso_dist = source_detector_dist
+        forward_projection_model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                    source_iso_dist=source_iso_dist)
+    else:
+        forward_projection_model = mj.ParallelBeamModel(sinogram_shape, angles)
+
     forward_projection_model.set_params(sharpness=0.0, use_gpu='automatic')
 
     # Print out model parameters
@@ -76,10 +87,10 @@ def forward_project(size, num_gpus, output_filepath='output.csv'):
     if not os.path.exists(output_filepath):
         with open(output_filepath, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(['size', 'transfer_pixel_batch_size', 'pixel_indices_size', 'num_gpus', 'elapsed', 'gpu0_peak_bytes', 'gpu1_peak_bytes', 'gpu2_peak_bytes', 'gpu3_peak_bytes', 'gpu4_peak_bytes', 'gpu5_peak_bytes', 'gpu6_peak_bytes', 'gpu7_peak_bytes'])
+            writer.writerow(['size', 'model_type', 'transfer_pixel_batch_size', 'pixel_indices_size', 'num_gpus', 'elapsed', 'gpu0_peak_bytes', 'gpu1_peak_bytes', 'gpu2_peak_bytes', 'gpu3_peak_bytes', 'gpu4_peak_bytes', 'gpu5_peak_bytes', 'gpu6_peak_bytes', 'gpu7_peak_bytes'])
 
     # append this test data to the output file
-    row = [ size, transfer_pixel_batch_size, pixel_indices_size, num_gpus, elapsed ] + [ mem_stats[i]['peak_bytes_in_use'] for i in range(num_gpus) ]
+    row = [ size, model_type, transfer_pixel_batch_size, pixel_indices_size, num_gpus, elapsed ] + [ mem_stats[i]['peak_bytes_in_use'] for i in range(num_gpus) ]
     with open(output_filepath, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(row)
@@ -91,11 +102,13 @@ if __name__ == "__main__":
     try:
         size = int(sys.argv[1])
         num_gpus = int(sys.argv[2])
-        output_filepath = sys.argv[3]
+        model_type = sys.argv[3]
+        output_filepath = sys.argv[4]
     except:
-        size = 2000
-        num_gpus = 8
-        output_filepath = "../output/forward_project_2K.csv"
+        size = 256
+        num_gpus = 2
+        model_type = 'cone'
+        output_filepath = "../output/forward_project.csv"
 
     # the sinogram and recon will have shape (size, size, size)
-    forward_project(size, num_gpus, output_filepath=output_filepath)
+    forward_project(size, num_gpus, model_type, output_filepath=output_filepath)
