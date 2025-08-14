@@ -426,7 +426,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         ... )
         >>> mj.slice_viewer(recon)
     """
-    if verbose > 0:
+    if verbose >= 1:
         print("\n************ Perform initial FDK reconstruction  **************")
     recon = ct_model.direct_recon(sino)
 
@@ -435,11 +435,11 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta)
 
         # Reconstruct Corrected Sinogram
-        if verbose > 0:
+        if verbose >= 1:
             print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
         recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct, verbose=verbose)
 
-        if verbose > 1:
+        if verbose >= 2:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
             plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
             labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
