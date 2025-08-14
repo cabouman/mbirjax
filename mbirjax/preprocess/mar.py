@@ -312,7 +312,8 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
         y -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
     # Denormalize the corrected plastic sinogram
-    corrected_plastic_sino = p_normalization * y / linear_plastic_coef
+    eps = 1e-6 * jnp.max(linear_plastic_coef)
+    corrected_plastic_sino = p_normalization * y / (linear_plastic_coef + eps)
 
     return corrected_plastic_sino
 
@@ -388,7 +389,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     return corrected_sino
 
 
-def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_pct=0.5,
+def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
                            num_metal=1, order=3, alpha=1, beta=0.005, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
@@ -401,7 +402,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         sino (jnp.ndarray):  Input sinogram data to be corrected.
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
-        stop_threshold_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
+        stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
@@ -416,7 +417,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         >>> recon = recon_BH_plastic_metal(
         ...     ct_model, sino, weights,
         ...     num_BH_iterations=3,
-        ...     stop_threshold_pct=0.5,
+        ...     stop_threshold_change_pct=0.5,
         ...     num_metal=1,
         ...     order=3,
         ...     alpha=1,
@@ -426,7 +427,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         >>> mj.slice_viewer(recon)
     """
     if verbose > 0:
-        print("\n********* Perform initial FDK reconstruction **********")
+        print("\n************ Perform initial FDK reconstruction  **************")
     recon = ct_model.direct_recon(sino)
 
     for i in range(num_BH_iterations):
@@ -434,9 +435,11 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta)
 
         # Reconstruct Corrected Sinogram
-        recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_pct)
-
         if verbose > 0:
+            print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
+        recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct, verbose=verbose)
+
+        if verbose > 1:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
             plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
             labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
