@@ -23,6 +23,11 @@ The Multi-Granular Vectorized Coordinate Descent (VCD) algorithm is then used to
 
 
 **Forward Model:**
+
+*Note:* More details
+about the forward model for specific geometries is available by downloading the `associated
+zip file <https://www.datadepot.rcac.purdue.edu/bouman/data/tomography_geometry.zip>`_.
+
 The forward model term has the form,
 
 .. math::
@@ -33,9 +38,7 @@ where :math:`y` is the sinogram data,
 where :math:`x` is the unknown image to be reconstructed,
 :math:`A` is the linear projection operator for the specified imaging geometry,
 :math:`\Lambda` is the diagonal matrix of sinogram weights, :math:`\Vert y \Vert_\Lambda^2 = y^T \Lambda y`, and
-:math:`\sigma_y` is a parameter controlling the assumed standard deviation of the measurement noise.  More details
-about the forward model for specific geometries is available by downloading the associated
-`zip file <https://www.datadepot.rcac.purdue.edu/bouman/data/tomography_geometry.zip>`_.
+:math:`\sigma_y` is a parameter controlling the assumed standard deviation of the measurement noise.
 
 These quantities correspond to the following python variables:
 
@@ -46,12 +49,12 @@ These quantities correspond to the following python variables:
 The weights can either be set automatically using the ``weight_type`` input, or they can be explicitly set to an array of precomputed weights.
 For many new users, it is easier to use one of the automatic weight settings shown below.
 
-* weight_type="unweighted" => Lambda = 1 + 0*sino
-* weight_type="transmission" => Lambda = numpy.exp(-sino)
-* weight_type="transmission_root" => Lambda = numpy.exp(-sino/2)
-* weight_type="emmission" => Lambda = (1/(sino + 0.1))
+* weight_type="unweighted": :math:`\Lambda = 1 + 0*y`  (array of ones of same size as sinogram)
+* weight_type="transmission": :math:`\Lambda = e^{-y}`
+* weight_type="transmission_root": :math:`\Lambda = e^{-y/2}`
+* weight_type="emission": :math:`\Lambda = 1/(y + 0.1)`
 
-Option "unweighted" provides unweighted reconstruction; Option "transmission" is the correct weighting for transmission CT with constant dosage; Option "transmission_root" is commonly used with transmission CT data to improve image homogeneity; Option "emmission" is appropriate for emission CT data.
+Option "unweighted" provides unweighted reconstruction; Option "transmission" is the correct weighting for transmission CT with constant dosage; Option "transmission_root" is commonly used with transmission CT data to improve image homogeneity; Option "emission" is appropriate for emission CT data.
 
 **Prior Model:**
 MBIRJAX allows the prior model to be set either as a qGGMRF or a proximal map prior.

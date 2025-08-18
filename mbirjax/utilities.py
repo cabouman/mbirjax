@@ -19,9 +19,7 @@ from urllib.parse import urlparse
 import shutil
 import h5py
 import re
-import gdown
 import warnings
-from ruamel.yaml import YAML
 
 
 def load_data_hdf5(file_path):
@@ -421,6 +419,7 @@ def download_and_extract(download_url, save_dir):
         if is_url:
             if is_google_drive:
                 print("Downloading file from Google Drive...")
+                import gdown
                 try:
                     gdrive_url = f"https://drive.google.com/uc?id={file_id}"
 

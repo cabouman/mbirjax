@@ -1,12 +1,9 @@
 import numpy as np
 import warnings
-import tifffile
 import glob
 import os
 import jax.numpy as jnp
 import jax
-import dm_pix
-import tqdm
 
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
@@ -40,6 +37,7 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
         ndarray: 
             The computed sinogram, with shape (num_views, num_det_rows, num_det_channels).
     """    # Compute mean for blank and dark scans and move them to GPU if available
+    import tqdm
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
 
@@ -174,6 +172,8 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
+    import dm_pix
+    import tqdm
     num_views = sino.shape[0]  # Total number of views
     sino_batches_list = []  # Initialize a list to store sinogram batches
 
@@ -250,6 +250,7 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
         - **dark_scan** (ndarray): Downsampled dark scan(s). Shape (num_dark_views, new_rows, new_cols).
         - **defective_pixel_array** (ndarray): Updated defective pixel coordinates. Shape (N_def, 2).
     """
+    import tqdm
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
@@ -381,6 +382,7 @@ def read_scan_img(img_path):
     Returns:
         np.ndarray: Image data as a float32 NumPy array. Can be 2D or higher dimensional depending on the input.
     """
+    import tifffile
     img = tifffile.imread(img_path)
 
     if np.issubdtype(img.dtype, np.integer):
@@ -402,6 +404,7 @@ def read_scan_dir(scan_dir, view_ids=None):
         ndarray (float): 3D numpy array, (num_views, num_det_rows, num_det_channels). A stack of scan images.
     """
 
+    import tifffile
     # Get the files that are views and check that we have as many as we need
     img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tif')))
     # Set the view ids if none given or check that we have enough.  This assumes that all the views are in the

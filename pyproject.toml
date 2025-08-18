@@ -24,6 +24,7 @@ dependencies = [
     "jaxlib",
     "matplotlib",
     "numpy",
+    "scipy",
     "setuptools",
     "ruamel.yaml",
     "psutil",
