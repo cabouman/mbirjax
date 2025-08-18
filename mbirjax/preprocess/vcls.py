@@ -103,12 +103,12 @@ def max_abs_neighbor_diff(arr):
     return max_diff
 
 
-
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_angles=np.array([]),
+                  verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper:
-    
+
     J. Lin, A. Ziabari, S. V. Venkatakrishnan, O. Rahman, G. T. Buzzard, C. A.Bouman, "Tomographic Sparse View Selection
     using the View Covariance Loss", to appear in the IEEE Transactions on Pattern Analysis and Machine Intelligence, 2025.
 
@@ -118,7 +118,8 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         num_selected_views (int): Number of view angles to select.
         r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.001).
         r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.01).
-        verbose (int, optional): Verbosity level. If >= 2, visualizations of the covariance matrix and gamma vector will be shown.
+        prev_select_angle (ndarray, optional): Previously selected view angles. Defaults to an empty NumPy array.
+        verbose (int, optional): Verbosity level. If > 0, visualizations of the covariance matrix and gamma vector will be shown.
         seed (int, optional): Random seed for deterministic behavior. If set, results will be reproducible.
 
     Returns:
@@ -140,6 +141,8 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
     recon_shape = ct_model.get_params('recon_shape')
     if recon_shape != reference_object.shape:
         raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))
+    if not np.isin(prev_selected_angles, angle_candidates).all():
+        raise ValueError("Every angle in prev_selected_angles must also be present in the angle_candidates pool.")
 
     with tempfile.TemporaryDirectory() as data_store_dir:
         # Compute recon bases
@@ -148,8 +151,8 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         # Compute inner product between recon bases
         R = compute_cov_matrix(num_views, data_store_dir)
 
-    if verbose >= 2:
-        # plot the covariance matrix and gamma
+    if verbose > 0:
+        # plot the the covariance matrix and gamma
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         axes[0].imshow(R)
@@ -163,7 +166,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         plt.show()
 
     # Compute optimal view angles
-    optimal_angle_inds, vcl_value = compute_opt_angle_subset(R, gamma, angle_candidates, num_selected_views, r_2, seed=seed)
+    optimal_angle_inds, vcl_value = compute_opt_angle_subset(R, gamma, angle_candidates, num_selected_views, r_2, prev_selected_angles, seed=seed)
 
     return optimal_angle_inds, vcl_value
 
@@ -308,7 +311,7 @@ def compute_vcl(sub_R, sub_gamma):
     return loss_value
 
 
-def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, max_iterations = 100, seed=None):
+def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, prev_selected_angles, search_min=30, max_iterations = 100, seed=None):
     """
     Select a subset of view angles that minimize the View Correlation Loss (VCL) using stochastic greedy optimization.
 
@@ -322,6 +325,7 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
         candidate_angles (ndarray): 1D array of view angles (shape (num_views,)) corresponding to R and gamma.
         K (int): Number of view angles to select.
         r_2 (float): Fraction of unchosen candidates to sample per view per iteration.
+        prev_select_angle (ndarray): Previously selected view angles.
         search_min (int, optional): Minimum number of angles that are searched per iteration. Defaults to 30.
         max_iterations (int, optional): Maximum allowed number of iterations. Defaults to 100.
         seed (int, optional): Random seed for deterministic behavior. Default is None.
@@ -343,9 +347,14 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
         random.seed(seed)
         np.random.seed(seed)
 
+    # Determine available angle candidates
+    prev_angle_inds = np.where(np.isin(candidate_angles, prev_selected_angles))[0]
+    candidate_angles_inds = np.arange(len(candidate_angles))
+    avail_angle_inds = np.setdiff1d(candidate_angles_inds, prev_angle_inds, assume_unique=False)
+
     # Determine the number of candidate views for the stochastic search
-    num_candidate_angles = len(candidate_angles)
-    num_unselected_angles = num_candidate_angles - K
+    num_avail_angle_inds = len(avail_angle_inds)
+    num_unselected_angles = num_avail_angle_inds - K
 
     if K <= 0:
         raise ValueError("K must be positive. Received K={}".format(K))
@@ -353,18 +362,20 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
     # If there are no available angles, just return the full set of angle candidates
     if num_unselected_angles <= 0:
         import warnings
-        warnings.warn(f"Requested {K} views, but only {num_candidate_angles} available. Returning all candidates.")
-        sorted_angle_inds = np.arange(len(candidate_angles))
+        warnings.warn(f"Requested {K} views, but only {num_avail_angle_inds} available. Returning all candidates.")
+        sorted_angle_inds = avail_angle_inds
         return sorted_angle_inds, float(compute_vcl(*subsample_R_gamma(R, gamma, sorted_angle_inds)))
 
     # Compute the number of candidates to search
     num_search_candidates = np.minimum(np.maximum(int(r_2 * num_unselected_angles), search_min), num_unselected_angles)
 
     # Initialize with uniformly spaced angles across candidate list.
-    selected_angle_inds = np.linspace(0, num_candidate_angles, K, endpoint=False, dtype=int)
+    pos = np.linspace(0, len(avail_angle_inds), K, endpoint=False).astype(int)
+    selected_angle_inds = avail_angle_inds[pos].astype(int)
 
     # Subsample R and gamma to form smaller submatrix and subvector
-    R_chosen, gamma_chosen = subsample_R_gamma(R, gamma, selected_angle_inds)
+    combined_selected_angle_inds = np.concatenate((prev_angle_inds, selected_angle_inds))
+    R_chosen, gamma_chosen = subsample_R_gamma(R, gamma, combined_selected_angle_inds)
 
     # Compute the vcl loss
     vcl_current_best = compute_vcl(R_chosen, gamma_chosen)
@@ -372,14 +383,15 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
     for i in range(max_iterations):
         prev_selected_angle_inds = np.copy(selected_angle_inds)
         for j in range(K):
-            candidate_indices = np.setdiff1d(np.arange(num_candidate_angles), selected_angle_inds, assume_unique=True).tolist()
+            candidate_indices = np.setdiff1d(avail_angle_inds, selected_angle_inds, assume_unique=True).tolist()
             random.shuffle(candidate_indices)
             candidate_indices = candidate_indices[:num_search_candidates]
 
             for k in candidate_indices:
                 selected_angle_inds_tmp = np.copy(selected_angle_inds)
                 selected_angle_inds_tmp[j] = k
-                R_temp, gamma_temp = subsample_R_gamma(R, gamma, selected_angle_inds_tmp)
+                combined_selected_angle_inds_tmp = np.concatenate((prev_angle_inds, selected_angle_inds_tmp))
+                R_temp, gamma_temp = subsample_R_gamma(R, gamma, combined_selected_angle_inds_tmp)
                 vcl_temp = compute_vcl(R_temp, gamma_temp)
 
                 if vcl_temp < vcl_current_best:
@@ -394,7 +406,6 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
     # Read-out and sort set of best angles
     best_view_angle_inds = np.sort(selected_angle_inds)
     return best_view_angle_inds, float(vcl_current_best)
-
 
 def get_2d_subsampling_indices(mask, r_1, seed=None, blue_noise=False):
     """
