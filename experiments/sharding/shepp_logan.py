@@ -4,8 +4,8 @@ import pickle
 import mbirjax as mj
 
 # SETUP
-# 1. Generate the pho\antom, sinogram, and params
-#    On the 'sharing_dev/stable' branch run the script 'expirements/sharding/shepp_logan_prep.py'
+# 1. Generate the phantom, sinogram, and params
+#    On the 'sharing_dev/control' branch run the script 'expirements/sharding/shepp_logan_prep.py'
 #    This generates the phantom and sinogram using the CPU and saves them to the scratch directory.
 
 # 2. Set username
