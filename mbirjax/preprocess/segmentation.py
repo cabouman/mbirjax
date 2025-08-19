@@ -207,7 +207,7 @@ def _compute_class_mean_var(recon, num_classes, thresholds):
     return means, variances
 
 
-def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial_margin=10, top_margin=10, bottom_margin=10):
+def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.03, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
     Args:
@@ -219,7 +219,6 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
             - sharpness > 1.0 → steeper transitions, masks closer to binary.
             - sharpness < 1.0 → flatter transitions, more blended masks.
                     soft_frac (float): Fraction of windowspixels to assign soft labels.
-        soft_frac (float): Fraction of pixels to assign soft labels (recommended < 1.0 to avoid touching bin edges).
         radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
         top_margin (int, optional): Number of slices to mask out from the top of the volume.
         bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
@@ -231,6 +230,7 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
             plastic_scale (float): weighted scaling factor for plastic
             metal_scales (List[float]): list of weighted scaling factors for each metal
     """
+    from skimage import filters
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                        bottom_margin=bottom_margin)
@@ -259,20 +259,20 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
 
         weights = weights.at[i].set(jnp.where(in_class, 1.0, 0.0))
 
-    # Inside each interior bin (t_i, t_{i+1}] -> assign soft labels
+    edges = filters.sobel(recon)
+    edges_mask = jnp.asarray(edges > edge_threshold)
+
+    # Assign soft labels ONLY in edge regions
     for i in range(0, num_classes - 1):
-        lower_range = thresholds[i] - soft_frac * (thresholds[i] - means[i]) if i > 0 else thresholds[0]
-        upper_range = thresholds[i] + soft_frac * (means[i+1] - means[i]) if i < num_classes - 1 else thresholds[-1]
-        in_bin = (recon > lower_range) & (recon <= upper_range)
-        # Gaussian-like unnormalized likelihoods
+        # Compute Gaussian-like likelihoods between adjacent classes
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
         s = wi + wj
         wi, wj = wi / s, wj / s
 
-        # Write only on voxels in this bin
-        weights = weights.at[i].set(jnp.where(in_bin, wi, weights[i]))
-        weights = weights.at[i + 1].set(jnp.where(in_bin, wj, weights[i + 1]))
+        # Write soft weights only in edge regions
+        weights = weights.at[i].set(jnp.where(edges_mask, wi, weights[i]))
+        weights = weights.at[i + 1].set(jnp.where(edges_mask, wj, weights[i + 1]))
 
     # Extract plastic and metal masks
     plastic_mask = weights[1]
