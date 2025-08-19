@@ -12,11 +12,12 @@ USER = "ncardel" # change the user to your username
 
 ############################################################
 
-output_directory = f"/scratch/gautschi/{USER}/cube_2000"
 
 # Choose the geometry type
 model_type = 'cone'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
+
+output_directory = f"/scratch/gautschi/{USER}/{model_type}"
 
 # Set parameters for the problem size
 num_views = 2000
