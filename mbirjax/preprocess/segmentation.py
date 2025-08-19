@@ -268,7 +268,8 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.003,
         soft_mask = edges_mask & (recon > means[i]) & (recon <= means[i + 1])
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
-        s = wi + wj
+        eps = 1e-8
+        s = wi + wj + eps
         wi, wj = wi / s, wj / s
 
         # Write soft weights only in edge regions
