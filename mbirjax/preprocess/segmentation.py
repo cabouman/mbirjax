@@ -265,14 +265,15 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.003,
     # Assign soft labels ONLY in edge regions
     for i in range(0, num_classes - 1):
         # Compute Gaussian-like likelihoods between adjacent classes
+        soft_mask = edges_mask & (recon > means[i]) & (recon <= means[i + 1])
         wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
         wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
         s = wi + wj
         wi, wj = wi / s, wj / s
 
         # Write soft weights only in edge regions
-        weights = weights.at[i].set(jnp.where(edges_mask, wi, weights[i]))
-        weights = weights.at[i + 1].set(jnp.where(edges_mask, wj, weights[i + 1]))
+        weights = weights.at[i].set(jnp.where(soft_mask, wi, weights[i]))
+        weights = weights.at[i + 1].set(jnp.where(soft_mask, wj, weights[i + 1]))
 
     # Extract plastic and metal masks
     plastic_mask = weights[1]
