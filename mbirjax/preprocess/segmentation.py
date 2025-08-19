@@ -207,7 +207,7 @@ def _compute_class_mean_var(recon, num_classes, thresholds):
     return means, variances
 
 
-def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.03, radial_margin=10, top_margin=10, bottom_margin=10):
+def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.003, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Non-binary (soft) segmentation using multi-threshold Otsu + Gaussian soft labels.
     Args:
