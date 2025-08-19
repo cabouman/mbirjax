@@ -17,7 +17,7 @@ USER = "ncardel" # change the user to your username
 ###### The
 
 # load phantom, sinogram, and params
-output_directory = f"/scratch/gautschi/{USER}"
+output_directory = f"/scratch/gautschi/{USER}/cone"
 
 phantom_filepath = f"{output_directory}/phantom.npy"
 params_filepath = f"{output_directory}/params.pkl"
@@ -32,11 +32,12 @@ with open(params_filepath, "rb") as f:
 print("phantom.shape:", phantom.shape)
 print("params:", params.items())
 
-filepath = f"{output_directory}/demo1_recon_100.h5"
+recon_filepath = f"{output_directory}/demo1_recon.h5"
+print("recon_filepath:", recon_filepath)
 
 # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
 #  the model if desired. The load function can be used even without an existing instance of a ct model.
-new_recon, new_recon_dict, _ = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
+new_recon, new_recon_dict, _ = mj.TomographyModel.load_recon_hdf5(recon_filepath, recreate_model=True)
 
 # Display results
 title = 'Phantom (left) vs Recon using sharding (right)'

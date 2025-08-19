@@ -17,7 +17,7 @@ USER = "ncardel" # change the user to your username
 ###### The
 
 # load phantom, sinogram, and params
-output_directory = f"/scratch/gautschi/{USER}/cube_2000"
+output_directory = f"/scratch/gautschi/{USER}/cone"
 
 phantom_filepath = f"{output_directory}/phantom.npy"
 sinogram_filepath = f"{output_directory}/sinogram.npy"
@@ -106,9 +106,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
 recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
 recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
-
-mj.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # recon and recon_dict can be saved from the viewer or directly in code
 filepath = f"{output_directory}/demo1_recon.h5"
