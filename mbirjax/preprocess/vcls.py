@@ -118,7 +118,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         num_selected_views (int): Number of view angles to select.
         r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.001).
         r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.01).
-        verbose (int, optional): Verbosity level. If > 0, visualizations of the covariance matrix and gamma vector will be shown.
+        verbose (int, optional): Verbosity level. If >= 2, visualizations of the covariance matrix and gamma vector will be shown.
         seed (int, optional): Random seed for deterministic behavior. If set, results will be reproducible.
 
     Returns:
@@ -148,8 +148,8 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         # Compute inner product between recon bases
         R = compute_cov_matrix(num_views, data_store_dir)
 
-    if verbose > 0:
-        # plot the the covariance matrix and gamma
+    if verbose >= 2:
+        # plot the covariance matrix and gamma
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         axes[0].imshow(R)
