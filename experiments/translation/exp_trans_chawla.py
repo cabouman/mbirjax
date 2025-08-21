@@ -29,8 +29,8 @@ def get_experiment_params(experiment_name):
 
     elif experiment_name == "experiment2":
         override_config = {
-            # Modify only what's different for experiment2
-            # Example: "phantom_type": "dots",
+            "x_view_space_mm": 3,
+            "z_view_space_mm": 3,
         }
         return {**base_config, **override_config}
 
@@ -84,7 +84,7 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Set number of rows in recon to match desired object thickness
-    recon_shape = (3*int(object_thickness_ALU / delta_recon_row), recon_shape[1], recon_shape[2])
+    recon_shape = (3*int(object_thickness_ALU / delta_recon_row), int(1.5*int(object_width_ALU)), int(1.5*int(object_width_ALU)))
     tct_model.set_params(recon_shape=recon_shape)
     tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(qggmrf_nbr_wts=[1.0, 1.0, 0.1])
