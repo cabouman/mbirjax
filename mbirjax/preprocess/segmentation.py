@@ -269,7 +269,7 @@ def segment_plastic_metal(recon, num_metal, sharpness=1.0, edge_threshold=0.003,
         var_i = jnp.clip(variances[i] / sharpness, 1e-12, None)
         var_j = jnp.clip(variances[i + 1] / sharpness, 1e-12, None)
         wi = jnp.exp(-0.5 * (recon - means[i])**2 / var_i) / jnp.sqrt(2 * jnp.pi * var_i)
-        wj = jnp.exp(-0.5 * (recon - means[i])**2 / var_j) / jnp.sqrt(2 * jnp.pi * var_j)
+        wj = jnp.exp(-0.5 * (recon - means[i+1])**2 / var_j) / jnp.sqrt(2 * jnp.pi * var_j)
         eps = 1e-8
         s = wi + wj + eps
         wi, wj = wi / s, wj / s
