@@ -22,7 +22,6 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import time
 import h5py
-import easygui
 
 # === CONSTANTS ===
 TOOLTIP_FONT_SIZE = 9
@@ -92,6 +91,7 @@ class SliceViewer:
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
+        import easygui
         self.datasets = datasets
         self.n_volumes = len(datasets)
         self.title = title
