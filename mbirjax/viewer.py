@@ -1,6 +1,7 @@
 import os
 import warnings
 import matplotlib
+import easygui
 
 import mbirjax as mj
 
@@ -91,7 +92,6 @@ class SliceViewer:
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
-        import easygui
         self.datasets = datasets
         self.n_volumes = len(datasets)
         self.title = title
