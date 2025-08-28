@@ -20,6 +20,7 @@ import shutil
 import h5py
 import re
 import warnings
+import subprocess
 
 
 def load_data_hdf5(file_path):
@@ -458,7 +459,12 @@ def download_and_extract(download_url, save_dir):
                     else:
                         raise RuntimeError(f'HTTP {e.code}: {e.reason}')
                 except urllib.error.URLError as e:
-                    raise RuntimeError('URLError raised! Check internet connection.')
+                    res = subprocess.run(
+                        ["curl", "-L", "--fail", "-o", file_path, download_url],
+                        capture_output=True, text=True
+                    )
+                    if res.returncode != 0:
+                        raise RuntimeError(f"Download failed with curl: {res.stderr.strip() or res.stdout.strip()}")
                 print(f"Download successful! File saved to {file_path}")
         else:
             print(f"Copying local file from {download_url} to {file_path}...")
