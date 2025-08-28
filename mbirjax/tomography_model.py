@@ -184,6 +184,7 @@ class TomographyModel(ParameterHandler):
         num_views, num_det_rows, num_det_channels = sinogram_shape
         recon_shape = self.get_params('recon_shape')
         num_slices = recon_shape[2]
+        self.view_batch_size_for_vmap = min(self.view_batch_size_for_vmap, num_views)
 
         zero = jnp.zeros(1)
         bits_per_byte = 8
@@ -486,9 +487,11 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = mj.Projectors(self)
 
     @staticmethod
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params, existing_view=None):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+        If `existing_view` is provided, it must have shape (num_det_rows, num_det_channels), in which case the projection of
+        the input voxels will be added to `existing_view`.
 
         Note:
             This method must be overridden for a specific geometry.
@@ -499,6 +502,7 @@ class TomographyModel(ParameterHandler):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+            existing_view (jax array): array of shape (num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -615,7 +619,9 @@ class TomographyModel(ParameterHandler):
                                                                  pixel_indices[pixel_index_start:pixel_index_end]],
                                                                 self.worker)
                 sinogram_views = sinogram_views.block_until_ready()
-                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
+                sinogram_views = self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch,
+                                                                                 existing_views=sinogram_views,
+                                                                                 view_indices=view_indices_batch)
 
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))

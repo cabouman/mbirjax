@@ -58,11 +58,12 @@ class Projectors:
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
         view_batch_size = self.tomography_model.view_batch_size_for_vmap
 
-        def sparse_forward_project_fcn(voxel_values, pixel_indices, view_indices=()):
+        def sparse_forward_project_fcn(voxel_values, pixel_indices, existing_views, view_indices=()):
             """
             Compute the sinogram obtained by forward projecting the specified voxels. The voxel sare determined
             using 2D indices into a flattened array of shape (num_recon_rows, num_recon_cols),
-            and for each such 2D index, the voxels in all slices at that location are projected.
+            and for each such 2D index, the voxels in all slices at that location are projected.  The projection of
+            these voxels is added to the input tensor `existing_views`.
 
             This function batches over pixels, applies sparse_forward_project_pixel_batch to each batch,
             then adds the results to get the sinogram.
@@ -70,6 +71,7 @@ class Projectors:
             Args:
                 voxel_values (ndarray or jax array): 2D array of shape (len(pixel_indices), num_slices) of voxel values
                 pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape (num_rows, num_cols)
+                existing_views (jax array): 3D array of shape (num_views, num_det_rows, num_det_cols)
                 view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                     If None, then all views are used.
 
@@ -80,7 +82,7 @@ class Projectors:
             voxel_and_indices = (voxel_values, pixel_indices)  # Apply ensure_tuple
 
             def forward_project_pixel_batch_wrapper(local_values, local_pix_indices):
-                return sparse_forward_project_pixel_batch(local_values, local_pix_indices, view_indices,
+                return sparse_forward_project_pixel_batch(local_values, local_pix_indices, existing_views, view_indices,
                                                           view_batch_size)
 
             summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
@@ -88,17 +90,19 @@ class Projectors:
             return summed_output
 
         @partial(jax.jit, static_argnames='views_per_batch')
-        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=(), views_per_batch=None):
+        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, existing_views, view_indices=(), views_per_batch=None):
             """
             Compute the sinogram obtained by forward projecting the specified batch of voxels. The voxels
             are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
-            and for each such 2D index, the voxels in all slices at that location are projected.
+            and for each such 2D index, the voxels in all slices at that location are projected.  The projection of
+            these voxels is added to the input tensor `existing_views`.
 
             This function creates batches of views and collects the results to form the full sinogram.
 
             Args:
                 voxel_values: 2D array of shape (len(pixel_indices), num_slices) of voxel values
                 pixel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
+                existing_views (jax array): 3D array of shape (num_views, num_det_rows, num_det_cols)
                 view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
                     If None, then all views are used.
                 views_per_batch (int or None, optional): Maximum number of views to project per batch.
@@ -110,21 +114,22 @@ class Projectors:
             if len(view_indices) > 0:
                 cur_view_params_array = view_params_array[view_indices]
 
-            def forward_project_single_view(single_view_params):
+            def forward_project_single_view(single_view_params, existing_view):
                 # Use closure to define a mappable function that operates on a single view with the given voxel values.
                 return forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices,
-                                                               single_view_params, projector_params)
+                                                               single_view_params, projector_params, existing_view)
 
-            def forward_project_view_batch(view_params_batch):
+            def forward_project_view_batch(view_params_batch, existing_views_batch):
                 # Map the single view function over a batch of views.
                 # To parallelize over views, we can use jax.vmap here instead of jax.lax.map, but this may use extra
                 # memory since the voxel values are required for each view.
 
-                sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch)
+                sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch, existing_views_batch)
 
                 return sino_view_batch
 
-            sinogram = concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array, views_per_batch)
+            view_data = [cur_view_params_array, existing_views]
+            sinogram = concatenate_function_in_batches(forward_project_view_batch, view_data, views_per_batch)
 
             return sinogram
 
