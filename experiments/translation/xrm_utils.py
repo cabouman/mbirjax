@@ -3,6 +3,7 @@ import os
 import logging
 import struct
 import olefile
+import mbirjax.preprocess as mjp
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,13 @@ def read_xrm(fname):
 
     _log_imported_data(fname, arr)
 
+    if np.issubdtype(arr.dtype, np.integer):
+        # make float and normalize integer types
+        maxval = np.iinfo(arr.dtype).max
+        arr = arr.astype(np.float32) / maxval
+
+    arr.astype(np.float32)
+
     ole.close()
     return arr, metadata
 
@@ -136,6 +144,14 @@ def read_xrm_dir(dir_path):
         metadata['z_positions'].append(md['z_positions'][0])
 
     _log_imported_data(str(dir_path), arr)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        # make float and normalize integer types
+        maxval = np.iinfo(arr.dtype).max
+        arr = arr.astype(np.float32) / maxval
+
+    arr.astype(np.float32)
+
     return arr, metadata
 
 
@@ -305,12 +321,12 @@ def _read_ole_arr(ole, label, struct_fmt):
     return arr
 
 
-def compute_translation_parameters(dir_path):
+def create_params_dict(obj_scan_path):
     """
     Compute translation parameters from a directory of xrm files.
 
     Args:
-        dir_path (str) : Directory containing xrm files.
+        obj_scan_path (str) : Directory containing xrm files.
 
     Returns:
         source_det_dist_ALU (float): Distance from the source to the detector in ALU.
@@ -319,7 +335,7 @@ def compute_translation_parameters(dir_path):
     """
 
     # Load physical parameters from metadata
-    center_path = Path(dir_path) / "center.xrm"
+    center_path = Path(obj_scan_path) / "MC.xrm"
     _, metadata_center = read_xrm(str(center_path))
     x_center = float(np.asarray(metadata_center['z_positions']).ravel()[0])
     y_center = float(np.asarray(metadata_center['x_positions']).ravel()[0])
@@ -339,7 +355,7 @@ def compute_translation_parameters(dir_path):
     source_det_dist_ALU = source_iso_dist_ALU
 
     # Load x, y, z positions
-    _, metadata = read_xrm_dir(dir_path)
+    _, metadata = read_xrm_dir(obj_scan_path)
 
     # x, y, z positions for all files
     x_positions = np.asarray(metadata['z_positions'], dtype=float).ravel()
@@ -352,9 +368,50 @@ def compute_translation_parameters(dir_path):
     translation_vectors = xyz_center - xyz_positions
 
     # For now, assume that there is no shift in y direction
-    translation_vectors[:, 1] = 0.0
+    # translation_vectors[:, 1] = 0.0
 
     # Compute translation vectors in ALU
     translation_vectors = translation_vectors * ALU_per_mm / 1000
 
-    return source_det_dist_ALU, source_iso_dist_ALU, translation_vectors
+    sino_shape = (metadata['num_views'], metadata['num_det_rows'], metadata['num_det_channels'])
+
+    translation_params = dict()
+    translation_params['sinogram_shape'] = sino_shape
+    translation_params['translation_vectors'] = translation_vectors
+    translation_params['source_detector_dist'] = source_det_dist_ALU
+    translation_params['source_iso_dist'] = source_iso_dist_ALU
+
+    return translation_params
+
+
+def compute_sino_and_params(obj_scan_path, blank_scan_path, dark_scan_path):
+    """
+
+    Args:
+        obj_scan_path:
+        blank_scan_path:
+        dark_scan_path:
+
+    Returns:
+
+    """
+    # Compute and load required parameters for translation reconstruction
+    translation_params = create_params_dict(obj_scan_path)
+
+    # Load obj scan, blank scan, and dark scan
+    obj_scan, _ = read_xrm_dir(obj_scan_path)
+    blank_scan, _ = read_xrm_dir(blank_scan_path)
+    dark_scan, _ = read_xrm_dir(dark_scan_path)
+
+    # Crop out defective rows in obj scan, blank scan, and dark scan
+    crop_pixels_bottom = 53
+    obj_scan, blank_scan, dark_scan, _ = mjp.crop_view_data(
+        obj_scan, blank_scan, dark_scan,
+        crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=crop_pixels_bottom,
+        defective_pixel_array=())
+
+    # Compute sinogram
+    sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan)
+    translation_params['sinogram_shape'] = sino.shape
+
+    return sino, translation_params
