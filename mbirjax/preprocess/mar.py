@@ -390,7 +390,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
 
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.005, verbose=0):
+                           num_metal=1, order=3, alpha=1, beta=0.02, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
