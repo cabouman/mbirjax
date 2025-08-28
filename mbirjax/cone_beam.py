@@ -188,9 +188,10 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view=None):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, existing_view=None):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+        If `existing_view` is provided, the projection of the input voxels is added to `existing_view`.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
@@ -198,7 +199,7 @@ class ConeBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            sinogram_view (jax array): 2D array of shape (num_rows, num_channels) of sinogram view
+            existing_view (jax array): array of shape (num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -213,7 +214,7 @@ class ConeBeamModel(TomographyModel):
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, angle, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params, sinogram_view)
+        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, angle, projector_params, existing_view)
 
         return sinogram_view
 
@@ -243,11 +244,13 @@ class ConeBeamModel(TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params, sinogram_view=None):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params,
+                                                       existing_view=None):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
-        This function returns the resulting sinogram view.
+        This function returns the resulting sinogram view. If `existing_view` is provided, the projection of
+        the input voxels is added to `existing_view`.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
@@ -256,7 +259,7 @@ class ConeBeamModel(TomographyModel):
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
-            sinogram_view (jax array): 2D array of shape (num_rows, num_channels) of sinogram view
+            existing_view (jax array): array of shape (num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -272,8 +275,10 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        if sinogram_view is None:
+        if existing_view is None:
             sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        else:
+            sinogram_view = existing_view
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
@@ -818,7 +823,7 @@ class ConeBeamModel(TomographyModel):
         weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
 
         # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.main_device)
+        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
 
         # Compute the scaled filter
         # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
@@ -840,7 +845,7 @@ class ConeBeamModel(TomographyModel):
         num_views = sinogram.shape[0]
         filtered_sino_list = []
         for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.main_device)
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.main_device))
