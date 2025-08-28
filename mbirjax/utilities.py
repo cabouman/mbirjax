@@ -401,7 +401,12 @@ def download_and_extract(download_url, save_dir):
                 actual_filename = f.read().strip()
             file_path = os.path.join(save_dir, actual_filename)
             filename = actual_filename
-            is_download = False
+
+            if os.path.exists(file_path):
+                is_download = False
+            else:
+                is_download = True
+
         else:
             filename = f"gdrive_{file_id}"
             is_download = True
