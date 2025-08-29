@@ -19,9 +19,8 @@ from urllib.parse import urlparse
 import shutil
 import h5py
 import re
-import gdown
 import warnings
-from ruamel.yaml import YAML
+import subprocess
 
 
 def load_data_hdf5(file_path):
@@ -403,7 +402,12 @@ def download_and_extract(download_url, save_dir):
                 actual_filename = f.read().strip()
             file_path = os.path.join(save_dir, actual_filename)
             filename = actual_filename
-            is_download = False
+
+            if os.path.exists(file_path):
+                is_download = False
+            else:
+                is_download = True
+
         else:
             filename = f"gdrive_{file_id}"
             is_download = True
@@ -421,6 +425,7 @@ def download_and_extract(download_url, save_dir):
         if is_url:
             if is_google_drive:
                 print("Downloading file from Google Drive...")
+                import gdown
                 try:
                     gdrive_url = f"https://drive.google.com/uc?id={file_id}"
 
@@ -454,7 +459,12 @@ def download_and_extract(download_url, save_dir):
                     else:
                         raise RuntimeError(f'HTTP {e.code}: {e.reason}')
                 except urllib.error.URLError as e:
-                    raise RuntimeError('URLError raised! Check internet connection.')
+                    res = subprocess.run(
+                        ["curl", "-L", "--fail", "-o", file_path, download_url],
+                        capture_output=True, text=True
+                    )
+                    if res.returncode != 0:
+                        raise RuntimeError(f"Download failed with curl: {res.stderr.strip() or res.stdout.strip()}")
                 print(f"Download successful! File saved to {file_path}")
         else:
             print(f"Copying local file from {download_url} to {file_path}...")
@@ -696,16 +706,21 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_size=20):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
     Args:
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
         option (str): Phantom type to generate. Options are 'dots' or 'text'.
-        words (list[str]): List of ASCII words to render.
+        text (list[str]): List of ASCII text strings to render.
         fill_rate (float, optional): Fill rate of the reconstruction volume. Default is 0.05.
         font_size (int, optional): Font size of the ASCII words. Default is 20.
+        text_row_indices (list[int], optional): List of row indices where each text string should be placed. Default is None.
+                                           If None, words are automatically distributed evenly across the first dimension.
+                                           Must have the same length as 'words' if provided.
+        horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
+        vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
 
     Returns:
         np.ndarray: Generated phantom volume.
@@ -713,7 +728,7 @@ def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_siz
     if option == 'dots':
         return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        return gen_text_phantom(recon_shape, words, font_size)
+        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
@@ -748,7 +763,8 @@ def gen_dot_phantom(recon_shape, fill_rate):
     return gt_recon
 
 
-def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
+def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal_offset=0,
+                     vertical_offset=0, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -756,15 +772,37 @@ def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
         recon_shape (tuple[int, int, int]): Shape of the phantom volume (num_rows, num_cols, num_slices).
         words (list[str]): List of ASCII words to render.
         font_size (int): Font size of ASCII words.
+        row_indices (list[int], optional): List of row indices where each word should be placed. Default is None.
+                                           If None, words are automatically distributed evenly across the first dimension.
+                                           Must have the same length as 'words' if provided.
+        horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
+        vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
         font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
 
     Returns:
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
-    positions = []
-    row_positions = np.linspace(0, recon_shape[0] - 1, len(words) + 2)[1:-1]
-    for r in row_positions:
-        positions.append((int(round(r)), recon_shape[1] // 2, recon_shape[2] // 2))
+    if row_indices is not None:
+        if len(row_indices) != len(words):
+            raise ValueError(
+                f"Length of row_indices ({len(row_indices)}) must match length of words ({len(words)})")
+
+        for idx in row_indices:
+            if not (0 <= idx < recon_shape[0]):
+                raise ValueError(f"Row index {idx} is out of bounds for first dimension of size {recon_shape[0]}")
+
+        positions = []
+        for row_idx in row_indices:
+            col_pos = recon_shape[1] // 2 + horizontal_offset
+            slice_pos = recon_shape[2] // 2 - vertical_offset
+            positions.append((row_idx, col_pos, slice_pos))
+    else:
+        positions = []
+        row_positions = np.linspace(0, recon_shape[0] - 1, len(words) + 2)[1:-1]
+        for r in row_positions:
+            col_pos = recon_shape[1] // 2 + horizontal_offset
+            slice_pos = recon_shape[2] // 2 - vertical_offset
+            positions.append((int(round(r)), col_pos, slice_pos))
 
     array_size = np.minimum(recon_shape[1], recon_shape[2])
 
@@ -805,15 +843,25 @@ def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
         word_array = (word_array > 0).astype(np.float32)
 
         # Crop or pad word_array to fit in the recon volume
-        r_start = max(0, r)
-        r_end = min(recon_shape[0], r + 1)
-        c_start = max(0, c - array_size // 2)
-        c_end = min(recon_shape[1], c_start + array_size)
-        s_start = max(0, s - array_size // 2)
-        s_end = min(recon_shape[2], s_start + array_size)
+        r_start, r_end = r, r + 1
+        c_start = c - array_size // 2
+        c_end = c_start + array_size
+        s_start = s - array_size // 2
+        s_end = s_start + array_size
 
-        word_crop = word_array[:(c_end - c_start), :(s_end - s_start)]
-        phantom[r_start:r_end, c_start:c_end, s_start:s_end] = word_crop
+        c_start_valid = max(c_start, 0)
+        c_end_valid = min(c_end, recon_shape[1])
+        s_start_valid = max(s_start, 0)
+        s_end_valid = min(s_end, recon_shape[2])
+
+        word_c_start = c_start_valid - c_start
+        word_c_end = word_c_start + (c_end_valid - c_start_valid)
+        word_s_start = s_start_valid - s_start
+        word_s_end = word_s_start + (s_end_valid - s_start_valid)
+
+        # Place cropped word_array into phantom
+        word_crop = word_array[word_c_start:word_c_end, word_s_start:word_s_end]
+        phantom[r_start:r_end, c_start_valid:c_end_valid, s_start_valid:s_end_valid] = word_crop
 
     return phantom
 

@@ -1,6 +1,7 @@
 import os
 import warnings
 import matplotlib
+import easygui
 
 import mbirjax as mj
 
@@ -22,7 +23,6 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import time
 import h5py
-import easygui
 
 # === CONSTANTS ===
 TOOLTIP_FONT_SIZE = 9
