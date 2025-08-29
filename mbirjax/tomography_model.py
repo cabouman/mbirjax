@@ -623,73 +623,35 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-
-        indices = pixel_indices
-
         # Batch the views and pixels
+        transfer_pixel_batch_size = self.transfer_pixel_batch_size
         sinogram_shape = self.get_params('sinogram_shape')
         num_views = sinogram_shape[0]
 
-        max_views = num_views
-        max_pixels = self.transfer_pixel_batch_size
-
-        view_batch_indices = jnp.arange(num_views, step=max_views)
-        view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
-
-        num_pixels = len(indices)
-        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
-        pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
-
-        # pixel batches need to be replicated so that all GPU devices have access to the same data
-        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
+        num_pixels = len(pixel_indices)
+        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
+        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
 
         # Create the output sinogram
-        sinogram = []
+        sinogram_views = jnp.zeros([num_views, sinogram_shape[1], sinogram_shape[2]],
+                                   device=self.sinogram_device)
+        view_indices = jnp.arange(0, num_views)[:, None]
+        view_indices = jax.device_put(view_indices, device=self.sinogram_device)
 
-        # get the projector params
-        geometry_params = self.get_geometry_parameters()
-        sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
+        # Loop over pixel batches
+        for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
+            # Send a batch of pixels to worker
+            pixel_index_end = pixel_batch_boundaries[k + 1]
+            # pixel batches need to be replicated so that all GPU devices have access to the same data
+            voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
+                                                               pixel_indices[pixel_index_start:pixel_index_end]],
+                                                              self.replicated_device)
 
-        # Combine the needed parameters into a named tuple for named access compatible with jit
-        projector_param_names = ['sinogram_shape', 'recon_shape', 'geometry_params']
-        projector_param_values = (sinogram_shape, recon_shape, geometry_params)
-        ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
-        projector_params = ProjectorParams(*tuple(projector_param_values))
-
-        view_params_name = self.get_params('view_params_name')
-        view_params_array = jax.device_put(self.get_params(view_params_name), device=self.sinogram_device)
-
-        # Loop over the view batches
-        for j, view_index_start in enumerate(view_batch_indices[:-1]):
-            # Send a batch of views to worker
-            view_index_end = view_batch_indices[j + 1]
-            cur_view_batch = jnp.zeros([view_index_end - view_index_start, sinogram_shape[1], sinogram_shape[2]],
-                                       device=self.sinogram_device)
-            cur_view_params_batch = view_params_array[view_index_start:view_index_end]
-
-            # Loop over pixel batches
-            for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
-                # Send a batch of pixels to worker
-                pixel_index_end = pixel_batch_indices[k + 1]
-                cur_voxel_batch, cur_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                                   indices[pixel_index_start:pixel_index_end]],
-                                                                  sinogram_device_replicated)
-
-                def forward_project_pixel_batch_local(view, view_params):
-                    # Add the forward projection to the given existing view
-                    return self.forward_project_pixel_batch_to_one_view(cur_voxel_batch, cur_index_batch, view_params,
-                                                                        projector_params, view)
-
-                view_map = jax.vmap(forward_project_pixel_batch_local)
-                cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
-
-            # sinogram.append(jax.device_put(cur_view_batch, output_device))
-            # print("YOU SHOULD ONLY SEE THIS ONCE!!!!!")
-            sinogram = cur_view_batch
-
-        # sinogram = jnp.concatenate(sinogram)
-        sinogram = jax.device_put(sinogram, output_device)
-        return sinogram
+            sinogram_views = sinogram_views.block_until_ready()
+            sinogram_views = self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch,
+                                                                             existing_views=sinogram_views,
+                                                                             view_indices=view_indices)
+        return sinogram_views
 
     def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
         """
@@ -707,6 +669,8 @@ class TomographyModel(ParameterHandler):
             jnp array: The resulting 3D sinogram after projection.
         """
         if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError('view_indices cannot be used with sharding.')
             return self.sparse_forward_project_sharded(voxel_values, pixel_indices, output_device)
 
         # Batch the views and pixels for possible transfer to the gpu
@@ -825,6 +789,8 @@ class TomographyModel(ParameterHandler):
             A jax array of shape (len(indices), num_slices)
         """
         if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError('view_indices cannot be used with sharding.')
             return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
