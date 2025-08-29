@@ -232,13 +232,20 @@ class TomographyModel(ParameterHandler):
         # 'automatic' and more than one GPU: Everything will be done with sharding
         if use_gpu == 'automatic' and len(gpus) > 1:
 
-            # all views will be vmapped
-            self.view_batch_size_for_vmap = num_views
-
             # FIXME: calculate this based off of actual memory
-            self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
-            mem_required_for_gpu = 0
-            mem_required_for_cpu = 0
+            # self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
+            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
+            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
+            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
+            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
+            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
+
+            # Recalculate the memory per projection with the new batch size
+            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
+
+            mem_required_for_gpu = max(mem_for_vcd_sinos_gpu,
+                                       mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
+            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
             # create devices and named shardings
             devices = np.array(gpus).reshape((-1, 1))
@@ -248,6 +255,7 @@ class TomographyModel(ParameterHandler):
             self.sinogram_device = NamedSharding(mesh, P('views'))
             self.replicated_device = NamedSharding(mesh, P())
             self.worker = gpus[0]
+            self.use_gpu = 'sharding'
 
         # 'full':  Everything on GPU
         elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
@@ -698,6 +706,9 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
+        if self.use_gpu == 'sharding':
+            return self.sparse_forward_project_sharded(voxel_values, pixel_indices, output_device)
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -772,7 +783,6 @@ class TomographyModel(ParameterHandler):
 
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        import tqdm
         for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
 
             view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
@@ -783,7 +793,7 @@ class TomographyModel(ParameterHandler):
 
             # Loop over pixel batches
             voxel_batch_list = []
-            for pixel_index_start, pixel_index_end in tqdm.tqdm(zip(pixel_batch_start_indices, pixel_batch_end_indices)):
+            for pixel_index_start, pixel_index_end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
                 pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], sinogram_device_replicated)
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
                                                                            view_indices=view_indices_batch,
@@ -814,6 +824,8 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
+        if self.use_gpu == 'sharding':
+            return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -1327,8 +1339,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             self.logger.info('Starting direct recon for initial reconstruction')
-            with jax.default_device(self.sinogram_device):
-                init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+            init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
