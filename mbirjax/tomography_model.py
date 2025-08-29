@@ -18,6 +18,7 @@ from jax.errors import JaxRuntimeError
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 import mbirjax
 import mbirjax as mj
@@ -71,6 +72,7 @@ class TomographyModel(ParameterHandler):
         self.verify_valid_params()
 
         self.main_device, self.sinogram_device, self.worker = None, None, None
+        self.replicated_device = None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
@@ -227,8 +229,28 @@ class TomographyModel(ParameterHandler):
         frac_gpu_mem_to_use = 0.9
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
+        # 'automatic' and more than one GPU: Everything will be done with sharding
+        if use_gpu == 'automatic' and len(gpus) > 1:
+
+            # all views will be vmapped
+            self.view_batch_size_for_vmap = num_views
+
+            # FIXME: calculate this based off of actual memory
+            self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
+            mem_required_for_gpu = 0
+            mem_required_for_cpu = 0
+
+            # create devices and named shardings
+            devices = np.array(gpus).reshape((-1, 1))
+            mesh = Mesh(devices, ('views', 'rows'))
+
+            self.main_device = cpus[0]
+            self.sinogram_device = NamedSharding(mesh, P('views'))
+            self.replicated_device = NamedSharding(mesh, P())
+            self.worker = gpus[0]
+
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
+        elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
             self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
@@ -551,7 +573,7 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        output_device = self.main_device
+        output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
@@ -578,6 +600,88 @@ class TomographyModel(ParameterHandler):
         recon = jnp.zeros(recon_shape, device=output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
+
+    def sparse_forward_project_sharded(self, voxel_values, pixel_indices, output_device=None):
+        """
+        Forward project the given voxel values to a sinogram.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.
+
+        Args:
+            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
+            pixel_indices (jax array): Array of indices specifying which voxels to project.
+            output_device (jax device): Device on which to put the output
+
+        Returns:
+            jnp array: The resulting 3D sinogram after projection.
+        """
+
+        indices = pixel_indices
+
+        # Batch the views and pixels
+        sinogram_shape = self.get_params('sinogram_shape')
+        num_views = sinogram_shape[0]
+
+        max_views = num_views
+        max_pixels = self.transfer_pixel_batch_size
+
+        view_batch_indices = jnp.arange(num_views, step=max_views)
+        view_batch_indices = jnp.concatenate([view_batch_indices, num_views * jnp.ones(1, dtype=int)])
+
+        num_pixels = len(indices)
+        pixel_batch_indices = jnp.arange(num_pixels, step=max_pixels)
+        pixel_batch_indices = jnp.concatenate([pixel_batch_indices, num_pixels * jnp.ones(1, dtype=int)])
+
+        # pixel batches need to be replicated so that all GPU devices have access to the same data
+        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
+
+        # Create the output sinogram
+        sinogram = []
+
+        # get the projector params
+        geometry_params = self.get_geometry_parameters()
+        sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
+
+        # Combine the needed parameters into a named tuple for named access compatible with jit
+        projector_param_names = ['sinogram_shape', 'recon_shape', 'geometry_params']
+        projector_param_values = (sinogram_shape, recon_shape, geometry_params)
+        ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
+        projector_params = ProjectorParams(*tuple(projector_param_values))
+
+        view_params_name = self.get_params('view_params_name')
+        view_params_array = jax.device_put(self.get_params(view_params_name), device=self.sinogram_device)
+
+        # Loop over the view batches
+        for j, view_index_start in enumerate(view_batch_indices[:-1]):
+            # Send a batch of views to worker
+            view_index_end = view_batch_indices[j + 1]
+            cur_view_batch = jnp.zeros([view_index_end - view_index_start, sinogram_shape[1], sinogram_shape[2]],
+                                       device=self.sinogram_device)
+            cur_view_params_batch = view_params_array[view_index_start:view_index_end]
+
+            # Loop over pixel batches
+            for k, pixel_index_start in enumerate(pixel_batch_indices[:-1]):
+                # Send a batch of pixels to worker
+                pixel_index_end = pixel_batch_indices[k + 1]
+                cur_voxel_batch, cur_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
+                                                                   indices[pixel_index_start:pixel_index_end]],
+                                                                  sinogram_device_replicated)
+
+                def forward_project_pixel_batch_local(view, view_params):
+                    # Add the forward projection to the given existing view
+                    return self.forward_project_pixel_batch_to_one_view(cur_voxel_batch, cur_index_batch, view_params,
+                                                                        projector_params, view)
+
+                view_map = jax.vmap(forward_project_pixel_batch_local)
+                cur_view_batch = view_map(cur_view_batch, cur_view_params_batch)
+
+            # sinogram.append(jax.device_put(cur_view_batch, output_device))
+            # print("YOU SHOULD ONLY SEE THIS ONCE!!!!!")
+            sinogram = cur_view_batch
+
+        # sinogram = jnp.concatenate(sinogram)
+        sinogram = jax.device_put(sinogram, output_device)
+        return sinogram
 
     def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
         """
@@ -628,6 +732,69 @@ class TomographyModel(ParameterHandler):
 
         sinogram = jnp.concatenate(sinogram)
         return sinogram
+
+
+    def sparse_back_project_sharded(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
+        """
+        Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
+        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
+        be the indices into the sinogram that is passed in here.
+
+        Args:
+            sinogram (jnp array): 3D jax array containing the full sinogram.
+            pixel_indices (jnp array): Array of indices specifying which voxels to back project.
+            coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
+            output_device (jax device, optional): Device on which to put the output
+
+        Returns:
+            A jax array of shape (len(indices), num_slices)
+        """
+        # Batch the views and pixels for possible transfer to the gpu
+        transfer_view_batch_size = self.view_batch_size_for_vmap
+        transfer_pixel_batch_size = self.transfer_pixel_batch_size
+        num_views, num_rows, num_channels = sinogram.shape
+
+        # pixel batches need to be replicated so that all GPU devices have access to the same data
+        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
+
+        view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
+        view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
+
+        # determine pixel batch indices
+        num_pixels = len(pixel_indices)
+        recon_shape = self.get_params('recon_shape')
+        num_slices = recon_shape[2]
+
+        pixel_batch_start_indices = jnp.arange(num_pixels, step=transfer_pixel_batch_size, dtype=int)
+        pixel_batch_end_indices = jnp.concatenate([pixel_batch_start_indices[1:], num_pixels * jnp.ones(1, dtype=int)])
+
+        # Get the final recon as a jax array
+        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
+        import tqdm
+        for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
+
+            view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
+            view_batch = sinogram
+
+            if view_batch.device != self.sinogram_device:
+                view_batch = jax.device_put(sinogram, self.sinogram_device)
+
+            # Loop over pixel batches
+            voxel_batch_list = []
+            for pixel_index_start, pixel_index_end in tqdm.tqdm(zip(pixel_batch_start_indices, pixel_batch_end_indices)):
+                pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], sinogram_device_replicated)
+                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
+                                                                           view_indices=view_indices_batch,
+                                                                           coeff_power=coeff_power)
+                voxel_batch = voxel_batch.block_until_ready()
+                voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
+
+            recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
+
+        return recon_at_indices
+
 
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
@@ -1184,6 +1351,7 @@ class TomographyModel(ParameterHandler):
         wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
         if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
             alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+            alpha = alpha.item()
         else:
             alpha = 1
 
