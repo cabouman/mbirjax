@@ -265,9 +265,12 @@ def segment_plastic_metal(recon, num_metal, soft_frac=0.1, sharpness=1.0, radial
         upper_range = thresholds[i] + soft_frac * (means[i+1] - means[i]) if i < num_classes - 1 else thresholds[-1]
         in_bin = (recon > lower_range) & (recon <= upper_range)
         # Gaussian-like unnormalized likelihoods
-        wi = jnp.exp(-0.5 * (recon - means[i]) ** 2 / (variances[i] / sharpness))
-        wj = jnp.exp(-0.5 * (recon - means[i + 1]) ** 2 / (variances[i + 1] / sharpness))
-        s = wi + wj
+        var_i = variances[i] / sharpness
+        var_j = variances[i+1] / sharpness
+        wi = jnp.exp(-0.5 * (recon - means[i])**2 / var_i) / jnp.sqrt(2 * jnp.pi * var_i)
+        wj = jnp.exp(-0.5 * (recon - means[i+1])**2 / var_j) / jnp.sqrt(2 * jnp.pi * var_j)
+        eps = 1e-8
+        s = wi + wj + eps
         wi, wj = wi / s, wj / s
 
         # Write only on voxels in this bin
