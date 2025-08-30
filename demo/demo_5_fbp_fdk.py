@@ -29,8 +29,10 @@ import mbirjax as mj
 
 """**Set the geometry parameters**"""
 
-# Choose the geometry type
-geometry_type = 'parallel'  # 'cone' or 'parallel'
+
+# Choose the geometry and object type
+model_type = 'parallel'  # 'cone' or 'parallel'
+object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
@@ -43,10 +45,6 @@ num_det_channels = 128
 Note:  the sliders on the viewer won't work in notebook form.  For that you'll need to run the python code with an interactive matplotlib backend, typcially using the command line or a development environment like Spyder or Pycharm to invoke python.  
 
 """
-
-# Choose the geometry type
-model_type = 'parallel'  # 'cone' or 'parallel'
-object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
@@ -85,7 +83,7 @@ elapsed = time.time() - time0
 # ##########################
 
 max_diff = np.amax(np.abs(phantom - recon))
-print('Geometry = {}'.format(geometry_type))
+print('Geometry = {}'.format(model_type))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
 pct_95 = np.percentile(np.abs(recon - phantom), 95)
 print('NRMSE between recon and phantom = {}'.format(nrmse))
@@ -96,7 +94,7 @@ mj.get_memory_stats()
 print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
-title = (f"Phantom (left) vs {'FDK' if geometry_type == 'cone' else 'FBP'} Recon (right). "
+title = (f"Phantom (left) vs {'FDK' if model_type == 'cone' else 'FBP'} Recon (right). "
          f"Filter used: ramp. \nUse the sliders to change the slice or adjust the intensity range.")
 
 recon_dict = ct_model.get_recon_dict()

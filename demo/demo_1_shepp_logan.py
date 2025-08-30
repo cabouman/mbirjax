@@ -100,9 +100,6 @@ recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
 recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
 recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
 
-mj.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
-
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
 mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)

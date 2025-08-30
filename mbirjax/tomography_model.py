@@ -732,7 +732,6 @@ class TomographyModel(ParameterHandler):
         num_views, num_rows, num_channels = sinogram.shape
 
         # pixel batches need to be replicated so that all GPU devices have access to the same data
-        sinogram_device_replicated = NamedSharding(self.sinogram_device.mesh, P())
 
         view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
         view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
@@ -747,23 +746,18 @@ class TomographyModel(ParameterHandler):
 
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
-        for view_index_start, view_index_end in zip(view_batch_start_indices, view_batch_end_indices):
 
-            view_indices_batch = jnp.arange(view_index_start, view_index_end, dtype=int)
-            view_batch = sinogram
-
-            if view_batch.device != self.sinogram_device:
-                view_batch = jax.device_put(sinogram, self.sinogram_device)
-
-            # Loop over pixel batches
-            voxel_batch_list = []
-            for pixel_index_start, pixel_index_end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
-                pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], sinogram_device_replicated)
-                voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batch,
-                                                                           coeff_power=coeff_power)
-                voxel_batch = voxel_batch.block_until_ready()
-                voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
+        # Loop over pixel batches
+        voxel_batch_list = []
+        view_indices = jnp.arange(num_views)[:, None]
+        sinogram, view_indices = jax.device_put([sinogram, view_indices], device=self.sinogram_device)
+        for pixel_index_start, pixel_index_end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
+            pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], self.replicated_device)
+            voxel_batch = self.projector_functions.sparse_back_project(sinogram, pixel_index_batch,
+                                                                       view_indices=view_indices,
+                                                                       coeff_power=coeff_power)
+            voxel_batch = voxel_batch.block_until_ready()
+            voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
 
             recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
 
