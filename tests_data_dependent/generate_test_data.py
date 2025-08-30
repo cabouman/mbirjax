@@ -38,17 +38,9 @@ def generate_test_data(model_type, size=32):
     else:
         back_projection_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
-    # get recon shape and partition pixel indices
-    recon_shape, granularity = back_projection_model.get_params(['recon_shape', 'granularity'])
-    recon_rows, recon_cols, recon_slices = recon_shape
-    partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
-    pixel_indices = partitions[0][0]
-
     # perform back projection and reshape into recon
-    back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices)
-    back_projection.block_until_ready()
-    recon = jnp.zeros((recon_rows * recon_cols, recon_slices)).at[pixel_indices].add(back_projection)
-    recon = back_projection_model.reshape_recon(recon)
+    recon = back_projection_model.back_project(sinogram)
+    recon.block_until_ready()
     recon = jax.device_put(recon)  # move to host
 
     # save the phantom, sinogram, recon, and params
