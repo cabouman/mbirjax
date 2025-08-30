@@ -1,4 +1,5 @@
 import numpy as np
+import jax
 import jax.numpy as jnp
 import mbirjax as mj
 import pickle
@@ -14,7 +15,7 @@ def generate_test_data(model_type, size=32):
     object_type = 'shepp-logan'
 
     # directory
-    USER = "ncardel"  # change the user to your username
+    USER = "ncardel"
     output_directory = f"/depot/bouman/users/{USER}"
 
     # generate phantom, sinogram (forward projection), and params
@@ -27,7 +28,7 @@ def generate_test_data(model_type, size=32):
     # params
     angles = params['angles']
 
-    # generate recon (back projection)
+    # create back projection model
     if model_type == 'cone':
         source_detector_dist = params['source_detector_dist']
         source_iso_dist = params['source_iso_dist']
@@ -43,11 +44,12 @@ def generate_test_data(model_type, size=32):
     partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity)
     pixel_indices = partitions[0][0]
 
-    # perform projection and reshape into "recon"
-    recon = back_projection_model.sparse_back_project(sinogram, pixel_indices)
-    recon.block_until_ready()
-    recon = jnp.zeros((recon_rows * recon_cols, recon_slices)).at[pixel_indices].add(recon)
+    # perform back projection and reshape into recon
+    back_projection = back_projection_model.sparse_back_project(sinogram, pixel_indices)
+    back_projection.block_until_ready()
+    recon = jnp.zeros((recon_rows * recon_cols, recon_slices)).at[pixel_indices].add(back_projection)
     recon = back_projection_model.reshape_recon(recon)
+    recon = jax.device_put(recon)  # move to host
 
     # save the phantom, sinogram, recon, and params
     phantom = np.array(phantom)
@@ -70,4 +72,4 @@ def generate_test_data(model_type, size=32):
 
 if __name__ == '__main__':
     generate_test_data('cone', size=32)
-    # generate_test_data('parallel', size=32)
+    generate_test_data('parallel', size=32)
