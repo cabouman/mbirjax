@@ -20,9 +20,9 @@ cd "$INSTALL_DIR"
 
 # List of CUDA components to download and extract
 COMPONENTS=(
-  "linux/x86_64/cuda-toolkit-linux-x86_64-12.9.1-archive.tar.xz"
-  "linux/x86_64/cuda-compiler-linux-x86_64-12.9.1-archive.tar.xz"
-  "linux/x86_64/cuda-cudart-linux-x86_64-12.9.1-archive.tar.xz"
+  "cuda-toolkit/linux-x86_64/cuda-toolkit-linux-x86_64-12.9.1-archive.tar.xz"
+  "cuda-compiler/linux-x86_64/cuda-compiler-linux-x86_64-12.9.1-archive.tar.xz"
+  "cuda-cudart/linux-x86_64/cuda-cudart-linux-x86_64-12.9.1-archive.tar.xz"
 )
 BASE_URL="https://developer.download.nvidia.com/compute/cuda/redist"
 
