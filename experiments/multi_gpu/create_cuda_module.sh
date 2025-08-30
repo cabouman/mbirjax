@@ -2,13 +2,15 @@
 
 
 # Exit on error
-set -e
+set -Eeuo pipefail
+
+trap 'echo -e "\n[ERROR] at line $LINENO while processing: ${CURRENT_COMP:-<unknown>}\nDropping into interactive shell..."; exec bash -i' ERR
 
 # Trap to drop into shell on error for debugging
 trap 'echo "Error occurred, dropping into shell for debugging"; bash' ERR
 
 # Full and short versioning
-CUDA_VERSION_FULL="12.9.0"
+CUDA_VERSION_FULL="12.9.1"
 CUDA_VERSION_SHORT="12.9"
 
 # Define paths
@@ -31,15 +33,15 @@ COMPONENTS=(
 BASE_URL="https://developer.download.nvidia.com/compute/cuda/redist"
 
 for comp in "${COMPONENTS[@]}"; do
+    CURRENT_COMP="$comp"
     echo "=== Downloading $comp"
-    if ! wget "${BASE_URL}/${comp}"; then
-        echo "Download failed for $comp"
-        exit 1
-    fi
+    wget -q --show-progress "${BASE_URL}/${comp}"
     echo "=== Extracting $(basename "$comp")"
     tar -xJf "$(basename "$comp")" --strip-components=1 -C "$INSTALL_DIR"
     rm -f "$(basename "$comp")"
 done
+
+unset CURRENT_COMP
 
 echo "=== Creating modulefile directory at $MODULE_DIR"
 mkdir -p "$MODULE_DIR"
@@ -63,3 +65,8 @@ echo -e "\n=== ✓ Done!"
 echo -e "\nTo make the module available run"
 echo "    module use /depot/bouman/apps/modules"
 echo -e "\nTo load CUDA ${CUDA_VERSION_SHORT}, use:\n    module load cuda/${CUDA_VERSION_SHORT}"
+
+# To keep the shell open even on success, run: KEEP_OPEN=1 ./create_cuda_module.sh
+if [[ "${KEEP_OPEN:-}" == "1" ]]; then
+    exec bash -i
+fi
