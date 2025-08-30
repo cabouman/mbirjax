@@ -1,7 +1,11 @@
 #!/bin/bash
 
+
 # Exit on error
 set -e
+
+# Trap to drop into shell on error for debugging
+trap 'echo "Error occurred, dropping into shell for debugging"; bash' ERR
 
 # Full and short versioning
 CUDA_VERSION_FULL="12.9.0"
@@ -28,7 +32,10 @@ BASE_URL="https://developer.download.nvidia.com/compute/cuda/redist"
 
 for comp in "${COMPONENTS[@]}"; do
     echo "=== Downloading $comp"
-    wget "${BASE_URL}/${comp}"
+    if ! wget "${BASE_URL}/${comp}"; then
+        echo "Download failed for $comp"
+        exit 1
+    fi
     echo "=== Extracting $(basename "$comp")"
     tar -xJf "$(basename "$comp")" --strip-components=1 -C "$INSTALL_DIR"
     rm -f "$(basename "$comp")"
