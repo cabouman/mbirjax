@@ -12,24 +12,27 @@ INSTALL_DIR="/depot/bouman/apps/cuda/${CUDA_VERSION_SHORT}"
 MODULE_DIR="/depot/bouman/apps/modules/cuda"
 MODULEFILE="${MODULE_DIR}/${CUDA_VERSION_SHORT}"
 
-# Construct download URL from components
-ARCHIVE_NAME="cuda_${CUDA_VERSION_FULL}_linux.run"
-CUDA_URL="https://developer.download.nvidia.com/compute/cuda/redist/cuda/${CUDA_VERSION_FULL}/local_installers/${ARCHIVE_NAME}"
-ARCHIVE_NAME=$(basename "$CUDA_URL")
 
 echo "=== Cleaning previous installation in $INSTALL_DIR"
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-echo "=== Downloading CUDA ${CUDA_VERSION_FULL}"
-wget "$CUDA_URL"
+# List of CUDA components to download and extract
+COMPONENTS=(
+  "linux/x86_64/cuda-toolkit-linux-x86_64-12.9.1-archive.tar.xz"
+  "linux/x86_64/cuda-compiler-linux-x86_64-12.9.1-archive.tar.xz"
+  "linux/x86_64/cuda-cudart-linux-x86_64-12.9.1-archive.tar.xz"
+)
+BASE_URL="https://developer.download.nvidia.com/compute/cuda/redist"
 
-echo "=== Running CUDA installer"
-sh "$ARCHIVE_NAME" --silent --toolkit --override --installpath="$INSTALL_DIR"
-
-echo "=== Cleaning up installer"
-rm -f "$ARCHIVE_NAME"
+for comp in "${COMPONENTS[@]}"; do
+    echo "=== Downloading $comp"
+    wget "${BASE_URL}/${comp}"
+    echo "=== Extracting $(basename "$comp")"
+    tar -xJf "$(basename "$comp")" --strip-components=1 -C "$INSTALL_DIR"
+    rm -f "$(basename "$comp")"
+done
 
 echo "=== Creating modulefile directory at $MODULE_DIR"
 mkdir -p "$MODULE_DIR"
