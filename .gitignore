@@ -5,6 +5,8 @@ demo/output/*
 experiments/data/*
 experiments/output/*
 
+tests_data_dependent/data/*
+
 # ignore jupyter notebook files
 .ipynb_checkpoints/
 *.ipynb
