@@ -1,6 +1,8 @@
 import jax
 import mbirjax as mj
 import h5py
+import tarfile
+import os
 
 def generate_test_data(model_type, size=32):
     # sinogram shape
@@ -40,11 +42,17 @@ def generate_test_data(model_type, size=32):
     recon.block_until_ready()
     recon = jax.device_put(recon)  # move to host
 
-    with h5py.File(f"{output_directory}/{model_type}_{size}_data.h5", "w") as f:
+    h5_path = f"{output_directory}/{model_type}_{size}_data.h5"
+    tar_path = f"{output_directory}/{model_type}_{size}_data.tar.gz"
+
+    with h5py.File(h5_path, "w") as f:
         f.create_dataset("phantom", data=phantom)
         f.create_dataset("sinogram", data=sinogram)
         f.create_dataset("recon", data=recon)
         f.attrs["params"] = back_projection_model.to_file(None)
+
+    with tarfile.open(tar_path, "w:gz") as tar:
+        tar.add(h5_path, arcname=os.path.basename(h5_path))
 
     # view the phantom, sinogram, and recon
     mj.slice_viewer(phantom, title=f"{model_type} phantom {size}")
