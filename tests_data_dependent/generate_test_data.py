@@ -1,9 +1,6 @@
-import numpy as np
 import jax
-import jax.numpy as jnp
 import mbirjax as mj
-import pickle
-
+import h5py
 
 def generate_test_data(model_type, size=32):
     # sinogram shape
@@ -43,18 +40,11 @@ def generate_test_data(model_type, size=32):
     recon.block_until_ready()
     recon = jax.device_put(recon)  # move to host
 
-    # save the phantom, sinogram, recon, and params
-    phantom = np.array(phantom)
-    np.save(f"{output_directory}/{model_type}_phantom_{size}.npy", phantom)
-
-    sinogram = np.array(sinogram)
-    np.save(f"{output_directory}/{model_type}_sinogram_{size}.npy", sinogram)
-
-    recon = np.array(recon)
-    np.save(f"{output_directory}/{model_type}_recon_{size}.npy", recon)
-
-    with open(f"{output_directory}/{model_type}_params_{size}.pkl", "wb") as f:
-        pickle.dump(params, f)
+    with h5py.File(f"{output_directory}/{model_type}_{size}_data.h5", "w") as f:
+        f.create_dataset("phantom", data=phantom)
+        f.create_dataset("sinogram", data=sinogram)
+        f.create_dataset("recon", data=recon)
+        f.attrs["params"] = back_projection_model.to_file(None)
 
     # view the phantom, sinogram, and recon
     mj.slice_viewer(phantom, title=f"{model_type} phantom {size}")
