@@ -635,7 +635,7 @@ class TomographyModel(ParameterHandler):
         # Create the output sinogram
         sinogram_views = jnp.zeros([num_views, sinogram_shape[1], sinogram_shape[2]],
                                    device=self.sinogram_device)
-        view_indices = jnp.arange(0, num_views)[:, None]
+        view_indices = jnp.arange(0, num_views)
         view_indices = jax.device_put(view_indices, device=self.sinogram_device)
 
         # Loop over pixel batches
@@ -668,9 +668,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        if self.use_gpu == 'sharding':
-            if view_indices:
-                raise ValueError('view_indices cannot be used with sharding.')
+        if self.use_gpu == 'sharding' and view_indices is None:
             return self.sparse_forward_project_sharded(voxel_values, pixel_indices, output_device)
 
         # Batch the views and pixels for possible transfer to the gpu
@@ -749,7 +747,7 @@ class TomographyModel(ParameterHandler):
 
         # Loop over pixel batches
         voxel_batch_list = []
-        view_indices = jnp.arange(num_views)[:, None]
+        view_indices = jnp.arange(num_views)
         sinogram, view_indices = jax.device_put([sinogram, view_indices], device=self.sinogram_device)
         for pixel_index_start, pixel_index_end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
             pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], self.replicated_device)
@@ -782,9 +780,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
-        if self.use_gpu == 'sharding':
-            if view_indices:
-                raise ValueError('view_indices cannot be used with sharding.')
+        if self.use_gpu == 'sharding' and view_indices is None:
             return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
