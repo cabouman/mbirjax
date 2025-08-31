@@ -1,9 +1,11 @@
+import os
 import unittest
-import numpy as np
+import h5py
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
-import pickle
+
+import shutil
 
 # use_gpu: 'automatic', 'full', 'sinograms', 'projections', 'none'
 # geometry: 'cone', 'parallel'
@@ -14,47 +16,39 @@ class TestProjectionCone(unittest.TestCase):
     Unit tests for verifying the projection accuracy of the cone beam model in MBIRJAX.
     """
 
-    control_phantom_filepath = None
-    control_sinogram_filepath = None
-    control_recon_filepath = None
-    control_params_filepath = None
+    source_filepath = f"/depot/bouman/users/ncardel/cone_32_data.h5"
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    dest_filepath = None
 
     @classmethod
     def setUpClass(cls):
         """Set up once before all tests."""
-        # TODO: create a ./data dir and download data into it from depot
 
-        output_directory = f"/depot/bouman/users/ncardel"
+        if not os.path.exists(cls.data_dir):
+            os.makedirs(cls.data_dir)
 
-        cls.control_phantom_filepath = output_directory + '/cone_phantom_32.npy'
-        cls.control_sinogram_filepath = output_directory + '/cone_sinogram_32.npy'
-        cls.control_recon_filepath = output_directory + '/cone_recon_32.npy'
-        cls.control_params_filepath = output_directory + '/cone_params_32.pkl'
+        # TODO: download and untar
+        filename = os.path.basename(cls.source_filepath)
+        cls.dest_filepath = f"{cls.data_dir}/{filename}"
+        shutil.copy(cls.source_filepath, cls.dest_filepath)
 
     @classmethod
     def tearDownClass(cls):
         """Clean up once before all tests."""
-        # TODO: delete files that were downloaded
-        pass
+        if os.path.exists(cls.dest_filepath):
+            os.remove(cls.dest_filepath)
 
     def setUp(self):
         """Set up before each test method."""
-        # load phantom, sinogram, and recon
-        self.control_phantom = np.load(self.control_phantom_filepath)
-        self.control_sinogram = np.load(self.control_sinogram_filepath)
-        self.control_recon = np.load(self.control_recon_filepath)
 
-        # params
-        with open(self.control_params_filepath, "rb") as f:
-            self.control_params = pickle.load(f)
-        angles = self.control_params['angles']
-        source_detector_dist = self.control_params['source_detector_dist']
-        source_iso_dist = self.control_params['source_iso_dist']
+        with h5py.File(self.dest_filepath, "r") as f:
+            self.control_phantom = f["phantom"][:]
+            self.control_sinogram = f["sinogram"][:]
+            self.control_recon = f["recon"][:]
+            self.control_params = f.attrs["params"]
 
         # create projection model
-        self.projection_model = mj.ConeBeamModel(self.control_sinogram.shape, angles,
-                                                      source_detector_dist=source_detector_dist,
-                                                      source_iso_dist=source_iso_dist)
+        self.projection_model = mj.ConeBeamModel.from_file(self.control_params)
 
     def tearDown(self):
         """Clean up after each test method."""
