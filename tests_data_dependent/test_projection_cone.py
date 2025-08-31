@@ -5,15 +5,15 @@ import mbirjax as mj
 class ProjectionTestBase(unittest.TestCase):
     """
     Reusable test suite for a projection model. Subclasses must set:
-      - SOURCE_FILEPATH (str)
       - MODEL (class with .from_file)
+      - SOURCE_FILEPATH (str)
     """
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"]
     ATOL = 1e-3
 
     # To be overridden in subclasses:
-    SOURCE_FILEPATH = None
     MODEL = None
+    SOURCE_FILEPATH = None
 
     TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp")
     DATA_FILEPATH = None
