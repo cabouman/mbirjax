@@ -47,7 +47,7 @@ class ProjectionTestBase(unittest.TestCase):
 
     # ---------- Forward projection tests ----------
 
-    def test_sparse_forward_project(self):
+    def test_forward_project(self):
         """Forward-project the control phantom and compare against control sinogram."""
         for opt in self.USE_GPU_OPTS:
             with self.subTest(geometry=self.MODEL.__name__, use_gpu=opt):
@@ -59,7 +59,7 @@ class ProjectionTestBase(unittest.TestCase):
                     msg=f"[{self.MODEL.__name__}] forward mismatch (use_gpu={opt})",
                 )
 
-    def test_sparse_forward_project_rejects_biased_input_at_tol(self):
+    def test_forward_project_rejects_biased_input_at_tol(self):
         """
         Adding a small bias to the phantom should change the sinogram enough
         to break equality at the chosen tolerance.
@@ -87,7 +87,7 @@ class ProjectionTestBase(unittest.TestCase):
 
     # ---------- Back-projection tests ----------
 
-    def test_sparse_back_project(self):
+    def test_back_project(self):
         """Back-project the control sinogram and compare against control reconstruction."""
         for opt in self.USE_GPU_OPTS:
             with self.subTest(geometry=self.MODEL.__name__, use_gpu=opt):
@@ -99,7 +99,7 @@ class ProjectionTestBase(unittest.TestCase):
                     msg=f"[{self.MODEL.__name__}] back-projection mismatch (use_gpu={opt})",
                 )
 
-    def test_sparse_back_project_rejects_biased_input_at_tol(self):
+    def test_back_project_rejects_biased_input_at_tol(self):
         """
         Adding a small bias to the sinogram should change the reconstruction
         enough to break equality at the chosen tolerance.
