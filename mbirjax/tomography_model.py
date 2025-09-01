@@ -86,6 +86,7 @@ class TomographyModel(ParameterHandler):
         self.mem_required_for_gpu = 0
         self.mem_required_for_cpu = 0
         self.use_gpu = 'none'  # This is set in set_devices_and_batch_sizes based on memory and get_params('use_gpu')
+        self.sharding_dict = dict()
         self.set_devices_and_batch_sizes()
         self.create_projectors()
 
@@ -230,9 +231,7 @@ class TomographyModel(ParameterHandler):
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
         # 'automatic' and more than one GPU: Everything will be done with sharding
-        if use_gpu == 'automatic' and len(gpus) > 1:
-
-            # FIXME: calculate this based off of actual memory
+        if use_gpu == 'automatic' and len(gpus) > 1:  # This is the case for sharding
             # self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
             projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
@@ -256,6 +255,9 @@ class TomographyModel(ParameterHandler):
             self.replicated_device = NamedSharding(mesh, P())
             self.worker = gpus[0]
             self.use_gpu = 'sharding'
+            num_gpus = len(gpus)
+            num_views_to_pad = num_gpus - num_views % num_gpus
+            self.sharding_dict['views_to_pad'] = num_views_to_pad % num_gpus
 
         # 'full':  Everything on GPU
         elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
@@ -757,7 +759,7 @@ class TomographyModel(ParameterHandler):
             voxel_batch = voxel_batch.block_until_ready()
             voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
 
-            recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
+        recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
 
         return recon_at_indices
 
@@ -1254,7 +1256,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return recon, recon_dict
+        return jax.device_get(recon), recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
@@ -1910,7 +1912,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Prox completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return recon, recon_dict
+        return jax.device_get(recon), recon_dict
 
     @staticmethod
     def gen_weights(sinogram, weight_type):
