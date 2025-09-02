@@ -2,11 +2,60 @@ To get multiple gpus (note that -n should be a multiple of 14, and larger multip
 
     sinteractive -A bouman -N1 -n42 --gpus-per-node=8 -q normal -p ai -t 04:00:00
 
+-------------
+
 To get an updated cudnn, needed in rcac for multiple gpus as of August 2025:
 The script below installs cudnn on data depot.  The library can then be accessed and activated by:
     module use /depot/bouman/apps/modules
     module load cudnn/9.11.0
 
+-------------
+
+To get pycharm debugger to use this cudnn:
+Use `module show cudnn` to get the following information:
+
+prepend_path("LD_LIBRARY_PATH","/depot/bouman/apps/cudnn/9.11.0/lib")
+prepend_path("CPATH","/depot/bouman/apps/cudnn/9.11.0/include")
+
+In pycharm:
+	•	Run → Edit Configurations… → your configuration
+	•	Environment variables → click …
+	•	Add (example paths; use your actual ones):
+	•	LD_LIBRARY_PATH=/opt/cudnn/8.9.7/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+	•	(Optional, if headers needed at build time) CPATH=/opt/cudnn/8.9.7/include:$CPATH
+	•	(Optional) PATH=/usr/local/cuda/bin:$PATH
+	•	Make sure “Include system environment variables” is checked.
+
+This ensures the debugger process can find libcudnn*.so at runtime.
+
+To do this for multiple configurations, use one of these approaches:
+
+⸻
+
+1. Set environment variables at the interpreter level
+
+If you go to
+
+Settings → Project: … → Python Interpreter → ⚙ → Show All → (select your interpreter) → Edit,
+
+you’ll see an “Environment Variables” section. Anything you put there applies to all Run/Debug Configurations that use this interpreter.
+
+So if you add your LD_LIBRARY_PATH (and friends) there, every configuration based on that interpreter will automatically inherit it.
+
+⸻
+
+2. Use Templates for Run/Debug Configurations
+
+Under Run → Edit Configurations… → Templates (left pane), you can set defaults for each configuration type (e.g. “Python”).
+
+If you edit the template’s Environment Variables, every new configuration you create of that type will start with those values already filled in.
+
+Note: This doesn’t retroactively update existing configurations — but it helps prevent duplication when you add new ones.
+
+
+-------------
+
+Script to create the cudnn module:
 
 #!/bin/bash
 
