@@ -31,6 +31,14 @@ def get_experiment_params(experiment_name):
         override_config = {
             # Modify only what's different for experiment2
             # Example: "phantom_type": "dots",
+            'num_det_rows': 1936,
+            'num_det_channels': 3064,
+            'x_view_space_mm': 7.6,
+            'z_view_space_mm': 6.9,
+            'num_x_translations': 7,
+            'num_z_translations': 5,
+            'num_pixels_in_object': 15,
+            'text': ['P']*15,
         }
         return {**base_config, **override_config}
 
@@ -70,7 +78,7 @@ def main():
     half_angle_rad = np.arctan2(max(num_det_rows, num_det_channels) / 2.0, source_iso_dist_ALU)
     object_width_ALU = object_width_mm * ALU_per_mm
     object_thickness_ALU = object_thickness_mm * ALU_per_mm
-    delta_recon_row = object_thickness_ALU / num_pixels_in_object
+    # delta_recon_row = object_thickness_ALU / num_pixels_in_object
 
     # Generate translation vectors
     translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_view_spacing_ALU, z_view_spacing_ALU)
@@ -84,9 +92,9 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Set number of rows in recon to match desired object thickness
-    recon_shape = (3*int(object_thickness_ALU / delta_recon_row), recon_shape[1], recon_shape[2])
-    tct_model.set_params(recon_shape=recon_shape)
-    tct_model.set_params(delta_recon_row=delta_recon_row)
+    # recon_shape = (3*int(object_thickness_ALU / delta_recon_row), recon_shape[1], recon_shape[2])
+    # tct_model.set_params(recon_shape=recon_shape)
+    # tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(qggmrf_nbr_wts=[1.0, 1.0, 0.1])
 
 
@@ -116,7 +124,7 @@ def main():
     text_start_index = (recon_shape[0] - num_pixels_in_object) // 2
     row_indices = list(range(text_start_index, text_start_index + num_pixels_in_object))
     gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, text=text,
-                                          font_size=object_width_ALU,
+                                          font_size=object_width_ALU/0.73,
                                           text_row_indices=row_indices)
 
     # View test sample
@@ -124,6 +132,7 @@ def main():
 
     # Generate synthetic sonogram data
     sino = tct_model.forward_project(gt_recon)
+    sino = np.asarray(sino)
 
     # View sinogram
     mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
