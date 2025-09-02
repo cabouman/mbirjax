@@ -505,10 +505,9 @@ class ConeBeamModel(TomographyModel):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
         # Set up slice indices array (0, slices_per_batch, 2*slices_per_batch, ..., num_slice_batches*slices_per_batch)
-        num_slices = detector_column_values.shape[0]
         slices_per_batch = gp.entries_per_cylinder_batch
-        slices_per_batch = min(slices_per_batch, num_slices)
-        num_slice_batches = (num_slices + slices_per_batch - 1) // slices_per_batch
+        slices_per_batch = min(slices_per_batch, num_recon_slices)
+        num_slice_batches = (num_recon_slices + slices_per_batch - 1) // slices_per_batch
         slice_indices = slices_per_batch * jnp.arange(num_slice_batches)
 
         # Set up a function to map over the slices of the cylinder
