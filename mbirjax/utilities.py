@@ -1102,3 +1102,85 @@ def gen_cube_phantom(recon_shape, device=None):
             phantom_rows, phantom_cols)
 
     return jnp.array(phantom, device=device)
+
+
+def stitch_arrays(array_list, overlap, axis=2):
+    """
+    Concatenate JAX arrays along one axis while linearly blending a fixed overlap
+    between adjacent arrays.
+
+    This behaves like `jnp.concatenate` except that for each adjacent pair, the
+    first `overlap_length` elements of the second array and the last
+    `overlap_length` elements of the current result are combined by a piece-wise linear cross‑fade.
+
+    All non‑`axis` dimensions must match across inputs.
+
+    Args:
+        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
+        overlap (int): Number of elements to blend between each adjacent pair.
+            Must be `>= 1` and not exceed the length of any input along `axis`.
+        axis (int, optional): Axis along which to stitch. Defaults to 2.
+
+    Returns:
+        jax.Array: Stitched array. Its shape equals the input shape with the
+        length along `axis` equal to:
+
+            sum(len_k) - (len(array_list) - 1) * overlap_length
+
+        where `len_k` are the lengths of each input along `axis`.
+
+    Raises:
+        ValueError: If fewer than two arrays are provided, if non‑`axis`
+            dimensions differ, or if any array is shorter than
+            `overlap_length` along `axis`.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> a0 = jnp.arange(2*2*5).reshape(2, 2, 5)
+        >>> a1 = jnp.arange(2*2*6).reshape(2, 2, 6)
+        >>> out = stitch_arrays([a0, a1], overlap=3, axis=2)
+        >>> out.shape
+        (2, 2, 8)
+
+        # 8 comes from 5 + 6 - 3 (one overlap between two arrays).
+    """
+    # Check for valid input
+    if not isinstance(array_list, list) or len(array_list) < 2:
+        raise ValueError('array_list must be a list of 2 or more jax arrays.')
+    for dim in range(array_list[0].ndim):
+        lengths = [array.shape[dim] for array in array_list]
+        if dim != axis:
+            if np.amax(lengths) != np.amin(lengths):
+                raise ValueError('The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
+        if dim == axis:
+            if np.amin(lengths) < overlap:
+                raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
+
+    # Create a piecewise linear weight array:
+    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
+    t = jnp.linspace(0, 1, overlap)
+    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    weights_shape = np.ones(array_list[0].ndim, dtype=int)
+    weights_shape[0] = len(weights)
+    weights = weights.reshape(weights_shape)
+
+    # Start with the first array in the list
+    stitched = jnp.swapaxes(array_list[0], 0, axis)
+
+    # Iterate through each subsequent array in the list
+    for next_array in array_list[1:]:
+        # Extract the overlap from the current end of the stitched array and the beginning of the next array
+        overlap_current = stitched[-overlap:]
+        next_array = jnp.swapaxes(next_array, 0, axis)
+        overlap_next = next_array[:overlap]
+
+        # Weighted average for the overlapping part
+        weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
+
+        # Replace the overlap in the stitched array
+        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+
+        # Append the non-overlapping remainder of the next array
+        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+
+    return jnp.swapaxes(stitched, 0, axis)
