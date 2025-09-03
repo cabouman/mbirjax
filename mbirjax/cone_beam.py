@@ -933,7 +933,6 @@ class ConeBeamModel(TomographyModel):
         # -------- Choose an even detector row nearest isocenter --------
         det_center_row_float = ((num_rows - 1) / 2.0) + (det_row_offset / delta_det_row)
         det_center_row_index = int(jnp.round(det_center_row_float))
-        det_center_row_index -= det_center_row_index % 2  # force even
 
         # -------- Row ranges for top and bottom sinogram halves --------
         top_lo = 0
