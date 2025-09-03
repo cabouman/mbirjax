@@ -1,7 +1,7 @@
 import numpy as np
 import mbirjax as mj
 import mbirjax.preprocess as mjp
-
+import mbirjax.utilities
 
 if __name__ == '__main__':
 
@@ -47,7 +47,7 @@ if __name__ == '__main__':
     # Compute view angles
 
     # Create the model to contain all the geometry information
-    ct_model = mjp.get_ct_model(geometry_type, sinogram_shape, angle_candidates, source_detector_dist, source_iso_dist)
+    ct_model = mbirjax.utilities.get_ct_model(geometry_type, sinogram_shape, angle_candidates, source_detector_dist, source_iso_dist)
 
     sino = ct_model.forward_project(reference_object)
     mj.slice_viewer(sino, vmax=2, slice_axis=0, title='Reference object sinogram')
