@@ -55,14 +55,16 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     return model
 
 
-def copy_ct_model(ct_model, new_angles):
+def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
     """
     Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
-    and a corresponding sinogram shape.
+    and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
 
     Args:
         ct_model (TomographyModel): The model to copy.
-        new_angles (ndarray of float): 1D vector of projection angles in radians
+        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
+        new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
+        new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
 
     Returns:
         An instance of ConeBeamModel or ParallelBeam model
@@ -73,10 +75,23 @@ def copy_ct_model(ct_model, new_angles):
                                                                            values_only=True)
 
     #  Get the shape of the old sinogram
-    old_shape = ct_model.get_params('sinogram_shape')
+    new_shape = list(ct_model.get_params('sinogram_shape'))
+    try:
+        old_angles = ct_model.get_params('angles')
+    except NameError as e:
+        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    if new_angles is None:
+        new_angles = old_angles
+    new_shape[0] = len(new_angles)
+
+    if new_num_det_rows is None:
+        new_shape[1] = new_num_det_rows
+
+    if new_num_det_cols is None:
+        new_shape[2] = new_num_det_cols
 
     # Set the new sinogram shape and angles
-    required_params['sinogram_shape'] = (len(new_angles), old_shape[1], old_shape[2])
+    required_params['sinogram_shape'] = new_shape
     required_params['angles'] = new_angles
     new_model = type(ct_model)(**required_params)
     with warnings.catch_warnings():
