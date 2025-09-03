@@ -1252,6 +1252,7 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
     new_model = type(ct_model)(**required_params)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        del other_params['recon_shape']  # This should be set automatically by the constructor
         new_model.set_params(**other_params)
 
     return new_model
