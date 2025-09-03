@@ -84,14 +84,14 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         new_angles = old_angles
     new_shape[0] = len(new_angles)
 
-    if new_num_det_rows is None:
+    if new_num_det_rows is not None:
         new_shape[1] = new_num_det_rows
 
-    if new_num_det_cols is None:
+    if new_num_det_cols is not None:
         new_shape[2] = new_num_det_cols
 
     # Set the new sinogram shape and angles
-    required_params['sinogram_shape'] = new_shape
+    required_params['sinogram_shape'] = tuple(new_shape)
     required_params['angles'] = new_angles
     new_model = type(ct_model)(**required_params)
     with warnings.catch_warnings():
