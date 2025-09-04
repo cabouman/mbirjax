@@ -929,18 +929,25 @@ class ConeBeamModel(TomographyModel):
         delta_det_row = self.get_params('delta_det_row')
         det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
+        recon_slice_offset = self.get_params('recon_slice_offset')
 
-        # -------- Choose an even detector row nearest isocenter --------
-        det_center_row_float = ((num_rows - 1) / 2.0) + (det_row_offset / delta_det_row)
-        det_center_row_index = int(jnp.round(det_center_row_float))
+        # -------- Choose the detector row nearest to iso --------
+        det_iso_row_float = ((num_rows - 1) / 2.0) + (det_row_offset / delta_det_row)
+        det_iso_row_index = int(jnp.round(det_iso_row_float))
 
-        # -------- Row ranges for top and bottom sinogram halves --------
+        # Validate iso-row index is inside (0, num_rows)
+        if not (0 < det_iso_row_index < num_rows):
+            raise ValueError(
+                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {num_rows-1}). "
+            )
+
+        # -------- Detector row ranges for top and bottom sinogram halves --------
         top_lo = 0
-        top_hi = min(det_center_row_index + half_overlap, num_rows)
-        bot_lo = max(det_center_row_index - half_overlap, 0)
+        top_hi = min(det_iso_row_index + half_overlap, num_rows)
+        bot_lo = max(det_iso_row_index - half_overlap, 0)
         bot_hi = num_rows
 
-        # -------- Slice sinogram (and weights) halves --------
+        # -------- Split sinogram (and weights) into top and bottom halves --------
         sino_top_half = sino[:, top_lo:top_hi, :]
         sino_bot_half = sino[:, bot_lo:bot_hi, :]
 
@@ -950,7 +957,7 @@ class ConeBeamModel(TomographyModel):
             weights_top_half = weights[:, top_lo:top_hi, :]
             weights_bot_half = weights[:, bot_lo:bot_hi, :]
 
-        # -------- Shapes and detector-row center alignment --------
+        # -------- Calculate number of rows and center location for top and bottom sinograms --------
         top_num_rows = top_hi - top_lo
         bot_num_rows = bot_hi - bot_lo
 
