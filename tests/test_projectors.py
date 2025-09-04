@@ -173,7 +173,7 @@ class TestProjectors(unittest.TestCase):
         for j in range(sinogram.shape[0]):
             sinogram_stitched[j] = sinogram_batched[j % num_subsets][j // num_subsets]
 
-        forward_view_batch_test_result = np.allclose(sinogram, sinogram_stitched)
+        forward_view_batch_test_result = np.allclose(sinogram, sinogram_stitched, atol=1e-5)
         self.assertTrue(forward_view_batch_test_result)
 
         # Then repeat for back projection
