@@ -934,6 +934,7 @@ class ConeBeamModel(TomographyModel):
         delta_det_row = self.get_params('delta_det_row')
         det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
+        recon_shape = self.get_params('recon_shape')
         recon_slice_offset = self.get_params('recon_slice_offset')
 
         # -------- Choose the detector row nearest to iso --------
@@ -982,16 +983,27 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half = mj.copy_ct_model(self, new_num_det_rows=bot_num_rows)
         ct_model_bot_half.set_params(det_row_offset=bot_det_row_offset)
 
-        # Validate half_overlap value against recon slice dimension for quilting
-        top_recon_shape = ct_model_top_half.get_params('recon_shape')
-        bot_recon_shape = ct_model_bot_half.get_params('recon_shape')
+        # -------- Compute the recon row nearest to iso --------
+        recon_iso_row_float = (recon_shape[2] - 1) / 2.0 - recon_slice_offset/delta_voxel
+        recon_iso_row_index = int(jnp.round(recon_iso_row_float))
+
+        # -------- Compute and set the shapes of top and bottom recons --------
+        top_recon_shape = (recon_shape[0], recon_shape[1], recon_iso_row_index + half_overlap)
+        bot_recon_shape = (recon_shape[0], recon_shape[1], (recon_shape[2] - recon_iso_row_index) + half_overlap)
+
+        ct_model_top_half.set_params(recon_shape=top_recon_shape)
+        ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
+
+        #ToDo: If either top or bottom reshape has rows<=0, then do not perform reconstruction for that half.
+
+        # Validate that neither top nor bottom recon shape has rows > half_overlap
         recon_slices = int(min(top_recon_shape[2], bot_recon_shape[2]))
         if not (0 < half_overlap < recon_slices):
-            raise ValueError(f"half_overlap must satisfy 0 < half_overlap < recon_slices ({recon_slices}).")
+            raise ValueError(f"Top or bottom recon has ({recon_slices}) slices, which is less than half_overlap ({half_overlap}).")
 
-        # -------- Slice offsets for quilting --------
-        top_recon_slice_offset = (-(top_recon_shape[2] / 2) + half_overlap) * delta_voxel
-        bot_recon_slice_offset = ((bot_recon_shape[2] / 2) - half_overlap) * delta_voxel
+        # -------- Compute and set the offsets of top and bottom recons --------
+        top_recon_slice_offset =  (half_overlap - (top_recon_shape[2]/2)) * delta_voxel
+        bot_recon_slice_offset = -(half_overlap - (bot_recon_shape[2]/2)) * delta_voxel
 
         ct_model_top_half.set_params(recon_slice_offset=top_recon_slice_offset)
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
