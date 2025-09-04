@@ -869,7 +869,8 @@ class ConeBeamModel(TomographyModel):
 
         return recon
 
-    def recon_split_sino(self, sino, weights=None, half_overlap=5):
+    def recon_split_sino(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
+                         first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
         Reconstruct from a full sinogram by splitting detector rows into two overlapping halves,
         reconstructing each half with its own ConeBeamModel, and stitching the halves together.
@@ -877,11 +878,15 @@ class ConeBeamModel(TomographyModel):
 
         Args:
             sino (jnp.ndarray | np.ndarray): Full sinogram of shape (num_views, num_rows, num_cols).
-            weights (jnp.ndarray | np.ndarray, optional): Optional sinogram weights with the same
-                shape as `sino`. If provided, they are split consistently and passed to each half recon.
-            half_overlap (int): Number of overlapping detector rows and recon slices per half
-                (total overlap = 2 * half_overlap). Must satisfy 0 < half_overlap < num_rows,
-                and later 0 < half_overlap < recon_slices for quilting.
+            weights (jnp.ndarray | np.ndarray, optional): Optional sinogram weights with the same shape as `sino`.
+            half_overlap (int): Number of overlapping detector rows and recon slices per half. (total overlap = 2 * half_overlap)
+            init_recon (optional): Same as in the recon method.
+            max_iterations (int, optional): Same as in the recon method.
+            stop_threshold_change_pct (float, optional): Same as in the recon method.
+            first_iteration (int, optional): Same as in the TomographyModel.recon() method.
+            compute_prior_loss (bool, optional): Same as in the TomographyModel.recon() method.
+            logfile_path (str, optional): Same as in the TomographyModel.recon() method.
+            print_logs (bool, optional): Same as in the TomographyModel.recon() method.
 
         Returns:
             Tuple[jnp.ndarray, dict]:
@@ -992,8 +997,18 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
 
         # -------- Reconstruct halves (pass weights if provided) --------
-        recon_top_half, recon_top_dict = ct_model_top_half.recon(sino_top_half, weights=weights_top_half)
-        recon_bot_half, recon_bot_dict = ct_model_bot_half.recon(sino_bot_half, weights=weights_bot_half)
+        recon_top_half, recon_top_dict = ct_model_top_half.recon(sino_top_half, weights=weights_top_half,
+                                                                 init_recon=init_recon, max_iterations=max_iterations,
+                                                                 stop_threshold_change_pct=stop_threshold_change_pct,
+                                                                 first_iteration=first_iteration,
+                                                                 compute_prior_loss=compute_prior_loss,
+                                                                 logfile_path=logfile_path, print_logs=print_logs)
+        recon_bot_half, recon_bot_dict = ct_model_bot_half.recon(sino_bot_half, weights=weights_bot_half,
+                                                                 init_recon=init_recon, max_iterations=max_iterations,
+                                                                 stop_threshold_change_pct=stop_threshold_change_pct,
+                                                                 first_iteration=first_iteration,
+                                                                 compute_prior_loss=compute_prior_loss,
+                                                                 logfile_path=logfile_path, print_logs=print_logs)
 
         # -------- Stitch together top and bottom reconstructions --------
         recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap, axis=2)
