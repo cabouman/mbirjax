@@ -7,7 +7,7 @@ set -e
 # https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/
 CUDNN_VERSION="9.12.0"
 CUDNN_FULL_VERSION="9.12.0.46"
-CUDA_VERSION="cuda13"
+CUDA_VERSION="cuda12"
 
 # Define paths
 INSTALL_DIR="/depot/bouman/apps/cudnn/${CUDNN_VERSION}"

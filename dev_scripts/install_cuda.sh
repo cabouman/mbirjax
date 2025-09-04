@@ -6,10 +6,11 @@ set -e
 # Config
 # =========================
 
-# Versions for URL determined at this link
+# Versions for URL determined at these links
+# https://developer.nvidia.com/cuda-12-9-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Rocky&target_version=9&target_type=runfile_local
 # https://developer.nvidia.com/cuda-downloads/?target_os=Linux&target_arch=x86_64&Distribution=Rocky&target_version=9&target_type=runfile_local
-CUDA_VERSION="13.0.0"
-CUDA_FULL_VERSION="13.0.0_580.65.06"
+CUDA_VERSION="12.9.0"
+CUDA_FULL_VERSION="12.9.0_575.51.03"
 
 CUDA_RUNFILE_URL="https://developer.download.nvidia.com/compute/cuda/${CUDA_VERSION}/local_installers/cuda_${CUDA_FULL_VERSION}_linux.run"
 
