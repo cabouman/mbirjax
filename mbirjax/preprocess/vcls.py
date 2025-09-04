@@ -1,7 +1,6 @@
 import os
 import random
 import tempfile
-import warnings
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,62 +27,6 @@ def subsample_R_gamma(R, gamma, selected_indices):
     R_sub = R[selected_indices[:, None], selected_indices]
     gamma_sub = gamma[selected_indices, :]
     return R_sub, gamma_sub
-
-
-def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None):
-    """
-    Create an instance of TomographyModel with the given parameters
-
-    Args:
-        geometry_type (str): 'parallel' or 'cone'
-        sinogram_shape (tuple list of int): (num_views, num_rows, num_channels)
-        angles (ndarray of float): 1D vector of projection angles in radians
-        source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
-        source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
-
-    Returns:
-        An instance of ConeBeamModel or ParallelBeam model
-    """
-    if geometry_type == 'cone':
-        model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                 source_iso_dist=source_iso_dist)
-    elif geometry_type == 'parallel':
-        model = mj.ParallelBeamModel(sinogram_shape, angles)
-    else:
-        raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
-
-    return model
-
-
-def copy_ct_model(ct_model, new_angles):
-    """
-    Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
-    and a corresponding sinogram shape.
-
-    Args:
-        ct_model (TomographyModel): The model to copy.
-        new_angles (ndarray of float): 1D vector of projection angles in radians
-
-    Returns:
-        An instance of ConeBeamModel or ParallelBeam model
-    """
-    required_param_names = ct_model.get_required_param_names()
-    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                           required_param_names=required_param_names,
-                                                                           values_only=True)
-
-    #  Get the shape of the old sinogram
-    old_shape = ct_model.get_params('sinogram_shape')
-
-    # Set the new sinogram shape and angles
-    required_params['sinogram_shape'] = (len(new_angles), old_shape[1], old_shape[2])
-    required_params['angles'] = new_angles
-    new_model = type(ct_model)(**required_params)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        new_model.set_params(**other_params)
-
-    return new_model
 
 
 def max_abs_neighbor_diff(arr):

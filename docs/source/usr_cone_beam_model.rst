@@ -28,3 +28,4 @@ FDK Reconstruction
 ------------------
 
 .. automethod:: mbirjax.ConeBeamModel.fdk_recon
+.. automethod:: mbirjax.ConeBeamModel.recon_split_sino

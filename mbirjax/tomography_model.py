@@ -426,9 +426,9 @@ class TomographyModel(ParameterHandler):
             string_dict = recon_dict.copy()
             yaml_writer = YAML()
             for key, value in string_dict.items():
-                if key == 'model_params' and isinstance(string_dict['model_params'], dict):
+                if key.startswith('model_params') and isinstance(string_dict[key], dict):
                     # 'model_params' must be handled separately to guarantee the ability to reload
-                    string_dict['model_params'] = ParameterHandler.save_params(string_dict['model_params'])
+                    string_dict[key] = ParameterHandler.save_params(string_dict[key])
                 elif isinstance(value, dict):
                     # Otherwise convert dicts to yaml strings
                     buf = io.StringIO()

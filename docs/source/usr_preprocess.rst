@@ -71,5 +71,4 @@ View selection (VCLS) functions
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: get_opt_views
-.. autofunction:: copy_ct_model
 .. autofunction:: show_image_with_projection_rays
