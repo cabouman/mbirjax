@@ -918,40 +918,40 @@ class ConeBeamModel(TomographyModel):
         if weights is not None and getattr(weights, "shape", None) != sino.shape:
             raise AssertionError("weights, if provided, must have the same shape as sino.")
 
-        num_views, num_rows, num_cols = sino.shape
+        # Get sino shape parameters for later use
+        num_views, full_num_rows, num_cols = sino.shape
 
         # Validate half_overlap value for detector-row split
         if not isinstance(half_overlap, (int, np.integer)):
             raise TypeError("half_overlap must be an integer.")
-        if not (0 < half_overlap < num_rows):
-            raise ValueError(f"half_overlap must satisfy 0 < half_overlap < num_rows ({num_rows}).")
-
-        # Test that model is cone beam geometry
-        if not isinstance(self, mj.ConeBeamModel):
-            raise TypeError("ct_model must be an mbirjax ConeBeamModel.")
+        if not (0 < half_overlap < full_num_rows):
+            raise ValueError(f"half_overlap must satisfy 0 < half_overlap < num_rows ({full_num_rows}).")
 
         # -------- parameters needed to create top and bottom models --------
         delta_det_row = self.get_params('delta_det_row')
-        det_row_offset = self.get_params('det_row_offset')
+        full_det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
-        recon_shape = self.get_params('recon_shape')
-        recon_slice_offset = self.get_params('recon_slice_offset')
+        full_recon_shape = self.get_params('recon_shape')
+        full_recon_slice_offset = self.get_params('recon_slice_offset')
 
+        """
+        Compute detector shape parameters for top and bottom sinograms
+        """
         # -------- Choose the detector row nearest to iso --------
-        det_iso_row_float = ((num_rows - 1) / 2.0) + (det_row_offset / delta_det_row)
+        det_iso_row_float = ((full_num_rows - 1) / 2.0) + (full_det_row_offset / delta_det_row)
         det_iso_row_index = int(jnp.round(det_iso_row_float))
 
         # Validate iso-row index is inside (0, num_rows)
-        if not (0 < det_iso_row_index < num_rows):
+        if not (0 < det_iso_row_index < full_num_rows):
             raise ValueError(
-                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {num_rows-1}). "
+                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {full_num_rows-1}). "
             )
 
         # -------- Detector row ranges for top and bottom sinogram halves --------
         top_lo = 0
-        top_hi = min(det_iso_row_index + half_overlap, num_rows)
+        top_hi = min(det_iso_row_index + half_overlap, full_num_rows)
         bot_lo = max(det_iso_row_index - half_overlap, 0)
-        bot_hi = num_rows
+        bot_hi = full_num_rows
 
         # -------- Split sinogram (and weights) into top and bottom halves --------
         sino_top_half = sino[:, top_lo:top_hi, :]
@@ -967,13 +967,22 @@ class ConeBeamModel(TomographyModel):
         top_num_rows = top_hi - top_lo
         bot_num_rows = bot_hi - bot_lo
 
-        det_center = (num_rows - 1) / 2.0
+        full_det_center = (full_num_rows - 1) / 2.0
         top_det_center = (top_num_rows - 1) / 2.0
         bot_det_center = (bot_num_rows - 1) / 2.0
 
-        # -------- Calculate row offsets required for top and bottom models --------
-        top_det_row_offset = det_row_offset + ((det_center - top_lo) - top_det_center) * delta_det_row
-        bot_det_row_offset = det_row_offset + ((det_center - bot_lo) - bot_det_center) * delta_det_row
+        # -------- Calculate detector row offsets required for top and bottom models --------
+        top_det_row_offset = full_det_row_offset + (full_det_center - (top_det_center + top_lo)) * delta_det_row
+        bot_det_row_offset = full_det_row_offset + (full_det_center - (bot_det_center + bot_lo)) * delta_det_row
+
+        # Test for correctness of top and bottom detector iso
+        full_det_iso = full_det_center + full_det_row_offset / delta_det_row
+        top_det_iso = top_det_center + top_det_row_offset / delta_det_row
+        bot_det_iso = bot_det_center + bot_det_row_offset / delta_det_row
+        if not (full_det_iso == top_det_iso):
+            raise ValueError("Detector iso mismatch between full and top sinograms.")
+        if not (full_det_iso == (bot_det_iso + bot_lo)):
+            raise ValueError("Detector iso mismatch between full and bottom sinograms.")
 
         # -------- Build top-half model --------
         ct_model_top_half = mj.copy_ct_model(self, new_num_det_rows=top_num_rows)
@@ -983,23 +992,28 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half = mj.copy_ct_model(self, new_num_det_rows=bot_num_rows)
         ct_model_bot_half.set_params(det_row_offset=bot_det_row_offset)
 
-        # -------- Compute the recon row nearest to iso --------
-        recon_iso_row_float = (recon_shape[2] - 1) / 2.0 - recon_slice_offset/delta_voxel
-        recon_iso_row_index = int(jnp.round(recon_iso_row_float))
+        """
+        Compute recon shape parameters for top and bottom reconstructions
+        """
+        # Get recon shape parameters for later use
+        full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
+
+        # -------- Compute the recon slice nearest to iso --------
+        full_recon_iso_slice_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel
+        full_recon_iso_slice_index = int(jnp.round(full_recon_iso_slice_float))
+
+        #ToDo: If either top or bottom recon is empty, then do not perform reconstruction for that half.
+
+        # Validate that both top nor bottom recon shape has half_overlap < slices
+        if (full_recon_iso_slice_index < 1) or (full_recon_iso_slice_index > full_recon_slices -2):
+            raise ValueError(f"Top or bottom recon are empty.")
 
         # -------- Compute and set the shapes of top and bottom recons --------
-        top_recon_shape = (recon_shape[0], recon_shape[1], recon_iso_row_index + half_overlap)
-        bot_recon_shape = (recon_shape[0], recon_shape[1], (recon_shape[2] - recon_iso_row_index) + half_overlap)
+        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], full_recon_iso_slice_index + half_overlap)
+        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - full_recon_iso_slice_index) + half_overlap)
 
         ct_model_top_half.set_params(recon_shape=top_recon_shape)
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
-
-        #ToDo: If either top or bottom reshape has rows<=0, then do not perform reconstruction for that half.
-
-        # Validate that neither top nor bottom recon shape has rows > half_overlap
-        recon_slices = int(min(top_recon_shape[2], bot_recon_shape[2]))
-        if not (0 < half_overlap < recon_slices):
-            raise ValueError(f"Top or bottom recon has ({recon_slices}) slices, which is less than half_overlap ({half_overlap}).")
 
         # -------- Compute and set the offsets of top and bottom recons --------
         top_recon_slice_offset =  (half_overlap - (top_recon_shape[2]/2)) * delta_voxel
