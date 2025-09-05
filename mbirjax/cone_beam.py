@@ -984,13 +984,18 @@ class ConeBeamModel(TomographyModel):
         if not (full_det_iso == (bot_det_iso + bot_lo)):
             raise ValueError("Detector iso mismatch between full and bottom sinograms.")
 
+        # Set the regularization parameters from the full sinogram
+        self.auto_set_regularization_params(sino)
+
         # -------- Build top-half model --------
         ct_model_top_half = mj.copy_ct_model(self, new_num_det_rows=top_num_rows)
         ct_model_top_half.set_params(det_row_offset=top_det_row_offset)
+        ct_model_top_half.set_params(auto_regularize_flag=False)
 
         # -------- Build bottom-half model --------
         ct_model_bot_half = mj.copy_ct_model(self, new_num_det_rows=bot_num_rows)
         ct_model_bot_half.set_params(det_row_offset=bot_det_row_offset)
+        ct_model_bot_half.set_params(auto_regularize_flag=False)
 
         """
         Compute recon shape parameters for top and bottom reconstructions
