@@ -1004,25 +1004,28 @@ class ConeBeamModel(TomographyModel):
         full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
 
         # -------- Compute the recon slice nearest to iso --------
-        full_recon_iso_slice_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel
-        full_recon_iso_slice_index = int(jnp.round(full_recon_iso_slice_float))
+        full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel
+        split_index = int(jnp.round(full_recon_iso_slice_index_float))
 
-        #ToDo: If either top or bottom recon is empty, then do not perform reconstruction for that half.
+        # Compute the offset of the split from iso.
+        # This will be used to slightly shift the slices so that they align with a standard reconstruction.
+        split_offset = split_index - full_recon_iso_slice_index_float
 
         # Validate that both top nor bottom recon shape has half_overlap < slices
-        if (full_recon_iso_slice_index < 1) or (full_recon_iso_slice_index > full_recon_slices -2):
+        if (split_index < 1) or (split_index > full_recon_slices -2):
             raise ValueError(f"Top or bottom recon are empty.")
+            #ToDo: If either top or bottom recon is empty, then do not perform reconstruction for that half.
 
         # -------- Compute and set the shapes of top and bottom recons --------
-        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], full_recon_iso_slice_index + half_overlap)
-        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - full_recon_iso_slice_index) + half_overlap)
+        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], split_index + half_overlap)
+        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - split_index) + half_overlap)
 
         ct_model_top_half.set_params(recon_shape=top_recon_shape)
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
 
         # -------- Compute and set the offsets of top and bottom recons --------
-        top_recon_slice_offset =  (half_overlap - (top_recon_shape[2]/2)) * delta_voxel
-        bot_recon_slice_offset = -(half_overlap - (bot_recon_shape[2]/2)) * delta_voxel
+        top_recon_slice_offset = (+half_overlap - (top_recon_shape[2]-1)/2 + 0 + split_offset) * delta_voxel
+        bot_recon_slice_offset = (-half_overlap + (bot_recon_shape[2]-1)/2 + 1 + split_offset) * delta_voxel
 
         ct_model_top_half.set_params(recon_slice_offset=top_recon_slice_offset)
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
