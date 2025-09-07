@@ -14,6 +14,7 @@ if __name__ == "__main__":
     display_comparison = True       # Displays comparison of reconstructions, but slows script
     recon_slice_offset = 0.0        # Offset of reconstruction slice down (positive) or up (negative)
     downsample = 16                 # Downsample rows and columns of scan views for speed
+    pixel_scale = 1.0               # Scaling factor for pixel pitch
 
     output_path = './output'
     if not os.path.exists(output_path):
@@ -53,8 +54,9 @@ if __name__ == "__main__":
 
     # Set user determined parameter values
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db, verbose=1)
-
     ct_model.set_params(recon_slice_offset=recon_slice_offset)
+    delta_voxel = ct_model.get_params('delta_voxel')
+    ct_model.set_params(delta_voxel=delta_voxel * pixel_scale)
 
     # Print out model parameters
     ct_model.print_params()

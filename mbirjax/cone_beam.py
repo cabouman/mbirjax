@@ -1017,6 +1017,7 @@ class ConeBeamModel(TomographyModel):
         # -------- Compute the recon slice nearest to iso --------
         full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel
         split_index = int(jnp.round(full_recon_iso_slice_index_float))
+        top_num_slices = split_index + 1
 
         # Compute the offset of the split from iso.
         # This will be used to slightly shift the slices so that they align with a standard reconstruction.
@@ -1041,8 +1042,8 @@ class ConeBeamModel(TomographyModel):
             )
 
         # -------- Compute and set the shapes of top and bottom recons --------
-        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], split_index + half_overlap_recon)
-        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - split_index) + half_overlap_recon)
+        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], top_num_slices + half_overlap_recon)
+        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - top_num_slices) + half_overlap_recon)
 
         ct_model_top_half.set_params(recon_shape=top_recon_shape)
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
