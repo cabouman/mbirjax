@@ -1011,10 +1011,23 @@ class ConeBeamModel(TomographyModel):
         # This will be used to slightly shift the slices so that they align with a standard reconstruction.
         split_offset = split_index - full_recon_iso_slice_index_float
 
-        # Validate that both top nor bottom recon shape has half_overlap < slices
-        if (split_index < 1) or (split_index > full_recon_slices -2):
-            raise ValueError(f"Top or bottom recon are empty.")
-            #ToDo: If either top or bottom recon is empty, then do not perform reconstruction for that half.
+        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
+        if (split_index < 1) or (split_index > full_recon_slices - 2):
+            warnings.warn(
+                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
+                UserWarning,
+            )
+            return self.recon(
+                sino,
+                weights=weights,
+                init_recon=init_recon,
+                max_iterations=max_iterations,
+                stop_threshold_change_pct=stop_threshold_change_pct,
+                first_iteration=first_iteration,
+                compute_prior_loss=compute_prior_loss,
+                logfile_path=logfile_path,
+                print_logs=print_logs,
+            )
 
         # -------- Compute and set the shapes of top and bottom recons --------
         top_recon_shape = (full_recon_shape[0], full_recon_shape[1], split_index + half_overlap)
