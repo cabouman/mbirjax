@@ -119,7 +119,7 @@ class Projectors:
                 return forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices,
                                                                single_view_params, projector_params, existing_view)
 
-            def forward_project_view_batch(view_params_batch, existing_views_batch):
+            def forward_project_view_batch(view_params_batch, existing_views_batch=None):
                 # Map the single view function over a batch of views.
                 # To parallelize over views, we can use jax.vmap here instead of jax.lax.map, but this may use extra
                 # memory since the voxel values are required for each view.
@@ -128,7 +128,10 @@ class Projectors:
 
                 return sino_view_batch
 
-            view_data = [cur_view_params_array, existing_views]
+            if existing_views is not None:
+                view_data = [cur_view_params_array, existing_views]
+            else:
+                view_data = cur_view_params_array
             sinogram = concatenate_function_in_batches(forward_project_view_batch, view_data, views_per_batch)
 
             return sinogram
