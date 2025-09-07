@@ -869,12 +869,15 @@ class ConeBeamModel(TomographyModel):
 
         return recon
 
-    def recon_split_sino(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
+    def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
                          first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
-        Reconstruct from a full sinogram by splitting detector rows into two overlapping halves,
-        reconstructing each half with its own ConeBeamModel, and stitching the halves together.
-        This reduces memory usage relative to standard MBIR reconstruction.
+        This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
+        by splitting the detector rows into two overlapping halves, reconstructing each half separately,
+        and stitching the reconstructions together.
+
+        The function can be called with the same arguments as TomographyModel.recon(), and it should return a
+        reconstruction which is approximately equal to the reconstruction returned by TomographyModel.recon().
 
         Args:
             sino (jnp.ndarray | np.ndarray): Full sinogram of shape (num_views, num_rows, num_cols).
@@ -906,7 +909,7 @@ class ConeBeamModel(TomographyModel):
             ...                          angles=jnp.linspace(0, jnp.pi, 180),
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
-            >>> recon, recon_info = model.recon_split_sino(sino, half_overlap=4)
+            >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
             >>> recon.shape  # Quilted reconstruction volume
             (64, 64, 64)
         """

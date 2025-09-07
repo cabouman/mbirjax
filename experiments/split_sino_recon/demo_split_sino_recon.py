@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     print("\n***************** Compute split sino recon ****************")
     t0 = time.time()
-    recon, recon_dict = ct_model.recon_split_sino(sino)  # weights can be passed as third arg if available
+    recon, recon_dict = ct_model.split_sino_recon(sino)  # weights can be passed as third arg if available
     t1 = time.time()
 
     if display_comparison:
