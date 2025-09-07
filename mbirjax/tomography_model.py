@@ -32,7 +32,7 @@ recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
 ReconParams = namedtuple('ReconParams', recon_param_names)
 
-TomographyParamNames = mj.ParamNames | Literal['view_params_name']
+TomographyParamNames = Union[mj.ParamNames, Literal['view_params_name']]
 
 
 class TomographyModel(ParameterHandler):
@@ -1261,7 +1261,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return jax.device_get(recon), recon_dict
+        return jnp.array(jax.device_get(recon)), recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
