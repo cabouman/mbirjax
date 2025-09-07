@@ -24,8 +24,8 @@ Constructor
 .. autoclass:: mbirjax.ConeBeamModel
    :show-inheritance:
 
-FDK Reconstruction
-------------------
+Alternative Reconstruction
+--------------------------
 
 .. automethod:: mbirjax.ConeBeamModel.fdk_recon
 .. automethod:: mbirjax.ConeBeamModel.split_sino_recon
