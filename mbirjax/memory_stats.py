@@ -53,3 +53,93 @@ def get_memory_stats(print_results=True, file=None):
                 print(f'  {tag}:{extra_space}{cur_value:.3f}GB', file=file)
 
     return memory_stats_per_processor
+
+
+from collections.abc import Iterable
+
+def _human(n):
+    for u in ('B','KB','MB','GB','TB'):
+        if n < 1024 or u == 'TB':
+            return f"{n:.2f} {u}"
+        n /= 1024
+
+def _buffer_pointer(arr):
+    try:
+        return arr._arrays[0].unsafe_buffer_pointer()   # private, may change
+    except Exception:
+        try:
+            return id(arr._arrays[0])
+        except Exception:
+            return id(arr)
+
+def _normalize_kinds(kinds):
+    if kinds in (None, 'all'):
+        # detect available platforms dynamically: 'cpu', 'gpu', 'tpu', etc.
+        return ['cpu', 'gpu']
+    if isinstance(kinds, str):
+        return [kinds]
+    if isinstance(kinds, Iterable):
+        return list(kinds)
+    raise ValueError("kinds must be 'all', str, or iterable of str")
+
+def live_unique_buffers(kinds: str | Iterable[str] | None = 'all', top_k: int | None = 10):
+    """
+    Summarize unique live device buffers for JAX arrays across one or more backends.
+
+    kinds: 'cpu', 'gpu', 'tpu', list like ['cpu','gpu'], or 'all' (default).
+    top_k: show the top-K largest unique buffers; None shows all.
+    """
+    uniq = {}  # (device, ptr) -> row
+
+    def _add(device, arr, logical_shape, dtype, shard_index):
+        nbytes = arr.size * arr.dtype.itemsize
+        key = (device, _buffer_pointer(arr))
+        if key not in uniq:
+            uniq[key] = {
+                "device": str(device),
+                "ptr": key[1],
+                "bytes": nbytes,
+                "shape": tuple(logical_shape),
+                "dtype": str(dtype),
+                "shard_index": shard_index,
+            }
+
+    arrays_to_scan = []
+    for k in _normalize_kinds(kinds):
+        arrays_to_scan.extend(jax.live_arrays(k))
+
+    # Ensure pending work is realized before accounting
+    for a in arrays_to_scan:
+        try:
+            a.block_until_ready()
+        except Exception:
+            pass
+
+    for a in arrays_to_scan:
+        shards = getattr(a, "addressable_shards", None)
+        if shards:
+            for sh in shards:
+                _add(sh.device, sh.data, a.shape, a.dtype, getattr(sh, "index", None))
+        else:
+            devs = getattr(a, "devices", lambda: [])()
+            dev = devs[0] if devs else None
+            _add(dev, a, a.shape, a.dtype, None)
+
+    by_device = {}
+    for row in uniq.values():
+        by_device[row["device"]] = by_device.get(row["device"], 0) + row["bytes"]
+
+    rows = sorted(uniq.values(), key=lambda r: r["bytes"], reverse=True)
+    if top_k is not None:
+        rows = rows[:top_k]
+
+    print("Per-device unique buffer totals:")
+    for dev, b in by_device.items():
+        print(f"  {dev:>12}: {_human(b)}")
+
+    print("\nTop unique buffers:")
+    for r in rows:
+        idx = "None" if r["shard_index"] is None else str(r["shard_index"])
+        print(f"  {r['device']:>12}  {_human(r['bytes']):>10}  {r['dtype']:<8}  {r['shape']}  shard_index={idx}")
+
+    return {"by_device": by_device, "top": rows}
