@@ -641,16 +641,15 @@ class TomographyModel(ParameterHandler):
         view_indices = jax.device_put(view_indices, device=self.sinogram_device)
 
         # Loop over pixel batches - the last batch is padded to the batch size unless there is only one batch
-        last_k = len(pixel_batch_boundaries) - 2
-        last_k = last_k if last_k > 0 else -1
+        default_size = pixel_batch_boundaries[1] - pixel_batch_boundaries[0]
         for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
             # Send a batch of pixels to worker
             pixel_index_end = pixel_batch_boundaries[k + 1]
             # pixel batches need to be replicated so that all GPU devices have access to the same data
             voxel_batch, pixel_index_batch = [voxel_values[pixel_index_start:pixel_index_end],
                                               pixel_indices[pixel_index_start:pixel_index_end]]
-            if k == last_k:
-                voxel_batch, pixel_index_batch = mj.pad_last_batch(voxel_batch, pixel_index_batch, transfer_pixel_batch_size)
+            if voxel_batch.shape[0] < default_size:
+                voxel_batch, pixel_index_batch = mj.pad_first_axis([voxel_batch, pixel_index_batch], default_size)
             voxel_batch, pixel_index_batch = jax.device_put([voxel_batch, pixel_index_batch],
                                                             self.replicated_device)
 
