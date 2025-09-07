@@ -82,12 +82,12 @@ class Projectors:
             voxel_and_indices = (voxel_values, pixel_indices)  # Apply ensure_tuple
 
             def forward_project_pixel_batch_wrapper(local_values, local_pix_indices):
-                return sparse_forward_project_pixel_batch(local_values, local_pix_indices, existing_views, view_indices,
+                return sparse_forward_project_pixel_batch(local_values, local_pix_indices, None, view_indices,
                                                           view_batch_size)
 
             summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
                                                     pixel_batch_size)
-            return summed_output
+            return existing_views + summed_output
 
         @partial(jax.jit, static_argnames='views_per_batch')
         def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, existing_views, view_indices=(), views_per_batch=None):
@@ -217,7 +217,7 @@ class Projectors:
             return new_voxel_values
 
         # Set the compiled projectors
-        projector_functions = (jax.jit(sparse_forward_project_fcn, donate_argnames=['voxel_values', 'pixel_indices', 'existing_views', 'view_indices']),
+        projector_functions = (jax.jit(sparse_forward_project_fcn, donate_argnames=['existing_views']),
                                jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'))
         self.sparse_forward_project, self.sparse_back_project = projector_functions
         self.forward_project_pixel_batch = sparse_forward_project_pixel_batch
