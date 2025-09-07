@@ -214,7 +214,7 @@ class Projectors:
             return new_voxel_values
 
         # Set the compiled projectors
-        projector_functions = (jax.jit(sparse_forward_project_fcn),
+        projector_functions = (jax.jit(sparse_forward_project_fcn, donate_argnames=['voxel_values', 'pixel_indices', 'existing_views', 'view_indices']),
                                jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'))
         self.sparse_forward_project, self.sparse_back_project = projector_functions
         self.forward_project_pixel_batch = sparse_forward_project_pixel_batch
