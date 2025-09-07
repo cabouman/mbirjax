@@ -1045,7 +1045,7 @@ def generate_demo_data(
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.asarray(sinogram)
+    sinogram = np.array(sinogram)
 
     return phantom, sinogram, params
 
@@ -1256,3 +1256,65 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         new_model.set_params(**other_params)
 
     return new_model
+
+def pad_last_batch(
+    voxel_batch: jax.Array,
+    index_batch: jax.Array,
+    batch_size: int
+) -> tuple[jax.Array, jax.Array]:
+    """
+    Zero-pad a smaller, final batch of voxels/indices up to a fixed `batch_size`.
+
+    This helper is intended for use with a jitted projector that expects a single,
+    fixed batch shape. If the input batch has size N < `batch_size`, it appends
+    `batch_size - N` rows of zeros to `voxel_batch` and zeros to `index_batch`.
+    It also multiplies by a boolean mask to guarantee padded rows contribute
+    nothing to downstream computations.
+
+    Parameters
+    ----------
+    voxel_batch : jax.Array
+        Array of shape (N, num_slices) containing voxel values for N pixels.
+    index_batch : jax.Array
+        Array of shape (N,) with integer indices corresponding to the voxels.
+    batch_size : int
+        Target batch size B to pad to.
+
+    Returns
+    -------
+    padded_voxels : jax.Array
+        Array of shape (batch_size, num_slices), where any added rows are zeros.
+    padded_indices : jax.Array
+        Array of shape (batch_size,), where any added entries are zeros.
+
+    Raises
+    ------
+    ValueError
+        If the input batch is larger than `batch_size`.
+
+    Notes
+    -----
+    - Inputs should already be placed/sharded on the desired device; this
+      function preserves device placement.
+    - The exact values of padded indices do not matter because the corresponding
+      voxel rows are zeroed.
+    """
+    current_size = voxel_batch.shape[0]
+    if current_size == batch_size:
+        return voxel_batch, index_batch
+    if current_size > batch_size:
+        raise ValueError(
+            f"Cannot pad: current batch size ({current_size}) exceeds "
+            f"target batch_size ({batch_size})."
+        )
+
+    pad_count = batch_size - current_size
+
+    # Append zeros to reach the target size
+    voxel_pad = jnp.zeros((pad_count,) + voxel_batch.shape[1:], dtype=voxel_batch.dtype)
+    index_pad = jnp.zeros((pad_count,), dtype=index_batch.dtype)
+
+    padded_voxels = jnp.concatenate((voxel_batch, voxel_pad), axis=0)
+    padded_indices = jnp.concatenate((index_batch, index_pad), axis=0)
+
+    return padded_voxels, padded_indices
