@@ -10,7 +10,8 @@ import numpy as np
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils
 
-ConeBeamParamNames = mj.ParamNames | Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
+ConeBeamParamNames = Union[
+    mj.ParamNames, Literal['angles', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']]
 
 
 class ConeBeamModel(TomographyModel):
@@ -720,7 +721,7 @@ class ConeBeamModel(TomographyModel):
         """
         Convert fractional detector grid indices (m, n) into detector coordinates (u, v).
 
-        Parameters:
+        Args:
             m: Fractional row index on the detector grid (vertical direction).
             n: Fractional channel index on the detector grid (horizontal direction).
             delta_det_channel: Spacing (pitch) of the detector channels (horizontal direction).

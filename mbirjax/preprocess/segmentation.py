@@ -55,16 +55,13 @@ def _recursive_otsu(hist, num_thresholds):
     """
     Recursively applies Otsu's method to find the best thresholds for multiple classes.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    num_thresholds : int
-        Number of thresholds to find.
+    Args:
+        hist : ndarray
+            Histogram of the image.
+        num_thresholds : int
+            Number of thresholds to find.
 
-    Returns
-    -------
-    list
+    Returns:
         List of thresholds that divide the histogram into the specified number of classes.
     """
     # Base case: no thresholds needed
@@ -106,15 +103,12 @@ def _binary_threshold_otsu(hist):
     """
     Finds the best threshold for binary segmentation using Otsu's method.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
+    Args:
+        hist : ndarray
+            Histogram of the image.
 
-    Returns
-    -------
-    int
-        Best threshold for binary segmentation.
+    Returns:
+        Integer index of the best threshold for binary segmentation.
     """
     total = np.sum(hist)
     current_max, threshold = 0, 0
@@ -150,17 +144,12 @@ def _compute_within_class_variance(hist, thresholds):
     """
     Computes the total within-class variance given a set of thresholds.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    thresholds : list
-        List of thresholds that divide the histogram into multiple classes.
+    Args:
+        hist (ndarray): Histogram of the image.
+        thresholds (list of ints): List of indices that divide the histogram into multiple classes.
 
-    Returns
-    -------
-    float
-        Total within-class variance.
+    Returns:
+        Total within-class variance (float).
     """
     total_variance = 0
     thresholds = [0] + thresholds + [len(hist)]

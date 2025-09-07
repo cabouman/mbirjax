@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os, sys
 from enum import Enum
 from typing import Union
@@ -175,11 +177,12 @@ def display_translation_vectors(translation_vectors, recon_shape):
     plt.legend(loc='upper right')
     plt.show()
 
+
 def debug_plot_partitions(partitions, recon_shape):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
 
-    Parameters:
+    Args:
         partitions (tuple of arrays): A tuple where each element is a 2D numpy array representing a partition.
         recon_shape (tuple): Shape of phantom in (rows, columns, slices).
     """
@@ -218,7 +221,7 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
     """
     Visualizes indices on a reconstruction grid and optionally displays reconstruction data at these indices.
 
-    Parameters:
+    Args:
         num_recon_rows (int): Number of rows in the reconstruction grid.
         num_recon_cols (int): Number of columns in the reconstruction grid.
         indices (array): Flat indices in the reconstruction grid to be highlighted or modified.
@@ -227,7 +230,7 @@ def debug_plot_indices(num_recon_rows, num_recon_cols, indices, recon_at_indices
         num_recon_slices (int): Number of slices in the reconstruction grid, default is 1.
         title (str): Title for the plot.
 
-    Usage:
+    Notes:
         When recon_at_indices is not provided, the function visualizes the indices on a 2D grid.
         When recon_at_indices is provided, it also shows the reconstructed values at these indices in 3D.
 
@@ -519,17 +522,12 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
     """
     Determine the top-level directory inside a tarball file by sampling up to max_entries members.
 
-    Parameters
-    ----------
-    tar_path : str
-        Path to the tarball file.
-    max_entries : int
-        Maximum number of entries to sample.
+    Args:
+        tar_path (str): Path to the tarball file.
+        max_entries (int): Maximum number of entries to sample.
 
-    Returns
-    -------
-    dir_name : str
-        The name of the top-level directory.
+    Returns:
+        The name of the top-level directory (str).
     """
     top_levels = set()
 
@@ -1257,64 +1255,45 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
 
     return new_model
 
-def pad_last_batch(
-    voxel_batch: jax.Array,
-    index_batch: jax.Array,
-    batch_size: int
-) -> tuple[jax.Array, jax.Array]:
+
+def pad_first_axis(arrays, new_size):
     """
-    Zero-pad a smaller, final batch of voxels/indices up to a fixed `batch_size`.
+    Zero-pad an array along the first axis up to a fixed `new_size`.  If any input array is at least new_size
+    along the first axis, then the array is returned unchanged.
 
     This helper is intended for use with a jitted projector that expects a single,
-    fixed batch shape. If the input batch has size N < `batch_size`, it appends
-    `batch_size - N` rows of zeros to `voxel_batch` and zeros to `index_batch`.
-    It also multiplies by a boolean mask to guarantee padded rows contribute
-    nothing to downstream computations.
+    fixed batch shape.
 
-    Parameters
-    ----------
-    voxel_batch : jax.Array
-        Array of shape (N, num_slices) containing voxel values for N pixels.
-    index_batch : jax.Array
-        Array of shape (N,) with integer indices corresponding to the voxels.
-    batch_size : int
-        Target batch size B to pad to.
+    Args:
+        arrays (jax.Array or list of jax.Array or tuple of jax.Array): Array(s) of shape (N, ...).
+        new_size (int): Target batch size to pad to.
 
-    Returns
-    -------
-    padded_voxels : jax.Array
-        Array of shape (batch_size, num_slices), where any added rows are zeros.
-    padded_indices : jax.Array
-        Array of shape (batch_size,), where any added entries are zeros.
+    Raises:
+        ValueError if any input array is larger than new_size along the first axis
 
-    Raises
-    ------
-    ValueError
-        If the input batch is larger than `batch_size`.
-
-    Notes
-    -----
-    - Inputs should already be placed/sharded on the desired device; this
-      function preserves device placement.
-    - The exact values of padded indices do not matter because the corresponding
-      voxel rows are zeroed.
+    Returns:
+        padded_arrays (jax.Array or list of jax.Array) Array(s) of shape (batch_size, ...), where any added entries are zeros.
     """
-    current_size = voxel_batch.shape[0]
-    if current_size == batch_size:
-        return voxel_batch, index_batch
-    if current_size > batch_size:
-        raise ValueError(
-            f"Cannot pad: current batch size ({current_size}) exceeds "
-            f"target batch_size ({batch_size})."
-        )
+    if type(arrays) not in [list, tuple]:
+        single_array = True
+        arrays = [arrays]
+    else:
+        single_array = False
+    output_arrays = []
 
-    pad_count = batch_size - current_size
+    for array in arrays:
+        current_size = array.shape[0]
+        if current_size > new_size:
+            raise ValueError('Input array of shape {} has first axis larger than target size of {}'.format(array.shape, new_size))
+        if current_size < new_size:
+            pad_count = new_size - current_size
 
-    # Append zeros to reach the target size
-    voxel_pad = jnp.zeros((pad_count,) + voxel_batch.shape[1:], dtype=voxel_batch.dtype)
-    index_pad = jnp.zeros((pad_count,), dtype=index_batch.dtype)
+            # Append zeros to reach the target size
+            array_pad = jnp.zeros((pad_count,) + array.shape[1:], dtype=array.dtype)
+            array = jnp.concatenate((array, array_pad), axis=0)
 
-    padded_voxels = jnp.concatenate((voxel_batch, voxel_pad), axis=0)
-    padded_indices = jnp.concatenate((index_batch, index_pad), axis=0)
+        output_arrays.append(array)
 
-    return padded_voxels, padded_indices
+    if single_array:
+        output_arrays = output_arrays[0]
+    return output_arrays

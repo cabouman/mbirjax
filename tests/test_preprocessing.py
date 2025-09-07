@@ -17,14 +17,14 @@ class TestNSIPreprocessing(unittest.TestCase):
         """
         Generate a random dark scan with Gaussian noise.
 
-        Parameters:
-        - shape (tuple): Shape of the dark scan (e.g., (height, width)).
-        - mean (float or ndarray or jax.array): Mean of the Gaussian noise (default: 0.0).
-        - stddev (float or ndarray or jax.array): Standard deviation of the Gaussian noise (default: 0.01).
-        - clip_negative (bool): Whether to clip negative values to zero (default: True).
+        Args:
+            shape (tuple): Shape of the dark scan (e.g., (height, width)).
+            mean (float or ndarray or jax.array): Mean of the Gaussian noise (default: 0.0).
+            stddev (float or ndarray or jax.array): Standard deviation of the Gaussian noise (default: 0.01).
+            clip_negative (bool): Whether to clip negative values to zero (default: True).
 
         Returns:
-        - dark_scan (numpy.ndarray): Simulated dark scan.
+            dark_scan (numpy.ndarray): Simulated dark scan.
         """
         if seed is not None:
             np.random.seed(seed)
