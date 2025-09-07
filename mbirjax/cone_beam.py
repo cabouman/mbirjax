@@ -905,7 +905,7 @@ class ConeBeamModel(TomographyModel):
         Raises:
             ValueError: If inputs are missing or shapes are inconsistent.
             AssertionError: If array dimensions are invalid.
-            TypeError: If half_overlap is not an integer or model type is incorrect.
+            TypeError: If half_overlap is not an integer.
 
         Example:
             >>> import jax.numpy as jnp
@@ -927,14 +927,16 @@ class ConeBeamModel(TomographyModel):
         if weights is not None and getattr(weights, "shape", None) != sino.shape:
             raise AssertionError("weights, if provided, must have the same shape as sino.")
 
-        # Get sino shape parameters for later use
+        # Get parameters for later use
         num_views, full_num_rows, num_cols = sino.shape
+        half_overlap_sino = half_overlap
+        half_overlap_recon = half_overlap
 
-        # Validate half_overlap value for detector-row split
-        if not isinstance(half_overlap, (int, np.integer)):
-            raise TypeError("half_overlap must be an integer.")
-        if not (0 < half_overlap < full_num_rows):
-            raise ValueError(f"half_overlap must satisfy 0 < half_overlap < num_rows ({full_num_rows}).")
+        # Validate half_overlap_sino value for detector-row split
+        if not isinstance(half_overlap_sino, (int, np.integer)):
+            raise TypeError("half_overlap_sino must be an integer.")
+        if not (0 < half_overlap_sino < full_num_rows):
+            raise ValueError(f"half_overlap_sino must satisfy 0 < half_overlap_sino < num_detector_rows ({full_num_rows}).")
 
         # -------- parameters needed to create top and bottom models --------
         delta_det_row = self.get_params('delta_det_row')
@@ -958,8 +960,8 @@ class ConeBeamModel(TomographyModel):
 
         # -------- Detector row ranges for top and bottom sinogram halves --------
         top_lo = 0
-        top_hi = min(det_iso_row_index + half_overlap, full_num_rows)
-        bot_lo = max(det_iso_row_index - half_overlap, 0)
+        top_hi = min(det_iso_row_index + half_overlap_sino, full_num_rows)
+        bot_lo = max(det_iso_row_index - half_overlap_sino, 0)
         bot_hi = full_num_rows
 
         # -------- Split sinogram (and weights) into top and bottom halves --------
@@ -1020,21 +1022,34 @@ class ConeBeamModel(TomographyModel):
         # This will be used to slightly shift the slices so that they align with a standard reconstruction.
         split_offset = split_index - full_recon_iso_slice_index_float
 
-        # Validate that both top nor bottom recon shape has half_overlap < slices
-        if (split_index < 1) or (split_index > full_recon_slices -2):
-            raise ValueError(f"Top or bottom recon are empty.")
-            #ToDo: If either top or bottom recon is empty, then do not perform reconstruction for that half.
+        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
+        if (split_index < 1) or (split_index > full_recon_slices - 2):
+            warnings.warn(
+                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
+                UserWarning,
+            )
+            return self.recon(
+                sino,
+                weights=weights,
+                init_recon=init_recon,
+                max_iterations=max_iterations,
+                stop_threshold_change_pct=stop_threshold_change_pct,
+                first_iteration=first_iteration,
+                compute_prior_loss=compute_prior_loss,
+                logfile_path=logfile_path,
+                print_logs=print_logs,
+            )
 
         # -------- Compute and set the shapes of top and bottom recons --------
-        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], split_index + half_overlap)
-        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - split_index) + half_overlap)
+        top_recon_shape = (full_recon_shape[0], full_recon_shape[1], split_index + half_overlap_recon)
+        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - split_index) + half_overlap_recon)
 
         ct_model_top_half.set_params(recon_shape=top_recon_shape)
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
 
         # -------- Compute and set the offsets of top and bottom recons --------
-        top_recon_slice_offset = (+half_overlap - (top_recon_shape[2]-1)/2 + 0 + split_offset) * delta_voxel
-        bot_recon_slice_offset = (-half_overlap + (bot_recon_shape[2]-1)/2 + 1 + split_offset) * delta_voxel
+        top_recon_slice_offset = (+half_overlap_recon - (top_recon_shape[2]-1)/2 + 0 + split_offset) * delta_voxel
+        bot_recon_slice_offset = (-half_overlap_recon + (bot_recon_shape[2]-1)/2 + 1 + split_offset) * delta_voxel
 
         ct_model_top_half.set_params(recon_slice_offset=top_recon_slice_offset)
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
@@ -1054,7 +1069,7 @@ class ConeBeamModel(TomographyModel):
                                                                  logfile_path=logfile_path, print_logs=print_logs)
 
         # -------- Stitch together top and bottom reconstructions --------
-        recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap, axis=2)
+        recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
 
         # -------- Construct full reconstruction dictionary --------
         recon_full_dict = {'recon_params_top': recon_top_dict['recon_params'],
