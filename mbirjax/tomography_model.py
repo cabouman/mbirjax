@@ -26,7 +26,7 @@ from mbirjax import ParameterHandler
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.95'
 
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
@@ -640,14 +640,19 @@ class TomographyModel(ParameterHandler):
         view_indices = jnp.arange(0, num_views)
         view_indices = jax.device_put(view_indices, device=self.sinogram_device)
 
-        # Loop over pixel batches
+        # Loop over pixel batches - the last batch is padded to the batch size unless there is only one batch
+        last_k = len(pixel_batch_boundaries) - 2
+        last_k = last_k if last_k > 0 else -1
         for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
             # Send a batch of pixels to worker
             pixel_index_end = pixel_batch_boundaries[k + 1]
             # pixel batches need to be replicated so that all GPU devices have access to the same data
-            voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                               pixel_indices[pixel_index_start:pixel_index_end]],
-                                                              self.replicated_device)
+            voxel_batch, pixel_index_batch = [voxel_values[pixel_index_start:pixel_index_end],
+                                              pixel_indices[pixel_index_start:pixel_index_end]]
+            if k == last_k:
+                voxel_batch, pixel_index_batch = mj.pad_last_batch(voxel_batch, pixel_index_batch, transfer_pixel_batch_size)
+            voxel_batch, pixel_index_batch = jax.device_put([voxel_batch, pixel_index_batch],
+                                                            self.replicated_device)
 
             sinogram_views = sinogram_views.block_until_ready()
             sinogram_views = self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch,
