@@ -155,7 +155,7 @@ class TestVCD(unittest.TestCase):
         # Perform half-sino reconstruction
         sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
-        recon, recon_dict = ct_model.recon_split_sino(sinogram)
+        recon, recon_dict = ct_model.split_sino_recon(sinogram)
 
         # Check tolerances
         max_diff = np.amax(np.abs(phantom - recon))

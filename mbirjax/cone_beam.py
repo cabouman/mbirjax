@@ -878,12 +878,15 @@ class ConeBeamModel(TomographyModel):
 
         return recon
 
-    def recon_split_sino(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
+    def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
                          first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
-        Reconstruct from a full sinogram by splitting detector rows into two overlapping halves,
-        reconstructing each half with its own ConeBeamModel, and stitching the halves together.
-        This reduces memory usage relative to standard MBIR reconstruction.
+        This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
+        by splitting the detector rows into two overlapping halves, reconstructing each half separately,
+        and stitching the reconstructions together.
+
+        The function can be called with the same arguments as TomographyModel.recon(), and it should return a
+        reconstruction which is approximately equal to the reconstruction returned by TomographyModel.recon().
 
         Args:
             sino (jnp.ndarray | np.ndarray): Full sinogram of shape (num_views, num_rows, num_cols).
@@ -915,7 +918,7 @@ class ConeBeamModel(TomographyModel):
             ...                          angles=jnp.linspace(0, jnp.pi, 180),
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
-            >>> recon, recon_info = model.recon_split_sino(sino, half_overlap=4)
+            >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
             >>> recon.shape  # Quilted reconstruction volume
             (64, 64, 64)
         """
@@ -929,14 +932,6 @@ class ConeBeamModel(TomographyModel):
 
         # Get parameters for later use
         num_views, full_num_rows, num_cols = sino.shape
-        half_overlap_sino = half_overlap
-        half_overlap_recon = half_overlap
-
-        # Validate half_overlap_sino value for detector-row split
-        if not isinstance(half_overlap_sino, (int, np.integer)):
-            raise TypeError("half_overlap_sino must be an integer.")
-        if not (0 < half_overlap_sino < full_num_rows):
-            raise ValueError(f"half_overlap_sino must satisfy 0 < half_overlap_sino < num_detector_rows ({full_num_rows}).")
 
         # -------- parameters needed to create top and bottom models --------
         delta_det_row = self.get_params('delta_det_row')
@@ -944,6 +939,17 @@ class ConeBeamModel(TomographyModel):
         delta_voxel = self.get_params('delta_voxel')
         full_recon_shape = self.get_params('recon_shape')
         full_recon_slice_offset = self.get_params('recon_slice_offset')
+        magnification = self.get_magnification()
+
+        # Compute overlaps for sinogram and recon
+        delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
+        ratio_pixel_to_sino_pitch = delta_voxel / delta_detector_row_at_iso
+        if ratio_pixel_to_sino_pitch > 1:
+            half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
+            half_overlap_recon = half_overlap
+        else:
+            half_overlap_sino = half_overlap
+            half_overlap_recon = int(jnp.round(half_overlap * 1/ratio_pixel_to_sino_pitch))
 
         """
         Compute detector shape parameters for top and bottom sinograms
@@ -985,15 +991,6 @@ class ConeBeamModel(TomographyModel):
         # -------- Calculate detector row offsets required for top and bottom models --------
         top_det_row_offset = full_det_row_offset + (full_det_center - (top_det_center + top_lo)) * delta_det_row
         bot_det_row_offset = full_det_row_offset + (full_det_center - (bot_det_center + bot_lo)) * delta_det_row
-
-        # Test for correctness of top and bottom detector iso
-        full_det_iso = full_det_center + full_det_row_offset / delta_det_row
-        top_det_iso = top_det_center + top_det_row_offset / delta_det_row
-        bot_det_iso = bot_det_center + bot_det_row_offset / delta_det_row
-        if not (full_det_iso == top_det_iso):
-            raise ValueError("Detector iso mismatch between full and top sinograms.")
-        if not (full_det_iso == (bot_det_iso + bot_lo)):
-            raise ValueError("Detector iso mismatch between full and bottom sinograms.")
 
         # Set the regularization parameters from the full sinogram
         self.auto_set_regularization_params(sino)
