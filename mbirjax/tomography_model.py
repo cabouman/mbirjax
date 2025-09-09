@@ -547,7 +547,7 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        output_device = self.main_device
+        output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
