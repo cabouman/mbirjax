@@ -6,6 +6,7 @@ experiments/data/*
 experiments/output/*
 
 experiments/split_sino_recon/demo_data/*
+experiments/split_sino_recon/demo_data
 experiments/split_sino_recon/output/*
 
 # ignore jupyter notebook files
