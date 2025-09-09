@@ -1113,7 +1113,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return recon, recon_dict
+        return jnp.array(jax.device_get(recon)), recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
@@ -1154,8 +1154,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             self.logger.info('Starting direct recon for initial reconstruction')
-            with jax.default_device(self.sinogram_device):
-                init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+            init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
@@ -1178,6 +1177,7 @@ class TomographyModel(ParameterHandler):
         wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
         if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
             alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+            alpha = alpha.item()
         else:
             alpha = 1
 
