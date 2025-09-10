@@ -574,16 +574,20 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    recon = jnp.asarray(recon)
+    @jax.jit
+    def process_recon(local_recon):
 
-    if remove_flash:
-        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+        if remove_flash:
+            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
 
-    recon = jnp.transpose(recon, (2, 0, 1))
-    # Flip the slice axis to convert to right-handed coordinate system
-    recon = recon[::-1, :, :]
-    recon = np.array(recon)
+        local_recon = jnp.transpose(local_recon, (2, 0, 1))
+        # Flip the slice axis to convert to right-handed coordinate system
+        local_recon = jnp.flipud(local_recon)
+        local_recon = jax.device_get(local_recon)
+        return local_recon
 
+    recon = jax.device_get(recon)
+    recon = process_recon(recon)
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
@@ -1102,3 +1106,157 @@ def gen_cube_phantom(recon_shape, device=None):
             phantom_rows, phantom_cols)
 
     return jnp.array(phantom, device=device)
+
+
+def stitch_arrays(array_list, overlap, axis=2):
+    """
+    Concatenate JAX arrays along one axis while linearly blending a fixed overlap
+    between adjacent arrays.
+
+    This behaves like `jnp.concatenate` except that for each adjacent pair, the
+    first `overlap_length` elements of the second array and the last
+    `overlap_length` elements of the current result are combined by a piece-wise linear cross‑fade.
+
+    All non‑`axis` dimensions must match across inputs.
+
+    Args:
+        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
+        overlap (int): Number of elements to blend between each adjacent pair.
+            Must be `>= 1` and not exceed the length of any input along `axis`.
+        axis (int, optional): Axis along which to stitch. Defaults to 2.
+
+    Returns:
+        jax.Array: Stitched array. Its shape equals the input shape with the
+        length along `axis` equal to:
+
+            sum(len_k) - (len(array_list) - 1) * overlap_length
+
+        where `len_k` are the lengths of each input along `axis`.
+
+    Raises:
+        ValueError: If fewer than two arrays are provided, if non‑`axis`
+            dimensions differ, or if any array is shorter than
+            `overlap_length` along `axis`.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> a0 = jnp.arange(2*2*5).reshape(2, 2, 5)
+        >>> a1 = jnp.arange(2*2*6).reshape(2, 2, 6)
+        >>> out = stitch_arrays([a0, a1], overlap=3, axis=2)
+        >>> out.shape
+        (2, 2, 8)
+
+        # 8 comes from 5 + 6 - 3 (one overlap between two arrays).
+    """
+    # Check for valid input
+    if not isinstance(array_list, list) or len(array_list) < 2:
+        raise ValueError('array_list must be a list of 2 or more jax arrays.')
+    for dim in range(array_list[0].ndim):
+        lengths = [array.shape[dim] for array in array_list]
+        if dim != axis:
+            if np.amax(lengths) != np.amin(lengths):
+                raise ValueError('The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
+        if dim == axis:
+            if np.amin(lengths) < overlap:
+                raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
+
+    # Create a piecewise linear weight array:
+    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
+    t = jnp.linspace(0, 1, overlap)
+    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    weights_shape = np.ones(array_list[0].ndim, dtype=int)
+    weights_shape[0] = len(weights)
+    weights = weights.reshape(weights_shape)
+
+    # Start with the first array in the list
+    stitched = jnp.swapaxes(array_list[0], 0, axis)
+
+    # Iterate through each subsequent array in the list
+    for next_array in array_list[1:]:
+        # Extract the overlap from the current end of the stitched array and the beginning of the next array
+        overlap_current = stitched[-overlap:]
+        next_array = jnp.swapaxes(next_array, 0, axis)
+        overlap_next = next_array[:overlap]
+
+        # Weighted average for the overlapping part
+        weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
+
+        # Replace the overlap in the stitched array
+        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+
+        # Append the non-overlapping remainder of the next array
+        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+
+    return jnp.swapaxes(stitched, 0, axis)
+
+
+def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None):
+    """
+    Create an instance of TomographyModel with the given parameters
+
+    Args:
+        geometry_type (str): 'parallel' or 'cone'
+        sinogram_shape (tuple list of int): (num_views, num_rows, num_channels)
+        angles (ndarray of float): 1D vector of projection angles in radians
+        source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
+        source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
+
+    Returns:
+        An instance of ConeBeamModel or ParallelBeam model
+    """
+    if geometry_type == 'cone':
+        model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                 source_iso_dist=source_iso_dist)
+    elif geometry_type == 'parallel':
+        model = mj.ParallelBeamModel(sinogram_shape, angles)
+    else:
+        raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
+
+    return model
+
+
+def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
+    """
+    Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
+    and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
+
+    Args:
+        ct_model (TomographyModel): The model to copy.
+        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
+        new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
+        new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
+
+    Returns:
+        An instance of ConeBeamModel or ParallelBeam model
+    """
+    required_param_names = ct_model.get_required_param_names()
+    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                           required_param_names=required_param_names,
+                                                                           values_only=True)
+
+    #  Get the shape of the old sinogram
+    new_shape = list(ct_model.get_params('sinogram_shape'))
+    try:
+        old_angles = ct_model.get_params('angles')
+    except NameError as e:
+        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    if new_angles is None:
+        new_angles = old_angles
+    new_shape[0] = len(new_angles)
+
+    if new_num_det_rows is not None:
+        new_shape[1] = new_num_det_rows
+
+    if new_num_det_cols is not None:
+        new_shape[2] = new_num_det_cols
+
+    # Set the new sinogram shape and angles
+    required_params['sinogram_shape'] = tuple(new_shape)
+    required_params['angles'] = new_angles
+    new_model = type(ct_model)(**required_params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        del other_params['recon_shape']  # This should be set automatically by the constructor
+        new_model.set_params(**other_params)
+
+    return new_model

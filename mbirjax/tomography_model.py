@@ -393,9 +393,9 @@ class TomographyModel(ParameterHandler):
             string_dict = recon_dict.copy()
             yaml_writer = YAML()
             for key, value in string_dict.items():
-                if key == 'model_params' and isinstance(string_dict['model_params'], dict):
+                if key.startswith('model_params') and isinstance(string_dict[key], dict):
                     # 'model_params' must be handled separately to guarantee the ability to reload
-                    string_dict['model_params'] = ParameterHandler.save_params(string_dict['model_params'])
+                    string_dict[key] = ParameterHandler.save_params(string_dict[key])
                 elif isinstance(value, dict):
                     # Otherwise convert dicts to yaml strings
                     buf = io.StringIO()
@@ -547,7 +547,7 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        output_device = self.main_device
+        output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
         return sinogram
@@ -1113,7 +1113,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return recon, recon_dict
+        return jnp.array(jax.device_get(recon)), recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
@@ -1154,8 +1154,7 @@ class TomographyModel(ParameterHandler):
         if init_recon is None:
             # Initialize VCD recon, and error sinogram
             self.logger.info('Starting direct recon for initial reconstruction')
-            with jax.default_device(self.sinogram_device):
-                init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+            init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
@@ -1178,6 +1177,7 @@ class TomographyModel(ParameterHandler):
         wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
         if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
             alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+            alpha = alpha.item()
         else:
             alpha = 1
 

@@ -20,6 +20,14 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
    :alt: An animated image of the slice viewer.
 
 
+General Purpose
+---------------
+
+.. autofunction:: mbirjax.utilities.stitch_arrays
+.. autofunction:: mbirjax.utilities.get_ct_model
+.. autofunction:: mbirjax.utilities.copy_ct_model
+
+
 Weight Generation
 -----------------
 
