@@ -490,7 +490,8 @@ def project_vector_to_vector(u1, u2):
     u1_proj = np.dot(u1, u2)*u2
     return u1_proj
 
-
+from functools import partial
+@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin'])
 def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
