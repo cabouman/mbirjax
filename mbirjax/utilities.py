@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os, sys
 from enum import Enum
 from typing import Union
@@ -574,7 +572,6 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
 
     @jax.jit
     def process_recon(local_recon):
-        local_recon = jnp.asarray(local_recon, device=jax.devices("cpu")[0])
 
         if remove_flash:
             local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
@@ -585,7 +582,9 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         local_recon = jax.device_get(local_recon)
         return local_recon
 
-    save_data_hdf5(file_path, process_recon(recon), 'recon', recon_dict)
+    recon = jax.device_get(recon)
+    recon = process_recon(recon)
+    save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
 def import_recon_hdf5(file_path):
@@ -1046,7 +1045,7 @@ def generate_demo_data(
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.array(sinogram)
+    sinogram = np.asarray(sinogram)
 
     return phantom, sinogram, params
 
