@@ -49,7 +49,7 @@ def get_experiment_params(experiment_name):
         raise ValueError(f"Unknown experiment: {experiment_name}")
 
 def main():
-    experiment = sys.argv[1] if len(sys.argv) > 1 else "experiment2"
+    experiment = sys.argv[1] if len(sys.argv) > 1 else "experiment1"
     params = get_experiment_params(experiment)
 
     # Set parameters for experiment
