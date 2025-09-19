@@ -64,7 +64,7 @@ class TranslationModel(mbirjax.TomographyModel):
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.5, 1, 1,))
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
 
     def get_magnification(self):
         """
