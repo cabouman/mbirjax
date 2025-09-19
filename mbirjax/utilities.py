@@ -580,9 +580,8 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         if remove_flash:
             local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
 
-        local_recon = jnp.transpose(local_recon, (2, 0, 1))
-        # Flip the slice axis to convert to right-handed coordinate system
-        local_recon = jnp.flipud(local_recon)
+        # Convert to right-handed coordinate system
+        local_recon = jnp.transpose(local_recon, (2, 1, 0))
         local_recon = jax.device_get(local_recon)
         return local_recon
 
