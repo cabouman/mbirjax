@@ -313,7 +313,8 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
 
     # Denormalize the corrected plastic sinogram
     eps = 1e-6 * jnp.max(linear_plastic_coef)
-    corrected_plastic_sino = p_normalization * y / (linear_plastic_coef + eps)
+    gamma = 1e-2
+    corrected_plastic_sino = p_normalization * jnp.maximum(y, 0) / (jnp.maximum(linear_plastic_coef, 0) + gamma*jnp.max(linear_plastic_coef))
 
     return corrected_plastic_sino
 
