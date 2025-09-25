@@ -391,11 +391,30 @@ def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pi
 
 
 # ####### subroutines for loading scan images
+
+def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
+    """
+    Convert image to float32 and normalize if it is an integer dtype.
+
+    - If `img.dtype` is an integer type, cast to float32 and divide by the max value for that dtype.
+    - Otherwise, cast to float32 without scaling.
+
+    Args:
+        img (np.ndarray): Input image array.
+
+    Returns:
+        np.ndarray: float32 array, normalized to [0, 1] if input was integer.
+    """
+    if np.issubdtype(img.dtype, np.integer):
+        maxval = np.iinfo(img.dtype).max
+        return img.astype(np.float32) / maxval
+    return img.astype(np.float32)
+
 def read_scan_img(img_path):
     """
     Reads a scan image from a TIFF file. Supports both 2D and 3D TIFFs.
 
-    This function loads a TIFF image using `tifffile.imread()`, and normalizes it to float32 format if the
+    This function loads a TIFF image using `tifffile.imread()`, then calls _normalize_to_float32() to normalizes it to float32 format if the
     input is of integer type. If the image has more than two dimensions (e.g., 3D volumes or RGB channels),
     the returned array preserves that shape.
 
@@ -407,13 +426,8 @@ def read_scan_img(img_path):
     """
     import tifffile
     img = tifffile.imread(img_path)
-
-    if np.issubdtype(img.dtype, np.integer):
-        # make float and normalize integer types
-        maxval = np.iinfo(img.dtype).max
-        img = img.astype(np.float32) / maxval
-
-    return img.astype(np.float32)
+    img = _normalize_to_float32(img)
+    return img
 
 
 def read_scan_dir(scan_dir, view_ids=None):
@@ -441,6 +455,7 @@ def read_scan_dir(scan_dir, view_ids=None):
     img_path_list = [img_path_list[idx] for idx in view_ids]
 
     output_views = tifffile.imread(img_path_list, ioworkers=48, maxworkers=8)
+    output_views = _normalize_to_float32(output_views)
 
     # return shape = num_views x num_det_rows x num_det_channels
     return output_views
