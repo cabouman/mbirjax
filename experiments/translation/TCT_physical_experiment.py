@@ -23,7 +23,7 @@ for package in required_packages:
     else:
         print(f"{package} is already installed.")
 
-from zeiss import *
+import mbirjax.preprocess as mjp
 
 def main():
     # Download and extract data
@@ -32,7 +32,7 @@ def main():
     dataset_dir = mj.download_and_extract(dataset_url, download_dir)
 
     # Load and preprocess data
-    sino, translation_params, optional_params = compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
+    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(**translation_params)
