@@ -10,7 +10,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
-                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None):
+                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None, verbose=1):
     """
     Load NSI sinogram data and prepare arrays and parameters for ConeBeamModel reconstruction.
 
@@ -35,6 +35,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. If None, uses NSI config file.
         crop_pixels_top (int, optional): Pixels to crop from the top. If None, uses NSI config file.
         crop_pixels_bottom (int, optional): Pixels to crop from the bottom. If None, uses NSI config file.
+        verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
         tuple: (sino, cone_beam_params, optional_params)
@@ -58,7 +59,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             weights = mj.gen_weights(sino, weight_type='transmission_root')
             recon, recon_dict = ct_model.recon(sino, weights=weights)
     """
-    print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
+    if verbose > 0:
+        print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
             load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
 
@@ -81,7 +83,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                                                                       crop_pixels_top=crop_pixels_top,
                                                                       crop_pixels_bottom=crop_pixels_bottom)
 
-    print("\n\n########## Cropping and downsampling scans")
+    if verbose > 0:
+        print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                        crop_pixels_sides=crop_pixels_sides,
@@ -95,34 +98,33 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                                                                                                  downsample_factor=downsample_factor,
                                                                                                  defective_pixel_array=defective_pixel_array)
 
-    print("\n\n########## Computing sinogram from object, blank, and dark scans")
+    if verbose > 0:
+        print("\n\n########## Computing sinogram from object, blank, and dark scans")
     sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
     scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
     del obj_scan, blank_scan, dark_scan  # delete scan images to save memory
 
-    print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
+    if verbose > 0:
+        print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
     background_offset = mjp.estimate_background_offset(sino)
-    print("background_offset = ", background_offset)
+    if verbose > 0:
+        print("background_offset = ", background_offset)
 
     det_rotation = optional_params["det_rotation"]
     sino = mjp.correct_det_rotation_and_background(sino, det_rotation=det_rotation, background_offset=background_offset)
     del optional_params["det_rotation"]  # We delete this since it's not an allowed parameter in TomographyModel.
 
-    # print("MBIRJAX geometry parameters:")
-    # pp.pprint(cone_beam_params)
-    # pp.pprint(optional_params)
-    print('obj_scan shape = ', scan_shapes[0])
-    print('blank_scan shape = ', scan_shapes[1])
-    print('dark_scan shape = ', scan_shapes[2])
+    if verbose > 0:
+        print('obj_scan shape = ', scan_shapes[0])
+        print('blank_scan shape = ', scan_shapes[1])
+        print('dark_scan shape = ', scan_shapes[2])
 
     return sino, cone_beam_params, optional_params
 
 
-def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsample_view_factor=1):
+def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsample_view_factor=1, verbose=1):
     """
     Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI scan directory.
-
-    This function loads the sinogram data and parameters from an NSI scan directory for users who would prefer to implement custom preprocessing of the data.
 
     Args:
         dataset_dir (string): Path to an NSI scan directory. The directory is assumed to have the following structure:
@@ -137,27 +139,30 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         view_id_start (int, optional): view index corresponding to the first view.
         view_id_end (int, optional): view index corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
         subsample_view_factor (int, optional): view subsample factor.
+        verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: [obj_scan, blank_scan, dark_scan, cone_beam_params, optional_params, defective_pixel_list]
+        tuple: (obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array)
 
-            obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
-            blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
-            dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
-            nsi_params (dict): Required parameters needed for convert_nsi_to_mbirjax_params().
-            defective_pixel_array (ndarray): An nx2 array containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx).
+            - obj_scan (numpy.ndarray): 3D object scan with shape (num_views, num_det_rows, num_det_channels).
+            - blank_scan (numpy.ndarray): 3D blank scan with shape (1, num_det_rows, num_det_channels).
+            - dark_scan (numpy.ndarray): 3D dark scan with shape (1, num_det_rows, num_det_channels).
+            - nsi_params (dict): Required parameters needed for ``convert_nsi_to_mbirjax_params()`` (e.g., geometry vectors, spacings, and angles).
+            - defective_pixel_array (numpy.ndarray | tuple): If a defective-pixel file is present, an (N, 2) integer array of (detector_row_idx, detector_channel_idx) pairs; otherwise an empty tuple ``()``.
     """
     ### automatically parse the paths to NSI metadata and scans from dataset_dir
     config_file_path, geom_report_path, obj_scan_dir, blank_scan_path, dark_scan_path, defective_pixel_path = \
         _parse_filenames_from_dataset_dir(dataset_dir)
 
-    print("The following files will be used to compute the NSI reconstruction:\n",
-          f"    - NSI config file: {config_file_path}\n",
-          f"    - Geometry report: {geom_report_path}\n",
-          f"    - Radiograph directory: {obj_scan_dir}\n",
-          f"    - Blank scan image: {blank_scan_path}\n",
-          f"    - Dark scan image: {dark_scan_path}\n",
-          f"    - Defective pixel information: {defective_pixel_path}\n")
+    if verbose > 0:
+        print("The following files will be used to compute the NSI reconstruction:\n",
+              f"    - NSI config file: {config_file_path}\n",
+              f"    - Geometry report: {geom_report_path}\n",
+              f"    - Radiograph directory: {obj_scan_dir}\n",
+              f"    - Blank scan image: {blank_scan_path}\n",
+              f"    - Dark scan image: {dark_scan_path}\n",
+              f"    - Defective pixel information: {defective_pixel_path}\n")
+
     ### NSI param tags in nsipro file
     tag_section_list = [['source', 'Result'],                           # vector from origin to source
                         ['reference', 'Result'],                        # vector from origin to first row and column of the detector
@@ -177,97 +182,104 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
                         ['crop', 'Radiograph']                          # 4-tuple of pixels to crop from each view
                        ]
     assert(os.path.isfile(config_file_path)), f'Error! NSI config file does not exist. Please check whether {config_file_path} is a valid file.'
-    NSI_params = _read_str_from_config(config_file_path, tag_section_list)
+    # raw_nsi_fields: list of raw strings from .nsipro in the same order as tag_section_list
+    raw_nsi_fields = _read_str_from_config(config_file_path, tag_section_list)
 
     # vector from origin to source
-    r_s = NSI_params[0].split(' ')
+    r_s = raw_nsi_fields[0].split(' ')
     r_s = np.array([np.single(elem) for elem in r_s])
 
     # vector from origin to reference, where reference is the center of first row and column of the detector
-    r_r = NSI_params[1].split(' ')
+    r_r = raw_nsi_fields[1].split(' ')
     r_r = np.array([np.single(elem) for elem in r_r])
 
     # correct the coordinate of (0,0) detector pixel based on "Geometry Report.rtf"
     x_r, y_r = _read_detector_location_from_geom_report(geom_report_path)
     r_r[0] = x_r
     r_r[1] = y_r
-    print("Corrected coordinate of (0,0) detector pixel (from Geometry Report) = ", r_r)
+    if verbose > 0:
+        print("Corrected coordinate of (0,0) detector pixel (from Geometry Report) = ", r_r)
 
     # detector pixel pitch
-    pixel_pitch_det = NSI_params[2].split(' ')
+    pixel_pitch_det = raw_nsi_fields[2].split(' ')
     delta_det_channel = np.single(pixel_pitch_det[0])
     delta_det_row = np.single(pixel_pitch_det[1])
 
     # dimension of radiograph
-    num_det_channels = int(NSI_params[3])
-    num_det_rows = int(NSI_params[4])
+    num_det_channels = int(raw_nsi_fields[3])
+    num_det_rows = int(raw_nsi_fields[4])
 
     # total number of radiograph scans
-    num_acquired_scans = int(NSI_params[5])
+    num_acquired_scans = int(raw_nsi_fields[5])
 
     # total angles (usually 360 for 3D data, and (360*number_of_full_rotations) for 4D data
-    total_angles = int(NSI_params[6])
+    total_angles = int(raw_nsi_fields[6])
 
     # Radiograph rotation (degree)
-    scan_rotate = int(NSI_params[7])
+    scan_rotate = int(raw_nsi_fields[7])
     if (scan_rotate == 180) or (scan_rotate == 0):
-        print('scans are in portrait mode!')
+        if verbose > 0:
+            print('Scans are in portrait mode!')
     elif (scan_rotate == 270) or (scan_rotate == 90):
-        print('scans are in landscape mode!')
+        if verbose > 0:
+            print('Scans are in landscape mode!')
         num_det_channels, num_det_rows = num_det_rows, num_det_channels
     else:
         warnings.warn("Picture mode unknown! Should be either portrait (0 or 180 deg rotation) or landscape (90 or 270 deg rotation). Automatically setting picture mode to portrait.")
         scan_rotate = 180
 
     # Radiograph horizontal & vertical flip
-    if NSI_params[8] == "True":
+    if raw_nsi_fields[8] == "True":
         flipH = True
     else:
         flipH = False
-    if NSI_params[9] == "True":
+    if raw_nsi_fields[9] == "True":
         flipV = True
     else:
         flipV = False
 
     # Detector rotation angle step (degree)
-    angle_step = np.single(NSI_params[10])
+    angle_step = np.single(raw_nsi_fields[10])
 
     # Detector rotation direction
-    if NSI_params[11] == "True":
-        print("clockwise rotation.")
+    if raw_nsi_fields[11] == "True":
+        if verbose > 0:
+            print("clockwise rotation.")
     else:
-        print("counter-clockwise rotation.")
+        if verbose > 0:
+            print("counter-clockwise rotation.")
         # counter-clockwise rotation
         angle_step = -angle_step
 
     # Rotation axis
-    r_a = NSI_params[12].split(' ')
+    r_a = raw_nsi_fields[12].split(' ')
     r_a = np.array([np.single(elem) for elem in r_a])
     # make sure rotation axis points down
     if r_a[1] > 0:
         r_a = -r_a
 
     # Detector normal vector
-    r_n = NSI_params[13].split(' ')
+    r_n = raw_nsi_fields[13].split(' ')
     r_n = np.array([np.single(elem) for elem in r_n])
 
     # Detector horizontal vector
-    r_h = NSI_params[14].split(' ')
+    r_h = raw_nsi_fields[14].split(' ')
     r_h = np.array([np.single(elem) for elem in r_h])
-    crops = NSI_params[15].split(' ')
+    crops = raw_nsi_fields[15].split(' ')
     crops = np.array([np.int32(elem) for elem in crops])
     max_crop = np.amax(crops)
 
-    print("############ NSI geometry parameters ############")
-    print("vector from origin to source = ", r_s, " [mm]")
-    print("vector from origin to (0,0) detector pixel = ", r_r, " [mm]")
-    print("Unit vector of rotation axis = ", r_a)
-    print("Unit vector of normal = ", r_n)
-    print("Unit vector of horizontal = ", r_h)
-    print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({delta_det_row:.3f},{delta_det_channel:.3f}) [mm]")
-    print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows},{num_det_channels})")
-    print(f"Pixels to crop from the border of each view = {max_crop}")
-    print("############ End NSI geometry parameters ############")
+    if verbose > 0:
+        print("############ NSI geometry parameters ############")
+        print("vector from origin to source = ", r_s, " [mm]")
+        print("vector from origin to (0,0) detector pixel = ", r_r, " [mm]")
+        print("Unit vector of rotation axis = ", r_a)
+        print("Unit vector of normal = ", r_n)
+        print("Unit vector of horizontal = ", r_h)
+        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({delta_det_row:.3f},{delta_det_channel:.3f}) [mm]")
+        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows},{num_det_channels})")
+        print(f"Pixels to crop from the border of each view = {max_crop}")
+        print("############ End NSI geometry parameters ############")
     ### END load NSI parameters from an nsipro file
 
     ### read blank scans and dark scans
@@ -281,9 +293,11 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     if view_id_end is None:
         view_id_end = num_acquired_scans
     view_ids = np.arange(start=view_id_start, stop=view_id_end, step=subsample_view_factor, dtype=np.int32)
-    print('Loading {} object scans from disk.'.format(len(view_ids)))
+    if verbose > 0:
+        print('Loading {} object scans from disk.'.format(len(view_ids)))
     obj_scan = mjp.read_scan_dir(obj_scan_dir, view_ids)
-    print('Scans loaded.')
+    if verbose > 0:
+        print('Scans loaded.')
 
     ### Load defective pixel information
     if defective_pixel_path is not None:
@@ -296,7 +310,8 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
 
     ### flip the scans according to flipH and flipV information from nsipro file
     if flipV:
-        print("Flipping scans vertically")
+        if verbose > 0:
+            print("Flipping scans vertically")
         obj_scan = np.flip(obj_scan, axis=1)
         blank_scan = np.flip(blank_scan, axis=1)
         dark_scan = np.flip(dark_scan, axis=1)
@@ -305,7 +320,8 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
             defective_pixel_array[:, 0] = blank_scan.shape[1] - defective_pixel_array[:, 0] - 1
 
     if flipH:
-        print("Flipping scans horizontally")
+        if verbose > 0:
+            print("Flipping scans horizontally")
         obj_scan = np.flip(obj_scan, axis=2)
         blank_scan = np.flip(blank_scan, axis=2)
         dark_scan = np.flip(dark_scan, axis=2)
