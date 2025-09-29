@@ -9,22 +9,6 @@ import sys
 import subprocess
 import importlib.util
 
-# Install necessary package
-required_packages = ['olefile']
-for package in required_packages:
-    if importlib.util.find_spec(package) is None:
-        print(f"{package} not found. Installing...")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-            print(f"Successfully installed {package}")
-        except subprocess.CalledProcessError:
-            print(f"Failed to install {package}. Please install it manually.")
-            sys.exit(1)
-    else:
-        print(f"{package} is already installed.")
-
-import mbirjax.preprocess as mjp
-
 def main():
     # Download and extract data
     download_dir = "./purdue_p_data"
@@ -32,7 +16,7 @@ def main():
     dataset_dir = mj.download_and_extract(dataset_url, download_dir)
 
     # Load and preprocess data
-    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
+    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53, verbose=0)
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(**translation_params)
