@@ -16,7 +16,7 @@ def main():
     dataset_dir = mj.download_and_extract(dataset_url, download_dir)
 
     # Load and preprocess data
-    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53, verbose=0)
+    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(**translation_params)
