@@ -62,7 +62,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
-            load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor)
+            load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor, verbose=verbose)
 
     # Get the crops from the config file if not provided and make sure they are symmetric
     # TODO:  adjust detector offsets for asymmetric crops
