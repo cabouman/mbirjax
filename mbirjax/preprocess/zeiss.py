@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
-                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1):
     """
     Load Zeiss sinogram data and prepare arrays ana parameters for TranslationModel reconstruction.
 
@@ -32,6 +32,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
         crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. Defaults to None.
         crop_pixels_top (int, optional): Pixels to crop from top of the sinogram. Defaults to None.
         crop_pixels_bottom (int, optional): Pixels to crop from bottom of the sinogram. Defaults to None.
+        verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
         tuple: (sino, translation_params, optional_params)
@@ -54,16 +55,18 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
             # Run reconstruction
             recon, recon_dict = tct_model.recon(sino)
     """
-    print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
+    if verbose > 0:
+        print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
     obj_scan, blank_scan, dark_scan, zeiss_params = \
-        load_scans_and_params(dataset_dir)
+        load_scans_and_params(dataset_dir, verbose=verbose)
 
     translation_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=downsample_factor,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
                                                                           crop_pixels_bottom=crop_pixels_bottom)
 
-    print("\n\n########## Cropping and downsampling scans")
+    if verbose > 0:
+        print("\n\n########## Cropping and downsampling scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                 crop_pixels_sides=crop_pixels_sides,
@@ -77,27 +80,28 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
                                                                                           downsample_factor=downsample_factor,
                                                                                           defective_pixel_array=defective_pixel_array)
 
-    print("\n\n########## Computing sinogram from object, blank, and dark scans")
+    if verbose > 0:
+        print("\n\n########## Computing sinogram from object, blank, and dark scans")
     sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
     scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
     del obj_scan, blank_scan, dark_scan  # delete scan images to save memory
 
-    print("\n\n########## Correcting sinogram data to account for background offset")
+    if verbose > 0:
+        print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
     background_offset = mjp.estimate_background_offset(sino)
     sino = sino - background_offset
-    print("background_offset = ", background_offset)
+    if verbose > 0:
+        print("background_offset = ", background_offset)
 
-    # print("MBIRJAX geometry parameters:")
-    # pp.pprint(translation_params)
-    # pp.pprint(optional_params)
-    print('obj_scan shape = ', scan_shapes[0])
-    print('blank_scan shape = ', scan_shapes[1])
-    print('dark_scan shape = ', scan_shapes[2])
+    if verbose > 0:
+        print('obj_scan shape = ', scan_shapes[0])
+        print('blank_scan shape = ', scan_shapes[1])
+        print('dark_scan shape = ', scan_shapes[2])
 
     return sino, translation_params, optional_params
 
 
-def load_scans_and_params(dataset_dir):
+def load_scans_and_params(dataset_dir, verbose=1):
     """
     Load the object scan, blank scan, dark scan, and geometry from a Zeiss scan directory.
     Args:
@@ -107,23 +111,26 @@ def load_scans_and_params(dataset_dir):
             - "blank_scan" (a subfolder containing the blank scan)
             - "dark_scan" (a subfolder containing the dark scan)
 
-    Returns:
-        tuple: [obj_scan, blank_scan, dark_scan, zeiss_params]
+        verbose (int, optional): Verbosity level. Defaults to 1.
 
-            obj_scan (jax array): 3D object scan with shape (num_views, num_det_rows, num_channels).
-            blank_scan (jax array): 3D blank scan with shape (1, num_det_rows, num_det_channels).
-            dark_scan (jax array): 3D dark scan with shape (1, num_det_rows, num_det_channels).
-            zeiss_params (dict): Required parameters needed for convert_zeiss_to_mbirjaxax_params().
+    Returns:
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params)
+
+            - obj_scan (numpy.ndarray): 3D object scan with shape (num_views, num_det_rows, num_channels).
+            - blank_scan (numpy.ndarray): 3D blank scan with shape (1, num_det_rows, num_det_channels).
+            - dark_scan (numpy.ndarray): 3D dark scan with shape (1, num_det_rows, num_det_channels).
+            - zeiss_params (dict): Required parameters needed for "convert_zeiss_to_mbirjax_params()" (e.g., geometry vectors, spacings, and angles).
     """
     ### automatically parse the paths to Zeiss scans from dataset—dir
     obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_obj_scan_path = \
         _parse_filenames_from_dataset_dir(dataset_dir)
 
-    print("The following files will be used to compute the NSI reconstruction:\n",
-          f"    - Object scan directory: {obj_scan_dir}\n",
-          f"    - Blank scan directory: {blank_scan_dir}\n",
-          f"    - Dark scan directory: {dark_scan_dir}\n",
-          f"    - Object scan file when object at iso (no translation): {iso_obj_scan_path}\n")
+    if verbose > 0:
+        print("The following files will be used to compute the Zeiss reconstruction:\n",
+              f"    - Object scan directory: {obj_scan_dir}\n",
+              f"    - Blank scan directory: {blank_scan_dir}\n",
+              f"    - Dark scan directory: {dark_scan_dir}\n",
+              f"    - Object scan file when object at iso (no translation): {iso_obj_scan_path}\n")
 
     _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
     _, Zeiss_params_iso_obj_scan = read_xrm(iso_obj_scan_path) # Zeiss parameters of the object scan when object at iso
@@ -161,13 +168,14 @@ def load_scans_and_params(dataset_dir):
     iso_y_position = float(np.asarray(Zeiss_params_iso_obj_scan['x_positions']).ravel()[0])
     iso_z_position = float(np.asarray(Zeiss_params_iso_obj_scan['y_positions']).ravel()[0])
 
-    print("############ Zeiss geometry parameters ############")
-    print(f"Source to iso distance: {source_iso_dist} [mm]")
-    print(f"Iso to detector distance: {iso_det_dist} [mm]")
-    print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f}, {det_pixel_pitch:.3f}) [um]")
-    print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
-    print(f"Object position at iso in x, y, z axis : (obj_position_x, obj_position_y, obj_position_z) = ({iso_x_position:.3f}, {iso_y_position:.3f}, {iso_z_position:.3f}) [um]")
-    print("############ End Zeiss geometry parameters ############")
+    if verbose > 0:
+        print("############ Zeiss geometry parameters ############")
+        print(f"Source to iso distance: {source_iso_dist} [mm]")
+        print(f"Iso to detector distance: {iso_det_dist} [mm]")
+        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f}, {det_pixel_pitch:.3f}) [um]")
+        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
+        print(f"Object position at iso in x, y, z axis : (obj_position_x, obj_position_y, obj_position_z) = ({iso_x_position:.3f}, {iso_y_position:.3f}, {iso_z_position:.3f}) [um]")
+        print("############ End Zeiss geometry parameters ############")
     ### END load Zeiss parameters from scan data
 
     ### read blank scans and dark scans
@@ -179,10 +187,12 @@ def load_scans_and_params(dataset_dir):
 
     ### read object scans
     obj_scan, _ = read_xrm_dir(obj_scan_dir)
-    print("Scans loaded.")
+    if verbose > 0:
+        print("Scans loaded.")
 
     ### flip the scans vertically
-    print("Flipping scans vertically")
+    if verbose > 0:
+        print("Flipping scans vertically")
     obj_scan = np.flip(obj_scan, axis=1)
     blank_scan = np.flip(blank_scan, axis=1)
     dark_scan = np.flip(dark_scan, axis=1)
@@ -613,7 +623,7 @@ def _read_ole_arr(ole, label, struct_fmt):
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
-######## subroutines for NSI-MBIR parameter conversion
+######## subroutines for Zeiss-MBIR parameter conversion
 def calc_source_det_params(source_iso_dist, iso_det_dist):
     """
     Calculate MBIRJAX geometry parameters: source_det_dist
@@ -670,4 +680,4 @@ def calc_row_params(crop_pixels_top, crop_pixels_bottom):
     det_row_offset = - (crop_pixels_top + crop_pixels_bottom) / 2
     return det_row_offset
 
-######## END subroutines for NSI-MBIR parameter conversion
+######## END subroutines for Zeiss-MBIR parameter conversion
