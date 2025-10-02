@@ -129,11 +129,11 @@ class ProjectionTestBase(unittest.TestCase):
 
 class TestProjectionCone(ProjectionTestBase):
     MODEL = mj.ConeBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/users/ncardel/cone_32_data.tar.gz"
+    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_projection_data.tgz"
 
 class TestProjectionParallel(ProjectionTestBase):
     MODEL = mj.ParallelBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/users/ncardel/parallel_32_data.tar.gz"
+    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
 
 if __name__ == "__main__":
     unittest.main()
