@@ -28,9 +28,30 @@ Reconstruction and Projection
 
 .. automethod:: mbirjax.TomographyModel.back_project
 
+
+Parameter Handling
+------------------
+
+.. automethod:: mbirjax.TomographyModel.set_params
+
+.. automethod:: mbirjax.ParameterHandler.get_params
+
+.. automethod:: mbirjax.ParameterHandler.print_params
+
+.. automethod:: mbirjax.TomographyModel.get_recon_dict
+
+
+Recon Shape and Voxel Spacing
+-----------------------------
+
 .. automethod:: mbirjax.TomographyModel.scale_recon_shape
 
 .. automethod:: mbirjax.TomographyModel.get_magnification
+
+.. automethod:: mbirjax.TomographyModel.auto_set_delta_voxel
+
+.. automethod:: mbirjax.TomographyModel.auto_set_recon_shape
+
 
 .. _SaveLoadDocs:
 
@@ -44,17 +65,6 @@ Saving and Loading
 .. automethod:: mbirjax.TomographyModel.save_recon_hdf5
 
 .. automethod:: mbirjax.TomographyModel.load_recon_hdf5
-
-Parameter Handling
-------------------
-
-.. automethod:: mbirjax.TomographyModel.set_params
-
-.. automethod:: mbirjax.ParameterHandler.get_params
-
-.. automethod:: mbirjax.ParameterHandler.print_params
-
-.. automethod:: mbirjax.TomographyModel.get_recon_dict
 
 
 Data Generation

@@ -855,8 +855,7 @@ class TomographyModel(ParameterHandler):
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
     def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
-        """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
-          the number of channels from the sinogram"""
+        """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
         raise NotImplementedError('auto_set_recon_shape must be implemented by each specific geometry model.')
 
     def auto_set_delta_voxel(self):
