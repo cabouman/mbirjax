@@ -175,9 +175,15 @@ class ConeBeamModel(TomographyModel):
         """ Compute the automatic recon shape cone beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        delta_voxel = self.get_params('delta_voxel')
+        delta_voxel_prev = self.get_params('delta_voxel')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
+        delta_det_channel = self.get_params('delta_det_channel')
+        delta_voxel = delta_det_channel / magnification
+        if delta_voxel_prev is not None and np.abs(delta_voxel_prev - delta_voxel) > 1e-7:
+            warnings.warn('delta_voxel set to {} in auto_set_recon_size'.format(delta_voxel))
+
+        self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
 
         num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
         num_recon_cols = num_recon_rows
