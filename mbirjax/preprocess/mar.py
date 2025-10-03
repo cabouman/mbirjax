@@ -312,22 +312,24 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
 
     y_minus_metal = y
-    del y
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, 1 + num_cross_terms + num_metal_terms):
         y_minus_metal -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
-    # Clamp y_minus_metal at 0
+    # Enforce non-negativity on the residual sinogram (plastic + cross terms)
     y_minus_metal = jnp.maximum(y_minus_metal, 0)
 
-    # Correct the plastic sinogram with a stabilization floor, then denormalize
-    median_val = jnp.median(linear_plastic_coef)
-    if float(median_val) < 0:
+    # Compute median of plastic coefficients (used to define a stabilization floor)
+    median_plastic_coef = jnp.median(linear_plastic_coef)
+    min_plastic_coef = gamma * median_plastic_coef
+
+    # A negative median would be non-physical and may indicate instability in the algorithm
+    # In that case, issue a runtime warning to flag the potential problem
+    if float(median_plastic_coef) <= 0:
         warnings.warn("Median of linear_plastic_coef is negative", RuntimeWarning)
-    min_plastic_coef = gamma * median_val
-    # Clamp linear_plastic_coef at min_plastic_coef to avoid streaks
+
+    # Clamp linear_plastic_coef at min_plastic_coef to prevent division by very small or negative values
     clamped_plastic_coef = jnp.maximum(linear_plastic_coef, min_plastic_coef)
-    del linear_plastic_coef
     corrected_plastic_sino = p_normalization * y_minus_metal / clamped_plastic_coef
 
     return corrected_plastic_sino
