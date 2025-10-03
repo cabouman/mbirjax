@@ -307,10 +307,6 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
         # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
         linear_plastic_coef += theta[i] * _get_column_H(i, jnp.ones_like(y), metal_basis, H_exponent_list)
 
-    # Regularize small denominators to prevent division by near-zero
-    denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
-    linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
-
     y_minus_metal = y
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, 1 + num_cross_terms + num_metal_terms):
