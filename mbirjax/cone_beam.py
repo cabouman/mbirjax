@@ -171,7 +171,7 @@ class ConeBeamModel(TomographyModel):
 
         return psf_radius
 
-    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape cone beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
