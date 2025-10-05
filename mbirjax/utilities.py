@@ -550,7 +550,7 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
 
 
 
-def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
@@ -562,7 +562,7 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
         recon (Union[np.ndarray, jax.Array]): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
         recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
-        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to False.
         radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
         top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
         bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
@@ -580,9 +580,8 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         if remove_flash:
             local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
 
-        local_recon = jnp.transpose(local_recon, (2, 0, 1))
-        # Flip the slice axis to convert to right-handed coordinate system
-        local_recon = jnp.flipud(local_recon)
+        # Convert to right-handed coordinate system
+        local_recon = jnp.transpose(local_recon, (2, 1, 0))
         local_recon = jax.device_get(local_recon)
         return local_recon
 

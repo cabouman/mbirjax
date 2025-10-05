@@ -319,27 +319,50 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
 def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, defective_pixel_array=()):
     """
-    Crop obj_scan, blank_scan, and dark_scan images by an integer number of pixels, and update defective_pixel_array accordingly.
-    The left and right side pixels are cropped the same amount in order to preserve the center of rotation.
+    Crop `obj_scan`, `blank_scan`, and `dark_scan` by the specified pixel amounts and update `defective_pixel_array`.
+
+    The same number of pixels is cropped from the left and right sides (via `crop_pixels_sides`) to
+    preserve the detector center/rotation axis. Top and bottom cropping are controlled independently by
+    `crop_pixels_top` and `crop_pixels_bottom`. Any defective pixels that fall outside the cropped region
+    are removed; remaining coordinates are shifted to the new origin of the cropped images.
 
     Args:
-        obj_scan (ndarray): Sinogram. 3D numpy array of shape (num_views, num_det_rows, num_det_channels).
-        blank_scan (ndarray): Blank scan(s). 3D numpy array of shape (num_blank_views, num_det_rows, num_det_channels).
-        dark_scan (ndarray): Dark scan(s). 3D numpy array of shape (num_dark_views, num_det_rows, num_det_channels).
-        crop_pixels_sides (int, optional): Number of pixels to crop from each side of the sinogram. Defaults to 0.
-        crop_pixels_top (int, optional): Number of pixels to crop from the top of the sinogram. Defaults to 0.
-        crop_pixels_bottom (int, optional): Number of pixels to crop from the bottom of the sinogram. Defaults to 0.
-        defective_pixel_array (ndarray): Array of shape (num_defective_pixels, 2) containing (row, col) coordinates.
-
-    Notes:
-        This function supports both singleton blank/dark scans (with shape (1, H, W)) and multi-view scans
-        (with shape (N, H, W), where N > 1). Cropping is applied consistently across all views.
+        obj_scan (np.ndarray):
+            Sinogram stack of shape `(num_views, num_det_rows, num_det_channels)`.
+        blank_scan (np.ndarray):
+            Blank scan(s) of shape `(num_blank_views, num_det_rows, num_det_channels)`.
+        dark_scan (np.ndarray):
+            Dark scan(s) of shape `(num_dark_views, num_det_rows, num_det_channels)`.
+        crop_pixels_sides (int, optional):
+            Number of pixels to remove from **each** side (left and right) of the detector channels.
+            Defaults to `0`.
+        crop_pixels_top (int, optional):
+            Number of pixels to remove from the top (small row indices). Defaults to `0`.
+        crop_pixels_bottom (int, optional):
+            Number of pixels to remove from the bottom (large row indices). Defaults to `0`.
+        defective_pixel_array (np.ndarray | tuple, optional):
+            Array of shape `(num_defective_pixels, 2)` containing `(row, col)` pixel coordinates that are
+            known to be defective **in detector coordinates shared across views**. May be an empty tuple
+            `()` if no defects are provided. Defaults to `()`.
 
     Returns:
         tuple:
-        - **obj_scan** (*ndarray, float*): Cropped stack of sinograms. 3D numpy array of shape (num_views, new_rows, new_cols).
-        - **blank_scan** (*ndarray, float*): Cropped blank scan(s). 3D numpy array of shape (num_blank_views, new_rows, new_cols).
-        - **dark_scan** (*ndarray, float*): Cropped dark scan(s). 3D numpy array of shape (num_dark_views, new_rows, new_cols).
+            A 4-tuple `(obj_scan, blank_scan, dark_scan, defective_pixel_array)` where
+
+            * **obj_scan** (*np.ndarray*): Cropped object scan of shape `(num_views, new_rows, new_cols)`.
+            * **blank_scan** (*np.ndarray*): Cropped blank scan(s) of shape `(num_blank_views, new_rows, new_cols)`.
+            * **dark_scan** (*np.ndarray*): Cropped dark scan(s) of shape `(num_dark_views, new_rows, new_cols)`.
+            * **defective_pixel_array** (*np.ndarray | tuple*): Updated defective-pixel coordinates in the
+              cropped detector grid (shape `(N_def, 2)`), or `()` if no defects remain.
+
+    Raises:
+        AssertionError: If any crop amount is negative, or if
+            `crop_pixels_top + crop_pixels_bottom >= num_det_rows`, or if
+            `2 * crop_pixels_sides >= num_det_channels`.
+
+    Notes:
+        This function supports both singleton and multi-view `blank_scan`/`dark_scan`. Cropping is applied
+        identically across all views.
     """
     assert (0 <= crop_pixels_sides < obj_scan.shape[2] // 2 and
             0 <= crop_pixels_top and 0 <= crop_pixels_bottom and crop_pixels_top + crop_pixels_bottom < obj_scan.shape[1]), \
@@ -368,11 +391,30 @@ def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pi
 
 
 # ####### subroutines for loading scan images
+
+def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
+    """
+    Convert image to float32 and normalize if it is an integer dtype.
+
+    - If `img.dtype` is an integer type, cast to float32 and divide by the max value for that dtype.
+    - Otherwise, cast to float32 without scaling.
+
+    Args:
+        img (np.ndarray): Input image array.
+
+    Returns:
+        np.ndarray: float32 array, normalized to [0, 1] if input was integer.
+    """
+    if np.issubdtype(img.dtype, np.integer):
+        maxval = np.iinfo(img.dtype).max
+        return img.astype(np.float32) / maxval
+    return img.astype(np.float32)
+
 def read_scan_img(img_path):
     """
     Reads a scan image from a TIFF file. Supports both 2D and 3D TIFFs.
 
-    This function loads a TIFF image using `tifffile.imread()`, and normalizes it to float32 format if the
+    This function loads a TIFF image using `tifffile.imread()`, then calls _normalize_to_float32() to normalizes it to float32 format if the
     input is of integer type. If the image has more than two dimensions (e.g., 3D volumes or RGB channels),
     the returned array preserves that shape.
 
@@ -384,13 +426,8 @@ def read_scan_img(img_path):
     """
     import tifffile
     img = tifffile.imread(img_path)
-
-    if np.issubdtype(img.dtype, np.integer):
-        # make float and normalize integer types
-        maxval = np.iinfo(img.dtype).max
-        img = img.astype(np.float32) / maxval
-
-    return img.astype(np.float32)
+    img = _normalize_to_float32(img)
+    return img
 
 
 def read_scan_dir(scan_dir, view_ids=None):
@@ -418,6 +455,7 @@ def read_scan_dir(scan_dir, view_ids=None):
     img_path_list = [img_path_list[idx] for idx in view_ids]
 
     output_views = tifffile.imread(img_path_list, ioworkers=48, maxworkers=8)
+    output_views = _normalize_to_float32(output_views)
 
     # return shape = num_views x num_det_rows x num_det_channels
     return output_views

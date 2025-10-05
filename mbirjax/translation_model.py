@@ -54,7 +54,7 @@ class TranslationModel(mbirjax.TomographyModel):
                 source_iso_dist=500.0
             )
             model.set_params(delta_recon_row=2.0)
-            model.auto_set_recon_size(sinogram_shape)
+            model.auto_set_recon_shape(sinogram_shape)
     """
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
@@ -64,7 +64,7 @@ class TranslationModel(mbirjax.TomographyModel):
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.5, 1, 1,))
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
 
     def get_magnification(self):
         """
@@ -139,7 +139,7 @@ class TranslationModel(mbirjax.TomographyModel):
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
-    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
         # Get model parameters

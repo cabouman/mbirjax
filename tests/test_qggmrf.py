@@ -165,7 +165,7 @@ class TestQGGMRF(unittest.TestCase):
             finite_diff = (loss1 - loss0) / epsilon
             taylor = jnp.sum(grad0.flatten() * delta.flatten())
 
-        assert (jnp.allclose(finite_diff, taylor, rtol=1e-3))
+        assert jnp.allclose(float(finite_diff), float(taylor), rtol=1e-3)
 
         grad_direct, hess_direct = compute_qggmrf_grad_and_hessian(recon0, qggmrf_params)
         assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
