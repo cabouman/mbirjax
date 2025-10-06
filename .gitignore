@@ -5,6 +5,10 @@ demo/output/*
 experiments/data/*
 experiments/output/*
 
+experiments/split_sino_recon/demo_data/*
+experiments/split_sino_recon/demo_data
+experiments/split_sino_recon/output/*
+
 tests_data_dependent/data/*
 
 # ignore jupyter notebook files
