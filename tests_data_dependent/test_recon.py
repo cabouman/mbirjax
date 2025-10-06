@@ -18,7 +18,7 @@ class ReconTestBase(unittest.TestCase):
     SOURCE_FILEPATH = None
     TOLERANCES = None
 
-    TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp")
+    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     DATA_FILEPATH = None
 
     @classmethod
@@ -27,14 +27,14 @@ class ReconTestBase(unittest.TestCase):
         assert cls.SOURCE_FILEPATH and cls.MODEL, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
 
-        if os.path.exists(cls.TMP_DIR):
-            shutil.rmtree(cls.TMP_DIR)
-        cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.TMP_DIR)
+        if os.path.exists(cls.DATA_DIR):
+            shutil.rmtree(cls.DATA_DIR)
+        cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
 
     @classmethod
     def tearDownClass(cls):
-        if cls.TMP_DIR and os.path.exists(cls.TMP_DIR):
-            shutil.rmtree(cls.TMP_DIR)
+        if cls.DATA_DIR and os.path.exists(cls.DATA_DIR):
+            shutil.rmtree(cls.DATA_DIR)
 
     def setUp(self):
         with h5py.File(self.DATA_FILEPATH, "r") as f:
