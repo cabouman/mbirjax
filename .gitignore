@@ -25,6 +25,10 @@ tests_data_dependent/data/*
 *.hdf5
 *.gif
 *.mp4
+*.tar.gz
+*.tgz
+*.tar
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

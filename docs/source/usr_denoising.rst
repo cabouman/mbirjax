@@ -39,7 +39,8 @@ Denoise
 Median Filter
 +++++++++++++
 
-MBIRJAX also includes a 3x3x3 median filter, which can be used as a simple denoiser.
+MBIRJAX also includes a 3x3x3 median filter, which can be used as a simple denoiser.  The median filter can
+optionally also return the min and max in 3x3x3 neighborhoods.
 
 .. autofunction:: mbirjax.median_filter3d
 

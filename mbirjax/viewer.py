@@ -1,6 +1,7 @@
 import os
 import warnings
 import matplotlib
+import easygui
 
 import mbirjax as mj
 
@@ -22,7 +23,6 @@ from matplotlib import gridspec
 from matplotlib.widgets import RangeSlider, Slider, RadioButtons, CheckButtons
 import time
 import h5py
-import easygui
 
 # === CONSTANTS ===
 TOOLTIP_FONT_SIZE = 9
@@ -1084,6 +1084,11 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
         - Right-click an image to access a context menu with options such as axis transposition and file loading.
         - Right-click the intensity slider (if using TkAgg backend) to manually set display range bounds.
         - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
+
+    Example:
+        >>> denoiser = mj.QGGMRFDenoiser(noisy_image.shape)
+        >>> denoised_image, denoised_dict = denoiser.denoise(noisy_image)  # Estimate the noise level from the image
+        >>> mj.slice_viewer(noisy_image, denoised_image, data_dicts=[None, denoised_dict], title='Noisy and denoised images')
     """
     viewer = SliceViewer(*datasets, data_dicts=data_dicts, title=title, vmin=vmin, vmax=vmax,
                          slice_label=slice_label,  slice_axis=slice_axis, cmap=cmap,
