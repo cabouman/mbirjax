@@ -1,7 +1,8 @@
 # test_recon.py
-import os, shutil, unittest, h5py, jax, jax.numpy as jnp
+import os, shutil, pytest, pathlib, unittest, h5py, jax, jax.numpy as jnp
 import mbirjax as mj
 
+@pytest.mark.data_dependent
 class ReconTestBase(unittest.TestCase):
     """
     Reusable test suite for a projection model. Subclasses must set:
@@ -94,10 +95,12 @@ class ReconTestBase(unittest.TestCase):
 
 # ---- Concrete geometry variants ----
 
+@pytest.mark.data_dependent
 class TestReconCone(ReconTestBase):
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_recon_data.tgz"
 
+@pytest.mark.data_dependent
 class TestReconParallel(ReconTestBase):
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
