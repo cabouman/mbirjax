@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.10"
+version = "0.6.11"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -34,8 +34,7 @@ dependencies = [
     "tqdm",
     "easygui",
     "gdown",
-    "pywavelets",
-    "olefile"
+    "pywavelets"
 ]
 
 [project.optional-dependencies]
