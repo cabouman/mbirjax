@@ -13,6 +13,7 @@ class ProjectionTestBase(unittest.TestCase):
     ATOL = 1e-3
 
     # To be overridden in subclasses:
+    __test__ = False
     MODEL = None
     SOURCE_FILEPATH = None
 
@@ -21,10 +22,6 @@ class ProjectionTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
-        # Don't run the abstract/base suite directly
-        if cls is ProjectionTestBase:
-            raise unittest.SkipTest("ProjectionTestBase is a base class; skipping.")
 
         assert cls.SOURCE_FILEPATH and cls.MODEL, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
@@ -130,11 +127,13 @@ class ProjectionTestBase(unittest.TestCase):
 
 @pytest.mark.data_dependent
 class TestProjectionCone(ProjectionTestBase):
+    __test__ = True
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_projection_data.tgz"
 
 @pytest.mark.data_dependent
 class TestProjectionParallel(ProjectionTestBase):
+    __test__ = True
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
 

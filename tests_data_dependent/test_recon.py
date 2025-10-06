@@ -13,6 +13,7 @@ class ReconTestBase(unittest.TestCase):
     ATOL = 1e-3
 
     # To be overridden in subclasses:
+    __test__ = False
     MODEL = None
     SOURCE_FILEPATH = None
     TOLERANCES = None
@@ -22,10 +23,6 @@ class ReconTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
-        # Don't run the abstract/base suite directly
-        if cls is ReconTestBase:
-            raise unittest.SkipTest("ReconTestBase is a base class; skipping.")
 
         assert cls.SOURCE_FILEPATH and cls.MODEL, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
@@ -113,12 +110,14 @@ class ReconTestBase(unittest.TestCase):
 
 @pytest.mark.data_dependent
 class TestReconCone(ReconTestBase):
+    __test__ = True
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_recon_data.tgz"
     TOLERANCES = {'nrmse': 0.05, 'max_diff': 0.12, 'pct_95': 0.02}
 
 @pytest.mark.data_dependent
 class TestReconParallel(ReconTestBase):
+    __test__ = True
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
     TOLERANCES = {'nrmse': 0.08, 'max_diff': 0.12, 'pct_95': 0.032}
