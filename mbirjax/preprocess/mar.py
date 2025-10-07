@@ -313,6 +313,23 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
 
 
 def _estimate_BH_model_params_with_constraint(Q, c, G, h):
+    """
+    This function solves the constrained quadratic optimization problem:
+
+        minimize_θ   0.5 * θᵀ Q θ + cᵀ θ
+        subject to   G θ ≤ h
+
+    The optimization is performed using the jaxopt OSQP solver.
+
+    Args:
+        Q (jnp.ndarray): Quadratic term matrix.
+        c (jnp.ndarray): Linear term vector.
+        G (jnp.ndarray): Inequality constraint matrix.
+        h (jnp.ndarray): Right-hand side vector for the inequality constraints.
+
+    Returns:
+        jnp.ndarray: Solution vector θ.
+    """
     solver = OSQP(tol=1e-5, maxiter=4000, implicit_diff=False)
     sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
     theta = sol.primal
@@ -320,10 +337,24 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
 
 def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_iter=10):
     """
-    Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
+    Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
 
-    This function avoids constructing the full H matrix by computing HtH and Hty using only the columns of H
-    as needed via `_get_column_H()`.
+    This function solves a regularized least squares problem with inequality constraints to
+    enforce nonnegativity on the plastic and residual sinograms. The optimization problem is:
+
+        minimize_θ   0.5‖Hθ − y‖² + 0.5λ‖θ‖²_Λ
+        subject to   H_p[i,:] θ_p ≥ 0   and   y[i] − H_m[i,:] θ_m ≥ τ,
+
+    where:
+        - H_p contains the plastic and plastic–metal cross-term columns.
+        - H_m contains the metal-only columns.
+
+    The function uses an iterative active constraint selection method:
+        1. Start from the unconstrained least squares estimate.
+        2. Identify indices where the positivity constraints are violated.
+        3. Add the most violated constraints to the set.
+        4. Re-solve the quadratic program (QP) using OSQP.
+        5. Repeat until all constraints are satisfied or `num_iter` iterations are reached.
 
     Args:
         p (jnp.ndarray): Normalized plastic basis vector.
@@ -336,6 +367,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     Returns:
         theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
+
     """
     num_cols = len(H_exponent_list)
 
@@ -371,29 +403,35 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     lambda_reg = beta * scaling_const
 
     Q = HtH + lambda_reg * weight_matrix
-    c = -2 * Hty
+    c = -Hty
     G = jnp.zeros((0, num_cols))  # no active constraints yet
     h = jnp.zeros((0,))
     theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     for iter in range(num_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
-        if Sp[i_min_Sp] < 0:
-            row_p = _get_column_H(i_min_Sp, p, metal_basis, H_exponent_list)
+        if Sp[i_min_Sp] < 0 and (i_min_Sp not in C_p):
+            row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Negative -row_p[:dp] to ensure Hpθp >= 0
             g_plastic = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             h_plastic = jnp.array([0.0])
             G = jnp.vstack([G, g_plastic[None, :]])
             h = jnp.concatenate([h, h_plastic])
+            C_p.append(i_min_Sp)
 
-        if y_minus_Sm[i_min_residual] < 0:
-            row_m = _get_column_H(i_min_residual, p, metal_basis, H_exponent_list)
+        if y_minus_Sm[i_min_residual] < 0 and (i_min_residual not in C_m):
+            row_m = _get_row_H(i_min_residual, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
             h_m = jnp.array([y[i_min_residual]])
             G = jnp.vstack([G, g_m[None, :]])
             h = jnp.concatenate([h, h_m])
+            C_m.append(i_min_residual)
+
+            # --- Early exit: positivity constraint achieved
+            if (Sp[i_min_Sp] >= 0) and (y_minus_Sm[i_min_residual] >= 0):
+                break
 
         theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     return theta
