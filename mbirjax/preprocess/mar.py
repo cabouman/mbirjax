@@ -330,9 +330,12 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
     Returns:
         jnp.ndarray: Solution vector θ.
     """
-    solver = OSQP(tol=1e-5, maxiter=4000, implicit_diff=False)
-    sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
-    theta = sol.primal
+    if G.shape[0] == 0:
+        # No constraints - solve unconstrained QP directly
+        theta = jnp.linalg.solve(Q, -c)
+    else:
+        sol = OSQP.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
+        theta = sol.primal
     return theta
 
 def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_iter=10):
