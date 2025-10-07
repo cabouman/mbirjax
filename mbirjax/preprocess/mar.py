@@ -215,6 +215,30 @@ def _get_column_H(col_index, p, metal_basis, H_exponent_list):
 
     return col
 
+def _get_row_H(row_index, p, metal_basis, H_exponent_list):
+    """
+    Compute the row_index-th column of the basis matrix H.
+
+    Args:
+        row_index (int): Index of the row to compute.
+        p (jnp.ndarray): Normalized plastic basis vector.
+        metal_basis (list of jnp.ndarray): Normalized metal basis vectors [m_0, m_1, ..., m_{n-1}].
+        H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
+
+    Returns:
+        jnp.ndarray: The computed row of H.
+    """
+    pi = p[row_index]
+    mi = [m[row_index] for m in metal_basis]
+    row_vals = []
+    for exps in H_exponent_list:
+        val = (pi ** exps[0])
+        for mk, ek in zip(mi, exps[1:]):
+            val = val * (mk ** ek)
+        row_vals.append(val)
+    return jnp.asarray(row_vals)
+
+
 def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
     """
     Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
@@ -267,6 +291,76 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
     theta = jnp.linalg.solve(HtH_reg, Hty)
 
     return theta
+
+
+def _estimate_BH_model_params_with_constraint(Q, c, G, h):
+    solver = OSQP(tol=1e-5, maxiter=4000, implicit_diff=False)
+    sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
+    theta = sol.primal
+    return theta
+
+def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_iter=10):
+    """
+    Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
+
+    This function avoids constructing the full H matrix by computing HtH and Hty using only the columns of H
+    as needed via `_get_column_H()`.
+
+    Args:
+        p (jnp.ndarray): Normalized plastic basis vector.
+        metal_basis (list of jnp.ndarray): List of normalized metal basis vectors.
+        y (jnp.ndarray): Measured sinogram.
+        H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the basis matrix H.
+        num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
+        alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
+        beta (float): Regularization strength scaling factor.
+
+    Returns:
+        theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
+    """
+    num_cols = len(H_exponent_list)
+
+    C_p = []
+    C_m = []
+
+    HtH = jnp.zeros((num_cols, num_cols))
+    Hty = jnp.zeros(num_cols)
+
+    # Compute the upper triangle of HtH and mirror it.
+    for i in range(num_cols):
+        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
+        Hty = Hty.at[i].set(jnp.dot(h_i, y))
+        for j in range(i, num_cols):
+            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
+            dot_ij = jnp.dot(h_i, h_j)
+            HtH = HtH.at[i, j].set(dot_ij)
+            if i != j:
+                HtH = HtH.at[j, i].set(dot_ij)
+
+    # Compute total degree for each cross term and metal term
+    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:1+num_cross_terms]]
+    metal_degree = [sum(exponent) for exponent in H_exponent_list[1+num_cross_terms:]]
+
+    # Construct diagonal regularization weights: higher-degree terms are penalized more.
+    # This applies stronger regularization to higher-order terms when alpha > 0.
+    # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
+    weights = jnp.asarray(cross_degree + metal_degree)
+    weight_matrix = jnp.diag(1 + weights ** alpha)
+
+    # --- Solve for theta ---
+    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
+    lambda_reg = beta * scaling_const
+
+    Q = HtH + lambda_reg * weight_matrix
+    c = -2 * Hty
+    G = jnp.zeros((1, num_cols))
+    h = jnp.zeros((1, 1))
+    theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
+    for iter in range(num_iter):
+
+        theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
+    return theta
+
 
 def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
     """
