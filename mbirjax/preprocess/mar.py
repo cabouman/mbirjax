@@ -239,6 +239,25 @@ def _get_row_H(row_index, p, metal_basis, H_exponent_list):
     return jnp.asarray(row_vals)
 
 
+def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms):
+    # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
+    num_cols = len(H_exponent_list)
+    linear_plastic_coef = jnp.zeros_like(y)
+    for i in range(0, 1 + num_cross_terms):
+        # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
+        linear_plastic_coef = linear_plastic_coef + theta[i] * _get_column_H(i, jnp.ones_like(p), metal_basis, H_exponent_list)
+
+    y_minus_metal = y
+    # Subtract metal-only terms (from H columns after the cross terms)
+    for j in range(1 + num_cross_terms, num_cols):
+        y_minus_metal = y_minus_metal - theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
+
+    # Compute the index of the smallest Sp entry and the smallest (y-Sm) entry
+    i_min_Sp = int(jnp.argmin(linear_plastic_coef))
+    i_min_residual = int(jnp.argmin(y_minus_metal))
+
+    return linear_plastic_coef, y_minus_metal
+
 def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
     """
     Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
