@@ -137,17 +137,17 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # source to iso distance (in mm)
     source_iso_dist = Zeiss_params["source_iso_dist"] # mm
-    source_iso_dist = np.abs(source_iso_dist)
+    source_iso_dist = float(np.abs(source_iso_dist))
 
     # iso to detector distance (in mm)
     iso_det_dist = Zeiss_params["iso_det_dist"] # mm
-    iso_det_dist = np.abs(iso_det_dist)
+    iso_det_dist = float(np.abs(iso_det_dist))
 
     # detector pixel pitch (in um)
     # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = Zeiss_params["det_pixel_pitch"] # um
-    delta_det_row = det_pixel_pitch
-    delta_det_channel = det_pixel_pitch
+    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"] # um
+    delta_det_row = iso_pixel_pitch
+    delta_det_channel = iso_pixel_pitch
 
     # dimensions of radiograph
     num_det_channels = Zeiss_params["num_det_channels"]
@@ -172,7 +172,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
         print("############ Zeiss geometry parameters ############")
         print(f"Source to iso distance: {source_iso_dist} [mm]")
         print(f"Iso to detector distance: {iso_det_dist} [mm]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f}, {det_pixel_pitch:.3f}) [um]")
+        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({iso_pixel_pitch:.3f}, {iso_pixel_pitch:.3f}) [um]")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
         print(f"Object position at iso in x, y, z axis : (obj_position_x, obj_position_y, obj_position_z) = ({iso_x_position:.3f}, {iso_y_position:.3f}, {iso_z_position:.3f}) [um]")
         print("############ End Zeiss geometry parameters ############")
@@ -457,6 +457,52 @@ def read_xrm_dir(dir_path):
     return arr, metadata
 
 
+def read_txrm(file_name):
+    """
+    Read data from a .txrm file, a compilation of .xrm files.
+
+    This code is adapted from the DXchange library:
+    https://github.com/data-exchange/dxchange
+
+    Reference:
+    [1] DXchange library: https://github.com/data-exchange/dxchange
+
+    Args:
+        file_name (str): String defining the path of file or file name.
+
+    Returns:
+        np.ndarray: Output 3D image with shape (num_views, num_det_rows, num_det_channels).
+        dict: Output metadata
+    """
+    file_name = _check_read(file_name)
+    try:
+        ole = olefile.OleFileIO(file_name)
+    except IOError:
+        print('No such file or directory: %s', file_name)
+        return False
+
+    metadata = read_ole_metadata(ole)
+
+    array_of_images = np.empty(
+        (
+            metadata["num_views"],
+            metadata["num_det_rows"],
+            metadata["num_det_channels"],
+        ),
+        dtype=_get_ole_data_type(metadata)
+    )
+
+    for i, idx in enumerate(range(metadata["num_views"])):
+        img_string = "ImageData{}/Image{}".format(
+            int(np.ceil((idx + 1) / 100.0)), int(idx + 1))
+        array_of_images[i] = _read_ole_image(ole, img_string, metadata)
+
+    _log_imported_data(file_name, array_of_images)
+
+    ole.close()
+    return array_of_images, metadata
+
+
 def read_ole_metadata(ole):
     """
     Read metadata from an xradia OLE file (.xrm, .txrm, .txm).
@@ -481,11 +527,14 @@ def read_ole_metadata(ole):
         'num_det_rows': _read_ole_value(ole, 'ImageInfo/ImageHeight', '<I'),
         'data_type': _read_ole_value(ole, 'ImageInfo/DataType', '<1I'),
         'num_views': number_of_images,
-        'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/pixelsize', '<f'),
-        'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', '<f'),
-        'source_iso_dist': _read_ole_value(ole, 'ImageInfo/StoRADistance', '<f'),
+        'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
+        'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        'iso_det_dist': _read_ole_arr(
+            ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
+        'source_iso_dist': _read_ole_arr(
+            ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
-            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
+            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)) * np.pi / 180.,
         'x_positions': _read_ole_arr(
             ole, 'ImageInfo/XPosition', "<{0}f".format(number_of_images)),
         'y_positions': _read_ole_arr(
@@ -620,6 +669,36 @@ def _read_ole_arr(ole, label, struct_fmt):
     if arr is not None:
         arr = np.array(arr)
     return arr
+
+
+def _read_ole_image(ole, label, metadata, datatype=None):
+    """
+    Reads the image data associated with label in an ole file
+
+    This code is adapted from the DXchange library:
+    https://github.com/data-exchange/dxchange
+
+    Reference:
+    [1] DXchange library: https://github.com/data-exchange/dxchange
+
+    Args:
+        ole (OleFileIO) : An ole file to read from.
+        label (str) : Label associated with the OLE file.
+        metadata (dict) : Dictionary containing metadata extracted from the OLE file.
+        datatype: Data type of the image data. Defaults to None.
+
+    Returns:
+        np.ndarray: Output 2D image with shape (num_det_rows, num_det_channels).
+    """
+    stream = ole.openstream(label)
+    data = stream.read()
+    data_type = _get_ole_data_type(metadata, datatype)
+    data_type = data_type.newbyteorder('<')
+    image = np.reshape(
+        np.frombuffer(data, data_type),
+        (metadata["num_det_rows"], metadata["num_det_channels"], )
+    )
+    return image
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
