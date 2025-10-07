@@ -34,7 +34,8 @@ dependencies = [
     "tqdm",
     "easygui",
     "gdown",
-    "pywavelets"
+    "pywavelets",
+    "jaxopt"
 ]
 
 [project.optional-dependencies]
