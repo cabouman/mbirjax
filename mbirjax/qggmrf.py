@@ -250,7 +250,7 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
 @partial(jax.jit, static_argnames='qggmrf_params')
 def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
     """
-    Compute rho'(delta) / delta using a slightly modifided form of page 153 of FCI for the qGGMRF prior model.
+    Compute rho'(delta) / delta using a slightly modified form on page 117 of FCI for the qGGMRF prior model.
 
     Args:
         delta (float or jax array): (batch_size, P) array of pixel differences between center and each of P neighboring
