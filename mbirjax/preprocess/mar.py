@@ -242,21 +242,21 @@ def _get_row_H(row_index, p, metal_basis, H_exponent_list):
 def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms):
     # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
     num_cols = len(H_exponent_list)
-    linear_plastic_coef = jnp.zeros_like(y)
+    Sp = jnp.zeros_like(y)
     for i in range(0, 1 + num_cross_terms):
         # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
-        linear_plastic_coef = linear_plastic_coef + theta[i] * _get_column_H(i, jnp.ones_like(p), metal_basis, H_exponent_list)
+        Sp = Sp + theta[i] * _get_column_H(i, jnp.ones_like(p), metal_basis, H_exponent_list)
 
-    y_minus_metal = y
+    y_minus_Sm = y
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, num_cols):
-        y_minus_metal = y_minus_metal - theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
+        y_minus_Sm = y_minus_Sm - theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
     # Compute the index of the smallest Sp entry and the smallest (y-Sm) entry
-    i_min_Sp = int(jnp.argmin(linear_plastic_coef))
-    i_min_residual = int(jnp.argmin(y_minus_metal))
+    i_min_Sp = int(jnp.argmin(Sp))
+    i_min_residual = int(jnp.argmin(y_minus_Sm))
 
-    return linear_plastic_coef, y_minus_metal
+    return Sp, y_minus_Sm, i_min_Sp, i_min_residual
 
 def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
     """
@@ -372,10 +372,28 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     Q = HtH + lambda_reg * weight_matrix
     c = -2 * Hty
-    G = jnp.zeros((1, num_cols))
-    h = jnp.zeros((1, 1))
+    G = jnp.zeros((0, num_cols))  # no active constraints yet
+    h = jnp.zeros((0,))
     theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     for iter in range(num_iter):
+        Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
+        if Sp[i_min_Sp] < 0:
+            row_p = _get_column_H(i_min_Sp, p, metal_basis, H_exponent_list)
+            dp = 1 + num_cross_terms
+            # Negative -row_p[:dp] to ensure Hpθp >= 0
+            g_plastic = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
+            h_plastic = jnp.array([0.0])
+            G = jnp.vstack([G, g_plastic[None, :]])
+            h = jnp.concatenate([h, h_plastic])
+
+        if y_minus_Sm[i_min_residual] < 0:
+            row_m = _get_column_H(i_min_residual, p, metal_basis, H_exponent_list)
+            dp = 1 + num_cross_terms
+            # Positive row_m[dp:] to ensure y-Hmθm >= 0
+            g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
+            h_m = jnp.array([y[i_min_residual]])
+            G = jnp.vstack([G, g_m[None, :]])
+            h = jnp.concatenate([h, h_m])
 
         theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     return theta
