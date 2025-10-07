@@ -334,7 +334,8 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
         # No constraints - solve unconstrained QP directly
         theta = jnp.linalg.solve(Q, -c)
     else:
-        sol = OSQP.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
+        solver = OSQP()
+        sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
         theta = sol.primal
     return theta
 
