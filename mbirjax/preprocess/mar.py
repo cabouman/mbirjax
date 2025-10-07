@@ -4,6 +4,7 @@ import mbirjax as mj
 import mbirjax.preprocess as mjp
 import random
 import warnings
+from jaxopt import OSQP
 
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
