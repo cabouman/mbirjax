@@ -8,7 +8,7 @@ import numpy as np
 @partial(jax.jit, static_argnames=['sigma_prox'])
 def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_prox):
     """
-    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
+    Calculate the gradient at each pixel index locations in a reconstructed image using the proximal map prior.
 
     Args:
         recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
