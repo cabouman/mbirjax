@@ -18,6 +18,9 @@ def main():
     # Path to the dataset
     dataset_dir = '/depot/bouman/data/Zeiss/foam512R1N3000.txrm'
 
+    # Output path
+    output_path = './output/'   # path to store output recon images
+
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
     sinogram, metadata = mjp.zeiss.read_txrm(dataset_dir)
@@ -52,22 +55,34 @@ def main():
     # Print out model parameters
     ct_model.print_params()
 
+    # Perform FBP reconstruction
+    print("\n********** Perform MBIR reconstruction **************")
+    direct_recon = ct_model.direct_recon(sinogram)
+    direct_recon /= pixel_size  # convert to units of 1/cm
+
     # Perform MBIR reconstruction
     print("\n********** Perform MBIR reconstruction **************")
-    recon, recon_dict = ct_model.recon(sinogram, weights=weights)
-    recon /= pixel_size  # convert to units of 1/cm
+    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+    mbir_recon /= pixel_size  # convert to units of 1/cm
 
     # Mask out Region of Interest (ROI)
-    recon = mjp.apply_cylindrical_mask(recon)
+    mbir_recon = mjp.apply_cylindrical_mask(mbir_recon)
 
-    # Save reconstruction results
-    output_path = './output/'  # path to store output recon
-    os.makedirs(output_path, exist_ok=True)
-    output_path = os.path.join(output_path, f'parallel_beam_recon.h5')
-    mj.export_recon_hdf5(output_path, recon, recon_dict=recon_dict)
+    # Save recon to hdf5
+    print("\n*********** save mar and fdk recon in h5 format *************")
+    os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
+    fbp_path = os.path.join(output_path, f"parallel_fbp_recon.h5")
+    mj.export_recon_hdf5(fbp_path, direct_recon, recon_dict=None)
+    mbir_path = os.path.join(output_path, f"parallel_mbir_recon.h5")
+    mj.export_recon_hdf5(mbir_path, mbir_recon, recon_dict=None, remove_flash=True)
+    print("FBP recon saved to {}".format(os.path.abspath(fbp_path)))
+    print("FDK recon saved to {}".format(os.path.abspath(mbir_path)))
 
     # Display the results
-    mj.slice_viewer(recon, data_dicts=recon_dict, vmin = 0, vmax = 10, title=f'MBIR Reconstruction of Zeiss data')
+    vmax = 10
+    mj.slice_viewer(direct_recon, mbir_recon, vmin=0, vmax=vmax, slice_axis=2,
+                    slice_label=['FBP', 'MBIR'],
+                    title='Comparison between FBP and MBIR reconstructions')
 
 
 if __name__ == '__main__':
