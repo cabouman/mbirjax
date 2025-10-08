@@ -368,6 +368,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
         num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
         alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
         beta (float): Regularization strength scaling factor.
+        num_iter (int): Number of iterations.
 
     Returns:
         theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
@@ -511,7 +512,7 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     return corrected_plastic_sino
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4, num_constrained_fit_iter=10):
     """
     Perform beam hardening correction for CT sinograms with plastic and multiple metal components
     using a polynomial fitting model with regularization.
@@ -526,6 +527,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
             higher-order terms more strongly. Defaults to 1.
         beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
         gamma (float, optional): Stabilization factor.
+        num_constrained_fit_iter (int, optional): Number of constrained fit iterations. Defaults to 10.
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -558,7 +560,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     metal_basis = [arr / norm for arr, norm in zip(metal_basis, metals_normalization)]
 
     # Estimate beam hardening model parameters theta
-    theta = _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
+    theta = _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_constrained_fit_iter)
     # print(f'theta = {theta}')
 
     # Compute the corrected plastic sinogram
@@ -583,7 +585,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     return corrected_sino
 
 
-def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
+def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constrained_fit_iter=10, stop_threshold_change_pct=0.5,
                            num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
@@ -596,6 +598,8 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         sino (jnp.ndarray):  Input sinogram data to be corrected.
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
+        num_constrained_fit_iter (int, optional): Number of iterations for the active constraint refinement process.
+            Each iteration adds the most violated positivity constraints and re-solves the quadratic program using OSQP.
         stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
@@ -628,7 +632,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma)
+        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constrained_fit_iter=num_constrained_fit_iter)
 
         # Reconstruct Corrected Sinogram
         if verbose >= 1:
