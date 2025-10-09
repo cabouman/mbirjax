@@ -129,13 +129,13 @@ class ProjectionTestBase(unittest.TestCase):
 class TestProjectionCone(ProjectionTestBase):
     __test__ = True
     MODEL = mj.ConeBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_projection_data.tgz"
+    SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
 
 @pytest.mark.data_dependent
 class TestProjectionParallel(ProjectionTestBase):
     __test__ = True
     MODEL = mj.ParallelBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
+    SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
 
 if __name__ == "__main__":
     unittest.main()
