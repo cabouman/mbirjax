@@ -13,6 +13,7 @@ pp = pprint.PrettyPrinter(indent=4)
 def main():
     # Recon parameters
     sharpness = 1.0
+    view_scale = 0.8
 
     # Path to the dataset
     dataset_dir = '/depot/bouman/data/Zeiss/foam512R1N3000.txrm'
@@ -70,11 +71,14 @@ def main():
     print("FDK recon saved to {}".format(os.path.abspath(fdk_path)))
     print("MBIR recon saved to {}".format(os.path.abspath(mbir_path)))
 
+    # Determine viewing range
+    vmax = view_scale * max(jnp.max(direct_recon), jnp.max(mbir_recon))
+    vmin = 0
+
     # Display the results
-    mj.slice_viewer(direct_recon, mbir_recon, vmin=0, slice_axis=2,
+    mj.slice_viewer(direct_recon, mbir_recon, vmin=vmin, vmax=vmax, slice_axis=2,
                     slice_label=['FDK', 'MBIR'],
                     title='Comparison between FDK and MBIR reconstructions')
-
 
 if __name__ == '__main__':
     main()
