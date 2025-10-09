@@ -426,7 +426,6 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     for iter in range(num_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
-        added = False
         if Sp[i_min_Sp] < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
@@ -436,7 +435,6 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             G = jnp.vstack([G, g_plastic[None, :]])
             h = jnp.concatenate([h, h_plastic])
             C_p.append(i_min_Sp)
-            added = True
 
         if y_minus_Sm[i_min_residual] < tolerance and (i_min_residual not in C_m):
             row_m = _get_row_H(i_min_residual, p, metal_basis, H_exponent_list)
@@ -447,11 +445,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             G = jnp.vstack([G, g_m[None, :]])
             h = jnp.concatenate([h, h_m])
             C_m.append(i_min_residual)
-            added = True
 
-        # --- Early exit: both new indices are already in the list
-        if not added:
-            break
         # --- Early exit: positivity constraint achieved
         if (Sp[i_min_Sp] >= 0) and (y_minus_Sm[i_min_residual] >= 0):
             break
