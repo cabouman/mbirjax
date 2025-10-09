@@ -447,7 +447,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             C_m.append(i_min_residual)
 
         # --- Early exit: positivity constraint achieved
-        if (Sp[i_min_Sp] >= 0) and (y_minus_Sm[i_min_residual] >= 0):
+        if (Sp[i_min_Sp] >= tolerance) and (y_minus_Sm[i_min_residual] >= tolerance):
             break
 
         theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
