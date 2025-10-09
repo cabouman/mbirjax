@@ -339,6 +339,43 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
         theta = sol.primal
     return theta
 
+def _compute_entry_for_OSQP(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
+    """Compute entry for OSQP quadratic programming solver."""
+    num_cols = len(H_exponent_list)
+
+    HtH = jnp.zeros((num_cols, num_cols))
+    Hty = jnp.zeros(num_cols)
+
+    # Compute the upper triangle of HtH and mirror it.
+    for i in range(num_cols):
+        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
+        Hty = Hty.at[i].set(jnp.dot(h_i, y))
+        for j in range(i, num_cols):
+            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
+            dot_ij = jnp.dot(h_i, h_j)
+            HtH = HtH.at[i, j].set(dot_ij)
+            if i != j:
+                HtH = HtH.at[j, i].set(dot_ij)
+
+    # Compute total degree for each cross term and metal term
+    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:1+num_cross_terms]]
+    metal_degree = [sum(exponent) for exponent in H_exponent_list[1+num_cross_terms:]]
+
+    # Construct diagonal regularization weights: higher-degree terms are penalized more.
+    # This applies stronger regularization to higher-order terms when alpha > 0.
+    # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
+    weights = jnp.asarray(cross_degree + metal_degree)
+    weight_matrix = jnp.diag(1 + weights ** alpha)
+
+    # --- Solve for theta ---
+    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
+    lambda_reg = beta * scaling_const
+
+    Q = HtH + lambda_reg * weight_matrix
+    c = -Hty
+
+    return Q, c
+
 def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, tolerance=-1e-6, num_iter=10):
     """
     Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
@@ -347,7 +384,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     enforce nonnegativity on the plastic and residual sinograms. The optimization problem is:
 
         minimize_θ   0.5‖Hθ − y‖² + 0.5λ‖θ‖²_Λ
-        subject to   H_p[i,:] θ_p ≥ 0   and   y[i] − H_m[i,:] θ_m ≥ τ,
+        subject to   H_p[i,:] θ_p ≥ 0   and   y[i] − H_m[i,:] θ_m ≥ 0,
 
     where:
         - H_p contains the plastic and plastic–metal cross-term columns.
@@ -380,38 +417,12 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     C_p = []
     C_m = []
 
-    HtH = jnp.zeros((num_cols, num_cols))
-    Hty = jnp.zeros(num_cols)
-
-    # Compute the upper triangle of HtH and mirror it.
-    for i in range(num_cols):
-        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
-        Hty = Hty.at[i].set(jnp.dot(h_i, y))
-        for j in range(i, num_cols):
-            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
-            dot_ij = jnp.dot(h_i, h_j)
-            HtH = HtH.at[i, j].set(dot_ij)
-            if i != j:
-                HtH = HtH.at[j, i].set(dot_ij)
-
-    # Compute total degree for each cross term and metal term
-    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:1+num_cross_terms]]
-    metal_degree = [sum(exponent) for exponent in H_exponent_list[1+num_cross_terms:]]
-
-    # Construct diagonal regularization weights: higher-degree terms are penalized more.
-    # This applies stronger regularization to higher-order terms when alpha > 0.
-    # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
-    weights = jnp.asarray(cross_degree + metal_degree)
-    weight_matrix = jnp.diag(1 + weights ** alpha)
-
-    # --- Solve for theta ---
-    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
-    lambda_reg = beta * scaling_const
-
-    Q = HtH + lambda_reg * weight_matrix
-    c = -Hty
+    # Construct the entries Q, c, G and h of OSQP for solving the constraint optimization
+    Q, c = _compute_entry_for_OSQP(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
     G = jnp.zeros((0, num_cols))  # no active constraints yet
     h = jnp.zeros((0,))
+
+    # Initial θ solved without constraint
     theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
     for iter in range(num_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
