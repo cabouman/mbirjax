@@ -33,11 +33,11 @@ def main():
     source_detector_dist = np.abs(source_iso_dist) + np.abs(iso_detector_dist)  # in mm
 
     # Convert geometry parameters from zeiss into mbirjax format
-    # Set 1 ALU = delta_det_channel = det_pixel_pitch (it seems that Zeiss detector pixel has equal width and height)
-    source_detector_dist /= (det_pixel_pitch / 1000)  # mm to ALU
-    source_iso_dist /= (det_pixel_pitch / 1000)  # mm to ALU
-    delta_det_channel = 1.0
-    delta_det_row = delta_det_channel
+    # It seems that Zeiss detector pixel has equal width and height
+    source_detector_dist *= 1000  # mm to um
+    source_iso_dist *= 1000  # mm to um
+    delta_det_channel = det_pixel_pitch
+    delta_det_row = det_pixel_pitch
     delta_voxel = delta_det_channel * (source_iso_dist/source_detector_dist)
 
     # Construct cone beam model
