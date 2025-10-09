@@ -339,7 +339,7 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
         theta = sol.primal
     return theta
 
-def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_iter=10):
+def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, tolerance=-1e-6, num_iter=10):
     """
     Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
 
@@ -368,6 +368,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
         num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
         alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
         beta (float): Regularization strength scaling factor.
+        tolerance (float): Tolerance for stopping criteria.
         num_iter (int): Number of iterations.
 
     Returns:
@@ -415,7 +416,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     for iter in range(num_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
         added = False
-        if Sp[i_min_Sp] < 0 and (i_min_Sp not in C_p):
+        if Sp[i_min_Sp] < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Negative -row_p[:dp] to ensure Hpθp >= 0
@@ -426,7 +427,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             C_p.append(i_min_Sp)
             added = True
 
-        if y_minus_Sm[i_min_residual] < 0 and (i_min_residual not in C_m):
+        if y_minus_Sm[i_min_residual] < tolerance and (i_min_residual not in C_m):
             row_m = _get_row_H(i_min_residual, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
