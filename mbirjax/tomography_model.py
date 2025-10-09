@@ -79,9 +79,9 @@ class TomographyModel(ParameterHandler):
         self.prox_data = None
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
-        self.view_batch_size_for_vmap = 512
-        self.pixel_batch_size_for_vmap = 2048
-        self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
+        self.view_batch_size_for_vmap = 1800 # 512
+        self.pixel_batch_size_for_vmap = 125 # 2048
+        self.transfer_pixel_batch_size = 125 # 100 * self.pixel_batch_size_for_vmap
         self.gpu_memory = 0
         self.cpu_memory = 0
         self.mem_required_for_gpu = 0
@@ -232,21 +232,23 @@ class TomographyModel(ParameterHandler):
 
         # 'automatic' and more than one GPU: Everything will be done with sharding
         if use_gpu == 'automatic' and len(gpus) > 1:
+            print("SHARDING ACTIVATED")
 
             # FIXME: calculate this based off of actual memory
-            # self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
-            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
-            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
-            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
-            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
+            self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
+            # mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
+            # projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
+            # max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
+            # num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
+            # self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
+            self.view_batch_size_for_vmap = 1800
 
             # Recalculate the memory per projection with the new batch size
             mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
 
-            mem_required_for_gpu = max(mem_for_vcd_sinos_gpu,
-                                       mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
-            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
+            mem_required_for_gpu = 0 # max(mem_for_vcd_sinos_gpu,
+                                     #     mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
+            mem_required_for_cpu = 0 # recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
             # create devices and named shardings
             devices = np.array(gpus).reshape((-1, 1))
@@ -738,25 +740,14 @@ class TomographyModel(ParameterHandler):
             A jax array of shape (len(indices), num_slices)
         """
         # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        num_views, num_rows, num_channels = sinogram.shape
-
-        # pixel batches need to be replicated so that all GPU devices have access to the same data
-
-        view_batch_start_indices = jnp.arange(num_views, step=transfer_view_batch_size, dtype=int)
-        view_batch_end_indices = jnp.concatenate([view_batch_start_indices[1:], num_views * jnp.ones(1, dtype=int)])
+        num_views = sinogram.shape[0]
 
         # determine pixel batch indices
         num_pixels = len(pixel_indices)
-        recon_shape = self.get_params('recon_shape')
-        num_slices = recon_shape[2]
 
         pixel_batch_start_indices = jnp.arange(num_pixels, step=transfer_pixel_batch_size, dtype=int)
         pixel_batch_end_indices = jnp.concatenate([pixel_batch_start_indices[1:], num_pixels * jnp.ones(1, dtype=int)])
-
-        # Get the final recon as a jax array
-        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
 
         # Loop over pixel batches
         voxel_batch_list = []
@@ -770,8 +761,7 @@ class TomographyModel(ParameterHandler):
             voxel_batch = voxel_batch.block_until_ready()
             voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
 
-            recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
-
+        recon_at_indices = jnp.concatenate(voxel_batch_list, axis=0)
         return recon_at_indices
 
 
@@ -797,6 +787,7 @@ class TomographyModel(ParameterHandler):
             if view_indices:
                 raise ValueError('view_indices cannot be used with sharding.')
             return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
