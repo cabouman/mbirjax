@@ -12,7 +12,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 def main():
     # Recon parameters
-    sharpness = 1.0
+    sharpness = 0.25
     view_scale = 0.8
 
     # Path to the dataset
