@@ -80,8 +80,8 @@ class TomographyModel(ParameterHandler):
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 1800 # 512
-        self.pixel_batch_size_for_vmap = 125 # 2048
-        self.transfer_pixel_batch_size = 125 # 100 * self.pixel_batch_size_for_vmap
+        self.pixel_batch_size_for_vmap = 175 # 2048
+        self.transfer_pixel_batch_size = 175 # 100 * self.pixel_batch_size_for_vmap
         self.gpu_memory = 0
         self.cpu_memory = 0
         self.mem_required_for_gpu = 0
@@ -235,13 +235,13 @@ class TomographyModel(ParameterHandler):
             print("SHARDING ACTIVATED")
 
             # FIXME: calculate this based off of actual memory
-            self.transfer_pixel_batch_size = 125  # hard coded to a value that is known to work for now
+            # self.transfer_pixel_batch_size = 150  # hard coded to a value that is known to work for now
             # mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
             # projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
             # max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
             # num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
             # self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
-            self.view_batch_size_for_vmap = 1800
+            # self.view_batch_size_for_vmap = 1800
 
             # Recalculate the memory per projection with the new batch size
             mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor

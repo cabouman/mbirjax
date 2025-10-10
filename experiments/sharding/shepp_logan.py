@@ -17,7 +17,7 @@ USER = "ncardel" # change the user to your username
 ###### The
 
 # load phantom, sinogram, and params
-output_directory = f"/scratch/gautschi/{USER}/cone"
+output_directory = f"/scratch/gautschi/{USER}/nsi/cone"
 
 phantom_filepath = f"{output_directory}/phantom.npy"
 sinogram_filepath = f"{output_directory}/sinogram.npy"
