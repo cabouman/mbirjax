@@ -9,7 +9,8 @@ class ReconTestBase(unittest.TestCase):
       - MODEL (class with .from_file)
       - SOURCE_FILEPATH (str)
     """
-    USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"]
+    HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
+    USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
 
     # To be overridden in subclasses:
@@ -112,14 +113,14 @@ class ReconTestBase(unittest.TestCase):
 class TestReconCone(ReconTestBase):
     __test__ = True
     MODEL = mj.ConeBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/cone_32_recon_data.tgz"
+    SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_recon_data.tgz"
     TOLERANCES = {'nrmse': 0.05, 'max_diff': 0.12, 'pct_95': 0.02}
 
 @pytest.mark.data_dependent
 class TestReconParallel(ReconTestBase):
     __test__ = True
     MODEL = mj.ParallelBeamModel
-    SOURCE_FILEPATH = "/depot/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
+    SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
     TOLERANCES = {'nrmse': 0.08, 'max_diff': 0.12, 'pct_95': 0.032}
 
 

@@ -9,7 +9,8 @@ class ProjectionTestBase(unittest.TestCase):
       - MODEL (class with .from_file)
       - SOURCE_FILEPATH (str)
     """
-    USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"]
+    HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
+    USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
 
     # To be overridden in subclasses:
@@ -89,6 +90,7 @@ class ProjectionTestBase(unittest.TestCase):
         """Back-project the control sinogram and compare against control reconstruction."""
         for opt in self.USE_GPU_OPTS:
             with self.subTest(geometry=self.MODEL.__name__, use_gpu=opt):
+
                 self.projection_model.set_params(use_gpu=opt)
                 recon = self.projection_model.back_project(self.control_sinogram)
                 recon = jax.device_put(recon)
