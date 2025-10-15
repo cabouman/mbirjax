@@ -27,7 +27,7 @@ def main():
 
     # Load geometry parameters from the metadata
     angles = metadata["thetas"]  # in radians
-    det_pixel_pitch = metadata["det_pixel_pitch"]  # in um
+    det_pixel_pitch = 2.0  # in um
     source_iso_dist = metadata['source_iso_dist'][0] # in mm
     iso_detector_dist = metadata['iso_det_dist'][0] # in mm
     source_iso_dist = np.abs(source_iso_dist)  # in mm
