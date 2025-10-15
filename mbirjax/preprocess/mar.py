@@ -258,68 +258,16 @@ def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, nu
 
     return Sp, y_minus_Sm, i_min_Sp, i_min_residual
 
-def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
-    """
-    Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
 
-    This function avoids constructing the full H matrix by computing HtH and Hty using only the columns of H
-    as needed via `_get_column_H()`.
-
-    Args:
-        p (jnp.ndarray): Normalized plastic basis vector.
-        metal_basis (list of jnp.ndarray): List of normalized metal basis vectors.
-        y (jnp.ndarray): Measured sinogram.
-        H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the basis matrix H.
-        num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
-        alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
-        beta (float): Regularization strength scaling factor.
-
-    Returns:
-        theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
-    """
-    num_cols = len(H_exponent_list)
-
-    HtH = jnp.zeros((num_cols, num_cols))
-    Hty = jnp.zeros(num_cols)
-
-    # Compute the upper triangle of HtH and mirror it.
-    for i in range(num_cols):
-        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
-        Hty = Hty.at[i].set(jnp.dot(h_i, y))
-        for j in range(i, num_cols):
-            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
-            dot_ij = jnp.dot(h_i, h_j)
-            HtH = HtH.at[i, j].set(dot_ij)
-            if i != j:
-                HtH = HtH.at[j, i].set(dot_ij)
-
-    # Compute total degree for each cross term and metal term
-    cross_degree = [sum(exponent) for exponent in H_exponent_list[0:1+num_cross_terms]]
-    metal_degree = [sum(exponent) for exponent in H_exponent_list[1+num_cross_terms:]]
-
-    # Construct diagonal regularization weights: higher-degree terms are penalized more.
-    # This applies stronger regularization to higher-order terms when alpha > 0.
-    # Add 1 to the beginning to represent the weight for the linear plastic term (p^1).
-    weights = jnp.asarray(cross_degree + metal_degree)
-    weight_matrix = jnp.diag(1 + weights ** alpha)
-
-    # --- Solve for theta ---
-    scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
-    lambda_reg = beta * scaling_const
-    HtH_reg = HtH + lambda_reg * weight_matrix
-    theta = jnp.linalg.solve(HtH_reg, Hty)
-
-    return theta
-
-
-def _estimate_BH_model_params_with_constraint(Q, c, G, h):
+def _estimate_BH_model_params(Q, c, G, h):
     """
     This function solves the constrained quadratic optimization problem:
 
         minimize_θ   0.5 * θᵀ Q θ + cᵀ θ
         subject to   G θ ≤ h
 
-    The optimization is performed using the jaxopt OSQP solver.
+    The problem is solved using the JAXOpt `OSQP` solver when constraints are provided.
+    If `G` or `h` is `None`, an unconstrained least-squares solution is computed directly.
 
     Args:
         Q (jnp.ndarray): Quadratic term matrix.
@@ -330,7 +278,7 @@ def _estimate_BH_model_params_with_constraint(Q, c, G, h):
     Returns:
         jnp.ndarray: Solution vector θ.
     """
-    if G.shape[0] == 0:
+    if G is None or h is None:
         # No constraints - solve unconstrained QP directly
         theta = jnp.linalg.solve(Q, -c)
     else:
@@ -423,7 +371,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     h = jnp.zeros((0,))
 
     # Initial θ solved without constraint
-    theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
+    theta = _estimate_BH_model_params(Q, c, G=None, h=None)
     for iter in range(num_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
         if Sp[i_min_Sp] < tolerance and (i_min_Sp not in C_p):
@@ -450,7 +398,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
         if (Sp[i_min_Sp] >= tolerance) and (y_minus_Sm[i_min_residual] >= tolerance):
             break
 
-        theta = _estimate_BH_model_params_with_constraint(Q, c, G, h)
+        theta = _estimate_BH_model_params(Q, c, G, h)
     return theta
 
 
