@@ -324,7 +324,7 @@ def _compute_entry_for_OSQP(p, metal_basis, y, H_exponent_list, num_cross_terms,
 
     return Q, c
 
-def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, tolerance=-1e-6, num_iter=10):
+def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_constrained_fit_iter=10, tolerance=-1e-6):
     """
     Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
 
@@ -353,8 +353,8 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
         num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
         alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
         beta (float): Regularization strength scaling factor.
+        num_constrained_fit_iter (int): Number of iterations.
         tolerance (float): Tolerance for stopping criteria.
-        num_iter (int): Number of iterations.
 
     Returns:
         theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
@@ -372,7 +372,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     # Initial θ solved without constraint
     theta = _estimate_BH_model_params(Q, c, G=None, h=None)
-    for iter in range(num_iter):
+    for iter in range(num_constrained_fit_iter):
         Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
         if Sp[i_min_Sp] < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
