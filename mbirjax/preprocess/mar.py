@@ -324,7 +324,7 @@ def _compute_entry_for_OSQP(p, metal_basis, y, H_exponent_list, num_cross_terms,
 
     return Q, c
 
-def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_constrained_fit_iter=10, tolerance=-1e-6):
+def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_constrained_fit_iter=10, tolerance=-1e-5):
     """
     Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
 
