@@ -23,28 +23,13 @@ def main():
 
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, metadata = mjp.zeiss.read_txrm(dataset_dir)
-
-    # Load geometry parameters from the metadata
-    angles = metadata["thetas"]  # in radians
-    det_pixel_pitch = 2.0  # in um
-    source_iso_dist = metadata['source_iso_dist'][0] # in mm
-    iso_detector_dist = metadata['iso_det_dist'][0] # in mm
-    source_iso_dist = np.abs(source_iso_dist)  # in mm
-    source_detector_dist = np.abs(source_iso_dist) + np.abs(iso_detector_dist)  # in mm
-
-    # Convert geometry parameters from zeiss into mbirjax format
-    # It seems that Zeiss detector pixel has equal width and height
-    source_detector_dist *= 1000  # mm to um
-    source_iso_dist *= 1000  # mm to um
-    delta_det_channel = det_pixel_pitch
-    delta_det_row = det_pixel_pitch
-    delta_voxel = delta_det_channel * (source_iso_dist/source_detector_dist)
+    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cone_beam.compute_sino_and_params(dataset_dir)
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
-    ct_model = mj.ConeBeamModel(sinogram_shape=sinogram.shape, angles=angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
-    ct_model.set_params(delta_det_channel=delta_det_channel, delta_det_row=delta_det_row, delta_voxel=delta_voxel, sharpness=sharpness, verbose=1)
+    ct_model = mj.ConeBeamModel(**cone_beam_params)
+    ct_model.set_params(**optional_params)
+    ct_model.set_params(sharpness=sharpness)
     weights = mj.gen_weights(sinogram, weight_type='transmission_root')
 
     # Display the sinogram
