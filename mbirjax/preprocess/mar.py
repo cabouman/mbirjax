@@ -249,7 +249,7 @@ def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, nu
        3. Plastic upper bound:       H_p[i,:] θ_p − θ[0] ≤ 0
 
     This function evaluates the indices and values of the entries that most violate
-    the positivity constraints (1)–(3).
+    the constraints (1)–(3).
 
     Returns:
         i_min_Sp (int): Index of smallest Sp entry.
@@ -347,7 +347,7 @@ def _compute_entry_for_OSQP(p, metal_basis, y, H_exponent_list, num_cross_terms,
 
 def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta, num_constrained_fit_iter=10, tolerance=-1e-5):
     """
-    Estimate polynomial beam hardening (BH) model parameters with iterative positivity constraints.
+    Estimate polynomial beam hardening model parameters with iterative constraints search.
 
     This function solves a regularized least squares problem with inequality constraints to
     enforce nonnegativity on the plastic and residual sinograms. The optimization problem is:
@@ -361,7 +361,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     The function uses an iterative active constraint selection method:
         1. Start from the unconstrained least squares estimate.
-        2. Identify indices where the positivity constraints are violated.
+        2. Identify indices where the constraints are violated.
         3. Add the most violated constraints to the set.
         4. Re-solve the quadratic program (QP) using OSQP.
         5. Repeat until all constraints are satisfied or `num_iter` iterations are reached.
@@ -416,7 +416,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             h = jnp.concatenate([h, h_m])
             C_m.append(i_min_residual)
 
-        # --- Early exit: positivity constraint achieved
+        # --- Early exit: constraints achieved
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
             break
 
@@ -575,7 +575,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_con
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
         num_constrained_fit_iter (int, optional): Number of iterations for the active constraint refinement process.
-            Each iteration adds the most violated positivity constraints and re-solves the quadratic program using OSQP.
+            At each iteration, the most violated constraints are activated and the quadratic program is re-solved via OSQP.
         stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
