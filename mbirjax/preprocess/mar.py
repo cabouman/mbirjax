@@ -240,7 +240,25 @@ def _get_row_H(row_index, p, metal_basis, H_exponent_list):
 
 
 def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms):
-    # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
+    """
+    Compute the most violated constraints for the beam hardening model.
+
+    The BH model enforces three types of inequality constraints:
+        1. Plastic positivity:        H_p[i,:] θ_p ≥ 0
+       2. Residual positivity:       y[i] − H_m[i,:] θ_m ≥ 0
+       3. Plastic upper bound:       H_p[i,:] θ_p − θ[0] ≤ 0
+
+    This function evaluates the indices and values of the entries that most violate
+    the positivity constraints (1)–(3).
+
+    Returns:
+        i_min_Sp (int): Index of smallest Sp entry.
+       v_min_Sp (float): Value of Sp[i_min_Sp].
+       i_min_residual (int): Index of smallest (y − Sm) entry.
+       v_min_residual (float): Value of (y − Sm)[i_min_residual].
+       i_max_Sp (int): Index of largest (Sp − θ[0]) entry.
+       v_max_Sp (float): Value of (Sp[i_max_Sp] − θ[0]).
+    """
     num_cols = len(H_exponent_list)
     Sp = jnp.zeros_like(y)
     for i in range(0, 1 + num_cross_terms):
@@ -256,12 +274,15 @@ def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, nu
     i_min_Sp = int(jnp.argmin(Sp))
     i_min_residual = int(jnp.argmin(y_minus_Sm))
 
-    return Sp, y_minus_Sm, i_min_Sp, i_min_residual
+    v_min_Sp = Sp[i_min_Sp]
+    v_min_residual = y_minus_Sm[i_min_residual]
+
+    return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual
 
 
 def _estimate_BH_model_params(Q, c, G, h):
     """
-    This function solves the constrained quadratic optimization problem:
+    Solve the constrained quadratic optimization problem:
 
         minimize_θ   0.5 * θᵀ Q θ + cᵀ θ
         subject to   G θ ≤ h
@@ -332,7 +353,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     enforce nonnegativity on the plastic and residual sinograms. The optimization problem is:
 
         minimize_θ   0.5‖Hθ − y‖² + 0.5λ‖θ‖²_Λ
-        subject to   H_p[i,:] θ_p ≥ 0   and   y[i] − H_m[i,:] θ_m ≥ 0,
+        subject to   H_p[i,:] θ_p ≥ 0, y[i] − H_m[i,:] θ_m ≥ 0 and H_p[i,:] θ_p - θ[0] ≤ 0
 
     where:
         - H_p contains the plastic and plastic–metal cross-term columns.
@@ -373,8 +394,9 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     # Initial θ solved without constraint
     theta = _estimate_BH_model_params(Q, c, G=None, h=None)
     for iter in range(num_constrained_fit_iter):
-        Sp, y_minus_Sm, i_min_Sp, i_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
-        if Sp[i_min_Sp] < tolerance and (i_min_Sp not in C_p):
+        # Find the indices and values of the points that most violate each constraint
+        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
+        if v_min_Sp < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Negative -row_p[:dp] to ensure Hpθp >= 0
@@ -384,7 +406,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             h = jnp.concatenate([h, h_plastic])
             C_p.append(i_min_Sp)
 
-        if y_minus_Sm[i_min_residual] < tolerance and (i_min_residual not in C_m):
+        if v_min_residual < tolerance and (i_min_residual not in C_m):
             row_m = _get_row_H(i_min_residual, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
@@ -395,7 +417,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             C_m.append(i_min_residual)
 
         # --- Early exit: positivity constraint achieved
-        if (Sp[i_min_Sp] >= tolerance) and (y_minus_Sm[i_min_residual] >= tolerance):
+        if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
             break
 
         theta = _estimate_BH_model_params(Q, c, G, h)
