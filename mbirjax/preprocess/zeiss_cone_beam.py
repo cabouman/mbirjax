@@ -709,13 +709,9 @@ def _read_ole_image(ole, label, metadata, datatype=None):
 
 def _read_ole_str(ole, label):
     """
+    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
+
     Reads the string associated with label in an ole file
-
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
