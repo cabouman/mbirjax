@@ -375,14 +375,18 @@ def read_xrm(fname):
         print('No such file or directory: %s', fname)
         return False
 
+    # Read metadata from xrm file
     metadata = read_metadata(ole)
 
+    # Read scan data from xrm file
     stream = ole.openstream("ImageData1/Image1")
     data = stream.read()
 
+    # Get the data type of scan data
     data_type = _get_ole_data_type(metadata)
     data_type = data_type.newbyteorder('<')
 
+    # Reshape the scan data into 2D array
     arr = np.reshape(
         np.frombuffer(data, data_type),
         (
@@ -393,6 +397,7 @@ def read_xrm(fname):
 
     _log_imported_data(fname, arr)
 
+    # Normalize the scan data
     arr = mjp.utilities._normalize_to_float32(arr)
 
     ole.close()
@@ -422,7 +427,7 @@ def read_xrm_dir(dir_path):
     dir_path = Path(dir_path)
     files = [p for p in dir_path.iterdir() if p.is_file()]
 
-    # Load the first file
+    # Load the scan data and metadata from first file
     proj0, md0 = read_xrm(str(files[0]))
     num_views = len(files)
     num_det_rows, num_det_channels = proj0.shape
@@ -434,7 +439,7 @@ def read_xrm_dir(dir_path):
     y0 = md0['y_positions'][0]
     z0 = md0['z_positions'][0]
 
-    # Load the stage angle of the object of the first file
+    # Load the rotation angle of the object of the first file
     angle0 = md0['thetas'][0]
 
     metadata = dict(md0)
@@ -455,6 +460,7 @@ def read_xrm_dir(dir_path):
 
     _log_imported_data(str(dir_path), arr)
 
+    # Normalize the scan data
     arr = mjp.utilities._normalize_to_float32(arr)
 
     return arr, metadata
@@ -487,8 +493,10 @@ def read_txrm(file_name):
         print('No such file or directory: %s', file_name)
         return False
 
+    # Read metadata from txrm file
     metadata = read_metadata(ole)
 
+    # Create an empty array to store the scan data
     array_of_images = np.empty(
         (
             metadata["num_views"],
@@ -498,6 +506,7 @@ def read_txrm(file_name):
         dtype=_get_ole_data_type(metadata)
     )
 
+    # Read scan data from txrm file
     for i, idx in enumerate(range(metadata["num_views"])):
         img_string = "ImageData{}/Image{}".format(
             int(np.ceil((idx + 1) / 100.0)), int(idx + 1))
