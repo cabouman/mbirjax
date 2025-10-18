@@ -375,7 +375,7 @@ def read_xrm(fname):
         print('No such file or directory: %s', fname)
         return False
 
-    metadata = read_ole_metadata(ole)
+    metadata = read_metadata(ole)
 
     stream = ole.openstream("ImageData1/Image1")
     data = stream.read()
@@ -487,7 +487,7 @@ def read_txrm(file_name):
         print('No such file or directory: %s', file_name)
         return False
 
-    metadata = read_ole_metadata(ole)
+    metadata = read_metadata(ole)
 
     array_of_images = np.empty(
         (
@@ -509,7 +509,7 @@ def read_txrm(file_name):
     return array_of_images, metadata
 
 
-def read_ole_metadata(ole):
+def read_metadata(ole):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
