@@ -548,7 +548,9 @@ def read_ole_metadata(ole):
         'y_positions': _read_ole_arr(
             ole, 'ImageInfo/YPosition', "<{0}f".format(number_of_images)),
         'z_positions': _read_ole_arr(
-            ole, 'ImageInfo/ZPosition', "<{0}f".format(number_of_images))
+            ole, 'ImageInfo/ZPosition', "<{0}f".format(number_of_images)),
+        'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
+        'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
     return metadata
@@ -703,6 +705,30 @@ def _read_ole_image(ole, label, metadata, datatype=None):
         (metadata["num_det_rows"], metadata["num_det_channels"], )
     )
     return image
+
+
+def _read_ole_str(ole, label):
+    """
+    Reads the string associated with label in an ole file
+
+    This code is adapted from the DXchange library:
+    https://github.com/data-exchange/dxchange
+
+    Reference:
+    [1] DXchange library: https://github.com/data-exchange/dxchange
+
+    Args:
+        ole (OleFileIO) : An ole file to read from.
+        label (str) : Label associated with the OLE file.
+
+    Returns:
+        list: A list contain all the strings from the binary stream if the label exists
+    """
+    stream = ole.openstream(label)
+    data = stream.read()
+    str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
+    return str
+
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
