@@ -15,14 +15,31 @@ To run non–data-dependent unit tests from the CLI::
 
    pytest
 
+   ...
+   configfile: pytest.ini
+   testpaths: tests, tests_data_dependent
+   collected 37 items / 18 deselected / 19 selected
+   ...
+
 To run **only** the data-dependent tests::
 
    pytest -m data_dependent
+
+   ...
+   configfile: pytest.ini
+   testpaths: tests, tests_data_dependent
+   collected 37 items / 19 deselected / 18 selected
+   ...
 
 To run **all** tests (overriding the default exclude)::
 
    pytest -m "data_dependent or not data_dependent"
 
+   ...
+   configfile: pytest.ini
+   testpaths: tests, tests_data_dependent
+   collected 37 items
+   ...
 
 ``pytest.ini``
 --------------
