@@ -523,6 +523,9 @@ def read_txrm(file_name):
 
     _log_imported_data(file_name, array_of_images)
 
+    # Normalize the scan data
+    array_of_images = mjp.utilities._normalize_to_float32(array_of_images)
+
     ole.close()
     return array_of_images, metadata
 
