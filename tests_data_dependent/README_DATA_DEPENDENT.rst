@@ -31,7 +31,7 @@ To run **only** the data-dependent tests::
    collected 37 items / 19 deselected / 18 selected
    ...
 
-To run **all** tests (overriding the default exclude)::
+To run **all** tests (override the default exclude)::
 
    pytest -m "data_dependent or not data_dependent"
 
@@ -81,27 +81,24 @@ Test modules (``test_*.py``)
 ----------------------------
 
 - Tests that need external data are marked with ``@pytest.mark.data_dependent``.
-- Abstract/base classes set ``__test__ = False`` so they are not collected.
-  Concrete subclasses set ``__test__ = True`` and will be collected.
+- Base classes are **mixins** (do **not** inherit ``unittest.TestCase``) and do **not**
+  start with ``Test``; concrete classes inherit the mixin **and** ``unittest.TestCase``.
+  This prevents the base from being collected by either unittest or pytest.
 
 Example:
 
 .. code-block:: python
 
-   class ProjectionTestBase(unittest.TestCase):
-       ...
-       __test__ = False
+   class ProjectionBase:
        ...
 
    @pytest.mark.data_dependent
-   class TestProjectionCone(ProjectionTestBase):
-       __test__ = True
+   class TestProjectionCone(ProjectionBase, unittest.TestCase):
        MODEL = mj.ConeBeamModel
        SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
 
    @pytest.mark.data_dependent
-   class TestProjectionParallel(ProjectionTestBase):
-       __test__ = True
+   class TestProjectionParallel(ProjectionBase, unittest.TestCase):
        MODEL = mj.ParallelBeamModel
        SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
 
@@ -114,22 +111,21 @@ the ``none`` mode and emits a warning that not all tests could run.
 
 .. code-block:: python
 
-   class ProjectionTestBase(unittest.TestCase):
+   class ProjectionBase:
        ...
        HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
        USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
        ...
 
 
-``tests_data_dependent/generate_test_data.py``
-----------------------------------------------
-
+``tests_data_dependent/_test_data_dependent_utils.py``
+------------------------------------------------------
 Utility script to generate the datasets consumed by the data-dependent tests.
 Run it to (re)build local copies of the required fixtures before executing the
-suite.
+suite. It is also provides ``sha256_file`` for the data-integrity check.
 
 Data integrity
----------------------------------
+--------------
 
 Each data-dependent test **must** declare an expected SHA-256 for its input
 file via ``DATA_FILE_SHA256``. On mismatch, the tests still run but a warning
