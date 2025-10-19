@@ -11,9 +11,16 @@ class ReconBase:
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
 
+    TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(TEST_DIR, "data")
+    LOG_DIR = os.path.join(TEST_DIR, "logs")
+
+    DATA_FILEPATH = None # set when the SOURCE_FILEPATH is untarred
+
     # To be overridden in subclasses:
     MODEL = None
     SOURCE_FILEPATH = None
+    DATA_FILE_SHA256 = None
     TOLERANCES = None
 
     @classmethod
