@@ -1,4 +1,4 @@
-import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
+import os, shutil, pytest, pathlib, unittest, h5py, warnings, jax, jax.numpy as jnp
 import mbirjax as mj
 from _test_data_dependent_utils import sha256_file
 
@@ -11,6 +11,12 @@ class ProjectionBase:
     HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
+
+    control_phantom = None
+    control_sinogram = None
+    control_recon = None
+    control_params = None
+    projection_model =  None
 
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(TEST_DIR, "data")
@@ -68,10 +74,8 @@ class ProjectionBase:
                 self.projection_model.set_params(use_gpu=opt)
                 sinogram = self.projection_model.forward_project(self.control_phantom)
                 sinogram = jax.device_put(sinogram)
-                self.assertTrue(
-                    jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL),
-                    msg=f"[{self.MODEL.__name__}] forward mismatch (use_gpu={opt})",
-                )
+                assert bool(jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL)), \
+                    f"[{self.MODEL.__name__}] forward mismatch (use_gpu={opt})"
 
     def test_forward_project_rejects_biased_input_at_tol(self):
         """
@@ -81,10 +85,8 @@ class ProjectionBase:
         self.projection_model.set_params(use_gpu="automatic")
         sinogram = self.projection_model.forward_project(self.control_phantom + 1e-3)
         sinogram = jax.device_put(sinogram)
-        self.assertFalse(
-            jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL),
-            msg=f"[{self.MODEL.__name__}] forward unexpectedly allclose with biased input",
-        )
+        assert not bool(jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL)), \
+            f"[{self.MODEL.__name__}] forward unexpectedly allclose with biased input"
 
     def test_forward_project_zero_tolerance_not_equal(self):
         """
@@ -94,10 +96,8 @@ class ProjectionBase:
         self.projection_model.set_params(use_gpu="automatic")
         sinogram = self.projection_model.forward_project(self.control_phantom)
         sinogram = jax.device_put(sinogram)
-        self.assertFalse(
-            jnp.allclose(sinogram, self.control_sinogram, rtol=0.0, atol=0.0),
-            msg=f"[{self.MODEL.__name__}] forward unexpectedly equal at zero tol",
-        )
+        assert not bool(jnp.allclose(sinogram, self.control_sinogram, rtol=0.0, atol=0.0)), \
+            f"[{self.MODEL.__name__}] forward unexpectedly equal at zero tol"
 
     # ---------- Back-projection tests ----------
 
@@ -109,10 +109,8 @@ class ProjectionBase:
                 self.projection_model.set_params(use_gpu=opt)
                 recon = self.projection_model.back_project(self.control_sinogram)
                 recon = jax.device_put(recon)
-                self.assertTrue(
-                    jnp.allclose(recon, self.control_recon, atol=self.ATOL),
-                    msg=f"[{self.MODEL.__name__}] back-projection mismatch (use_gpu={opt})",
-                )
+                assert bool(jnp.allclose(recon, self.control_recon, atol=self.ATOL)), \
+                    f"[{self.MODEL.__name__}] back-projection mismatch (use_gpu={opt})"
 
     def test_back_project_rejects_biased_input_at_tol(self):
         """
@@ -122,10 +120,8 @@ class ProjectionBase:
         self.projection_model.set_params(use_gpu="automatic")
         recon = self.projection_model.back_project(self.control_sinogram + 1e-3)
         recon = jax.device_put(recon)
-        self.assertFalse(
-            jnp.allclose(recon, self.control_recon, atol=self.ATOL),
-            msg=f"[{self.MODEL.__name__}] back-projection unexpectedly allclose with biased input",
-        )
+        assert not bool(jnp.allclose(recon, self.control_recon, atol=self.ATOL)), \
+            f"[{self.MODEL.__name__}] back-projection unexpectedly allclose with biased input"
 
     def test_back_project_zero_tolerance_not_equal(self):
         """
@@ -135,10 +131,8 @@ class ProjectionBase:
         self.projection_model.set_params(use_gpu="automatic")
         recon = self.projection_model.back_project(self.control_sinogram)
         recon = jax.device_put(recon)
-        self.assertFalse(
-            jnp.allclose(recon, self.control_recon, rtol=0.0, atol=0.0),
-            msg=f"[{self.MODEL.__name__}] back-projection unexpectedly equal at zero tol",
-        )
+        assert not bool(jnp.allclose(recon, self.control_recon, rtol=0.0, atol=0.0)), \
+            f"[{self.MODEL.__name__}] back-projection unexpectedly equal at zero tol"
 
 # ---- Concrete geometry variants ----
 

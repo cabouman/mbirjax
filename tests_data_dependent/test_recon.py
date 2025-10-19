@@ -1,4 +1,4 @@
-import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
+import os, shutil, pytest, pathlib, unittest, h5py, warnings, jax, jax.numpy as jnp
 import mbirjax as mj
 from _test_data_dependent_utils import sha256_file
 
@@ -11,6 +11,12 @@ class ReconBase:
     HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
+
+    control_phantom = None
+    control_sinogram = None
+    control_recon = None
+    control_params = None
+    projection_model =  None
 
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(TEST_DIR, "data")
@@ -81,11 +87,12 @@ class ReconBase:
                 nrmse = jnp.linalg.norm(recon - self.control_recon) / jnp.linalg.norm(self.control_recon)
                 pct_95 = jnp.percentile(jnp.abs(recon - self.control_recon), 95)
 
-                self.assertTrue(max_diff < self.TOLERANCES['max_diff'] and
-                                nrmse < self.TOLERANCES['nrmse'] and
-                                pct_95 < self.TOLERANCES['pct_95'],
-                                msg=f"[{self.MODEL.__name__}] recon mismatch (use_gpu={opt})",
+                all_within = (
+                        float(max_diff) < self.TOLERANCES['max_diff'] and
+                        float(nrmse) < self.TOLERANCES['nrmse'] and
+                        float(pct_95) < self.TOLERANCES['pct_95']
                 )
+                assert all_within, f"[{self.MODEL.__name__}] recon mismatch (use_gpu={opt})"
 
     def test_recon_biased_input_at_tol(self):
         """
@@ -103,11 +110,12 @@ class ReconBase:
         nrmse = jnp.linalg.norm(recon - self.control_recon) / jnp.linalg.norm(self.control_recon)
         pct_95 = jnp.percentile(jnp.abs(recon - self.control_recon), 95)
 
-        self.assertFalse(max_diff < self.TOLERANCES['max_diff'] and
-                        nrmse < self.TOLERANCES['nrmse'] and
-                        pct_95 < self.TOLERANCES['pct_95'],
-                        msg=f"[{self.MODEL.__name__}] recon unexpectedly allclose with biased input",
+        all_within = (
+                float(max_diff) < self.TOLERANCES['max_diff'] and
+                float(nrmse) < self.TOLERANCES['nrmse'] and
+                float(pct_95) < self.TOLERANCES['pct_95']
         )
+        assert not all_within, f"[{self.MODEL.__name__}] recon unexpectedly allclose with biased input"
 
     def test_recon_zero_tolerance_not_equal(self):
         """
@@ -119,10 +127,8 @@ class ReconBase:
                                                max_iterations=15,
                                                stop_threshold_change_pct=0)
         recon = jax.device_put(recon)
-        self.assertFalse(
-            jnp.allclose(recon, self.control_recon, rtol=0.0, atol=0.0),
-            msg=f"[{self.MODEL.__name__}] recon unexpectedly equal at zero tol",
-        )
+        assert not bool(jnp.allclose(recon, self.control_recon, rtol=0.0, atol=0.0)), \
+            f"[{self.MODEL.__name__}] recon unexpectedly equal at zero tol"
 
 # ---- Concrete geometry variants ----
 
