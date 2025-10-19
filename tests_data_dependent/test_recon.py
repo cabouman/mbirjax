@@ -12,16 +12,9 @@ class ReconBase:
     ATOL = 1e-3
 
     # To be overridden in subclasses:
-    # __unittest_skip__ = True
-    # __unittest_skip_why__ = "ReconTestBase is a reusable base; not a concrete test."
-    # __test__ = False
     MODEL = None
     SOURCE_FILEPATH = None
     TOLERANCES = None
-
-    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    DATA_FILEPATH = None
-    DATA_FILE_SHA256 = None
 
     @classmethod
     def _sha256_file(cls, p, chunk=1<<20):
@@ -131,8 +124,6 @@ class ReconBase:
 
 @pytest.mark.data_dependent
 class TestReconCone(ReconBase, unittest.TestCase):
-    # __test__ = True
-    # __unittest_skip__ = False
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_recon_data.tgz"
     DATA_FILE_SHA256 = '7053ccf75298f587607644f3e96fbb3257c9f850704bcd16b484c5de9dcc9441'
@@ -140,8 +131,6 @@ class TestReconCone(ReconBase, unittest.TestCase):
 
 @pytest.mark.data_dependent
 class TestReconParallel(ReconBase, unittest.TestCase):
-    # __test__ = True
-    # __unittest_skip__ = False
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
     DATA_FILE_SHA256 = 'b0210a75c8a82659530d299d7cef2e5d5d296e3dbf2e51841f7d6f8f208fbf8a'
