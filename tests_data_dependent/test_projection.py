@@ -1,5 +1,4 @@
 import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
-
 import mbirjax as mj
 
 class ProjectionBase:
@@ -12,13 +11,15 @@ class ProjectionBase:
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
 
+    TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(TEST_DIR, "data")
+    DATA_FILEPATH = None
+
     # To be overridden in subclasses:
     MODEL = None
     SOURCE_FILEPATH = None
-
-    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    DATA_FILEPATH = None
     DATA_FILE_SHA256 = None
+
 
     @classmethod
     def _sha256_file(cls, p, chunk=1<<20):

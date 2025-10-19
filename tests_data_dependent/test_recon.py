@@ -14,7 +14,6 @@ class ReconBase:
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(TEST_DIR, "data")
     LOG_DIR = os.path.join(TEST_DIR, "logs")
-
     DATA_FILEPATH = None # set when the SOURCE_FILEPATH is untarred
 
     # To be overridden in subclasses:
@@ -76,7 +75,8 @@ class ReconBase:
                 recon, _ = self.projection_model.recon(self.control_sinogram,
                                                        max_iterations=15,
                                                        stop_threshold_change_pct=0,
-                                                       logfile_path=f'./tests_data_dependent/logs/recon_{filename}_{opt}.log')
+                                                       logfile_path=os.path.join(self.LOG_DIR,
+                                                                                 f'recon_{filename}_{opt}.log'))
                 recon.block_until_ready()
                 recon = jax.device_put(recon)
 
