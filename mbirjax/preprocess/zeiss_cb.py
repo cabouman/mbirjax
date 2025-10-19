@@ -232,7 +232,10 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     num_det_rows, num_det_channels, angles = itemgetter('num_det_rows', 'num_det_channels', 'angles')(zeiss_params)
 
     source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
-    det_row_offset = calc_row_params(crop_pixels_top, crop_pixels_bottom)
+    #ToDo: This is incorrect for a number of reasons.
+    # First, it needs to be in ALU, so that means it needs to be multiplied by delta_det_row.
+    # Second, Zeiss must store this number as metadata, so we need to use their stored number and properly scale it.
+    det_row_offset_index_space = calc_row_params(crop_pixels_top, crop_pixels_bottom)
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -245,17 +248,13 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = delta_det_channel
+    # Set 1 ALU = 1 um
     if Zeiss_metadata["axis_names"] is not None and Zeiss_metadata["axis_units"] is not None:
         # TODO: For now, I am not sure about the meaning of the axis names and axis units.
         #   Based on reference value given by Zeiss people, I just set that source_iso_dist and source_detector_dist has units of mm,
         #   and delta_det_channel and delta_det_row has units of um
         source_iso_dist *= 1000 # mm to um
         source_detector_dist *= 1000 # mm to um
-        source_iso_dist /= delta_det_channel # um to ALU
-        source_detector_dist /= delta_det_channel # um to ALU
-        delta_det_row /= delta_det_channel
-        delta_det_channel = 1.0
     else:
         raise ValueError("Unknown units for source_iso_dist, and source_detector_dist; cannot safely convert to mbirjax format.")
 
@@ -271,7 +270,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
-    optional_params['det_row_offset'] = det_row_offset
+    optional_params['det_row_offset'] = det_row_offset_index_space*delta_det_row # Convert to ALU
+    #ToDo: We also need to set the det_channel_offset from the Zeiss meta data. This is very important for real data.
 
     return cone_beam_params, optional_params
 

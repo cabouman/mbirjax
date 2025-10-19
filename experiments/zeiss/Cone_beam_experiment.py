@@ -25,20 +25,21 @@ def main():
     print("\n********** Load sinogram and metadata from the data **************")
     sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir)
 
-    # The stored det_pixel_pitch value is inaccurate, which leads to incorrect
-    # scaling of source-to-detector and source-to-iso distances in ALU.
-    # Override and recompute these distances to maintain correct geometry.
-    det_pixel_pitch = 0.002 # in mm
-    source_detector_dist = float(np.abs(metadata["source_iso_dist"][0])) + float(np.abs(metadata["iso_det_dist"][0])) # in mm
-    cone_beam_params["source_detector_dist"] =  source_detector_dist / 0.002 # mm to ALU
-
-    source_iso_dist = float(np.abs(metadata["source_iso_dist"][0])) # in mm
-    cone_beam_params["source_iso_dist"] = source_iso_dist / 0.002 # mm to ALU
+    # The stored det_pixel_pitch value is incorrect, so we are overriding it with the correct value.
+    det_pixel_pitch = 2.0 # in um
+    optional_params["delta_det_channel"] = det_pixel_pitch # in um
+    optional_params["delta_det_row"] = det_pixel_pitch # in um
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
     ct_model = mj.ConeBeamModel(**cone_beam_params)
     ct_model.set_params(**optional_params)
+
+    # Rerun auto-parameter functions because we changed the assumed detector pitch
+    ct_model.auto_set_delta_voxel() # Reset default voxel size
+    ct_model.auto_set_recon_shape() # Reset default recon shape
+
+    # Sharpness and weights
     ct_model.set_params(sharpness=sharpness)
     weights = mj.gen_weights(sinogram, weight_type='transmission_root')
 
