@@ -61,7 +61,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
         print("\n\n########## Loading scan data and geometry parameters from Zeiss dataset directory")
     obj_scan, blank_scan, dark_scan, zeiss_params, metadata = load_scans_and_params(dataset_dir)
 
-    cone_beam_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=downsample_factor,
+    cone_beam_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, metadata, downsample_factor=downsample_factor,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
                                                                           crop_pixels_bottom=crop_pixels_bottom)
@@ -83,7 +83,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
 
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
-    # For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
+    # TODO: For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
     sino = obj_scan
     scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
 
@@ -122,7 +122,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
             - blank_scan (numpy.ndarray): 3D blank scan with shape (1, num_det_rows, num_det_channels).
             - dark_scan (numpy.ndarray): 3D dark scan with shape (1, num_det_rows, num_det_channels).
             - zeiss_params (dict): Required parameters needed for "convert_zeiss_to_mbirjax_params()" (e.g., geometry vectors, spacings, and angles).
-            - Zeiss_metadata (dict): metadata stored in Zeiss txrm file.
+            - Zeiss_metadata (dict): metadata stored in Zeiss txrm or xrm file.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
@@ -152,10 +152,10 @@ def load_scans_and_params(dataset_dir, verbose=1):
             print("The following files will be used to compute the Zeiss reconstruction:\n",
                   f"    - Projection data directory: {data_dir}\n")
 
-        # For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
+        # TODO: For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
         obj_scan, Zeiss_metadata = read_txrm(data_dir)
 
-        # Currently we do not have blank scan and dark scan for txrm file
+        # TODO: Currently we do not have blank scan and dark scan for txrm file
         blank_scan = np.zeros((1, obj_scan.shape[1], obj_scan.shape[2]))
         dark_scan = np.zeros((1, obj_scan.shape[1], obj_scan.shape[2]))
 
@@ -172,7 +172,9 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # detector pixel pitch (in um)
     # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = 2.0 # um
+    # TODO: The value of the stored detector pixel pitch seems to be wrong;
+    #  Read it directly from metadat to keep the issue visible for future correction
+    det_pixel_pitch = Zeiss_metadata["det_pixel_pitch"] # um
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
@@ -205,7 +207,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
     return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_metadata
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
@@ -213,6 +215,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
 
     Args:
         zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
+        Zeiss_metadata (dict): metadata stored in Zeiss txrm or xrm file.
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
@@ -243,12 +246,18 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel *= downsample_factor[1]
 
     # Set 1 ALU = delta_det_channel
-    source_iso_dist *= 1000 # mm to um
-    source_detector_dist *= 1000 # mm to um
-    source_iso_dist /= delta_det_channel # um to ALU
-    source_detector_dist /= delta_det_channel # um to ALU
-    delta_det_row /= delta_det_channel
-    delta_det_channel = 1.0
+    if Zeiss_metadata["axis_names"] is not None and Zeiss_metadata["axis_units"] is not None:
+        # TODO: For now, I am not sure about the meaning of the axis names and axis units.
+        #   Based on reference value given by Zeiss people, I just set that source_iso_dist and source_detector_dist has units of mm,
+        #   and delta_det_channel and delta_det_row has units of um
+        source_iso_dist *= 1000 # mm to um
+        source_detector_dist *= 1000 # mm to um
+        source_iso_dist /= delta_det_channel # um to ALU
+        source_detector_dist /= delta_det_channel # um to ALU
+        delta_det_row /= delta_det_channel
+        delta_det_channel = 1.0
+    else:
+        raise ValueError("Unknown units for source_iso_dist, and source_detector_dist; cannot safely convert to mbirjax format.")
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
@@ -729,9 +738,11 @@ def _read_ole_str(ole, label):
     Returns:
         list: A list contain all the strings from the binary stream if the label exists
     """
-    stream = ole.openstream(label)
-    data = stream.read()
-    str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
+    str = None
+    if ole.exists(label):
+        stream = ole.openstream(label)
+        data = stream.read()
+        str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
     return str
 
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
