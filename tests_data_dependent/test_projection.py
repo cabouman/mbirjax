@@ -14,20 +14,23 @@ class ProjectionBase:
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(TEST_DIR, "data")
 
-    # these fields will be set by the setUpClass method
+    # these fields MUST be overridden in subclasses
+    MODEL = None
+    SOURCE_FILEPATH = None
+    DATA_FILE_SHA256 = None
+
+    # this field will be set by the setUpClass method
+    data_filepath = None
+
+    # these fields will be set by the setUp method
     control_phantom = None
     control_sinogram = None
     control_recon = None
     control_params = None
     projection_model =  None
-    data_filepath = None
 
-    # To be overridden in subclasses:
-    MODEL = None
-    SOURCE_FILEPATH = None
-    DATA_FILE_SHA256 = None
-
-    def subTest(self, *a, **kw):     return unittest.TestCase.subTest(self, *a, **kw)
+    # inherit subTest method from unittest to make linter happy
+    subTest = unittest.TestCase.subTest
 
     @classmethod
     def setUpClass(cls):
@@ -35,7 +38,7 @@ class ProjectionBase:
         if not cls.HAS_GPU:
             warnings.warn("No GPUs found. Only use_gpu='none' unit test will be performed.")
 
-        assert cls.SOURCE_FILEPATH and cls.MODEL, \
+        assert cls.SOURCE_FILEPATH and cls.MODEL and cls.DATA_FILE_SHA256, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
 
         # delete the data directory and all its contents
