@@ -2,7 +2,6 @@
 import os, shutil, pytest, unittest, h5py, jax, jax.numpy as jnp
 import mbirjax as mj
 
-@pytest.mark.data_dependent
 class ProjectionTestBase(unittest.TestCase):
     """
     Reusable test suite for a projection model. Subclasses must set:

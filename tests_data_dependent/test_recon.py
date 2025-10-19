@@ -2,7 +2,6 @@
 import os, shutil, pytest, pathlib, unittest, h5py, jax, jax.numpy as jnp
 import mbirjax as mj
 
-@pytest.mark.data_dependent
 class ReconTestBase(unittest.TestCase):
     """
     Reusable test suite for a projection model. Subclasses must set:
@@ -122,7 +121,6 @@ class TestReconParallel(ReconTestBase):
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
     TOLERANCES = {'nrmse': 0.08, 'max_diff': 0.12, 'pct_95': 0.032}
-
 
 if __name__ == "__main__":
     unittest.main()
