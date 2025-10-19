@@ -1,5 +1,6 @@
 import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
 import mbirjax as mj
+from _test_data_dependent_utils import sha256_file
 
 class ProjectionBase:
     """
@@ -20,14 +21,6 @@ class ProjectionBase:
     SOURCE_FILEPATH = None
     DATA_FILE_SHA256 = None
 
-
-    @classmethod
-    def _sha256_file(cls, p, chunk=1<<20):
-        h=hashlib.sha256()
-        with open(p, "rb") as f:
-            for b in iter(lambda: f.read(chunk), b""): h.update(b)
-        return h.hexdigest()
-
     @classmethod
     def setUpClass(cls):
 
@@ -37,13 +30,15 @@ class ProjectionBase:
         assert cls.SOURCE_FILEPATH and cls.MODEL, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
 
+        # delete the data directory and all its contents
         if os.path.exists(cls.DATA_DIR):
             shutil.rmtree(cls.DATA_DIR)
         cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
 
+        # verify the file contents with sha256
         try:
             p = pathlib.Path(cls.DATA_FILEPATH)
-            actual = cls._sha256_file(p)
+            actual = sha256_file(p)
             if actual.lower() != cls.DATA_FILE_SHA256.lower():
                 warnings.warn(f"Checksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
                               "Failures may be due to unexpected input data.")
@@ -52,6 +47,7 @@ class ProjectionBase:
 
     @classmethod
     def tearDownClass(cls):
+        # delete the data directory and all its contents
         if cls.DATA_DIR and os.path.exists(cls.DATA_DIR):
             shutil.rmtree(cls.DATA_DIR)
 

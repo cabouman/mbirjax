@@ -3,6 +3,13 @@ import mbirjax as mj
 import h5py
 import tarfile
 import os
+import hashlib
+
+def sha256_file(cls, p, chunk=1 << 20):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(chunk), b""): h.update(b)
+    return h.hexdigest()
 
 def generate_projection_test_data(model_type, size=32):
     # sinogram shape
@@ -58,8 +65,6 @@ def generate_projection_test_data(model_type, size=32):
     mj.slice_viewer(sinogram, title=f"{model_type} sinogram {size}", slice_axis=0)
     mj.slice_viewer(recon, title=f"{model_type} recon {size}")
 
-
-
 def generate_recon_test_data(model_type, size=32):
     # sinogram shape
     num_views = size
@@ -112,7 +117,6 @@ def generate_recon_test_data(model_type, size=32):
     mj.slice_viewer(phantom, title=f"{model_type} phantom {size}")
     mj.slice_viewer(sinogram, title=f"{model_type} sinogram {size}", slice_axis=0)
     mj.slice_viewer(recon, title=f"{model_type} recon {size}")
-
 
 if __name__ == '__main__':
     generate_projection_test_data('cone', size=32)
