@@ -27,6 +27,8 @@ class ProjectionBase:
     SOURCE_FILEPATH = None
     DATA_FILE_SHA256 = None
 
+    def subTest(self, *a, **kw):     return unittest.TestCase.subTest(self, *a, **kw)
+
     @classmethod
     def setUpClass(cls):
 
