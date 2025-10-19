@@ -5,7 +5,7 @@ import tarfile
 import os
 import hashlib
 
-def sha256_file(cls, p, chunk=1 << 20):
+def sha256_file(p, chunk=1 << 20):
     h = hashlib.sha256()
     with open(p, "rb") as f:
         for b in iter(lambda: f.read(chunk), b""): h.update(b)
