@@ -1,91 +1,112 @@
 .. docs-include-ref
 
-DATA DEPENDENT TESTS
-=======
+Data-Dependent Tests
+====================
 
-The data dependent tests are a set of tests that rely on data that is not included in the mbirjax repo. To handle the situation where the data is inaccessible the data dependent tests have been set up so that they only run when explicitly evoked. This readme goes over the each of the files and the important things to note about them.
+The data-dependent tests rely on external datasets that are not stored in the
+``mbirjax`` repo. To keep regular CI runs fast and resilient, these tests only
+run when explicitly requested. This README describes how to run them and what
+each file does.
 
-Running unit tests
---------------------
+Running tests
+-------------
 
-To run non—data dependent unit tests from CLI::
+To run non–data-dependent unit tests from the CLI::
 
-    pytest
+   pytest
 
-To run data dependent unit tests::
+To run **only** the data-dependent tests::
 
-    pytest -m data_dependent
+   pytest -m data_dependent
+
+To run **all** tests (overriding the default exclude)::
+
+   pytest -m "data_dependent or not data_dependent"
+
 
 ``pytest.ini``
---------------------
+--------------
 
-This file is used to tell pytest which directories to look in for unit tests. This file tells it to look in tests and tests_data_dependent for unit tests.
-It also defines the marker `data_dependent` which will be used to mark a test as one that requires exernal data.
-The addopts setting allows the default behavior of not running tests that are marked as data_dependent.
+This file configures pytest to discover tests in both ``tests`` and
+``tests_data_dependent``. It declares the ``data_dependent`` marker and sets the
+default behavior to skip those tests unless explicitly enabled.
 
 .. code-block:: ini
 
-    [pytest]
-    norecursedirs = build venv nodist
-    testpaths = tests tests_data_dependent
-    markers =
-        data_dependent: requires external data -- to run data dependent tests, run 'pytest -m data_dependent'
-    addopts = -m "not data_dependent"
+   [pytest]
+   norecursedirs = build venv nodist
+   testpaths = tests tests_data_dependent
+   markers =
+       data_dependent: requires external data; run with 'pytest -m data_dependent'
+   addopts = -m "not data_dependent"
 
-``conftest.py``
---------------------
-The conftest python script is run any times the unit test scripts in the tests_data_dependednt dir is run. This script detects if the host of the running is pycharm. IF the host is pycharm and there are no explicite -m flags then it overrides the default behavior and includes the data_dependent tests. This allows running the test from a right click on the file in pycharm.
 
-.. code-block:: python
+``tests_data_dependent/conftest.py``
+------------------------------------
 
-    import os, sys
-
-    def _explicit_m_passed(argv):
-        return any(a == "-m" or a.startswith("-m=") for a in argv)
-
-    def pytest_configure(config):
-        if os.getenv("PYCHARM_HOSTED") == "1" and not _explicit_m_passed(sys.argv):
-            config.option.markexpr = "data_dependent or not data_dependent"
-
-``test_*.py``
---------------------
-
-The test files have multiple
-
-The classes defined in the test file are marked with the `@pytest.mark.data_dependent` decorator. This means these tests can be turned on an off using the `data_dependent` marker option.
-The parent classes are marked with the class field __test__ = False so they are not discoverable and will not be run as unit tests. The subclasses are marked with __test__ = True so they are discoverable and will run when data_dependent tests are run.
+This hook makes right-click ▶ Run in PyCharm execute **all tests in the file**
+(even if they’re marked ``data_dependent``) when no explicit ``-m`` is provided,
+while leaving CLI defaults unchanged.
 
 .. code-block:: python
 
-    class ProjectionTestBase(unittest.TestCase):
-        ...
-        __test__ = False
-        ...
+   import os, sys
 
-    @pytest.mark.data_dependent
-    class TestProjectionCone(ProjectionTestBase):
-        __test__ = True
-        MODEL = mj.ConeBeamModel
-        SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
+   def _explicit_m_passed(argv):
+       return any(a == "-m" or a.startswith("-m=") for a in argv)
 
-    @pytest.mark.data_dependent
-    class TestProjectionParallel(ProjectionTestBase):
-        __test__ = True
-        MODEL = mj.ParallelBeamModel
-        SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
+   def pytest_configure(config):
+       if os.getenv("PYCHARM_HOSTED") == "1" and not _explicit_m_passed(sys.argv):
+           config.option.markexpr = "data_dependent or not data_dependent"
 
-GPU behavior:
-The current behavior is to detect if gpus are present and only run the 'none' test if no gpus are present.
-A warning will be generated if no gpus are present that not all test are able to run.
+
+Test modules (``test_*.py``)
+----------------------------
+
+- Tests that need external data are marked with ``@pytest.mark.data_dependent``.
+- Abstract/base classes set ``__test__ = False`` so they are not collected.
+  Concrete subclasses set ``__test__ = True`` and will be collected.
+
+Example:
 
 .. code-block:: python
 
-    class ProjectionTestBase(unittest.TestCase):
-        ...
-        HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
-        USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
-        ...
+   class ProjectionTestBase(unittest.TestCase):
+       ...
+       __test__ = False
+       ...
 
-``generate_test_data.py``
---------------------
-This python script is used to generate the data that is used by the unit tests.
+   @pytest.mark.data_dependent
+   class TestProjectionCone(ProjectionTestBase):
+       __test__ = True
+       MODEL = mj.ConeBeamModel
+       SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
+
+   @pytest.mark.data_dependent
+   class TestProjectionParallel(ProjectionTestBase):
+       __test__ = True
+       MODEL = mj.ParallelBeamModel
+       SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
+
+
+GPU behavior
+------------
+
+If GPUs are available, the suite exercises GPU modes; otherwise it falls back to
+the ``none`` mode and emits a warning that not all tests could run.
+
+.. code-block:: python
+
+   class ProjectionTestBase(unittest.TestCase):
+       ...
+       HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
+       USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
+       ...
+
+
+``tests_data_dependent/generate_test_data.py``
+----------------------------------------------
+
+Utility script to generate the datasets consumed by the data-dependent tests.
+Run it to (re)build local copies of the required fixtures before executing the
+suite.
