@@ -23,7 +23,17 @@ def main():
 
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cone_beam.compute_sino_and_params(dataset_dir)
+    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir)
+
+    # The stored det_pixel_pitch value is inaccurate, which leads to incorrect
+    # scaling of source-to-detector and source-to-iso distances in ALU.
+    # Override and recompute these distances to maintain correct geometry.
+    det_pixel_pitch = 0.002 # in mm
+    source_detector_dist = float(np.abs(metadata["source_iso_dist"][0])) + float(np.abs(metadata["iso_det_dist"][0])) # in mm
+    cone_beam_params["source_detector_dist"] =  source_detector_dist / 0.002 # mm to ALU
+
+    source_iso_dist = float(np.abs(metadata["source_iso_dist"][0])) # in mm
+    cone_beam_params["source_iso_dist"] = source_iso_dist / 0.002 # mm to ALU
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
