@@ -74,7 +74,7 @@ class ReconTestBase(unittest.TestCase):
                 recon, _ = self.projection_model.recon(self.control_sinogram,
                                                        max_iterations=15,
                                                        stop_threshold_change_pct=0,
-                                                       logfile_path=f'./logs/recon_{filename}_{opt}.log')
+                                                       logfile_path=f'./tests_data_dependent/logs/recon_{filename}_{opt}.log')
                 recon.block_until_ready()
                 recon = jax.device_put(recon)
 
