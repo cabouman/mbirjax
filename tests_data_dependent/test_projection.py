@@ -11,16 +11,16 @@ class ProjectionBase:
     HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
+    TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(TEST_DIR, "data")
 
+    # these fields will be set by the setUpClass method
     control_phantom = None
     control_sinogram = None
     control_recon = None
     control_params = None
     projection_model =  None
-
-    TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-    DATA_DIR = os.path.join(TEST_DIR, "data")
-    DATA_FILEPATH = None
+    data_filepath = None
 
     # To be overridden in subclasses:
     MODEL = None
@@ -41,17 +41,17 @@ class ProjectionBase:
         # delete the data directory and all its contents
         if os.path.exists(cls.DATA_DIR):
             shutil.rmtree(cls.DATA_DIR)
-        cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
+        cls.data_filepath = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
 
         # verify the file contents with sha256
         try:
-            p = pathlib.Path(cls.DATA_FILEPATH)
+            p = pathlib.Path(cls.data_filepath)
             actual = sha256_file(p)
             if actual.lower() != cls.DATA_FILE_SHA256.lower():
                 warnings.warn(f"Checksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
                               "Failures may be due to unexpected input data.")
         except Exception as e:
-            warnings.warn(f"Checksum skipped for {cls.DATA_FILEPATH}: {e}")
+            warnings.warn(f"Checksum skipped for {cls.data_filepath}: {e}")
 
     @classmethod
     def tearDownClass(cls):
@@ -60,7 +60,7 @@ class ProjectionBase:
             shutil.rmtree(cls.DATA_DIR)
 
     def setUp(self):
-        with h5py.File(self.DATA_FILEPATH, "r") as f:
+        with h5py.File(self.data_filepath, "r") as f:
             self.control_phantom = f["phantom"][:]
             self.control_sinogram = f["sinogram"][:]
             self.control_recon = f["recon"][:]
