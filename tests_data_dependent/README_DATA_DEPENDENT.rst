@@ -127,3 +127,25 @@ the ``none`` mode and emits a warning that not all tests could run.
 Utility script to generate the datasets consumed by the data-dependent tests.
 Run it to (re)build local copies of the required fixtures before executing the
 suite.
+
+Data integrity
+---------------------------------
+
+Each data-dependent test **must** declare an expected SHA-256 for its input
+file via ``DATA_FILE_SHA256``. On mismatch, the tests still run but a warning
+is printed that includes the **actual** SHA-256 so you can correct it.
+
+Example (in a test subclass)::
+
+   DATA_FILE_SHA256 = "0123abc...def"  # required
+
+Typical warning output::
+
+   Checksum mismatch for data.h5: expected 0123abc...def, got 89ab456...cde.
+   Failures may be due to unexpected input data.
+
+Workflow to set/update the hash:
+
+1. Put any placeholder value in ``DATA_FILE_SHA256``.
+2. Run the test once; copy the **got** value from the warning.
+3. Paste that value back into ``DATA_FILE_SHA256``.

@@ -1,4 +1,5 @@
-import os, shutil, pytest, unittest, h5py, warnings, jax, jax.numpy as jnp
+import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
+
 import mbirjax as mj
 
 class ProjectionTestBase(unittest.TestCase):
@@ -18,6 +19,14 @@ class ProjectionTestBase(unittest.TestCase):
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     DATA_FILEPATH = None
+    DATA_FILE_SHA256 = None
+
+    @classmethod
+    def _sha256_file(cls, p, chunk=1<<20):
+        h=hashlib.sha256()
+        with open(p, "rb") as f:
+            for b in iter(lambda: f.read(chunk), b""): h.update(b)
+        return h.hexdigest()
 
     @classmethod
     def setUpClass(cls):
@@ -31,6 +40,15 @@ class ProjectionTestBase(unittest.TestCase):
         if os.path.exists(cls.DATA_DIR):
             shutil.rmtree(cls.DATA_DIR)
         cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
+
+        try:
+            p = pathlib.Path(cls.DATA_FILEPATH)
+            actual = cls._sha256_file(p)
+            if actual.lower() != cls.DATA_FILE_SHA256.lower():
+                warnings.warn(f"Checksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
+                              "Failures may be due to unexpected input data.")
+        except Exception as e:
+            warnings.warn(f"Checksum skipped for {cls.DATA_FILEPATH}: {e}")
 
     @classmethod
     def tearDownClass(cls):
@@ -133,12 +151,14 @@ class TestProjectionCone(ProjectionTestBase):
     __test__ = True
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
+    DATA_FILE_SHA256 = 'bbb179585188204af4162e51165e2c00afc198703b015f7e97b0cbd896666ed7'
 
 @pytest.mark.data_dependent
 class TestProjectionParallel(ProjectionTestBase):
     __test__ = True
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
+    DATA_FILE_SHA256 = '9b5cc0fac49c8fb51d567ed86b40e78daf90555cad2f4eff22e12cd1d19f41e0'
 
 if __name__ == "__main__":
     unittest.main()

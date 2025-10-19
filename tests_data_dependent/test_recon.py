@@ -1,4 +1,4 @@
-import os, shutil, pytest, pathlib, unittest, h5py, warnings, jax, jax.numpy as jnp
+import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.numpy as jnp
 import mbirjax as mj
 
 class ReconTestBase(unittest.TestCase):
@@ -19,6 +19,14 @@ class ReconTestBase(unittest.TestCase):
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     DATA_FILEPATH = None
+    DATA_FILE_SHA256 = None
+
+    @classmethod
+    def _sha256_file(cls, p, chunk=1<<20):
+        h=hashlib.sha256()
+        with open(p, "rb") as f:
+            for b in iter(lambda: f.read(chunk), b""): h.update(b)
+        return h.hexdigest()
 
     @classmethod
     def setUpClass(cls):
@@ -32,6 +40,15 @@ class ReconTestBase(unittest.TestCase):
         if os.path.exists(cls.DATA_DIR):
             shutil.rmtree(cls.DATA_DIR)
         cls.DATA_FILEPATH = mj.download_and_extract(cls.SOURCE_FILEPATH, cls.DATA_DIR)
+
+        try:
+            p = pathlib.Path(cls.DATA_FILEPATH)
+            actual = cls._sha256_file(p)
+            if actual.lower() != cls.DATA_FILE_SHA256.lower():
+                warnings.warn(f"Checksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
+                              "Failures may be due to unexpected input data.")
+        except Exception as e:
+            warnings.warn(f"Checksum skipped for {cls.DATA_FILEPATH}: {e}")
 
     @classmethod
     def tearDownClass(cls):
@@ -115,6 +132,7 @@ class TestReconCone(ReconTestBase):
     __test__ = True
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_recon_data.tgz"
+    DATA_FILE_SHA256 = '7053ccf75298f587607644f3e96fbb3257c9f850704bcd16b484c5de9dcc9441'
     TOLERANCES = {'nrmse': 0.05, 'max_diff': 0.12, 'pct_95': 0.02}
 
 @pytest.mark.data_dependent
@@ -122,6 +140,7 @@ class TestReconParallel(ReconTestBase):
     __test__ = True
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_recon_data.tgz"
+    DATA_FILE_SHA256 = 'b0210a75c8a82659530d299d7cef2e5d5d296e3dbf2e51841f7d6f8f208fbf8a'
     TOLERANCES = {'nrmse': 0.08, 'max_diff': 0.12, 'pct_95': 0.032}
 
 if __name__ == "__main__":
