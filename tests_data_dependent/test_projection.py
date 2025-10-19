@@ -2,7 +2,7 @@ import os, shutil, pytest, pathlib, hashlib, unittest, h5py, warnings, jax, jax.
 
 import mbirjax as mj
 
-class ProjectionTestBase(unittest.TestCase):
+class ProjectionBase:
     """
     Reusable test suite for a projection model. Subclasses must set:
       - MODEL (class with .from_file)
@@ -13,7 +13,9 @@ class ProjectionTestBase(unittest.TestCase):
     ATOL = 1e-3
 
     # To be overridden in subclasses:
-    __test__ = False
+    # __unittest_skip__ = True
+    # __unittest_skip_why__ = "ProjectionTestBase is a reusable base; not a concrete test."
+    # __test__ = False
     MODEL = None
     SOURCE_FILEPATH = None
 
@@ -147,15 +149,15 @@ class ProjectionTestBase(unittest.TestCase):
 # ---- Concrete geometry variants ----
 
 @pytest.mark.data_dependent
-class TestProjectionCone(ProjectionTestBase):
-    __test__ = True
+class TestProjectionCone(ProjectionBase, unittest.TestCase):
+    # __test__ = True
     MODEL = mj.ConeBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/cone_32_projection_data.tgz"
     DATA_FILE_SHA256 = 'bbb179585188204af4162e51165e2c00afc198703b015f7e97b0cbd896666ed7'
 
 @pytest.mark.data_dependent
-class TestProjectionParallel(ProjectionTestBase):
-    __test__ = True
+class TestProjectionParallel(ProjectionBase, unittest.TestCase):
+    # __test__ = True
     MODEL = mj.ParallelBeamModel
     SOURCE_FILEPATH = "https://www.datadepot.rcac.purdue.edu/bouman/data/unit_test_data/parallel_32_projection_data.tgz"
     DATA_FILE_SHA256 = '9b5cc0fac49c8fb51d567ed86b40e78daf90555cad2f4eff22e12cd1d19f41e0'
