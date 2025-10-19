@@ -1,5 +1,4 @@
-# test_projection.py
-import os, shutil, pytest, unittest, h5py, jax, jax.numpy as jnp
+import os, shutil, pytest, unittest, h5py, warnings, jax, jax.numpy as jnp
 import mbirjax as mj
 
 class ProjectionTestBase(unittest.TestCase):
@@ -22,6 +21,9 @@ class ProjectionTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+
+        if not cls.HAS_GPU:
+            warnings.warn("No GPUs found. Only use_gpu='none' unit test will be performed.")
 
         assert cls.SOURCE_FILEPATH and cls.MODEL, \
             "Subclasses must define MODEL, SOURCE_FILEPATH"
