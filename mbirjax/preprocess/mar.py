@@ -265,19 +265,26 @@ def _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, nu
         # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
         Sp = Sp + theta[i] * _get_column_H(i, jnp.ones_like(p), metal_basis, H_exponent_list)
 
+    # y_minus_Sm = y - metal-only
     y_minus_Sm = y
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, num_cols):
         y_minus_Sm = y_minus_Sm - theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
-    # Compute the index of the smallest Sp entry and the smallest (y-Sm) entry
+    # Lower-bound violator: minimize Sp and y-Sm
     i_min_Sp = int(jnp.argmin(Sp))
     i_min_residual = int(jnp.argmin(y_minus_Sm))
 
     v_min_Sp = Sp[i_min_Sp]
     v_min_residual = y_minus_Sm[i_min_residual]
 
-    return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual
+    # Upper-bound violator: maximize (Sp - theta[0])
+    s_upper = Sp - theta[0]
+    i_max_Sp = int(jnp.argmax(s_upper))
+    v_max_Sp = s_upper[i_max_Sp]
+
+    return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual, i_max_Sp, v_max_Sp
+
 
 
 def _estimate_BH_model_params(Q, c, G, h):
@@ -395,11 +402,11 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
     theta = _estimate_BH_model_params(Q, c, G=None, h=None)
     for iter in range(num_constrained_fit_iter):
         # Find the indices and values of the points that most violate each constraint
-        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
+        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual, i_max_Sp, v_max_Sp = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
             dp = 1 + num_cross_terms
-            # Negative -row_p[:dp] to ensure Hpθp >= 0
+            # Negative row_p[:dp] to ensure Hpθp >= 0
             g_plastic = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             h_plastic = jnp.array([0.0])
             G = jnp.vstack([G, g_plastic[None, :]])
