@@ -37,7 +37,6 @@ def main():
 
     # Rerun auto-parameter functions because we changed the assumed detector pitch
     ct_model.auto_set_delta_voxel() # Reset default voxel size
-    ct_model.auto_set_recon_shape() # Reset default recon shape
 
     # Sharpness and weights
     ct_model.set_params(sharpness=sharpness)
