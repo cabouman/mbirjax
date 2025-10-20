@@ -61,7 +61,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
         print("\n\n########## Loading scan data and geometry parameters from Zeiss dataset directory")
     obj_scan, blank_scan, dark_scan, zeiss_params, metadata = load_scans_and_params(dataset_dir)
 
-    cone_beam_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, metadata, downsample_factor=downsample_factor,
+    cone_beam_params, optional_params, metadata = convert_zeiss_to_mbirjax_params(zeiss_params, metadata, downsample_factor=downsample_factor,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
                                                                           crop_pixels_bottom=crop_pixels_bottom)
@@ -225,6 +225,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     Returns:
         cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
         optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
+        metadata (dict): metadata stored in Zeiss txrm or xrm file.
     """
     # Get zeiss parameters and convert them
     source_iso_dist, iso_det_dist = itemgetter('source_iso_dist', 'iso_det_dist')(zeiss_params)
@@ -255,6 +256,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
         #   and delta_det_channel and delta_det_row has units of um
         source_iso_dist *= 1000 # mm to um
         source_detector_dist *= 1000 # mm to um
+        Zeiss_metadata["ALU_unit"] = 'um'
     else:
         raise ValueError("Unknown units for source_iso_dist, and source_detector_dist; cannot safely convert to mbirjax format.")
 
@@ -273,7 +275,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     optional_params['det_row_offset'] = det_row_offset_index_space*delta_det_row # Convert to ALU
     #ToDo: We also need to set the det_channel_offset from the Zeiss meta data. This is very important for real data.
 
-    return cone_beam_params, optional_params
+    return cone_beam_params, optional_params, Zeiss_metadata
 
 
 ######## subroutines for parsing Zeiss object scan, blank scan, and dark scan
