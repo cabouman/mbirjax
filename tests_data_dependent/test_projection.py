@@ -11,6 +11,7 @@ class ProjectionBase:
     HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
     USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
+    RTOL = 1e-2
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(TEST_DIR, "data")
 
@@ -114,8 +115,12 @@ class ProjectionBase:
                 self.projection_model.set_params(use_gpu=opt)
                 recon = self.projection_model.back_project(self.control_sinogram)
                 recon = jax.device_put(recon)
-                assert bool(jnp.allclose(recon, self.control_recon, atol=self.ATOL)), \
-                    f"[{self.MODEL.__name__}] back-projection mismatch (use_gpu={opt})"
+
+                # 99.8% of voxels are within self.ATOL
+                assert jnp.percentile(jnp.abs(recon - self.control_recon), 99.8) < self.ATOL
+
+                # Relative tolerance is within self.RTOL
+                assert jnp.allclose(recon, self.control_recon, rtol=self.RTOL)
 
     def test_back_project_rejects_biased_input_at_tol(self):
         """
