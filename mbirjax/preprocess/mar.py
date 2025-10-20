@@ -389,8 +389,10 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     """
     num_cols = len(H_exponent_list)
+    dp = 1 + num_cross_terms
 
     C_p = []
+    C_p_upper = []
     C_m = []
 
     # Construct the entries Q, c, G and h of OSQP for solving the constraint optimization
@@ -400,28 +402,46 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
     # Initial θ solved without constraint
     theta = _estimate_BH_model_params(Q, c, G=None, h=None)
+
+    # Use the same magnitude tolerance for upper-bound (≤ 0) checks
+    ub_tol = -tolerance if tolerance < 0 else tolerance
+
     for iter in range(num_constrained_fit_iter):
         # Find the indices and values of the points that most violate each constraint
         i_min_Sp, v_min_Sp, i_min_residual, v_min_residual, i_max_Sp, v_max_Sp = _compute_coef_and_furthest_off(y, p, metal_basis, theta, H_exponent_list, num_cross_terms)
+
+        # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
-            dp = 1 + num_cross_terms
             # Negative row_p[:dp] to ensure Hpθp >= 0
-            g_plastic = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
-            h_plastic = jnp.array([0.0])
-            G = jnp.vstack([G, g_plastic[None, :]])
-            h = jnp.concatenate([h, h_plastic])
+            g_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
+            h_p = jnp.array([0.0])
+            G = jnp.vstack([G, g_p[None, :]])
+            h = jnp.concatenate([h, h_p])
             C_p.append(i_min_Sp)
 
+        # (2) y − Hm θm ≥ 0  ->  (Hm) θ ≤ y
         if v_min_residual < tolerance and (i_min_residual not in C_m):
             row_m = _get_row_H(i_min_residual, p, metal_basis, H_exponent_list)
-            dp = 1 + num_cross_terms
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
             h_m = jnp.array([y[i_min_residual]])
             G = jnp.vstack([G, g_m[None, :]])
             h = jnp.concatenate([h, h_m])
             C_m.append(i_min_residual)
+
+        # (3) Hp θp − θ0 ≤ 0  ->  [(Hp - e0) on plastic+cross, 0 on metal] · θ ≤ 0
+        if (v_max_Sp > ub_tol) and (i_max_Sp not in C_p_upper):
+            row_p = _get_row_H(i_max_Sp, p, metal_basis, H_exponent_list)
+            # e0 = [1, 0, 0, ..., 0] over the plastic+cross block
+            e0 = jnp.zeros((dp,))
+            e0 = e0.at[0].set(1.0)
+            Hp_minus_e0 = row_p[:dp] - e0
+            g_p_upper = jnp.concatenate([Hp_minus_e0, jnp.zeros((num_cols - dp,))])
+            h_p_upper = jnp.array([0.0])
+            G = jnp.vstack([G, g_p_upper[None, :]])
+            h = jnp.concatenate([h, h_p_upper])
+            C_p_upper.append(i_max_Sp)
 
         # --- Early exit: constraints achieved
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
