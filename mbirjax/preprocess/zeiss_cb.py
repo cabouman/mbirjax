@@ -185,6 +185,14 @@ def load_scans_and_params(dataset_dir, verbose=1):
     # Rotation angles (in radians)
     angles = np.array(Zeiss_metadata['thetas'], dtype=float).ravel()
 
+    # Detector offset (in um)
+    # TODO: Need to check whether the detector offset parameter is correctly read from the file; Need to check the units of detector offset
+    #   For now, I assume that the detector offset has units of um.
+    #   Since I can only decoded one single float from the directory I found in the file, I just set det_channel_offset = det_row_offset = detector offset
+    detector_offset = Zeiss_metadata["det_offset"]
+    det_row_offset = detector_offset
+    det_channel_offset = detector_offset
+
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
         print(f"Source to iso distance: {source_iso_dist} [mm]")
@@ -202,6 +210,8 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
         'angles': angles,
+        'det_row_offset': det_row_offset,
+        'det_channel_offset': det_channel_offset,
     }
 
     return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_metadata
@@ -231,12 +241,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     source_iso_dist, iso_det_dist = itemgetter('source_iso_dist', 'iso_det_dist')(zeiss_params)
     delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(zeiss_params)
     num_det_rows, num_det_channels, angles = itemgetter('num_det_rows', 'num_det_channels', 'angles')(zeiss_params)
+    det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
     source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
-    #ToDo: This is incorrect for a number of reasons.
-    # First, it needs to be in ALU, so that means it needs to be multiplied by delta_det_row.
-    # Second, Zeiss must store this number as metadata, so we need to use their stored number and properly scale it.
-    det_row_offset_index_space = calc_row_params(crop_pixels_top, crop_pixels_bottom)
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -250,13 +257,18 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     delta_det_channel *= downsample_factor[1]
 
     # Set 1 ALU = 1 um
-    if Zeiss_metadata["axis_names"] is not None and Zeiss_metadata["axis_units"] is not None:
+    axis_names = Zeiss_metadata["axis_names"]
+    axis_units = Zeiss_metadata["axis_units"]
+    if axis_names is not None and axis_units is not None:
         # TODO: For now, I am not sure about the meaning of the axis names and axis units.
         #   Based on reference value given by Zeiss people, I just set that source_iso_dist and source_detector_dist has units of mm,
         #   and delta_det_channel and delta_det_row has units of um
         source_iso_dist *= 1000 # mm to um
         source_detector_dist *= 1000 # mm to um
+
+        # Include the ALU unit and value in metadata dictionary
         Zeiss_metadata["ALU_unit"] = 'um'
+        Zeiss_metadata["ALU_value"] = 1
     else:
         raise ValueError("Unknown units for source_iso_dist, and source_detector_dist; cannot safely convert to mbirjax format.")
 
@@ -272,8 +284,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
-    optional_params['det_row_offset'] = det_row_offset_index_space*delta_det_row # Convert to ALU
-    #ToDo: We also need to set the det_channel_offset from the Zeiss meta data. This is very important for real data.
+    optional_params['det_row_offset'] = det_row_offset
+    optional_params['det_channel_offset'] = det_channel_offset
+    #ToDo: For now, we assume that the det_row_offset and det_channel_offset have units of um.
 
     return cone_beam_params, optional_params, Zeiss_metadata
 
@@ -560,6 +573,8 @@ def read_metadata(ole):
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        # TODO: Need to check whether we read the correct detector offset parameter from the file
+        'det_offset': _read_ole_value(ole, 'DetAssemblyInfo/CameraOffset', '<f'),
         'iso_det_dist': _read_ole_arr(
             ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_arr(
