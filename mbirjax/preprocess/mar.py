@@ -412,7 +412,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
         # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
-            row_p = _get_row_H(i_min_Sp, p, metal_basis, H_exponent_list)
+            row_p = _get_row_H(i_min_Sp, jnp.ones_like(y), metal_basis, H_exponent_list)
             # Negative row_p[:dp] to ensure Hpθp >= 0
             g_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             h_p = jnp.array([0.0])
@@ -432,7 +432,7 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
 
         # (3) Hp θp − θ0 ≤ 0  ->  [(Hp - e0) on plastic+cross, 0 on metal] · θ ≤ 0
         if (v_max_Sp > ub_tol) and (i_max_Sp not in C_p_upper):
-            row_p = _get_row_H(i_max_Sp, p, metal_basis, H_exponent_list)
+            row_p = _get_row_H(i_max_Sp, jnp.ones_like(y), metal_basis, H_exponent_list)
             # e0 = [1, 0, 0, ..., 0] over the plastic+cross block
             e0 = jnp.zeros((dp,))
             e0 = e0.at[0].set(1.0)
