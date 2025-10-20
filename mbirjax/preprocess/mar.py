@@ -443,10 +443,9 @@ def _iterative_estimate_BH_model_params_with_constraint(p, metal_basis, y, H_exp
             h = jnp.concatenate([h, h_p_upper])
             C_p_upper.append(i_max_Sp)
 
-        # --- Early exit: constraints achieved
-        if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
+        # Early exit if all three constraints are satisfied (within tolerances)
+        if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance) and (v_max_Sp <= ub_tol):
             break
-
         theta = _estimate_BH_model_params(Q, c, G, h)
     return theta
 
