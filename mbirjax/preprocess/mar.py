@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 import random
+import warnings
 
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
@@ -266,7 +267,7 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
 
     return theta
 
-def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization):
+def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
     """
     Perform beam hardening correction on the plastic sinogram.
 
@@ -281,7 +282,9 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
 
     The H matrix looks like: [p, p*m, p*m^2, m, m^2, m^3]
     The correction is applied as:
-        corrected_plastic = p_normalization * (y - H_metal·θ_m) / (H_plastic·θ_p)
+        corrected_plastic = p_normalization * max(y - H_metal·θ_m, 0) / (max(H_plastic·θ_p, γ * median(H_plastic·θ_p))
+    The stabilization term involving γ prevents division by near-zero or negative values, reducing streaks
+    and numerical instability.
 
     Args:
         y (jnp.ndarray): Measured sinogram.
@@ -292,6 +295,7 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
         num_cross_terms (int): Number of cross terms involving both p and metal.
         num_metal_terms (int): Number of metal-only terms in H.
         p_normalization (float): Normalization factor applied to p.
+        gamma (float, optional): Stabilization factor.
 
     Returns:
         corrected_plastic_sino (jnp.ndarray): Beam-hardening-corrected plastic sinogram.
@@ -303,22 +307,31 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
         # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
         linear_plastic_coef += theta[i] * _get_column_H(i, jnp.ones_like(y), metal_basis, H_exponent_list)
 
-    # Regularize small denominators to prevent division by near-zero
-    denom_floor = 1e-6 * jnp.linalg.norm(linear_plastic_coef)
-    linear_plastic_coef = jnp.where(jnp.abs(linear_plastic_coef) > denom_floor, linear_plastic_coef, denom_floor)
-
+    y_minus_metal = y
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, 1 + num_cross_terms + num_metal_terms):
-        y -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
+        y_minus_metal -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
 
-    # Denormalize the corrected plastic sinogram
-    eps = 1e-6 * jnp.max(linear_plastic_coef)
-    corrected_plastic_sino = p_normalization * y / (linear_plastic_coef + eps)
+    # Enforce non-negativity on the residual sinogram (plastic + cross terms)
+    y_minus_metal = jnp.maximum(y_minus_metal, 0)
+
+    # Compute median of plastic coefficients (used to define a stabilization floor)
+    median_plastic_coef = jnp.median(linear_plastic_coef)
+    min_plastic_coef = gamma * median_plastic_coef
+
+    # A negative median would be non-physical and may indicate instability in the algorithm
+    # In that case, issue a runtime warning to flag the potential problem
+    if float(median_plastic_coef) <= 0:
+        warnings.warn("Median of linear_plastic_coef is negative", RuntimeWarning)
+
+    # Clamp linear_plastic_coef at min_plastic_coef to prevent division by very small or negative values
+    clamped_plastic_coef = jnp.maximum(linear_plastic_coef, min_plastic_coef)
+    corrected_plastic_sino = p_normalization * y_minus_metal / clamped_plastic_coef
 
     return corrected_plastic_sino
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.005):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4):
     """
     Perform beam hardening correction for CT sinograms with plastic and multiple metal components
     using a polynomial fitting model with regularization.
@@ -331,7 +344,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.005.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
+        gamma (float, optional): Stabilization factor.
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -369,7 +383,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
     # Compute the corrected plastic sinogram
     corrected_plastic_sino = _correct_plastic_sinogram(y, p, metal_basis, theta,H_exponent_list,
-                                                       num_cross_terms, num_metal_terms, p_normalization)
+                                                       num_cross_terms, num_metal_terms, p_normalization, gamma)
 
     # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
     # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
@@ -390,7 +404,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
 
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.02, verbose=0):
+                           num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
@@ -407,7 +421,9 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.005.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
+        gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
+            to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.4.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
 
     Returns:
@@ -432,7 +448,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta)
+        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma)
 
         # Reconstruct Corrected Sinogram
         if verbose >= 1:
