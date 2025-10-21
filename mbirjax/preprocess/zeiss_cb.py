@@ -17,44 +17,43 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
-    Load Zeiss sinogram data and prepare arrays ana parameters for ConeBeamModel reconstruction.
+    Compute Zeiss sinogram and MBIR-JAX geometry parameters.
 
-    This function computes the sinogram and geometry parameters from a Zeiss scan directory. It performs the following:
+    This reads object/blank/dark scans and Zeiss geometry from a dataset directory, builds a
+    sinogram, and applies a background-offset correction.
 
-    1. Load object, blank, and dark scans, and geometry parameters from the dataset.
-    2. Computes the sinogram from the scan images.
-    3. Applies background offset correction.
+    Steps:
+        1. Load object, blank, and dark scans and geometry.
+        2. Compute the sinogram from the scans (currently uses the object scan as the sinogram).
+        3. Apply background offset correction.
 
     Args:
-        dataset_dir (str): Path to the Zeiss scan directory (expect to be a txrm or xrm file). Expected structure.
+        dataset_dir (str): Path to the Zeiss dataset. Accepts a ``.txrm`` file or an ``.xrm`` directory with:
             - ``ImageData*/Image*`` (scan data)
-            - ``**/**`` (Zeiss metadata)
-        downsample_factor (Tuple[int, int], optional): Downsampling factor for detector rows and channels. Defaults to (1, 1).
-        crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. Defaults to None.
-        crop_pixels_top (int, optional): Pixels to crop from top of the sinogram. Defaults to None.
-        crop_pixels_bottom (int, optional): Pixels to crop from bottom of the sinogram. Defaults to None.
-        verbose (int, optional): Verbosity level. Defaults to 1.
+            - Zeiss OLE metadata streams
+        downsample_factor (Tuple[int, int], optional): Block-averaging factor ``(rows, channels)``. Defaults to ``(1, 1)``.
+        crop_pixels_sides (int, optional): Pixels to crop from each lateral side of the detector. Defaults to ``0``.
+        crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to ``0``.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to ``0``.
+        verbose (int, optional): Verbosity level. Defaults to ``1``.
 
     Returns:
-        tuple: (sino, coen_beam_params, optional_params)
-            - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_channels)
-            - ``cone_beam_params`` (dict): Parameters for initializing ConeBeamModel.
-            - ``optional_params`` (dict): Parameters to be passed via ``set_params``.
-            - ``metadata`` (dict): Metadata stored in Zeiss txrm file.
+        tuple: ``(sino, cone_beam_params, optional_params, metadata)``
+
+            - ``sino`` (numpy.ndarray): Sinogram of shape ``(num_views, num_det_rows, num_channels)``.
+            - ``cone_beam_params`` (dict): Parameters for initializing ``ConeBeamModel``.
+            - ``optional_params`` (dict): Additional parameters to be set via ``ConeBeamModel.set_params``.
+            - ``metadata`` (dict): Zeiss metadata parsed from ``.txrm``/``.xrm``.
 
     Example:
         .. code-block:: python
 
-            # Get data and reconstruction parameters
-            sino, cone_beam_params, optional_params = mbirjax.preprocess.zeiss.compute_sino_and_params(
-            dataset_dir, downsample_factor=(1, 1))
-
-            # Create the model and set parameters
+            from mbirjax.preprocess.zeiss_cb import compute_sino_and_params
+            sino, cone_beam_params, optional_params, metadata = compute_sino_and_params(
+                dataset_dir, downsample_factor=(1, 1), verbose=1
+            )
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
             ct_model.set_params(**optional_params)
-            ct_model.set_params(sharpness=sharpness, verbose=1)
-
-            # Run reconstruction
             recon, recon_dict = ct_model.recon(sino)
     """
     if verbose > 0:
@@ -106,23 +105,22 @@ def load_scans_and_params(dataset_dir, verbose=1):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
-    Load the scan data, and geometry from a Zeiss scan directory.
-    Args:
-        dataset_dir (string): Path to a Zeiss scan directory (expect to be a txrm or xrm file). The directory is assumed to have the following structure:
+    Load the scan data and geometry from a Zeiss scan directory.
 
+    Args:
+        dataset_dir (str): Path to a Zeiss scan directory (expect a `.txrm` file or an `.xrm` directory). Expected structure:
             - ``ImageData*/Image*`` (scan data)
             - ``**/**`` (Zeiss metadata)
-
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (sino, zeiss_params)
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_metadata)
 
-            - obj_scan (numpy.ndarray): 3D object scan with shape (num_views, num_det_rows, num_channels).
-            - blank_scan (numpy.ndarray): 3D blank scan with shape (1, num_det_rows, num_det_channels).
-            - dark_scan (numpy.ndarray): 3D dark scan with shape (1, num_det_rows, num_det_channels).
-            - zeiss_params (dict): Required parameters needed for "convert_zeiss_to_mbirjax_params()" (e.g., geometry vectors, spacings, and angles).
-            - Zeiss_metadata (dict): metadata stored in Zeiss txrm or xrm file.
+            - obj_scan (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
+            - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
+            - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
+            - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
+            - Zeiss_metadata (dict): Metadata stored in Zeiss `.txrm` or `.xrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)

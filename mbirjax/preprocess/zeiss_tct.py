@@ -104,22 +104,23 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
 def load_scans_and_params(dataset_dir, verbose=1):
     """
     Load the object scan, blank scan, dark scan, and geometry from a Zeiss scan directory.
+
     Args:
-        dataset_dir (string): Path to a Zeiss scan directory. The directory is assumed to have the following structure:
+        dataset_dir (str): Path to a Zeiss scan directory. Expected structure:
 
-            - "obj_scan" (a subfolder containing the object scan)
-            - "blank_scan" (a subfolder containing the blank scan)
-            - "dark_scan" (a subfolder containing the dark scan)
+            - ``obj_scan`` — subfolder containing the object scan
+            - ``blank_scan`` — subfolder containing the blank scan
+            - ``dark_scan`` — subfolder containing the dark scan
 
-        verbose (int, optional): Verbosity level. Defaults to 1.
+        verbose (int, optional): Verbosity level. Defaults to ``1``.
 
     Returns:
-        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params)
+        tuple: ``(obj_scan, blank_scan, dark_scan, zeiss_params)``
 
-            - obj_scan (numpy.ndarray): 3D object scan with shape (num_views, num_det_rows, num_channels).
-            - blank_scan (numpy.ndarray): 3D blank scan with shape (1, num_det_rows, num_det_channels).
-            - dark_scan (numpy.ndarray): 3D dark scan with shape (1, num_det_rows, num_det_channels).
-            - zeiss_params (dict): Required parameters needed for "convert_zeiss_to_mbirjax_params()" (e.g., geometry vectors, spacings, and angles).
+            - ``obj_scan`` (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
+            - ``blank_scan`` (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
+            - ``dark_scan`` (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
+            - ``zeiss_params`` (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
     """
     ### automatically parse the paths to Zeiss scans from dataset—dir
     obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_obj_scan_path = \

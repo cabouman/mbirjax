@@ -16,6 +16,25 @@ NorthStar Instrument (NSI) functions
 .. autofunction:: compute_sino_and_params
 .. autofunction:: load_scans_and_params
 
+
+Zeiss cone beam functions
+-------------------------
+
+.. currentmodule:: mbirjax.preprocess.zeiss_cb
+
+.. autofunction:: compute_sino_and_params
+.. autofunction:: load_scans_and_params
+
+
+Zeiss translation tomography functions
+--------------------------------------
+
+.. currentmodule:: mbirjax.preprocess.zeiss_tct
+
+.. autofunction:: compute_sino_and_params
+.. autofunction:: load_scans_and_params
+
+
 PYMBIR functions
 ----------------
 
