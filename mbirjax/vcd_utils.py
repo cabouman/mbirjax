@@ -6,63 +6,6 @@ import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
 
 
-def stitch_arrays(array_list, overlap_length, axis=2):
-    """
-    Combine a list of jax arrays in a way similar to concatenate, except that adjacent arrays are assumed to overlap
-    by a specified number of elements, so those elements are created as a weighted average of the overlapping elements.
-    The weight varies linearly throughout the overlap.  For example, if arrays a0, a1 have size 5x5x10, 5x5x12
-    respectively, with an overlap length of 4 in axis 2, then the output array has size 5x5x18, the overlapping
-    entries are [:, :, 6+j] for j = 0, 1, 2, 3, and the entries in [:, :, 6+j] are given by
-    (1 - (j + 1) / (4 + 1)) * a0[:, :, 6+j] + (j + 1) / (4 + 1) * a1[:, :, 6+j]
-
-    Args:
-        array_list (list of jax arrays):  List of jax arrays
-        overlap_length (int):  Number of overlapping entries between adjacent arrays
-        axis (int, optional): Axis along which to combine arrays
-
-    Returns:
-        jax array:  The stitched arrays
-    """
-    # Check for valid input
-    if not isinstance(array_list, list) or len(array_list) < 2:
-        raise ValueError('array_list must be a list of 2 or more jax arrays.')
-    for dim in range(array_list[0].ndim):
-        lengths = [array.shape[dim] for array in array_list]
-        if dim != axis:
-            if np.amax(lengths) != np.amin(lengths):
-                raise ValueError('The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
-        if dim == axis:
-            if np.amin(lengths) < overlap_length:
-                raise ValueError('Each array must have length at least overlap_length in the dimension specified by axis.')
-
-    # Create a linear weight array
-    weights = jnp.linspace(0, 1, overlap_length + 1, endpoint=False)[1:]
-    weights_shape = np.ones(array_list[0].ndim).astype(int)
-    weights_shape[0] = len(weights)
-    weights = weights.reshape(weights_shape)
-
-    # Start with the first array in the list
-    stitched = jnp.swapaxes(array_list[0], 0, axis)
-
-    # Iterate through each subsequent array in the list
-    for next_array in array_list[1:]:
-        # Extract the overlap from the current end of the stitched array and the beginning of the next array
-        overlap_current = stitched[-overlap_length:]
-        next_array = jnp.swapaxes(next_array, 0, axis)
-        overlap_next = next_array[:overlap_length]
-
-        # Weighted average for the overlapping part
-        weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
-
-        # Replace the overlap in the stitched array
-        stitched = jnp.concatenate([stitched[:-overlap_length], weighted_overlap], axis=0)
-
-        # Append the non-overlapping remainder of the next array
-        stitched = jnp.concatenate([stitched, next_array[overlap_length:]], axis=0)
-
-    return jnp.swapaxes(stitched, 0, axis)
-
-
 def get_2d_ror_mask(recon_shape, *, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
     Get a binary mask for the region of reconstruction.  By default, the mask is the largest possible circle

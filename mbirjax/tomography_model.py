@@ -61,13 +61,10 @@ class TomographyModel(ParameterHandler):
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
         delta_voxel = self.get_params('delta_voxel')
         if delta_voxel is None:
-            magnification = self.get_magnification()
-            delta_det_channel = self.get_params('delta_det_channel')
-            delta_voxel = delta_det_channel / magnification
-            self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
+            self.auto_set_delta_voxel()
 
         self.use_ror_mask = True
-        self.auto_set_recon_size(sinogram_shape, no_compile=True, no_warning=True)
+        self.auto_set_recon_shape(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
@@ -427,9 +424,9 @@ class TomographyModel(ParameterHandler):
             string_dict = recon_dict.copy()
             yaml_writer = YAML()
             for key, value in string_dict.items():
-                if key == 'model_params' and isinstance(string_dict['model_params'], dict):
+                if key.startswith('model_params') and isinstance(string_dict[key], dict):
                     # 'model_params' must be handled separately to guarantee the ability to reload
-                    string_dict['model_params'] = ParameterHandler.save_params(string_dict['model_params'])
+                    string_dict[key] = ParameterHandler.save_params(string_dict[key])
                 elif isinstance(value, dict):
                     # Otherwise convert dicts to yaml strings
                     buf = io.StringIO()
@@ -1004,10 +1001,16 @@ class TomographyModel(ParameterHandler):
         sigma_prox = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
-    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
-        """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
-          the number of channels from the sinogram"""
-        raise NotImplementedError('auto_set_recon_size must be implemented by each specific geometry model.')
+    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
+        """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
+        raise NotImplementedError('auto_set_recon_shape must be implemented by each specific geometry model.')
+
+    def auto_set_delta_voxel(self):
+        """Compute the automatic value of ``delta_voxel`` as delta_det_channel / magnification."""
+        magnification = self.get_magnification()
+        delta_det_channel = self.get_params('delta_det_channel')
+        delta_voxel = delta_det_channel / magnification
+        self.set_params(no_compile=True, no_warning=True, delta_voxel=delta_voxel)
 
     def get_voxels_at_indices(self, recon, indices):
         """
@@ -1260,7 +1263,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        return recon, recon_dict
+        return jnp.array(jax.device_get(recon)), recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
                   init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):

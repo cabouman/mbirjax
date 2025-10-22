@@ -5,6 +5,12 @@ demo/output/*
 experiments/data/*
 experiments/output/*
 
+experiments/split_sino_recon/demo_data/*
+experiments/split_sino_recon/demo_data
+experiments/split_sino_recon/output/*
+
+tests_data_dependent/data/*
+
 # ignore jupyter notebook files
 .ipynb_checkpoints/
 *.ipynb
@@ -19,6 +25,10 @@ experiments/output/*
 *.hdf5
 *.gif
 *.mp4
+*.tar.gz
+*.tgz
+*.tar
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

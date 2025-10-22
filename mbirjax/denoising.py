@@ -71,7 +71,7 @@ class QGGMRFDenoiser(TomographyModel):
     def create_projectors(self):
         pass
 
-    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
         """Compute the default recon shape to equal the sinogram shape"""
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=sinogram_shape)
 
@@ -413,10 +413,10 @@ def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
     return flat_image, flat_error_image, ell1_for_subset, alpha_for_subset
 
 
-def median_filter3d(x, max_block_gb=4.0) -> jnp.ndarray:
+def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndarray | tuple]:
     """
     Apply a 27‑point (3x3x3) median filter to a 3‑D JAX array using replicated
-    (edge) boundary conditions.
+    (edge) boundary conditions.  Optionally return the min and max in each 27 point neighborhood.
 
     The volume is processed in d0‑blocks so that the kernel can be
     `jax.jit`‑compiled while limiting peak device memory. Each block is padded with
@@ -426,10 +426,11 @@ def median_filter3d(x, max_block_gb=4.0) -> jnp.ndarray:
     Args:
         x (jax array or ndarray): Input array. Any numeric dtype supported by JAX is allowed.
         max_block_gb (float. optional): A rough upper bound on the amount of memory in GB to use for the filtering.  Defaults to 4.0.
+        return_min_max (bool, optional): If true, the output is a tuple of median, min, max.
 
     Returns:
 
-        jax.numpy.ndarray: An array of the same shape and dtype as *x* containing the median‑filtered result.
+        jax.numpy.ndarray or tuple: An array (or tuple of 3 arrays) of the same shape and dtype as *x* containing the median‑filtered result.
 
     Notes
     -----
@@ -486,6 +487,10 @@ def median_filter3d(x, max_block_gb=4.0) -> jnp.ndarray:
         ]
         stacked  = jnp.stack(patches, axis=0)      # (27, blkZ+2, d1+2, d2+2)
         filtered = jnp.median(stacked, axis=0)    # (blkZ+2, d1+2, d2+2)
+        if return_min_max:
+            min_filtered = jnp.min(stacked, axis=0)
+            max_filtered = jnp.max(stacked, axis=0)
+            filtered = jnp.stack([filtered, min_filtered, max_filtered], axis=3)
 
         # strip off the 1‐voxel halo in all dims → (blkZ, d1, d2)
         return filtered[1:-1, 1:-1, 1:-1]
@@ -495,4 +500,7 @@ def median_filter3d(x, max_block_gb=4.0) -> jnp.ndarray:
 
     # 4) Stitch & then crop back to original d0
     out = jnp.concatenate(blocks, axis=0)  # (padded_Z, d1, d2)
-    return out[:d0, :, :]                   # (d0, d1, d2)
+    out = out[:d0, :, :]                   # (d0, d1, d2)
+    if return_min_max:
+        out = (out[..., 0], out[..., 1], out[..., 2])
+    return out

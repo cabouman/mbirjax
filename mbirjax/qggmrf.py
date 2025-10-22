@@ -8,7 +8,7 @@ import numpy as np
 @partial(jax.jit, static_argnames=['sigma_prox'])
 def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_prox):
     """
-    Calculate the gradient and hessian at each index location in a reconstructed image using the qGGMRF prior.
+    Calculate the gradient at each pixel index locations in a reconstructed image using the proximal map prior.
 
     Args:
         recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
@@ -250,7 +250,7 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
 @partial(jax.jit, static_argnames='qggmrf_params')
 def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
     """
-    Compute rho'(delta) / delta using a slightly modifided form of page 153 of FCI for the qGGMRF prior model.
+    Compute rho'(delta) / delta using a slightly modified form on page 117 of FCI for the qGGMRF prior model.
 
     Args:
         delta (float or jax array): (batch_size, P) array of pixel differences between center and each of P neighboring
