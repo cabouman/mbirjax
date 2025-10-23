@@ -63,9 +63,9 @@ def main():
         filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
         export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata_dict)
 
-        # Write out denoised/rehydrated data
-        filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
-        export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata_dict)
+    # Write out denoised/rehydrated data
+    filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
+    export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata_dict)
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
