@@ -47,7 +47,9 @@ def recon(size, num_gpus, model_type, output_filepath='output.csv'):
     recon_model.set_params(use_gpu="automatic")
     recon, _ = recon_model.recon(sinogram,
                                  max_iterations=8,
-                                 stop_threshold_change_pct=0)
+                                 stop_threshold_change_pct=0,
+                                 logfile_path=os.path.join(f'../output/recon_{model_type}_{size}_{num_gpus}.log')
+                                 )
     recon.block_until_ready()
     recon = jax.device_put(recon)
 
