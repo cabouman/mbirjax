@@ -17,19 +17,19 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
     Denoise a hyperspectral dataset using dehydration and rehydration.
 
     Dehydration:
-        Learns (or accepts) a set of N_s basis spectra and then projects the full dataset onto that subspace. Typically
-        N_s << N_k, where N_k is the number of spectral bins. Significant spectral noise is removed while fitting the data
+        Learns (or accepts) a set of :math:`N_s` basis spectra and then projects the full dataset onto that subspace. Typically,
+        :math:`N_s << N_k`, where :math:`N_k` is the number of spectral bins. Significant spectral noise is removed while fitting the data
         into lower dimensional subspace.
 
     Rehydration:
         Projects the subspace domain data back to the hyperspectral domain and retrieves original dimensions.
 
     Args:
-        data: Hyperspectral data array with arbitrary axes and a spectral axis of length N_k in the last position.
+        data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        subspace_dimension: Desired dimension of the subspace N_s. If None, the dimension is either set from the
+        subspace_dimension: Desired dimension of the subspace :math:`N_s`. If None, the dimension is either set from the
             provided subspace basis matrix or estimated automatically from the data. Defaults to None.
-        subspace_basis: Pre-computed subspace basis spectra of shape (N_s, N_k). If None, the basis spectra are
+        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
             estimated directly from the data. Defaults to None.
         safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
             safer final choice. Defaults to 2.
@@ -115,16 +115,16 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
 
-    The function learns (or accepts) a set of N_s basis spectra, projects the full dataset onto that subspace, and
-    returns the low-dimensional subspace data along with the basis spectra. Typically N_s << N_k, where N_k is
+    The function learns (or accepts) a set of :math:`N_s` basis spectra, projects the full dataset onto that subspace, and
+    returns the low-dimensional subspace data along with the basis spectra. Typically, :math:`N_s << N_k`, where :math:`N_k` is
     the number of spectral bins.
 
     Args:
         data: Hyperspectral data array with arbitrary axes and a spectral axis of length N_k in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        subspace_dimension: Desired dimension of the subspace N_s. If None, the dimension is either set from the 
+        subspace_dimension: Desired dimension of the subspace :math:`N_s`. If None, the dimension is either set from the
             provided subspace basis matrix or estimated automatically from the data. Defaults to None.
-        subspace_basis: Pre-computed subspace basis spectra of shape (N_s, N_k). If None, the basis spectra are
+        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
             estimated directly from the data. Defaults to None.
         safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
             safer final choice. Defaults to 2.
@@ -135,8 +135,8 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
 
     Returns:
         A list containing the dehydrated hyperspectral dataset in the form [subspace_data, subspace_basis, dataset_type].
-            - subspace_data: ndarray with same shape as input data except the last axis length is N_s.
-            - subspace_basis: ndarray of shape (N_s, N_k), where rowss are subspace basis spectra.
+            - subspace_data: ndarray with same shape as input data except the last axis length is :math:`N_s`.
+            - subspace_basis: ndarray of shape :math:`(N_s, N_k)`, where rows are subspace basis spectra.
             - dataset_type: Can be 'attenuation' or 'transmission' where attenuation = -log(transmission).
 
     Example:
@@ -231,15 +231,16 @@ def rehydrate(dehydrated_data, hyperspectral_idx=None):
 
     Args:
         dehydrated_data: Dehydrated hyperspectral data in the form [subspace_data, subspace_basis, dataset_type]:
-            - subspace_data: ndarray with arbitrary axes and a subspace axis of length N_s in the last position.
-            - subspace_basis: ndarray of shape (N_s, N_k), where rows are subspace basis spectra.
+
+            - subspace_data: ndarray with arbitrary axes and a subspace axis of length :math:`N_s` in the last position.
+            - subspace_basis: ndarray of shape :math:`(N_s, N_k)`, where rows are subspace basis spectra.
             - dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission).
-        hyperspectral_idx: A list of N_h indices along the original spectral axis to rehydrate. If None, all N_k
+        hyperspectral_idx: A list of :math:`N_h` indices along the original spectral axis to rehydrate. If None, all :math:`N_k`
             spectral bins are rehydrated. Defaults to None.
 
     Returns:
         Rehydrated/decompressed hyperspectral data with the same shape as the input subspace_data except the last axis
-        length is N_h (N_h <= N_k).
+        length is :math:`N_h (N_h <= N_k)`.
 
     Example:
         >>> hyper_data = rehydrate([subspace_data, subspace_basis, dataset_type], hyperspectral_idx=[5, 10, 15])
@@ -267,7 +268,7 @@ def _estimate_subspace_dimension(data, safety_factor=2, noise_fit_window=[25.0, 
     Estimate the signal subspace dimension using a log-linear fit to singular values.
 
     Args:
-        data: 2D array of shape (num_samples, N_k). Values should be real.
+        data: 2D array of shape (num_samples, :math:`N_k`). Values should be real.
         safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
             safer final choice. Defaults to 2.
         noise_fit_window: Two-element list or tuple [start_percent, stop_percent] indicating the percentile window (0–100)
@@ -579,19 +580,19 @@ def export_hsnt_data_hdf5(filename, data, metadata):
 def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, dosage_rate=300, material_thickness=None,
                         verbose=1):
     """
-    Simulate noisy hyperspectral neutron attenuation data for N_m=3 materials (Ni, Cu, Al) and N_k wavelength bins.
+    Simulate noisy hyperspectral neutron attenuation data for :math:`N_m=3` materials (Ni, Cu, Al) and N_k wavelength bins.
 
     Args:
-        material_basis: ndarray of shape (N_m, N_k), where rows are material linear attenuation coefficient spectra.
-        detector_rows: Number of rows in the detector (N_r). Defaults to 64.
-        detector_columns: Number of columns in the detector (N_c). Defaults to 64.
+        material_basis: ndarray of shape :math:`(N_m, N_k)`, where rows are material linear attenuation coefficient spectra.
+        detector_rows: Number of rows in the detector :math:`(N_r)`. Defaults to 64.
+        detector_columns: Number of columns in the detector :math:`(N_c)`. Defaults to 64.
         dosage_rate: Neutron dosage rate during hyperspectral data collection. Defaults to 300.
         material_thickness: Material thicknesses (cm) for Ni, Cu, and Al. Defaults to {"Ni": 2.0, "Cu": 2.0, "Al": 10.0}.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
         A list in the form [hsnt_data, gt_hyper_projection].
-            - hsnt_data: Simulated noisy hyperspectral data of shape (N_r, N_c, N_k).
+            - hsnt_data: Simulated noisy hyperspectral data of shape :math:`(N_r, N_c, N_k)`.
             - gt_hyper_projection: Ground truth noiseless hyperspectral data of same shape.
 
     """
