@@ -5,7 +5,7 @@ import numpy as np
 import mbirjax.hsnt as hsnt
 
 
-class TestHSNTCore(unittest.TestCase):
+class TestHSNT(unittest.TestCase):
     """
     Core functionality tests for mbirjax.hsnt:
       - dehydrate / rehydrate
