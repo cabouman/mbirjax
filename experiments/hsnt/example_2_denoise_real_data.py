@@ -22,11 +22,12 @@ def main():
     dataset_name = '2.4C_Ni_cylinder'
     input_path = './input_data/'  # path to import input noisy data
     output_path = './output_data/'  # path to export output denoised data
+    os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
     # Denoiser parameters
     subspace_dimension = None  # Subspace dimension
     verbose = 2  # Verbosity level
-    test_denoise = True  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
+    test_denoise = False  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
 
     # Display parameters
     display_wave_idx = 500  # Wavelength index of displayed images
@@ -58,10 +59,13 @@ def main():
         hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
         hsnt_denoised = rehydrate(hsnt_dehydrated)
 
-    # Export denoised hyperspectral data
-    os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
-    filename = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
-    export_hsnt_data_hdf5(filename, hsnt_denoised, metadata_dict)
+        # Write out dehydrated data
+        filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
+        export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata_dict)
+
+        # Write out denoised/rehydrated data
+        filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
+        export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata_dict)
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
