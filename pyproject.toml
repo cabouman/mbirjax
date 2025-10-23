@@ -35,7 +35,7 @@ dependencies = [
     "easygui",
     "gdown",
     "pywavelets",
-    "jaxopt"
+    "olefile"
 ]
 
 [project.optional-dependencies]
