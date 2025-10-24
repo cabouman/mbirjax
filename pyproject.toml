@@ -35,7 +35,8 @@ dependencies = [
     "easygui",
     "gdown",
     "pywavelets",
-    "olefile"
+    "olefile",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]
