@@ -94,37 +94,37 @@ def create_constant_square_image(size=64, num_slices=1):
     return jnp.array(square_volume)
 
 
-def apply_translation(original_image, shifts):
+def apply_shift(original_image, shifts):
     """
-    Apply a translation on an image using dm_pix.affine_transform
+    Apply a translation on an image using jax.image.scale_and_translate
     Args:
         original_image (jax.array): Image to be transformed with size (num_slices, num_rows, num_columns)
-        shifts (jax.Array): 2D array of shape (num_slices, 2) containing (dy, dx) for each slice
+        shifts (jax.Array): 2D array of shape (num_slices, 2) containing (vertical shift, horizontal shift) for each slice
 
     Returns:
-        jax.array: Transformed image
+        jax.array: shifted image
     """
     def translate_slice(img_slice, shift):
         dy, dx = shift
-        translated_image = jax.image.scale_and_translate(img_slice,
+        shifted_image = jax.image.scale_and_translate(img_slice,
                                                      shape=img_slice.shape,
                                                      spatial_dims=(0, 1),
                                                      scale=jnp.array([1.0, 1.0]),
                                                      translation=jnp.array([dy, dx]),
                                                      method="linear",
                                                      antialias=False)
-        return translated_image
+        return shifted_image
 
     return jax.vmap(translate_slice, in_axes=(0, 0))(original_image, shifts)
 
 
-def loss_fn(shifts_flatten, original_image, translated_image):
+def loss_fn(shifts_flatten, original_image, shifted_image):
     """
     Compute the MSE between the fixed image and the moving image.
     Args:
         shifts_flatten (jax.Array): Flattened shifts array of shape (num_slices * 2,).
         original_image (jax.array): Fixed image with shape (num_slices, num_rows, num_columns), assumed to be the reference position
-        translated_image (jax.array): the image to be aligned with shape (num_slices, num_rows, num_columns), assumed to be the shifted version of the fixed image
+        shifted_image (jax.array): the image to be aligned with shape (num_slices, num_rows, num_columns), assumed to be the shifted version of the fixed image
 
     Returns:
         jax.array: MSE between image_fixed and image_moving
@@ -143,5 +143,5 @@ def loss_fn(shifts_flatten, original_image, translated_image):
                                                        antialias=False)
         return jnp.mean((adjusted_slice - original_slice) ** 2)
 
-    per_slice_mse = jax.vmap(loss_per_slice, in_axes=(0, 0, 0))(shifts, original_image, translated_image)
+    per_slice_mse = jax.vmap(loss_per_slice, in_axes=(0, 0, 0))(shifts, original_image, shifted_image)
     return jnp.sum(per_slice_mse)
