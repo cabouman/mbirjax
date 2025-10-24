@@ -52,7 +52,7 @@ def main():
     initial_shift = jnp.zeros((num_slices, 2))
 
     # Generate the reference image and the shifted image
-    print("\n===============Create synthetic data============")
+    print("\n===============Create synthetic Phantom============")
     reference_image = create_reference_image(option=image_type, size=size, num_slices=num_slices)
     shifted_image = apply_shift(reference_image, true_shifts)
 
