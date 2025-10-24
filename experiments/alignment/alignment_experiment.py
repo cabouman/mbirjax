@@ -23,8 +23,7 @@ import mbirjax as mj
 import time
 import optax
 import matplotlib.pyplot as plt
-from img_registration_utils import *
-from skimage.registration import phase_cross_correlation
+from alignment_utils import *
 
 
 def main():
@@ -41,30 +40,27 @@ def main():
     learning_rate = 0.1
 
     # Define the ground truth shift in x and y axis
-    np.random.seed(42)
+    # np.random.seed(42)
     true_shifts = np.random.uniform(-maximum_shift, maximum_shift, (num_slices, 2)).astype(np.float32)
-    print("===============True Shifts============")
+    print("===============Ground Truth Shifts============")
     for i in range(num_slices):
-        print(f"Slice {i}: dy = {true_shifts[i, 0]}, dx = {true_shifts[i, 1]}")
+        # dy means vertical shift. Positive dy shifts image down.
+        # dx means horizontal shift. PPositive dx shifts image right.
+        print(f"Slice {i}: dy = {true_shifts[i, 0]:.3f}, dx = {true_shifts[i, 1]:.3f}")
 
     # Initialize the shift parameters
     initial_shift = jnp.zeros((num_slices, 2))
 
-    # Generate the reference image and the image to be aligned with it
+    # Generate the reference image and the shifted image
+    print("\n===============Create synthetic data============")
     reference_image = create_reference_image(option=image_type, size=size, num_slices=num_slices)
-    translated_image = apply_translation(reference_image, true_shifts)
+    shifted_image = apply_shift(reference_image, true_shifts)
 
-    # Visualize the fixed and moving images
-    mj.slice_viewer(reference_image, translated_image, title='Reference Image (Left) and Translated Image (Right)', slice_axis=0)
+    # Visualize the fixed and shifted images
+    mj.slice_viewer(reference_image, shifted_image, title='Synthetic Reference Image (Left) and Shifted Image (Right)', slice_axis=0)
 
-    # Test gradients
-    test_shift = jnp.zeros((num_slices, 2)).flatten()
-    grads = jax.grad(loss_fn)(test_shift, reference_image, translated_image)
-    print(f"\n===============Test Gradients============")
-    print("Gradient of loss function with respect to shift:", grads)
-
-    # Perform the optimization using optax
-    print(f"\n===============Starting Optimization=============")
+    # Perform the gradient descent optimization using optax
+    print(f"\n===============Starting Gradient Descent Optimization=============")
     time0 = time.time()
     params = initial_shift.flatten()
     optimizer = optax.adam(learning_rate=learning_rate)
@@ -77,14 +73,14 @@ def main():
     loss_val = []
 
     for step in range(num_iterations):
-        loss = loss_fn(params, reference_image, translated_image)
+        loss = loss_fn(params, reference_image, shifted_image)
         loss_val.append(loss)
-        gradients = grad_fn(params, reference_image, translated_image)
+        gradients = grad_fn(params, reference_image, shifted_image)
         updates, opt_state = optimizer.update(gradients, opt_state)
         params = optax.apply_updates(params, updates)
 
-        if step % 10 == 0:
-            print(f"Iteration {step}, loss = {loss}")
+        # if step % 10 == 0:
+        #     print(f"Iteration {step}, loss = {loss}")
 
         if loss < min_loss:
             min_loss = loss
@@ -92,21 +88,22 @@ def main():
 
     elapsed = time.time() - time0
     print(f'Elapsed time for optimization is {elapsed:.3f} seconds')
+    print(f'Number of iterations: {num_iterations}')
 
     print(f"\n===============Final Estimated Shift============")
     shifts_estimated = best_params.reshape((num_slices, 2))
     for i in range(num_slices):
-        print(f"Slice {i}: estimated [dy={shifts_estimated[i, 0]:.3f}, dx={shifts_estimated[i, 1]:.3f}] | "
-              f"true [dy={true_shifts[i, 0]:.3f}, dx={true_shifts[i, 1]:.3f}] | "
-              f"error [dy={np.abs(shifts_estimated[i, 0] - true_shifts[i, 0]):.3f}, dx={np.abs(shifts_estimated[i, 1] - true_shifts[i, 1]):.3f}]")
+        print(f"\nSlice {i}: "
+              f"\nEstimated shift: [dy={shifts_estimated[i, 0]:.3f}, dx={shifts_estimated[i, 1]:.3f}] | "
+              f"\nGround truth shift: [dy={true_shifts[i, 0]:.3f}, dx={true_shifts[i, 1]:.3f}] | "
+              f"\nDifference between estimated shift and ground truth shift: [dy={np.abs(shifts_estimated[i, 0] - true_shifts[i, 0]):.3f}, dx={np.abs(shifts_estimated[i, 1] - true_shifts[i, 1]):.3f}]")
 
-    plt.semilogy(range(num_iterations), loss_val)
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title("Gradient Descent Convergence (Loss vs Iterations)")
-    plt.grid(True)
-    plt.show()
+    # Correct the shifted images
+    shifts_estimated = -shifts_estimated
+    corrected_image = apply_shift(shifted_image, shifts_estimated)
 
+    # Visualize the reference image and corrected image
+    mj.slice_viewer(reference_image, corrected_image, title='Synthetic Reference Image (Left) and Corrected Image (Right)', slice_axis=0)
 
 if __name__ == '__main__':
     main()
