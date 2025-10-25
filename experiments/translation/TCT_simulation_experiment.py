@@ -1,3 +1,5 @@
+# This script is for running general Translation CT simulation experiments
+
 import sys
 import mbirjax as mj
 import mbirjax.preprocess as mjp
@@ -13,15 +15,16 @@ def get_experiment_params(experiment_name):
         "z_view_space_mm": 14,
         "num_x_translations": 5,
         "num_z_translations": 3,
-        "num_det_rows": 1944,
-        "num_det_channels": 3072,
+        "num_det_rows": 1936,
+        "num_det_channels": 3064,
         "num_pixels_in_object": 3,
         "phantom_type": "text",
         "text": ['P', 'P', 'P'],
         "object_width_mm": 22,
         "object_thickness_mm": 2.15,
+        "qggmrf_nbr_weights": [0.1, 1.0, 1.0],
         "sharpness": 1.0,
-        "max_iterations": 15,
+        "max_iterations": 80,
     }
 
     if experiment_name == "experiment1":
@@ -31,6 +34,16 @@ def get_experiment_params(experiment_name):
         override_config = {
             # Modify only what's different for experiment2
             # Example: "phantom_type": "dots",
+            'source_det_dist_mm': 120,
+            'source_iso_dist_mm': (70/190)*120,
+            'x_view_space_mm': 7.25,
+            'z_view_space_mm': 7,
+            'num_x_translations': 9,
+            'num_z_translations': 5,
+            'num_pixels_in_object': 7,
+            'text': ['P']*7,
+            "qggmrf_nbr_weights": [1.0, 1.0, 1.0],
+            'max_iterations': 80,
         }
         return {**base_config, **override_config}
 
@@ -56,6 +69,7 @@ def main():
     text = params["text"]
     object_width_mm = params["object_width_mm"]
     object_thickness_mm = params["object_thickness_mm"]
+    qggmrf_nbr_weights = params["qggmrf_nbr_weights"]
     sharpness = params["sharpness"]
     max_iterations = params["max_iterations"]
 
@@ -84,10 +98,12 @@ def main():
     recon_shape = tct_model.get_params('recon_shape')
 
     # Set number of rows in recon to match desired object thickness
-    recon_shape = (3*int(object_thickness_ALU / delta_recon_row), recon_shape[1], recon_shape[2])
-    tct_model.set_params(recon_shape=recon_shape)
+    if experiment == "experiment1":
+        recon_shape = (5*int(object_thickness_ALU / delta_recon_row), recon_shape[1], recon_shape[2])
+        tct_model.set_params(recon_shape=recon_shape)
     tct_model.set_params(delta_recon_row=delta_recon_row)
-    tct_model.set_params(qggmrf_nbr_wts=[1.0, 1.0, 0.1])
+    tct_model.set_params(qggmrf_nbr_wts=qggmrf_nbr_weights)
+    tct_model.set_params(partition_sequence=[0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7])
 
 
     print("\n*************** Experimental Parameters ***************")
@@ -116,7 +132,7 @@ def main():
     text_start_index = (recon_shape[0] - num_pixels_in_object) // 2
     row_indices = list(range(text_start_index, text_start_index + num_pixels_in_object))
     gt_recon = mj.gen_translation_phantom(recon_shape=recon_shape, option=phantom_type, text=text,
-                                          font_size=object_width_ALU,
+                                          font_size=object_width_ALU/0.73,
                                           text_row_indices=row_indices)
 
     # View test sample
@@ -124,12 +140,13 @@ def main():
 
     # Generate synthetic sonogram data
     sino = tct_model.forward_project(gt_recon)
+    sino = np.asarray(sino)
 
     # View sinogram
     mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
 
     # Perform MBIR reconstruction
-    recon, recon_params = tct_model.recon(sino, max_iterations=max_iterations)
+    recon, recon_params = tct_model.recon(sino, stop_threshold_change_pct=0, max_iterations=max_iterations)
 
     # Display Results
     mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
