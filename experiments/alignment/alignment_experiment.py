@@ -51,7 +51,7 @@ def main():
     # Generate the reference image and the shifted image
     print("\n===============Create synthetic Phantom and its shifted verison============")
     reference_image = create_reference_image(option=image_type, size=size, num_slices=num_slices)
-    shifted_image = apply_shift(reference_image, true_shifts)
+    shifted_image = shift_image(reference_image, true_shifts)
 
     # Visualize the fixed and shifted images
     mj.slice_viewer(reference_image, shifted_image, title='Synthetic Reference Image (Left) and Shifted Image (Right)', slice_axis=0)
@@ -98,7 +98,7 @@ def main():
 
     # Correct the shifted images
     shifts_estimated = -shifts_estimated
-    corrected_image = apply_shift(shifted_image, shifts_estimated)
+    corrected_image = shift_image(shifted_image, shifts_estimated)
 
     # Visualize the reference image and corrected image
     mj.slice_viewer(reference_image, corrected_image, title='Synthetic Reference Image (Left) and Corrected Image (Right)', slice_axis=0)

@@ -94,7 +94,7 @@ def create_constant_square_image(size=64, num_slices=1):
     return jnp.array(square_volume)
 
 
-def apply_shift(imgs, shifts):
+def shift_image(imgs, shifts):
     """
     Apply a translations to an array of images using jax.image.scale_and_translate.
 
