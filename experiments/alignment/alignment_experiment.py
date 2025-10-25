@@ -36,8 +36,8 @@ def main():
     maximum_shift = 10
 
     # Define the optimization parameters
-    num_iterations = 150
-    learning_rate = 0.1
+    num_iterations = 10
+    learning_rate = 1.0
 
     # Define the ground truth shift in x and y axis
     # np.random.seed(42)
@@ -47,9 +47,6 @@ def main():
         # dy means vertical shift. Positive dy shifts image down.
         # dx means horizontal shift. PPositive dx shifts image right.
         print(f"Slice {i}: dy = {true_shifts[i, 0]:.3f}, dx = {true_shifts[i, 1]:.3f}")
-
-    # Initialize the shift parameters
-    initial_shift = jnp.zeros((num_slices, 2))
 
     # Generate the reference image and the shifted image
     print("\n===============Create synthetic Phantom and its shifted verison============")
@@ -62,6 +59,7 @@ def main():
     # Perform the gradient descent optimization using optax
     print(f"\n===============Starting Gradient Descent Optimization=============")
     time0 = time.time()
+    initial_shift = jnp.zeros((num_slices, 2))
     params = initial_shift.flatten()
     optimizer = optax.adam(learning_rate=learning_rate)
     opt_state = optimizer.init(params)
