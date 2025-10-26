@@ -21,7 +21,7 @@ def get_experiment_params(experiment_name):
         "phantom_type": "text",
         "text": ['P', 'P', 'P'],
         "object_width_mm": 22,
-        "object_thickness_mm": 2.15,
+        "object_thickness_mm": 12.15,
         "qggmrf_nbr_weights": [0.1, 1.0, 1.0],
         "sharpness": 1.0,
         "max_iterations": 80,
@@ -146,11 +146,12 @@ def main():
     mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
 
     # Perform MBIR reconstruction
+    direct_recon = tct_model.direct_recon(sino)
     recon, recon_params = tct_model.recon(sino, stop_threshold_change_pct=0, max_iterations=max_iterations)
 
     # Display Results
-    mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
-                    title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
+    mj.slice_viewer(gt_recon.transpose(0, 2, 1), direct_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1),
+                    vmin=0, vmax=1, title='Object (left), FDK recon (middle), MBIR reconstruction (right)', slice_axis=0)
 
     # Save as animated gifs
     mj.save_volume_as_gif(gt_recon, "gt_recon.gif", vmin=0, vmax=1)
