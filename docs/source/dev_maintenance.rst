@@ -12,6 +12,11 @@ In order to run unit tests, install MBIRJAX using the provided install scripts, 
 
 This should be repeated for each supported platform.
 
+Tests that use external data can also be run separately with the command::
+
+    pytest -m data_dependent
+
+
 Uploading to PyPI
 -----------------
 

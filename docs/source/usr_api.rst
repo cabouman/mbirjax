@@ -14,8 +14,9 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
 * :ref:`ConeBeamModelDocs`
 * :ref:`TranslationModelDocs`
 * :ref:`DenoisingDocs`
-* :ref:`Utilities`
 * :ref:`PreprocessDocs`
+* :ref:`Utilities`
+* :ref:`HSNTDocs`
 
 
 .. automodule:: mbirjax
@@ -36,5 +37,7 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
    usr_cone_beam_model
    usr_translation_model
    usr_denoising
-   usr_utilities
    usr_preprocess
+   usr_utilities
+   usr_hsnt
+
