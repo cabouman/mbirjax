@@ -120,7 +120,7 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
     the number of spectral bins.
 
     Args:
-        data: Hyperspectral data array with arbitrary axes and a spectral axis of length N_k in the last position.
+        data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
         subspace_dimension: Desired dimension of the subspace :math:`N_s`. If None, the dimension is either set from the
             provided subspace basis matrix or estimated automatically from the data. Defaults to None.
@@ -449,7 +449,7 @@ def import_hsnt_data_hdf5(filename, dataset_name):
             data = group["data"][()]
 
         # Importing metadata
-        metadata_dict = {"dataset_name": dataset_name}
+        metadata = {"dataset_name": dataset_name}
         for key in ALLOWED_KEYS:
             if key == "dataset_name":
                 continue
@@ -459,15 +459,15 @@ def import_hsnt_data_hdf5(filename, dataset_name):
                     value = value.decode()
                 elif isinstance(value, np.ndarray) and value.shape == ():
                     value = value.item()
-                metadata_dict[key] = value
+                metadata[key] = value
             else:
-                metadata_dict[key] = None
+                metadata[key] = None
 
     # Validate categorical keys
-    for key, value in metadata_dict.items():
+    for key, value in metadata.items():
         _validate_key(key, value)
 
-    return [data, metadata_dict]
+    return [data, metadata]
 
 
 @_with_key_docstring("arg")
@@ -500,15 +500,15 @@ def create_hsnt_metadata(**kwargs):
         if key not in ALLOWED_KEYS:
             warnings.warn(f"Ignoring invalid key '{key}' in arguments.")
 
-    metadata_dict = {k: kwargs.get(k, None) for k in ALLOWED_KEYS}
-    if not metadata_dict.get("dataset_name"):
+    metadata = {k: kwargs.get(k, None) for k in ALLOWED_KEYS}
+    if not metadata.get("dataset_name"):
         raise ValueError("'dataset_name' is required.")
 
     # Validation
-    for key, value in metadata_dict.items():
+    for key, value in metadata.items():
         _validate_key(key, value)
 
-    return metadata_dict
+    return metadata
 
 
 @_with_key_docstring("dict")
@@ -580,7 +580,7 @@ def export_hsnt_data_hdf5(filename, data, metadata):
 def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, dosage_rate=300, material_thickness=None,
                         verbose=1):
     """
-    Simulate noisy hyperspectral neutron attenuation data for :math:`N_m=3` materials (Ni, Cu, Al) and N_k wavelength bins.
+    Simulate noisy hyperspectral neutron attenuation data for :math:`N_m=3` materials (Ni, Cu, Al) and :math:`N_k` wavelength bins.
 
     Args:
         material_basis: ndarray of shape :math:`(N_m, N_k)`, where rows are material linear attenuation coefficient spectra.

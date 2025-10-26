@@ -42,9 +42,9 @@ def main():
 
     # Import real hyperspectral data
     filename = os.path.join(input_path, dataset_name+'_dataset.h5')
-    hsnt_data, metadata_dict = import_hsnt_data_hdf5(filename, dataset_name)
-    dataset_type = metadata_dict['dataset_type']
-    wavelengths = metadata_dict['wavelengths']
+    hsnt_data, metadata = import_hsnt_data_hdf5(filename, dataset_name)
+    dataset_type = metadata['dataset_type']
+    wavelengths = metadata['wavelengths']
 
     if verbose >= 1:
         print("Hyperspectral data shape: ", hsnt_data.shape)
@@ -61,11 +61,11 @@ def main():
 
         # Write out dehydrated data
         filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
-        export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata_dict)
+        export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata)
 
     # Write out denoised/rehydrated data
     filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
-    export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata_dict)
+    export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata)
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
