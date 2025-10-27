@@ -18,8 +18,8 @@ if __name__ == "__main__":
     # filename = 'HDR_L_{}'.format(bn_size)
     # Code to convert png to npy
     # from PIL import Image
-    # img = Image.open(filename + '.png')
-    # img_array = np.array(img)
+    # imgs = Image.open(filename + '.png')
+    # img_array = np.array(imgs)
     # np.save(filename + '.npy', img_array)
     # pattern = np.load(filename + '.npy').astype(np.uint16)
     # np.savetxt('bn256.py', pattern, fmt='%d,', header='import numpy as np\nbn256 = np.array([',

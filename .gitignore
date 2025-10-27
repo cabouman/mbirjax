@@ -29,6 +29,8 @@ tests_data_dependent/data/*
 *.tgz
 *.tar
 *.zip
+*.xrm
+*.txrm
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
