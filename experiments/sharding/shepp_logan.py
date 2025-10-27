@@ -64,8 +64,8 @@ else:
     ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed to reduce the effect of possibly noisy sinogram entries.
-weights = None
-# weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+# weights = None
+weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
 # Set reconstruction parameter values
 # Sharpness is a float, typically in the range (-1, 2).  The default value is 1.0.

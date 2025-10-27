@@ -37,8 +37,14 @@ def recon(size, num_gpus, model_type, output_filepath='output.csv'):
 
     print("\nTEST PARAMS:")
     transfer_pixel_batch_size = recon_model.transfer_pixel_batch_size
-    print("Device set:", recon_model.sinogram_device.device_set)
     print("Transfer pixel batch size:", transfer_pixel_batch_size)
+    try:
+        print("Device set:", recon_model.sinogram_device.device_set)
+    except:
+        pass
+
+    # TODO: set weights here
+    # TODO: Transfer pixel batch size: 175 save to csv
 
     print("\nGPU STARTING MEMORY STATS:")
     mj.get_memory_stats()
@@ -46,7 +52,7 @@ def recon(size, num_gpus, model_type, output_filepath='output.csv'):
     print("\nSTARTING RECON FIRST PASS:")
     recon_model.set_params(use_gpu="automatic")
     recon, _ = recon_model.recon(sinogram,
-                                 max_iterations=8,
+                                 max_iterations=10, # TODO: get granularity from params and use length
                                  stop_threshold_change_pct=0)
     recon.block_until_ready()
     recon = jax.device_put(recon)
@@ -55,7 +61,7 @@ def recon(size, num_gpus, model_type, output_filepath='output.csv'):
     print("\nSTARTING RECON SECOND PASS:")
     time0 = time.time()
     recon, _ = recon_model.recon(sinogram,
-                                 max_iterations=8,
+                                 max_iterations=10,
                                  stop_threshold_change_pct=0,
                                  logfile_path=os.path.join(f'../output/recon_{model_type}_{size}_{num_gpus}.log')
                                  )

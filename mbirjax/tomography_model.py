@@ -77,8 +77,8 @@ class TomographyModel(ParameterHandler):
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 1800 # 512
-        self.pixel_batch_size_for_vmap = 175 # 2048
-        self.transfer_pixel_batch_size = 175 # 100 * self.pixel_batch_size_for_vmap
+        self.pixel_batch_size_for_vmap = 2048 # 2048
+        self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap # 100 * self.pixel_batch_size_for_vmap
         self.gpu_memory = 0
         self.cpu_memory = 0
         self.mem_required_for_gpu = 0
@@ -230,6 +230,9 @@ class TomographyModel(ParameterHandler):
         # 'automatic' and more than one GPU: Everything will be done with sharding
         if use_gpu == 'automatic' and len(gpus) > 1:
             print("SHARDING ACTIVATED")
+
+            # TODO: raise error if view number is not a multiple of gpu number
+            # TODO: add message about using utility to trim number of views
 
             # FIXME: calculate this based off of actual memory
             # self.transfer_pixel_batch_size = 150  # hard coded to a value that is known to work for now
@@ -680,7 +683,9 @@ class TomographyModel(ParameterHandler):
         """
         if self.use_gpu == 'sharding':
             if view_indices:
-                raise ValueError('view_indices cannot be used with sharding.')
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
             return self.sparse_forward_project_sharded(voxel_values, pixel_indices, output_device)
 
         # Batch the views and pixels for possible transfer to the gpu
@@ -782,7 +787,9 @@ class TomographyModel(ParameterHandler):
         """
         if self.use_gpu == 'sharding':
             if view_indices:
-                raise ValueError('view_indices cannot be used with sharding.')
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
             return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
 
         # Batch the views and pixels for possible transfer to the gpu
