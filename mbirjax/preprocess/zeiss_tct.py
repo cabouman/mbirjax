@@ -136,18 +136,18 @@ def load_scans_and_params(dataset_dir, verbose=1):
     _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
     _, Zeiss_params_iso_obj_scan = read_xrm(iso_obj_scan_path) # Zeiss parameters of the object scan when object at iso
 
-    # source to iso distance (in mm)
-    source_iso_dist = Zeiss_params["source_iso_dist"] # mm
+    # source to iso distance
+    source_iso_dist = Zeiss_params["source_iso_dist"]
     source_iso_dist = float(np.abs(source_iso_dist))
 
-    # iso to detector distance (in mm)
-    iso_det_dist = Zeiss_params["iso_det_dist"] # mm
+    # iso to detector distance
+    iso_det_dist = Zeiss_params["iso_det_dist"]
     iso_det_dist = float(np.abs(iso_det_dist))
 
-    # detector pixel pitch (in um)
+    # detector pixel pitch
     # Zeiss detector pixel has equal width and height
     det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
-    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"] # um
+    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
@@ -155,7 +155,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
     num_det_channels = Zeiss_params["num_det_channels"]
     num_det_rows = Zeiss_params["num_det_rows"]
 
-    # object positions in x, y, z axis (in um)
+    # object positions in x, y, z axis
     # The scanner uses a coordinate system different from MBIRJAX
     # ToDo: Perform experiments to determine the Zeiss coordinates
     # Axis mapping:
@@ -170,6 +170,41 @@ def load_scans_and_params(dataset_dir, verbose=1):
     iso_x_position = float(np.asarray(Zeiss_params_iso_obj_scan['z_positions']).ravel()[0])
     iso_y_position = float(np.asarray(Zeiss_params_iso_obj_scan['x_positions']).ravel()[0])
     iso_z_position = float(np.asarray(Zeiss_params_iso_obj_scan['y_positions']).ravel()[0])
+
+    # Unit of parameters
+    axis_names = Zeiss_params["axis_names"]
+    axis_units = Zeiss_params["axis_units"]
+
+    source_iso_dist_unit = None
+    iso_det_dist_unit = None
+    delta_det_row_unit = None
+    delta_det_channel_unit = None
+    obj_x_position_unit = None
+    obj_y_position_unit = None
+    obj_z_position_unit = None
+
+    if axis_names is not None and axis_units is not None:
+        for name, unit in zip(axis_names, axis_units):
+            # TODO: Need to verify whether the geometry parameter units actually match the specified axis names.
+            if name == "Source Z":
+                source_iso_dist_unit = unit
+                iso_det_dist_unit = unit
+
+            elif name == "CCD_X":
+                delta_det_row_unit = unit
+                delta_det_channel_unit = unit
+
+            elif name == "Sample X":
+                obj_x_position_unit = unit
+
+            elif name == "Sample Y":
+                obj_y_position_unit = unit
+
+            elif name == "Sample Z":
+                obj_z_position_unit = unit
+
+    else:
+        raise ValueError("Unknown units for geometry parameters; cannot safely convert to mbirjax format.")
 
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
@@ -212,7 +247,14 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'obj_z_positions': obj_z_positions,
         'iso_x_position': iso_x_position,
         'iso_y_position': iso_y_position,
-        'iso_z_position': iso_z_position
+        'iso_z_position': iso_z_position,
+        'source_iso_dist_unit': source_iso_dist_unit,
+        'iso_det_dist_unit': iso_det_dist_unit,
+        'delta_det_row_unit': delta_det_row_unit,
+        'delta_det_channel_unit': delta_det_channel_unit,
+        'obj_x_position_unit': obj_x_position_unit,
+        'obj_y_position_unit': obj_y_position_unit,
+        'obj_z_position_unit': obj_z_position_unit,
     }
 
     return obj_scan, blank_scan, dark_scan, zeiss_params
@@ -235,10 +277,10 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
         optional_params (dict): Additional TranslationModel parameters to be set using set_params()
     """
     # Get zeiss parameters and convert them
-    source_iso_dist, iso_det_dist = itemgetter('source_iso_dist', 'iso_det_dist')(zeiss_params)
-    delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(zeiss_params)
+    source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
+    delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
-    obj_x_positions, obj_y_positions, obj_z_positions = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions')(zeiss_params)
+    obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
     iso_x_position, iso_y_position, iso_z_position = itemgetter('iso_x_position', 'iso_y_position', 'iso_z_position')(zeiss_params)
 
     source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
@@ -257,10 +299,23 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel *= downsample_factor[1]
 
     # Set 1 ALU = delta_det_channel
-    source_iso_dist /= (delta_det_channel / 1000) # mm to ALU
-    source_detector_dist /= (delta_det_channel / 1000) # mm to ALU
-    translation_vectors /= delta_det_channel # um to ALU
-    delta_det_row /= delta_det_channel
+    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
+    if source_iso_dist_unit == 'mm' and delta_det_channel_unit == 'um':
+        source_iso_dist /= (delta_det_channel / 1000) # mm to ALU
+        source_detector_dist /= (delta_det_channel / 1000) # mm to ALU
+    else:
+        raise ValueError("Unknown units for source_iso_dist, and source_det_dist; cannot safely convert to mbirjax format.")
+
+    if obj_x_position_unit == 'um' and obj_y_position_unit == 'um' and obj_z_position_unit == 'um' and delta_det_channel_unit == 'um':
+        translation_vectors /= delta_det_channel # um to ALU
+    else:
+        raise ValueError("Unknown units for translation_vectors; cannot safely convert to mbirjax format.")
+
+    if delta_det_channel_unit == 'um':
+        delta_det_row /= delta_det_channel
+    else:
+        raise ValueError("Unknown units for delta_det_channels, and delta_det_rows; cannot safely convert to mbirjax format.")
+
     delta_det_channel = 1.0
 
     # Create a dictionary to store MBIR parameters
@@ -547,7 +602,9 @@ def read_ole_metadata(ole):
         'x-shifts': _read_ole_arr(
             ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
         'y-shifts': _read_ole_arr(
-            ole, 'alignment/y-shifts', "<{0}f".format(number_of_images))
+            ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
+        'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
+        'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
     return metadata
@@ -702,6 +759,29 @@ def _read_ole_image(ole, label, metadata, datatype=None):
         (metadata["num_det_rows"], metadata["num_det_channels"], )
     )
     return image
+
+
+def _read_ole_str(ole, label):
+    """
+    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
+
+    Reads the string associated with label in an ole file
+
+    Args:
+        ole (OleFileIO) : An ole file to read from.
+        label (str) : Label associated with the OLE file.
+
+    Returns:
+        list: A list contain all the strings from the binary stream if the label exists
+    """
+    str = None
+    if ole.exists(label):
+        stream = ole.openstream(label)
+        data = stream.read()
+        str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
+    return str
+
+
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
