@@ -123,18 +123,16 @@ def load_scans_and_params(dataset_dir, verbose=1):
             - ``zeiss_params`` (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
     """
     ### automatically parse the paths to Zeiss scans from dataset—dir
-    obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_obj_scan_path = \
+    obj_scan_dir, blank_scan_dir, dark_scan_dir = \
         _parse_filenames_from_dataset_dir(dataset_dir)
 
     if verbose > 0:
         print("The following files will be used to compute the Zeiss reconstruction:\n",
               f"    - Object scan directory: {obj_scan_dir}\n",
               f"    - Blank scan directory: {blank_scan_dir}\n",
-              f"    - Dark scan directory: {dark_scan_dir}\n",
-              f"    - Object scan file when object at iso (no translation): {iso_obj_scan_path}\n")
+              f"    - Dark scan directory: {dark_scan_dir}\n",)
 
     _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
-    _, Zeiss_params_iso_obj_scan = read_xrm(iso_obj_scan_path) # Zeiss parameters of the object scan when object at iso
 
     # source to iso distance
     source_iso_dist = Zeiss_params["source_iso_dist"]
@@ -165,11 +163,6 @@ def load_scans_and_params(dataset_dir, verbose=1):
     obj_x_positions = np.array(Zeiss_params['z_positions'], dtype=float).ravel()
     obj_y_positions = np.array(Zeiss_params['x_positions'], dtype=float).ravel()
     obj_z_positions = np.array(Zeiss_params['y_positions'], dtype=float).ravel()
-
-    # object position at iso in x, y, z axis (in um)
-    iso_x_position = float(np.asarray(Zeiss_params_iso_obj_scan['z_positions']).ravel()[0])
-    iso_y_position = float(np.asarray(Zeiss_params_iso_obj_scan['x_positions']).ravel()[0])
-    iso_z_position = float(np.asarray(Zeiss_params_iso_obj_scan['y_positions']).ravel()[0])
 
     # Unit of parameters
     axis_names = Zeiss_params["axis_names"]
@@ -208,11 +201,10 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
-        print(f"Source to iso distance: {source_iso_dist} [mm]")
-        print(f"Iso to detector distance: {iso_det_dist} [mm]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({iso_pixel_pitch:.3f}, {iso_pixel_pitch:.3f}) [um]")
+        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
+        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
+        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f} [{delta_det_row_unit}], {det_pixel_pitch:.3f} [{delta_det_channel_unit}])")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
-        print(f"Object position at iso in x, y, z axis : (obj_position_x, obj_position_y, obj_position_z) = ({iso_x_position:.3f}, {iso_y_position:.3f}, {iso_z_position:.3f}) [um]")
         print("############ End Zeiss geometry parameters ############")
     ### END load Zeiss parameters from scan data
 
@@ -245,9 +237,6 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'obj_x_positions': obj_x_positions,
         'obj_y_positions': obj_y_positions,
         'obj_z_positions': obj_z_positions,
-        'iso_x_position': iso_x_position,
-        'iso_y_position': iso_y_position,
-        'iso_z_position': iso_z_position,
         'source_iso_dist_unit': source_iso_dist_unit,
         'iso_det_dist_unit': iso_det_dist_unit,
         'delta_det_row_unit': delta_det_row_unit,
@@ -265,7 +254,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop and downsample.
 
     Args:
-        zeiss_params (dict):
+        zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
@@ -281,10 +270,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
-    iso_x_position, iso_y_position, iso_z_position = itemgetter('iso_x_position', 'iso_y_position', 'iso_z_position')(zeiss_params)
 
     source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
-    translation_vectors = calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, obj_x_positions, obj_y_positions, obj_z_positions)
+    translation_vectors = calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions)
     det_row_offset = calc_row_params(crop_pixels_top, crop_pixels_bottom)
 
     # Adjust detector size params w.r.t. cropping arguments
@@ -342,7 +330,6 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
         - object scan directory
         - blank scan directory
         - dark scan directory
-        - object scan when object at iso (no translation)
 
     Args:
         dataset_dir (string): Path to the directory containing the Zeiss scan files.
@@ -352,7 +339,6 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
             - obj_scan_dir (string): Path to the object scan directory
             - blank_scan_dir (string): Path to the blank scan directory
             - dark_scan_dir (string): Path to the dark scan directory
-            - iso_obj_scan_path (string): Path to the object scan file when object at iso (no translation)
     """
     # Object scan directory
     obj_scan_dir = os.path.join(dataset_dir, "obj_scan")
@@ -363,10 +349,7 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     # Dark scan
     dark_scan_dir = os.path.join(dataset_dir, "dark_scan")
 
-    # Object scan when object at iso (no translation)
-    iso_object_scan_path = os.path.join(obj_scan_dir, "MC.xrm")
-
-    return obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_object_scan_path
+    return obj_scan_dir, blank_scan_dir, dark_scan_dir
 
 
 def _check_read(fname):
@@ -801,14 +784,11 @@ def calc_source_det_params(source_iso_dist, iso_det_dist):
     return source_det_dist
 
 
-def calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, obj_x_positions, obj_y_positions, obj_z_positions):
+def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions):
     """
     Calculate the translation geometry parameters: translation_vectors
 
     Args:
-        iso_x_position (float) : The object position at iso in x-axis [in um]
-        iso_y_position (float): The object position at iso in y-axis [in um]
-        iso_z_position (float): The object position at iso in z-axis [in um]
         obj_x_positions (tuple): The object positions of all views in x-axis with shape (num_views,)
         obj_y_positions (tuple): The object positions of all views in y-axis with shape (num_views,)
         obj_z_positions (tuple): The object positions of all views in z-axis with shape (num_views,)
@@ -819,11 +799,18 @@ def calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, 
     # Stack the object positions of all views in x, y, z axis into a 3D array of shape (number of views, 3)
     obj_xyz_positions = np.stack([obj_x_positions, obj_y_positions, obj_z_positions], axis=1)
 
-    # Stack the object position at iso in x, y, z axis into a 1D array of shape (3,)
-    iso_xyz_position = np.array([iso_x_position, iso_y_position, iso_z_position], float)
+    # Calculate the mean position along the x, y, z axis
+    # Treat the mean of the x, y, z axis as object position at the center
+    # TODO: Need to determine whether this is the best way to compute the translation vectors
+    center_x_position = np.mean(obj_xyz_positions[:, 0])
+    center_y_position = np.mean(obj_xyz_positions[:, 1])
+    center_z_position = np.mean(obj_xyz_positions[:, 2])
+
+    # Stack the object position at center in x, y, z axis into a 1D array of shape (3,)
+    center_xyz_position = np.array([center_x_position, center_y_position, center_z_position], float)
 
     # Compute the translation vectors in um
-    translation_vectors = iso_xyz_position - obj_xyz_positions
+    translation_vectors = center_xyz_position - obj_xyz_positions
 
     return translation_vectors
 
