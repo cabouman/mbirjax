@@ -146,9 +146,10 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # detector pixel pitch (in um)
     # Zeiss detector pixel has equal width and height
+    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
     iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"] # um
-    delta_det_row = iso_pixel_pitch
-    delta_det_channel = iso_pixel_pitch
+    delta_det_row = det_pixel_pitch
+    delta_det_channel = det_pixel_pitch
 
     # dimensions of radiograph
     num_det_channels = Zeiss_params["num_det_channels"]
@@ -715,7 +716,7 @@ def calc_source_det_params(source_iso_dist, iso_det_dist):
     Returns:
         source_detector_dist (float): Distance between the detector and source
     """
-    source_det_dist = source_iso_dist
+    source_det_dist = source_iso_dist + iso_det_dist
     return source_det_dist
 
 

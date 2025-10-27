@@ -19,25 +19,31 @@ def main():
     sino, translation_params, optional_params = mjp.zeiss_tct.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
 
     # Estimate and subtract the per-view background
-    background = [np.mean(sino[j][sino[j]<0.04]) for j in range(sino.shape[0])]
-    sino = sino - np.array(background)[:, None, None]
+    # background = [np.mean(sino[j][sino[j]<0.04]) for j in range(sino.shape[0])]
+    # sino = sino - np.array(background)[:, None, None]
 
     # Initialize model for reconstruction.
     tct_model = mj.TranslationModel(**translation_params)
     tct_model.set_params(**optional_params)
     tct_model.set_params(sharpness=2.0)
+    tct_model.auto_set_recon_shape(sino.shape)
     recon_shape = tct_model.get_params('recon_shape')
 
     # Set parameters for recon
     tct_model.set_params(recon_shape=(20,)+recon_shape[1:])
-    tct_model.set_params(delta_recon_row=30)
+    tct_model.set_params(delta_recon_row=10)
     tct_model.set_params(partition_sequence=50*[0,] + 100*[2,] + [3,])
     tct_model.set_params(qggmrf_nbr_wts=[0.01, 1, 1])
 
     # Print model parameters and display translation array
     translation_vectors = translation_params['translation_vectors']
     tct_model.print_params()
-    mj.display_translation_vectors(translation_vectors, recon_shape)
+    delta_voxel, delta_recon_row = tct_model.get_params(['delta_voxel', 'delta_recon_row'])
+    translation_vectors_display = translation_vectors.copy()
+    translation_vectors_display[:, 0] /= delta_voxel
+    translation_vectors_display[:, 2] /= delta_voxel
+    translation_vectors_display[:, 1] /= delta_recon_row
+    mj.display_translation_vectors(translation_vectors_display, recon_shape)
 
     # View sinogram
     mj.slice_viewer(sino, slice_axis=0, title='Original sinogram', slice_label='View')
