@@ -155,9 +155,11 @@ class TranslationModel(mj.TomographyModel):
         # Calculate the width and height of the detector in ALU
         detect_box = jnp.array([delta_det_channel*num_det_channels, delta_det_row*num_det_rows])
 
-        # Compute cone_slope = tan(cone_angle/2) along the x and z directions
-        # This is the maximum slope of a view that a pixel at iso can see.
-        cone_slope = (detect_box/2) / source_detector_dist
+        # Compute avg_view_slope = tan(cone_angle/2) along the x and z directions
+        # This is the average slope of a view that a pixel at iso sees.
+        # detect_box/4 = distance from the (center of the detector) to (halfway to the edge of the detector).
+        # Using the average seems to be better than using the maximum.
+        avg_view_slope = (detect_box/4) / source_detector_dist
 
         # Compute detector pixel pitch at iso
         # Note that this may differ from delta_voxel
@@ -166,14 +168,9 @@ class TranslationModel(mj.TomographyModel):
         det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
 
         ######### Compute the row pitch based on a heuristic #########
-        #ToDo: There will be problems if cone_slope is small or zero. Discuss with Greg.
-        # The following code will result in isotropic voxels when cone_angle/2 > 63 deg
-        #           nominal_row_pitch = 2.0*det_pixel_pitch_iso_vec/cone_slope
-        # However, this may be too aggressive in practice because cone_slope is the maximum of the view angle seen by a voxel at iso.
-        # It might be more realistic to assume an average view slope of cone_slope/2,
-        # and assume an isotropic voxel when the cone_angle/2 > 76 deg.
-        # That leads to the following equation:
-        nominal_row_pitch = 4.0*det_pixel_pitch_iso_vec/(cone_slope/2)
+        #ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
+        # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
+        nominal_row_pitch = 4.0*det_pixel_pitch_iso_vec/avg_view_slope
         nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
         delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso) # Ensure that the row resolution is not higher than the (x,z) detector resolution
         delta_recon_row = float(delta_recon_row)
