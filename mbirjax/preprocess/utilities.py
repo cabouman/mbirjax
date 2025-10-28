@@ -396,7 +396,7 @@ def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
     """
     Convert image to float32 and normalize if it is an integer dtype.
 
-    - If `img.dtype` is an integer type, cast to float32 and divide by the max value for that dtype.
+    - If `imgs.dtype` is an integer type, cast to float32 and divide by the max value for that dtype.
     - Otherwise, cast to float32 without scaling.
 
     Args:

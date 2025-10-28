@@ -21,10 +21,10 @@ def get_experiment_params(experiment_name):
         "phantom_type": "text",
         "text": ['P', 'P', 'P'],
         "object_width_mm": 22,
-        "object_thickness_mm": 2.15,
+        "object_thickness_mm": 12.15,
         "qggmrf_nbr_weights": [0.1, 1.0, 1.0],
-        "sharpness": 1.0,
-        "max_iterations": 80,
+        "sharpness": 2.0,
+        "max_iterations": 200,
     }
 
     if experiment_name == "experiment1":
@@ -103,7 +103,7 @@ def main():
         tct_model.set_params(recon_shape=recon_shape)
     tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(qggmrf_nbr_wts=qggmrf_nbr_weights)
-    tct_model.set_params(partition_sequence=[0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7])
+    tct_model.set_params(partition_sequence=10 * [0] + 10 * [2] + 10 * [2] + [2])  # , 0, 0, 1, 2, 3, 4, 5, 6, 7])
 
 
     print("\n*************** Experimental Parameters ***************")
@@ -146,15 +146,26 @@ def main():
     mj.slice_viewer(sino, slice_axis=0, vmin=0, vmax=1, title='Original sinogram', slice_label='View')
 
     # Perform MBIR reconstruction
-    recon, recon_params = tct_model.recon(sino, stop_threshold_change_pct=0, max_iterations=max_iterations)
+    direct_recon, direct_dict = tct_model.recon(sino, max_iterations=0)
+    mbir_recon, mbir_dict = tct_model.recon(sino, stop_threshold_change_pct=0, max_iterations=max_iterations)
+
+    # To investigate the effect of projecting to nearest of 0 or 1, uncomment below
+    # recon = np.array(recon)
+    # recon[recon < 0.4] = 0
+    # recon[recon > 0.6] = 1
+    # mj.slice_viewer(gt_recon.transpose(0, 2, 1), direct_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1),
+    #                 vmin=0, vmax=1, title='Object (left), FDK recon (middle), MBIR reconstruction (right)', slice_axis=0)
+    # mbir_recon, mbir_dict = tct_model.recon(sino, init_recon=mbir_recon, stop_threshold_change_pct=0, max_iterations=100)
 
     # Display Results
-    mj.slice_viewer(gt_recon.transpose(0, 2, 1), recon.transpose(0, 2, 1), vmin=0, vmax=1,
-                    title='Object (left) vs. MBIR reconstruction (right)', slice_axis=0)
+    mj.slice_viewer(gt_recon.transpose(0, 2, 1), direct_recon.transpose(0, 2, 1), mbir_recon.transpose(0, 2, 1),
+                    data_dicts=[None, direct_dict, mbir_dict],
+                    vmin=0, vmax=1, title='Object (left), FDK recon (middle), MBIR reconstruction (right)', slice_axis=0)
 
     # Save as animated gifs
     mj.save_volume_as_gif(gt_recon, "gt_recon.gif", vmin=0, vmax=1)
-    mj.save_volume_as_gif(recon, "mbir_recon.gif", vmin=0, vmax=1)
+    mj.save_volume_as_gif(direct_recon, "direct_recon.gif", vmin=0, vmax=1)
+    mj.save_volume_as_gif(mbir_recon, "mbir_recon.gif", vmin=0, vmax=1)
 
 
 if __name__ == '__main__':
