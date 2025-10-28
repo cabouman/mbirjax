@@ -451,8 +451,8 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
 
     # Use split sino recon by default for cone beam
     recon_function = ct_model.recon
-    if ct_model.get_params('geometry_type') == 'cone':
-        recon_function = mj.ConeBeamModel.split_sino_recon
+    if 'ConeBeamModel' in ct_model.get_params('geometry_type'):
+        recon_function = ct_model.split_sino_recon
 
     # Do a regular recon if num_metal == 0
     if num_metal == 0:
