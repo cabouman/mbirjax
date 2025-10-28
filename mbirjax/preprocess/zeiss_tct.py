@@ -155,10 +155,11 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # Detector offset (in um)
     # TODO: Need to check whether the detector offset parameter is correctly read from the file
-    #   Since I can only decoded one single float from the directory I found in the file, I just set det_channel_offset = det_row_offset = detector offset
+    #   Since I can only decoded one single float from the directory I found in the file,
+    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
     detector_offset = Zeiss_params["det_offset"]
-    det_row_offset = detector_offset
     det_channel_offset = detector_offset
+    det_row_offset = 0.0
 
     # object positions in x, y, z axis
     # The scanner uses a coordinate system different from MBIRJAX
