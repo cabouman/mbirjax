@@ -296,29 +296,27 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = delta_det_channel
+    # Set 1 ALU = 1 delta_det_channel_unit
     # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
     if source_iso_dist_unit == 'mm' and delta_det_channel_unit == 'um':
-        source_iso_dist /= (delta_det_channel / 1000) # mm to ALU
-        source_detector_dist /= (delta_det_channel / 1000) # mm to ALU
+        source_iso_dist *= 1000 # mm to um
+        source_detector_dist *= 1000 # mm to ALU
     else:
         raise ValueError("Unknown units for source_iso_dist, and source_det_dist; cannot safely convert to mbirjax format.")
 
     if obj_x_position_unit == 'um' and obj_y_position_unit == 'um' and obj_z_position_unit == 'um' and delta_det_channel_unit == 'um':
-        translation_vectors /= delta_det_channel # um to ALU
+        pass
     else:
         raise ValueError("Unknown units for translation_vectors; cannot safely convert to mbirjax format.")
 
     if delta_det_row_unit == 'um' and delta_det_channel_unit == 'um':
-        delta_det_row /= delta_det_channel
+        pass
     else:
         raise ValueError("Unknown units for delta_det_channels, and delta_det_rows; cannot safely convert to mbirjax format.")
 
-    delta_det_channel = 1.0
-
     # ToDo: Need to check the units of detector offset
     #  For now, we assume that the det_channel_offset have units of pixels.
-    det_channel_offset *= delta_det_channel # pixels to ALU
+    det_channel_offset *= delta_det_channel # pixels to um
 
     # Create a dictionary to store MBIR parameters
     num_views = translation_vectors.shape[0]
