@@ -805,15 +805,12 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
     # Stack the object positions of all views in x, y, z axis into a 3D array of shape (number of views, 3)
     obj_xyz_positions = np.stack([obj_x_positions, obj_y_positions, obj_z_positions], axis=1)
 
-    # Calculate the mean position along the x, y, z axis
-    # Treat the mean of the x, y, z axis as object position at the center
-    # TODO: Need to determine whether this is the best way to compute the translation vectors
-    center_x_position = np.mean(obj_xyz_positions[:, 0])
-    center_y_position = np.mean(obj_xyz_positions[:, 1])
-    center_z_position = np.mean(obj_xyz_positions[:, 2])
+    # Calculate the max and min of object positions along the x, y, z axis
+    max_obj_xyz_positions = np.max(obj_xyz_positions, axis=0)
+    min_obj_xyz_positions = np.min(obj_xyz_positions, axis=0)
 
-    # Stack the object position at center in x, y, z axis into a 1D array of shape (3,)
-    center_xyz_position = np.array([center_x_position, center_y_position, center_z_position], float)
+    # Set the object position at the center to be the midpoint of the extremes along the x, y, z axis
+    center_xyz_position = (max_obj_xyz_positions + min_obj_xyz_positions) / 2
 
     # Compute the translation vectors in um
     translation_vectors = center_xyz_position - obj_xyz_positions
