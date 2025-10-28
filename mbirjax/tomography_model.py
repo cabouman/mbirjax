@@ -251,7 +251,8 @@ class TomographyModel(ParameterHandler):
             # create
             self.view_batch_size_for_vmap = num_views
 
-            self.pixel_batch_size_for_vmap = 2048
+            # TODO: calculate this value based on the number of gpus and sinogram size
+            self.pixel_batch_size_for_vmap = 2048 
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
 
             # Recalculate the memory per voxel batch with the new batch size
