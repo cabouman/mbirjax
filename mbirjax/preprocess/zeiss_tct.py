@@ -1,6 +1,7 @@
 import os, sys
 from operator import itemgetter
 import numpy as np
+import jax.numpy as jnp
 import warnings
 import mbirjax.preprocess as mjp
 import pprint
@@ -150,6 +151,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
     delta_det_channel = det_pixel_pitch
 
     # dimensions of radiograph
+    num_views = Zeiss_params["num_views"]
     num_det_channels = Zeiss_params["num_det_channels"]
     num_det_rows = Zeiss_params["num_det_rows"]
 
@@ -240,6 +242,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'num_views': num_views,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
         'det_row_offset': det_row_offset,
@@ -278,7 +281,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     # Get zeiss parameters and convert them
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
-    num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
+    num_views, num_det_rows, num_det_channels = itemgetter('num_views', 'num_det_rows', 'num_det_channels')(zeiss_params)
     obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
@@ -288,6 +291,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
+
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]
@@ -321,10 +326,12 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     #  For now, we assume that the det_channel_offset have units of pixels.
     det_channel_offset *= delta_det_channel # pixels to ALU
 
+    # Calculate recon_shape, delta_voxel, and delta_recon_row parameters
+    recon_shape, delta_voxel, delta_recon_row = calc_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
+
     # Create a dictionary to store MBIR parameters
-    num_views = translation_vectors.shape[0]
     translation_params = dict()
-    translation_params['sinogram_shape'] = (num_views, num_det_rows, num_det_channels)
+    translation_params['sinogram_shape'] = sinogram_shape
     translation_params['translation_vectors'] = translation_vectors
     translation_params['source_detector_dist'] = source_detector_dist
     translation_params['source_iso_dist'] = source_iso_dist
@@ -332,7 +339,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params = dict()
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
-    optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
+    optional_params['delta_voxel'] = delta_voxel
+    optional_params['delta_recon_row'] = delta_recon_row
+    optional_params['recon_shape'] = recon_shape
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
 
@@ -814,4 +823,83 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
 
     return translation_vectors
 
+def calc_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
+    """
+    Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
+
+    Args:
+        source_det_dist (float): distance from the X-ray source to the detector (in ALU)
+        source_iso_dist (float): distance from the X-ray source to the isocenter (in ALU)
+        delta_det_row (float): the spacing between detector rows (in ALU)
+        delta_det_channel (float): the spacing between detector channels (in ALU)
+        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels)
+        translation_vectors (numpy array): A (num_views, 3) array of translations (x, y, z) in ALU
+
+    Returns:
+        recon_shape (tuple): Shape of the reconstruction shape as (num_recon_rows, num_recon_cols, num_recon_slices)
+        delta_voxel (float): the voxel pitch at isocenter (in ALU)
+        delta_recon_row (float): the row pitch of the reocnstruction (in ALU)
+    """
+    # Get parameters
+    num_views, num_det_rows, num_det_channels = sinogram_shape
+
+    # Calculate magnification
+    magnification = source_det_dist / source_iso_dist
+
+    # Calculate delta_voxel
+    delta_voxel = delta_det_channel / magnification
+
+    # Calculate the width and height of the detector in ALU
+    detect_box = jnp.array([delta_det_channel * num_det_channels, delta_det_row * num_det_rows])
+
+    # Compute avg_view_slope = tan(cone_angle/2) along the x and z directions
+    # This is the average slope of a view that a pixel at iso sees.
+    # detect_box/4 = distance from the (center of the detector) to (halfway to the edge of the detector).
+    # Using the average seems to be better than using the maximum.
+    avg_view_slope = (detect_box / 4) / source_det_dist
+
+    # Compute detector pixel pitch at iso
+    # Note that this may differ from delta_voxel
+    # However, we will use det_pixel_pitch_iso to calculate both the number rows and their pitch
+    det_pixel_pitch_iso_vec = jnp.array([delta_det_row, delta_det_channel]) / magnification
+    det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
+
+    ######### Compute the row pitch based on a heuristic #########
+    # ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
+    # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
+    nominal_row_pitch = 4.0 * det_pixel_pitch_iso_vec / avg_view_slope
+    nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
+    delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
+    delta_recon_row = float(delta_recon_row)
+
+    # Compute cube = (width, depth, height) of the scanned region in ALU
+    max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
+    min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
+    cube = max_translation - min_translation
+
+    # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
+    # Nominal voxels are the voxels that would result using the detector pitch at iso
+    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
+
+    # ************ Use a heuristic to determine a reasonable number of rows *************
+    # Compute the number of unknown pixels per view
+    num_pixels_per_view = ((recon_box[0] + num_det_rows) * (recon_box[1] + num_det_channels)) / num_views
+    num_measurements_per_view = num_det_channels * num_det_rows
+    # Select the number of rows to match the number of unknowns to the number of measurements
+    num_recon_rows = jnp.ceil(num_measurements_per_view / num_pixels_per_view)
+
+    # Make sure the object extends no further than halfway to the source
+    max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
+    if max_recon_rows < 1:
+        print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
+    num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
+
+    # Set the parameters to their computed values
+    num_recon_cols, num_recon_slices = recon_box
+    num_recon_cols = int(num_recon_cols)
+    num_recon_rows = int(num_recon_rows)
+    num_recon_slices = int(num_recon_slices)
+    recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+
+    return recon_shape, delta_voxel, delta_recon_row
 ######## END subroutines for Zeiss-MBIR parameter conversion
