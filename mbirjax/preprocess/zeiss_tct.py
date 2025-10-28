@@ -282,7 +282,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
+    source_detector_dist = source_iso_dist + iso_det_dist
     translation_vectors = calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions)
 
     # Adjust detector size params w.r.t. cropping arguments
@@ -790,21 +790,6 @@ def _read_ole_str(ole, label):
 
 
 ######## subroutines for Zeiss-MBIR parameter conversion
-def calc_source_det_params(source_iso_dist, iso_det_dist):
-    """
-    Calculate MBIRJAX geometry parameters: source_det_dist
-
-    Args:
-        source_iso_dist (float): Distance between the X-ray source and iso
-        iso_det_dist (float): Distance between the detector and iso
-
-    Returns:
-        source_detector_dist (float): Distance between the detector and source
-    """
-    source_det_dist = source_iso_dist + iso_det_dist
-    return source_det_dist
-
-
 def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions):
     """
     Calculate the translation geometry parameters: translation_vectors
