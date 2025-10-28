@@ -178,53 +178,50 @@ def _compute_within_class_variance(hist, thresholds):
     return total_variance
 
 
-def segment_plastic_metal(recon, radial_margin=10, top_margin=10, bottom_margin=10):
+def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10):
     """
-    Segment a reconstruction into plastic and metal masks using multi-threshold Otsu.
-
-    This function uses multi-threshold Otsu segmentation to classify the input
-    reconstruction into several classes and returns binary masks for the plastic
-    and metal components. It also returns a scaling factor representing the average
-    value of the reconstruction in each segmented region. A cylindrical mask is applied
-    to the volume prior to thresholding.
+    Segment a reconstruction into plastic and multiple metal masks using multi-threshold Otsu.
 
     Args:
         recon (jnp.ndarray): Reconstructed volume array.
-        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius. Defaults to 10.
-        top_margin (int, optional): Number of slices to mask out from the top of the volume. Defaults to 10.
-        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume. Defaults to 10.
+        num_metal (int): Number of metal materials to segment.
+        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
+        top_margin (int, optional): Number of slices to mask out from the top of the volume.
+        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
 
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, float, float]: A tuple containing:
+        Tuple[jnp.ndarray, List[jnp.ndarray], float, List[float]]:
             - plastic_mask (jnp.ndarray): Binary mask for plastic regions.
-            - metal_mask (jnp.ndarray): Binary mask for metal regions.
-            - plastic_scale (float): Scaling factor for the plastic mask.
-            - metal_scale (float): Scaling factor for the metal mask.
-
-    Example:
-        >>> import mbirjax as mj
-        >>> import mbirjax.preprocess as mjp
-        >>> plastic_mask, metal_mask, plastic_scale, metal_scale = mjp.segment_plastic_metal(recon)
-        >>> mj.slice_viewer(plastic_mask, metal_mask, vmin=0, vmax=1.0,
-        ...                 slice_label=['Plastic', 'Metal'],
-        ...                 title='Plastic and Metal Masks')
+            - metal_masks (List[jnp.ndarray]): List of binary masks for each metal region.
+            - plastic_scale (float): Scaling factor for plastic region.
+            - metal_scales (List[float]): List of scaling factors for each metal region.
     """
-    # Determine class thresholds based on the 3-classes
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                        bottom_margin=bottom_margin)
-    thresholds = multi_threshold_otsu(recon, classes=3)
+
+    # Compute thresholds using multi-threshold Otsu
+    thresholds = multi_threshold_otsu(recon, classes=num_metal + 2)
+
+    # Plastic: lowest class
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
     # Create masks
     plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
-    metal_mask = jnp.where(recon > plastic_metal_threshold, 1.0, 0.0)
-
-    # Scale factors that match the unitary masks to the reconstruction
     plastic_scale = mjp.compute_scaling_factor(recon, plastic_mask)
-    metal_scale = mjp.compute_scaling_factor(recon, metal_mask)
 
-    return plastic_mask, metal_mask, plastic_scale, metal_scale
+    # Metal masks and scaling
+    metal_masks = []
+    metal_scales = []
+    for i in range(1, num_metal + 1):  # start from index 1
+        lower = thresholds[i]
+        upper = thresholds[i + 1] if i + 1 < len(thresholds) else jnp.inf
+        metal_mask = jnp.where((recon > lower) & (recon <= upper), 1.0, 0.0)
+        metal_masks.append(metal_mask)
+        metal_scales.append(mjp.compute_scaling_factor(recon, metal_mask))
+
+    return plastic_mask, metal_masks, plastic_scale, metal_scales
+
 
 

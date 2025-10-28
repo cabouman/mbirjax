@@ -17,10 +17,10 @@ class TestVCD(unittest.TestCase):
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
-        parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
-        cone_tolerances = {'nrmse': 0.13, 'max_diff': 0.5, 'pct_95': 0.04}
-        translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
-        self.all_tolerances = [parallel_tolerances, cone_tolerances, translation_tolerances]
+        self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
+        self.cone_tolerances = {'nrmse': 0.13, 'max_diff': 0.5, 'pct_95': 0.04}
+        self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
+        self.all_tolerances = [self.parallel_tolerances, self.cone_tolerances, self.translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
@@ -97,7 +97,7 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'translation':
             recon_shape = ct_model.get_params('recon_shape')
             words = ["Purdue", "Presents", "Translation", "Tomography"]
-            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', words=words)
+            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', text=words)
         else:
             phantom_shape = ct_model.get_params('recon_shape')
             phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
@@ -138,6 +138,36 @@ class TestVCD(unittest.TestCase):
             assert np.allclose(recon, loaded_recon)
             assert np.allclose(ct_model.get_params('sigma_x'), new_model.get_params('sigma_x')) # just one representative parameter
             assert recon_dict['notes'] == loaded_notes
+
+
+    def test_split_sino(self):
+        geometry_type = 'cone'
+        self.set_view_params(geometry_type)
+        ct_model = self.get_model(geometry_type)
+        ct_model.set_params(verbose=0)
+
+        # Generate synthetic sinogram data
+        phantom_shape = ct_model.get_params('recon_shape')
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+        sinogram = ct_model.forward_project(phantom)
+
+        # ##########################
+        # Perform half-sino reconstruction
+        sinogram = jax.device_put(sinogram, ct_model.main_device)
+        print('  Starting recon')
+        recon, recon_dict = ct_model.split_sino_recon(sinogram)
+
+        # Check tolerances
+        max_diff = np.amax(np.abs(phantom - recon))
+        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
+        pct_95 = np.percentile(np.abs(recon - phantom), 95)
+        print('  nrmse = {:.3f}'.format(nrmse))
+        print('  max_diff = {:.3f}'.format(max_diff))
+        print('  pct_95 = {:.3f}'.format(pct_95))
+
+        self.assertTrue(max_diff < self.cone_tolerances['max_diff'] and
+                        nrmse < self.cone_tolerances['nrmse'] and
+                        pct_95 < self.cone_tolerances['pct_95'])
 
 
 if __name__ == '__main__':

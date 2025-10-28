@@ -1,9 +1,5 @@
 import jax
 import jax.numpy as jnp
-import pywt
-from scipy import interpolate
-from scipy.ndimage import uniform_filter1d, median_filter, binary_dilation
-from concurrent.futures import ThreadPoolExecutor
 
 
 def generate_column_index_matrix(num_rows, num_cols):
@@ -55,6 +51,7 @@ def remove_small_stripes_sorting(sino, filter_size, index_matrix):
         corrected_sino (jax array): corrected 2D slice of the sinogram data after stripes removal
     """
 
+    from scipy.ndimage import median_filter
     # Sort each column of the sinogram by its grayscale values
     sino = jnp.transpose(sino)
     stacked_matrix = jnp.stack([index_matrix, sino], axis=2)
@@ -148,6 +145,7 @@ def remove_large_stripes_sorting(sino, snr, filter_size, index_matrix, drop_rati
         sino (jax array): corrected 2D slice of the sinogram data after stripes removal
     """
 
+    from scipy.ndimage import median_filter, binary_dilation
     drop_ratio = jnp.clip(drop_ratio, 0.0, 0.8)
     (num_rows, num_cols) = sino.shape
     num_rows_drop = jnp.int16(0.5 * drop_ratio * num_rows)
@@ -223,6 +221,8 @@ def remove_dead_fluctuating_stripes_interpolation(sino, snr, filter_size, index_
         sino (jax array): corrected 2D slice of the sinogram data after stripes removal
 
     """
+    from scipy import interpolate
+    from scipy.ndimage import uniform_filter1d, median_filter, binary_dilation
     num_rows = sino.shape[0]
 
     # Compute the column-wise absolute difference between the original sinogram and the smoothed sinogram
@@ -288,6 +288,7 @@ def remove_all_stripe(sino, snr=3, large_filter_size=61, small_filter_size=21):
         >>> sino = jnp.ones((180, 128, 256))  # Simulated 3D sinogram
         >>> cleaned_sino = mjp.remove_all_stripe(sino)
     """
+    from concurrent.futures import ThreadPoolExecutor
     index_matrix = generate_column_index_matrix(sino.shape[2], sino.shape[0])
     index_matrix_cpu = jax.device_put(index_matrix, device=jax.devices("cpu")[0])
 
@@ -337,6 +338,7 @@ def remove_stripe_fw(sino, wavelet_filter_name="db5", sigma=2):
         >>> cleaned_sino = mjp.remove_stripe_fw(sino)
     """
     # Determine decomposition level L
+    import pywt
     level = int(jnp.ceil(jnp.log2(jnp.max(jnp.array(sino.shape)))))
     views, num_rows, num_columns = sino.shape
     padded_views = views + views // 8

@@ -22,8 +22,8 @@ Constructor
 .. autoclass:: mbirjax.ParallelBeamModel
    :show-inheritance:
 
-Filtered Back Projection
-------------------------
+Alternative Reconstruction
+--------------------------
 
 .. automethod:: mbirjax.ParallelBeamModel.fbp_recon
 

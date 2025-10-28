@@ -6,10 +6,10 @@ from collections import namedtuple
 
 import numpy as np
 
-import mbirjax
+import mbirjax as mj
 
 
-class TranslationModel(mbirjax.TomographyModel):
+class TranslationModel(mj.TomographyModel):
     """
     Implements a tomography model using translation-based cone-beam projections.
 
@@ -54,8 +54,10 @@ class TranslationModel(mbirjax.TomographyModel):
                 source_iso_dist=500.0
             )
             model.set_params(delta_recon_row=2.0)
-            model.auto_set_recon_size(sinogram_shape)
+            model.auto_set_recon_shape(sinogram_shape)
     """
+    DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
+
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
         self.use_ror_mask = False
@@ -64,7 +66,7 @@ class TranslationModel(mbirjax.TomographyModel):
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.5, 1, 1,))
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
 
     def get_magnification(self):
         """
@@ -139,7 +141,7 @@ class TranslationModel(mbirjax.TomographyModel):
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
-    def auto_set_recon_size(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
         # Get model parameters
@@ -719,4 +721,114 @@ class TranslationModel(mbirjax.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FBP filtering.
+        """
+        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform FDK filtering on the given sinogram.
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            filtered_sinogram (jax array): The sinogram after FDK filtering.
+        """
+        # Get parameters
+        num_views, num_rows, num_channels = sinogram.shape
+        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
+        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        if view_batch_size is None:
+            view_batch_size = self.view_batch_size_for_vmap
+            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
+            view_batch_size = min(view_batch_size, max_view_batch_size)
+
+        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        M_0 = self.get_magnification()
+
+        # Define the index arrays for channels and rows
+        m = jnp.arange(num_rows)  # Column vector for rows
+        n = jnp.arange(num_channels)  # Row vector for channels
+        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
+
+        # Coordinate transformation to physical distances:
+        u_grid, v_grid = mj.ConeBeamModel.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
+                                                            det_channel_offset, det_row_offset, num_rows, num_channels)
+
+        # Compute the weight
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
+
+        # Apply the pre-weighting factor to the sinogram
+        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
+
+        # Compute the scaled filter
+        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
+        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
+        recon_filter = mj.tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        recon_filter = alpha * recon_filter
+
+        # Define convolution for a single row (across its channels)
+        def convolve_row(row):
+            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+
+        # Apply above convolve func across each row of a view
+        def apply_convolution_to_view(view):
+            return jax.vmap(convolve_row)(view)
+
+        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
+        num_views = sinogram.shape[0]
+        filtered_sino_list = []
+        for i in range(0, num_views, view_batch_size):
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
+            filtered_sinogram_batch.block_until_ready()
+            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
+        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
+        filtered_sinogram *= jnp.pi / num_views
+        return filtered_sinogram
+
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+        """
+        Perform FDK reconstruction on the given sinogram.
+
+        Our implementation uses standard filtering of the sinogram, then uses the adjoint of the forward projector to
+        perform the backprojection.  This is different from many implementations, in which the backprojection is not
+        exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
+        see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Args:
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
+            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+
+        Returns:
+            recon (jax array): The reconstructed volume after FDK reconstruction.
+        """
+
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+
+        # Apply backprojection
+        recon = self.back_project(filtered_sinogram)
+
+        return recon
 
