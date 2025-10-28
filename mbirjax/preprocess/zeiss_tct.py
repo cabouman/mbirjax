@@ -296,27 +296,30 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = 1 delta_det_channel_unit
+    # Unit conversion table (relative to um)
     # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
-    if source_iso_dist_unit == 'mm' and delta_det_channel_unit == 'um':
-        source_iso_dist *= 1000 # mm to um
-        source_detector_dist *= 1000 # mm to ALU
-    else:
-        raise ValueError("Unknown units for source_iso_dist, and source_det_dist; cannot safely convert to mbirjax format.")
+    #   For now, I assume that only um and mm appear in the xrm file
+    unit_conversion = {'um': 1.0, 'mm': 1000.0}
 
-    if obj_x_position_unit == 'um' and obj_y_position_unit == 'um' and obj_z_position_unit == 'um' and delta_det_channel_unit == 'um':
-        pass
-    else:
-        raise ValueError("Unknown units for translation_vectors; cannot safely convert to mbirjax format.")
+    # Set 1 ALU = 1 delta_det_channel_unit
+    ALU_unit = delta_det_channel_unit
 
-    if delta_det_row_unit == 'um' and delta_det_channel_unit == 'um':
-        pass
+    # Convert physical units to ALU
+    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+
+    if obj_x_position_unit == obj_y_position_unit == obj_z_position_unit:
+        translation_vectors = translation_vectors * unit_conversion[obj_x_position_unit] / unit_conversion[ALU_unit]
     else:
-        raise ValueError("Unknown units for delta_det_channels, and delta_det_rows; cannot safely convert to mbirjax format.")
+        translation_vectors[:, 0] = translation_vectors[:, 0] * unit_conversion[obj_x_position_unit] / unit_conversion[ALU_unit]
+        translation_vectors[:, 1] = translation_vectors[:, 1] * unit_conversion[obj_y_position_unit] / unit_conversion[ALU_unit]
+        translation_vectors[:, 2] = translation_vectors[:, 2] * unit_conversion[obj_z_position_unit] / unit_conversion[ALU_unit]
+
+    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[ALU_unit]
 
     # ToDo: Need to check the units of detector offset
     #  For now, we assume that the det_channel_offset have units of pixels.
-    det_channel_offset *= delta_det_channel # pixels to um
+    det_channel_offset *= delta_det_channel # pixels to ALU
 
     # Create a dictionary to store MBIR parameters
     num_views = translation_vectors.shape[0]
