@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.7"
+version = "0.6.12"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -24,6 +24,7 @@ dependencies = [
     "jaxlib",
     "matplotlib",
     "numpy",
+    "scipy",
     "setuptools",
     "ruamel.yaml",
     "psutil",
@@ -33,7 +34,9 @@ dependencies = [
     "tqdm",
     "easygui",
     "gdown",
-    "pywavelets"
+    "pywavelets",
+    "olefile",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]

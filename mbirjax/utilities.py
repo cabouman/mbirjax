@@ -19,9 +19,8 @@ from urllib.parse import urlparse
 import shutil
 import h5py
 import re
-import gdown
 import warnings
-from ruamel.yaml import YAML
+import subprocess
 
 
 def load_data_hdf5(file_path):
@@ -403,7 +402,12 @@ def download_and_extract(download_url, save_dir):
                 actual_filename = f.read().strip()
             file_path = os.path.join(save_dir, actual_filename)
             filename = actual_filename
-            is_download = False
+
+            if os.path.exists(file_path):
+                is_download = False
+            else:
+                is_download = True
+
         else:
             filename = f"gdrive_{file_id}"
             is_download = True
@@ -421,6 +425,7 @@ def download_and_extract(download_url, save_dir):
         if is_url:
             if is_google_drive:
                 print("Downloading file from Google Drive...")
+                import gdown
                 try:
                     gdrive_url = f"https://drive.google.com/uc?id={file_id}"
 
@@ -454,7 +459,12 @@ def download_and_extract(download_url, save_dir):
                     else:
                         raise RuntimeError(f'HTTP {e.code}: {e.reason}')
                 except urllib.error.URLError as e:
-                    raise RuntimeError('URLError raised! Check internet connection.')
+                    res = subprocess.run(
+                        ["curl", "-L", "--fail", "-o", file_path, download_url],
+                        capture_output=True, text=True
+                    )
+                    if res.returncode != 0:
+                        raise RuntimeError(f"Download failed with curl: {res.stderr.strip() or res.stdout.strip()}")
                 print(f"Download successful! File saved to {file_path}")
         else:
             print(f"Copying local file from {download_url} to {file_path}...")
@@ -540,7 +550,7 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
 
 
 
-def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radial_margin=10, top_margin=10, bottom_margin=10):
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
@@ -552,7 +562,7 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
         recon (Union[np.ndarray, jax.Array]): 3D volume in (row, col, slice) order. Will be converted to NumPy before writing.
         recon_dict (dict, optional): Dictionary of attributes to store as metadata in the dataset.
-        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to True.
+        remove_flash (bool, optional): Whether to apply a cylindrical mask to remove peripheral and top/bottom slices. Defaults to False.
         radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
         top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
         bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
@@ -564,16 +574,19 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=True, radi
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    recon = jnp.asarray(recon)
+    @jax.jit
+    def process_recon(local_recon):
 
-    if remove_flash:
-        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+        if remove_flash:
+            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
 
-    recon = jnp.transpose(recon, (2, 0, 1))
-    # Flip the slice axis to convert to right-handed coordinate system
-    recon = recon[::-1, :, :]
-    recon = np.array(recon)
+        # Convert to right-handed coordinate system
+        local_recon = jnp.transpose(local_recon, (2, 1, 0))
+        local_recon = jax.device_get(local_recon)
+        return local_recon
 
+    recon = jax.device_get(recon)
+    recon = process_recon(recon)
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
@@ -696,16 +709,21 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_size=20):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
     Args:
         recon_shape (tuple[int, int, int]): Shape of the reconstruction volume.
         option (str): Phantom type to generate. Options are 'dots' or 'text'.
-        words (list[str]): List of ASCII words to render.
+        text (list[str]): List of ASCII text strings to render.
         fill_rate (float, optional): Fill rate of the reconstruction volume. Default is 0.05.
         font_size (int, optional): Font size of the ASCII words. Default is 20.
+        text_row_indices (list[int], optional): List of row indices where each text string should be placed. Default is None.
+                                           If None, words are automatically distributed evenly across the first dimension.
+                                           Must have the same length as 'words' if provided.
+        horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
+        vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
 
     Returns:
         np.ndarray: Generated phantom volume.
@@ -713,7 +731,7 @@ def gen_translation_phantom(recon_shape, option, words, fill_rate=0.05, font_siz
     if option == 'dots':
         return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        return gen_text_phantom(recon_shape, words, font_size)
+        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
@@ -748,7 +766,8 @@ def gen_dot_phantom(recon_shape, fill_rate):
     return gt_recon
 
 
-def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
+def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal_offset=0,
+                     vertical_offset=0, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -756,15 +775,37 @@ def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
         recon_shape (tuple[int, int, int]): Shape of the phantom volume (num_rows, num_cols, num_slices).
         words (list[str]): List of ASCII words to render.
         font_size (int): Font size of ASCII words.
+        row_indices (list[int], optional): List of row indices where each word should be placed. Default is None.
+                                           If None, words are automatically distributed evenly across the first dimension.
+                                           Must have the same length as 'words' if provided.
+        horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
+        vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
         font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
 
     Returns:
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
-    positions = []
-    row_positions = np.linspace(0, recon_shape[0] - 1, len(words) + 2)[1:-1]
-    for r in row_positions:
-        positions.append((int(round(r)), recon_shape[1] // 2, recon_shape[2] // 2))
+    if row_indices is not None:
+        if len(row_indices) != len(words):
+            raise ValueError(
+                f"Length of row_indices ({len(row_indices)}) must match length of words ({len(words)})")
+
+        for idx in row_indices:
+            if not (0 <= idx < recon_shape[0]):
+                raise ValueError(f"Row index {idx} is out of bounds for first dimension of size {recon_shape[0]}")
+
+        positions = []
+        for row_idx in row_indices:
+            col_pos = recon_shape[1] // 2 + horizontal_offset
+            slice_pos = recon_shape[2] // 2 - vertical_offset
+            positions.append((row_idx, col_pos, slice_pos))
+    else:
+        positions = []
+        row_positions = np.linspace(0, recon_shape[0] - 1, len(words) + 2)[1:-1]
+        for r in row_positions:
+            col_pos = recon_shape[1] // 2 + horizontal_offset
+            slice_pos = recon_shape[2] // 2 - vertical_offset
+            positions.append((int(round(r)), col_pos, slice_pos))
 
     array_size = np.minimum(recon_shape[1], recon_shape[2])
 
@@ -805,15 +846,25 @@ def gen_text_phantom(recon_shape, words, font_size, font_path="DejaVuSans.ttf"):
         word_array = (word_array > 0).astype(np.float32)
 
         # Crop or pad word_array to fit in the recon volume
-        r_start = max(0, r)
-        r_end = min(recon_shape[0], r + 1)
-        c_start = max(0, c - array_size // 2)
-        c_end = min(recon_shape[1], c_start + array_size)
-        s_start = max(0, s - array_size // 2)
-        s_end = min(recon_shape[2], s_start + array_size)
+        r_start, r_end = r, r + 1
+        c_start = c - array_size // 2
+        c_end = c_start + array_size
+        s_start = s - array_size // 2
+        s_end = s_start + array_size
 
-        word_crop = word_array[:(c_end - c_start), :(s_end - s_start)]
-        phantom[r_start:r_end, c_start:c_end, s_start:s_end] = word_crop
+        c_start_valid = max(c_start, 0)
+        c_end_valid = min(c_end, recon_shape[1])
+        s_start_valid = max(s_start, 0)
+        s_end_valid = min(s_end, recon_shape[2])
+
+        word_c_start = c_start_valid - c_start
+        word_c_end = word_c_start + (c_end_valid - c_start_valid)
+        word_s_start = s_start_valid - s_start
+        word_s_end = word_s_start + (s_end_valid - s_start_valid)
+
+        # Place cropped word_array into phantom
+        word_crop = word_array[word_c_start:word_c_end, word_s_start:word_s_end]
+        phantom[r_start:r_end, c_start_valid:c_end_valid, s_start_valid:s_end_valid] = word_crop
 
     return phantom
 
@@ -1054,3 +1105,157 @@ def gen_cube_phantom(recon_shape, device=None):
             phantom_rows, phantom_cols)
 
     return jnp.array(phantom, device=device)
+
+
+def stitch_arrays(array_list, overlap, axis=2):
+    """
+    Concatenate JAX arrays along one axis while linearly blending a fixed overlap
+    between adjacent arrays.
+
+    This behaves like `jnp.concatenate` except that for each adjacent pair, the
+    first `overlap_length` elements of the second array and the last
+    `overlap_length` elements of the current result are combined by a piece-wise linear cross‑fade.
+
+    All non‑`axis` dimensions must match across inputs.
+
+    Args:
+        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
+        overlap (int): Number of elements to blend between each adjacent pair.
+            Must be `>= 1` and not exceed the length of any input along `axis`.
+        axis (int, optional): Axis along which to stitch. Defaults to 2.
+
+    Returns:
+        jax.Array: Stitched array. Its shape equals the input shape with the
+        length along `axis` equal to:
+
+            sum(len_k) - (len(array_list) - 1) * overlap_length
+
+        where `len_k` are the lengths of each input along `axis`.
+
+    Raises:
+        ValueError: If fewer than two arrays are provided, if non‑`axis`
+            dimensions differ, or if any array is shorter than
+            `overlap_length` along `axis`.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> a0 = jnp.arange(2*2*5).reshape(2, 2, 5)
+        >>> a1 = jnp.arange(2*2*6).reshape(2, 2, 6)
+        >>> out = stitch_arrays([a0, a1], overlap=3, axis=2)
+        >>> out.shape
+        (2, 2, 8)
+
+        # 8 comes from 5 + 6 - 3 (one overlap between two arrays).
+    """
+    # Check for valid input
+    if not isinstance(array_list, list) or len(array_list) < 2:
+        raise ValueError('array_list must be a list of 2 or more jax arrays.')
+    for dim in range(array_list[0].ndim):
+        lengths = [array.shape[dim] for array in array_list]
+        if dim != axis:
+            if np.amax(lengths) != np.amin(lengths):
+                raise ValueError('The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
+        if dim == axis:
+            if np.amin(lengths) < overlap:
+                raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
+
+    # Create a piecewise linear weight array:
+    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
+    t = jnp.linspace(0, 1, overlap)
+    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    weights_shape = np.ones(array_list[0].ndim, dtype=int)
+    weights_shape[0] = len(weights)
+    weights = weights.reshape(weights_shape)
+
+    # Start with the first array in the list
+    stitched = jnp.swapaxes(array_list[0], 0, axis)
+
+    # Iterate through each subsequent array in the list
+    for next_array in array_list[1:]:
+        # Extract the overlap from the current end of the stitched array and the beginning of the next array
+        overlap_current = stitched[-overlap:]
+        next_array = jnp.swapaxes(next_array, 0, axis)
+        overlap_next = next_array[:overlap]
+
+        # Weighted average for the overlapping part
+        weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
+
+        # Replace the overlap in the stitched array
+        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+
+        # Append the non-overlapping remainder of the next array
+        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+
+    return jnp.swapaxes(stitched, 0, axis)
+
+
+def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None):
+    """
+    Create an instance of TomographyModel with the given parameters
+
+    Args:
+        geometry_type (str): 'parallel' or 'cone'
+        sinogram_shape (tuple list of int): (num_views, num_rows, num_channels)
+        angles (ndarray of float): 1D vector of projection angles in radians
+        source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
+        source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
+
+    Returns:
+        An instance of ConeBeamModel or ParallelBeam model
+    """
+    if geometry_type == 'cone':
+        model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                 source_iso_dist=source_iso_dist)
+    elif geometry_type == 'parallel':
+        model = mj.ParallelBeamModel(sinogram_shape, angles)
+    else:
+        raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
+
+    return model
+
+
+def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
+    """
+    Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
+    and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
+
+    Args:
+        ct_model (TomographyModel): The model to copy.
+        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
+        new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
+        new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
+
+    Returns:
+        An instance of ConeBeamModel or ParallelBeam model
+    """
+    required_param_names = ct_model.get_required_param_names()
+    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                           required_param_names=required_param_names,
+                                                                           values_only=True)
+
+    #  Get the shape of the old sinogram
+    new_shape = list(ct_model.get_params('sinogram_shape'))
+    try:
+        old_angles = ct_model.get_params('angles')
+    except NameError as e:
+        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    if new_angles is None:
+        new_angles = old_angles
+    new_shape[0] = len(new_angles)
+
+    if new_num_det_rows is not None:
+        new_shape[1] = new_num_det_rows
+
+    if new_num_det_cols is not None:
+        new_shape[2] = new_num_det_cols
+
+    # Set the new sinogram shape and angles
+    required_params['sinogram_shape'] = tuple(new_shape)
+    required_params['angles'] = new_angles
+    new_model = type(ct_model)(**required_params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        del other_params['recon_shape']  # This should be set automatically by the constructor
+        new_model.set_params(**other_params)
+
+    return new_model

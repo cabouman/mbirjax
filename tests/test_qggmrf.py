@@ -38,7 +38,7 @@ class TestQGGMRF(unittest.TestCase):
         delta = np.random.rand(*recon_shape)
         pixel_indices = np.arange(flat_shape[0])
 
-        with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
+        with jax.enable_x64(True):  # Finite difference requires 64 bit arithmetic
             epsilon = 1e-7
             alpha = 0.6
             recon_alpha = recon0 + alpha * delta
@@ -154,7 +154,7 @@ class TestQGGMRF(unittest.TestCase):
 
         # Then get a perturbation to verify a finite difference approximation
         delta = np.random.rand(*recon_shape)
-        with jax.experimental.enable_x64(True):  # Finite difference requires 64 bit arithmetic
+        with jax.enable_x64(True):  # Finite difference requires 64 bit arithmetic
             epsilon = 1e-7
             recon1 = recon0 + epsilon * delta
 
@@ -165,7 +165,7 @@ class TestQGGMRF(unittest.TestCase):
             finite_diff = (loss1 - loss0) / epsilon
             taylor = jnp.sum(grad0.flatten() * delta.flatten())
 
-        assert (jnp.allclose(finite_diff, taylor, rtol=1e-3))
+        assert jnp.allclose(float(finite_diff), float(taylor), rtol=1e-3)
 
         grad_direct, hess_direct = compute_qggmrf_grad_and_hessian(recon0, qggmrf_params)
         assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))

@@ -7,6 +7,9 @@ Base Parameters
 The following documents the base parameters used by the :ref:`TomographyModelDocs` class.
 Any of these parameters can be modified with :func:`TomographyModel.set_params`.
 
+Note that the default detector channel spacing is `delta_det_channel = 1 ALU`, and the voxel spacing is automatically
+set to `delta_voxel = 1/magnifaction ALU` where `magnification` is the magnification of a voxel at iso.
+
 Parameters that are specific to particular geometries are documented in the geometry's documentation.
 
 Reconstruction Parameters
@@ -108,9 +111,11 @@ Assumed offset in rows of the source-to-detector line with center of detector in
 
 delta_voxel
 """""""""""
-:Type: float (Defaults to 1.0)
+:Type: float (Defaults to None)
 
 Spacing between voxels in ALU.
+If None, then it is automatically set to `delta_voxel = delta_det_channel / magnification` where `magnification` is the
+magnification of a voxel at iso determined from the function :func:`TomographyModel.get_magnification()`.
 
 Proximal Map Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^
