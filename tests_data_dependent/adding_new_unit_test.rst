@@ -2,24 +2,28 @@
 Adding a Data-Dependent Unit Test
 ==========================================
 
-1. START FROM AN EXISTING TEMPLATE
-==================================
+1. CREATING NEW UNIT TEST CLASSES
+=================================
 
-Copy the mixin + subclass pattern from ``tests_data_dependent/test_projection.py`` or ``tests_data_dependent/test_recon.py``. Keep reusable logic inside a mixin class whose name does **not** begin with ``Test``. Create concrete subclasses that inherit the mixin **and** ``unittest.TestCase`` so pytest only collects the subclasses.
+Reference the patterns used in previous tests in the ``tests_data_dependent`` directory.
 
-2. DECLARE REQUIRED CLASS ATTRIBUTES
-====================================
+If creating a base class:
 
-Each concrete test class must set:
+- Do NOT start the class name with ``Test`` so the base mixin is not collected by ``pytest``.
+- Do NOT inherit from ``unittest.TestCase`` so the base mixin is not collected by ``unittest``.
 
-- ``MODEL``: a class with ``.from_file`` (for example, ``mj.ConeBeamModel``).
-- ``SOURCE_FILEPATH``: URL or path to a ``.tgz`` archive containing ``phantom``, ``sinogram``, ``recon``, and ``params`` datasets.
-- ``DATA_FILE_SHA256``: checksum for the archive (see Section 4 below).
-- ``TOLERANCES``: only for recon tests; a dict defining ``nrmse``, ``max_diff``, and ``pct_95`` thresholds.
+If creating a concrete subclass:
 
-Always decorate the concrete subclasses with ``@pytest.mark.data_dependent`` so they stay opt-in during regular CI runs.
+- DO inherit from ``unittest.TestCase`` and start the class name with ``Test`` so the test is collected.
+- DO start every unit test method with ``test`` so pytest collects the method.
+- DO decorate the class with ``@pytest.mark.data_dependent`` so it is not run by default.
+- The ``setUpClass`` method runs only once before all unit tests, so use it to download the relevant data once for the suite.
+- The ``tearDownClass`` method runs only once after all unit tests, so use it to clean up the data.
+- The ``setUp`` method runs before each unit test method, so use it to reinitialize test data when needed.
+- ``with self.subTest(...)`` lets you iterate through test variations (for example, all ``use_gpu`` options).
 
-3. PREPARE OR UPDATE THE DATASET
+
+1. PREPARE OR UPDATE THE DATASET
 ================================
 
 If the required archive already exists, just point ``SOURCE_FILEPATH`` at it. To build new fixtures, run:
@@ -30,19 +34,19 @@ If the required archive already exists, just point ``SOURCE_FILEPATH`` at it. To
 
 The helper script writes fresh ``.tgz`` datasets under ``/depot/bouman/data/unit_test_data`` mirroring the layout expected by the tests. Upload or publish the generated archive and update ``SOURCE_FILEPATH`` accordingly.
 
-4. GET THE SHA-256 FOR THE DATA ARCHIVE
+3. GET THE SHA-256 FOR THE DATA ARCHIVE
 =======================================
 
 Follow the checksum workflow from ``README_DATA_DEPENDENT.rst``:
 
 1. Put any placeholder string in ``DATA_FILE_SHA256``.
 2. Run the test once with ``pytest -m data_dependent tests_data_dependent/test_your_module.py``.
-3. The run will warn if the checksum is wrong, showing the **actual** hash; copy that value.
+3. The run warns if the checksum is wrong, showing the **actual** hash; copy that value.
 4. Replace the placeholder with the reported hash so future runs verify the dataset integrity.
 
 You can regenerate the hash manually by calling ``sha256_file`` from ``tests_data_dependent/_test_data_dependent_utils.py`` if you already have the archive locally.
 
-5. EXECUTE THE SUITE
+4. EXECUTE THE SUITE
 ====================
 
 Run the targeted module to confirm the new tests pass and the checksum matches:
