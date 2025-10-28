@@ -153,7 +153,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
     num_det_channels = Zeiss_params["num_det_channels"]
     num_det_rows = Zeiss_params["num_det_rows"]
 
-    # Detector offset (in um)
+    # Detector offset
     # TODO: Need to check whether the detector offset parameter is correctly read from the file
     #   Since I can only decoded one single float from the directory I found in the file,
     #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
@@ -309,20 +309,16 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     else:
         raise ValueError("Unknown units for translation_vectors; cannot safely convert to mbirjax format.")
 
-    # ToDo:  Need to check the units of detector offset
-    #  For now, I assume that the det_row_offset and det_channel_offset have units of um.
-    if delta_det_channel_unit == 'um':
-        det_row_offset /= delta_det_channel
-        det_channel_offset /= delta_det_channel
-    else:
-        raise ValueError("Unknown units for det_row_offset, and det_column_offset; cannot safely convert to mbirjax format.")
-
     if delta_det_row_unit == 'um' and delta_det_channel_unit == 'um':
         delta_det_row /= delta_det_channel
     else:
         raise ValueError("Unknown units for delta_det_channels, and delta_det_rows; cannot safely convert to mbirjax format.")
 
     delta_det_channel = 1.0
+
+    # ToDo: Need to check the units of detector offset
+    #  For now, we assume that the det_channel_offset have units of pixels.
+    det_channel_offset *= delta_det_channel # pixels to ALU
 
     # Create a dictionary to store MBIR parameters
     num_views = translation_vectors.shape[0]
