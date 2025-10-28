@@ -153,6 +153,13 @@ def load_scans_and_params(dataset_dir, verbose=1):
     num_det_channels = Zeiss_params["num_det_channels"]
     num_det_rows = Zeiss_params["num_det_rows"]
 
+    # Detector offset (in um)
+    # TODO: Need to check whether the detector offset parameter is correctly read from the file
+    #   Since I can only decoded one single float from the directory I found in the file, I just set det_channel_offset = det_row_offset = detector offset
+    detector_offset = Zeiss_params["det_offset"]
+    det_row_offset = detector_offset
+    det_channel_offset = detector_offset
+
     # object positions in x, y, z axis
     # The scanner uses a coordinate system different from MBIRJAX
     # ToDo: Perform experiments to determine the Zeiss coordinates
@@ -234,6 +241,8 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'delta_det_row': delta_det_row,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
+        'det_row_offset': det_row_offset,
+        'det_channel_offset': det_channel_offset,
         'obj_x_positions': obj_x_positions,
         'obj_y_positions': obj_y_positions,
         'obj_z_positions': obj_z_positions,
@@ -270,10 +279,10 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
+    det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
     source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
     translation_vectors = calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions)
-    det_row_offset = calc_row_params(crop_pixels_top, crop_pixels_bottom)
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -299,7 +308,15 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     else:
         raise ValueError("Unknown units for translation_vectors; cannot safely convert to mbirjax format.")
 
+    # ToDo:  Need to check the units of detector offset
+    #  For now, I assume that the det_row_offset and det_channel_offset have units of um.
     if delta_det_channel_unit == 'um':
+        det_row_offset /= delta_det_channel
+        det_channel_offset /= delta_det_channel
+    else:
+        raise ValueError("Unknown units for det_row_offset, and det_column_offset; cannot safely convert to mbirjax format.")
+
+    if delta_det_row_unit == 'um' and delta_det_channel_unit == 'um':
         delta_det_row /= delta_det_channel
     else:
         raise ValueError("Unknown units for delta_det_channels, and delta_det_rows; cannot safely convert to mbirjax format.")
@@ -319,6 +336,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params['delta_det_row'] = delta_det_row
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
     optional_params['det_row_offset'] = det_row_offset
+    optional_params['det_channel_offset'] = det_channel_offset
 
     return translation_params, optional_params
 
@@ -570,6 +588,8 @@ def read_ole_metadata(ole):
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        # TODO: Need to check whether we read the correct detector offset parameter from the file
+        'det_offset': _read_ole_value(ole, 'DetAssemblyInfo/CameraOffset', '<f'),
         'iso_det_dist': _read_ole_arr(
             ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_arr(
@@ -813,20 +833,5 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
     translation_vectors = center_xyz_position - obj_xyz_positions
 
     return translation_vectors
-
-
-def calc_row_params(crop_pixels_top, crop_pixels_bottom):
-    """
-    Calculate the MBIRJAX geometry parameters: det_row_offset
-
-    Args:
-        crop_pixels_top (int): The number of pixels to crop from top of the sinogram.
-        crop_pixels_bottom (int): The number of pixels to crop from bottom of the sinogram.
-
-    Returns:
-        det_row_offset (float): Distance from center of detector to the source-detector line along a column.
-    """
-    det_row_offset = - (crop_pixels_top + crop_pixels_bottom) / 2
-    return det_row_offset
 
 ######## END subroutines for Zeiss-MBIR parameter conversion
