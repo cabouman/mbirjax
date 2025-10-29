@@ -90,7 +90,10 @@ time0 = time.time()
 # recon and recon_dict can be used together for viewing and saving to an hdf5 file.
 # Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
 # or to recreate the model if desired.
-recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model.recon(sinogram,
+                                   weights=weights,
+                                   max_iterations=2,
+                                   stop_threshold_change_pct=0)
 
 max_diff = np.amax(np.abs(phantom - recon))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
@@ -115,12 +118,12 @@ ct_model.save_recon_hdf5(filepath, recon, recon_dict)
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
 mj.slice_viewer(phantom, recon, data_dicts=[None, recon_dict], title=title)
 
-# The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
-#  the model if desired. The load function can be used even without an existing instance of a ct model.
-new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
-
-print('recon and recon_dict loaded from {}'.format(filepath))
-print('New model created: {}'.format(new_model.get_params('geometry_type')))
+# # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
+# #  the model if desired. The load function can be used even without an existing instance of a ct model.
+# new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
+#
+# print('recon and recon_dict loaded from {}'.format(filepath))
+# print('New model created: {}'.format(new_model.get_params('geometry_type')))
 
 # From this you could view again, restart the recon from the previous iteration, etc.
 
