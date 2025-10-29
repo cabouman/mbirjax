@@ -146,9 +146,10 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # detector pixel pitch (in um)
     # Zeiss detector pixel has equal width and height
+    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
     iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"] # um
-    delta_det_row = iso_pixel_pitch
-    delta_det_channel = iso_pixel_pitch
+    delta_det_row = det_pixel_pitch
+    delta_det_channel = det_pixel_pitch
 
     # dimensions of radiograph
     num_det_channels = Zeiss_params["num_det_channels"]
@@ -156,10 +157,11 @@ def load_scans_and_params(dataset_dir, verbose=1):
 
     # object positions in x, y, z axis (in um)
     # The scanner uses a coordinate system different from MBIRJAX
+    # ToDo: Perform experiments to determine the Zeiss coordinates
     # Axis mapping:
-    #   Scanner z-axis -> MBIRJAX x-axis
-    #   Scanner x-axis -> MBIRJAX y-axis
-    #   Scanner y-axis -> MBIRJAX z-axis
+    #   Scanner z-axis -> MBIRJAX x-axis or -x-axis not sure
+    #   Scanner x-axis -> MBIRJAX y-axis or -y-axis not sure
+    #   Scanner y-axis -> MBIRJAX z-axis or -z-axis not sure
     obj_x_positions = np.array(Zeiss_params['z_positions'], dtype=float).ravel()
     obj_y_positions = np.array(Zeiss_params['x_positions'], dtype=float).ravel()
     obj_z_positions = np.array(Zeiss_params['y_positions'], dtype=float).ravel()
@@ -715,7 +717,7 @@ def calc_source_det_params(source_iso_dist, iso_det_dist):
     Returns:
         source_detector_dist (float): Distance between the detector and source
     """
-    source_det_dist = source_iso_dist
+    source_det_dist = source_iso_dist + iso_det_dist
     return source_det_dist
 
 
