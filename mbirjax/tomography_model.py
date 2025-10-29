@@ -232,10 +232,11 @@ class TomographyModel(ParameterHandler):
             num_gpus = len(gpus)
             excess_views = num_views % num_gpus
             if excess_views != 0:
-                raise ValueError(f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected."
-                                 "The number of views must be an exact multiple of the number of GPUs."
-                                 f"Currently there are {num_views} views and {num_gpus} detected GPUs, so there are {excess_views} excess views."
-                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+                raise ValueError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected."
+                    "The number of views must be an exact multiple of the number of GPUs."
+                    f"Currently there are {num_views} views and {num_gpus} detected GPUs, so there are {excess_views} excess views."
+                    "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
 
             self.use_gpu = 'sharding'
 
@@ -258,10 +259,16 @@ class TomographyModel(ParameterHandler):
             mem_sino_per_gpu = (mem_for_vcd_sinos_gpu + mem_per_projection_total) / num_gpus
             mem_budget_for_voxel = gpu_memory_to_use - mem_sino_per_gpu
 
-            if mem_budget_for_voxel < mem_per_cylinder:
-                raise ValueError('Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
+            # the results of the math were different from what has empirically been seen so this conservative factor
+            # has been added until the math is changed
+            mem_per_cylinder_conservative_factor = 600
+            conservative_mem_per_cylinder = mem_per_cylinder * mem_per_cylinder_conservative_factor
 
-            pixel_batch_size = int(np.floor(mem_budget_for_voxel / mem_per_cylinder))
+            if mem_budget_for_voxel < conservative_mem_per_cylinder:
+                raise ValueError(
+                    'Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
+
+            pixel_batch_size = int(np.floor(mem_budget_for_voxel / conservative_mem_per_cylinder))
 
             self.pixel_batch_size_for_vmap = pixel_batch_size
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
