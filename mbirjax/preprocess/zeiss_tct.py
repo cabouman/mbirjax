@@ -327,7 +327,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     det_channel_offset *= delta_det_channel # pixels to ALU
 
     # Calculate recon_shape, delta_voxel, and delta_recon_row parameters
-    recon_shape, delta_voxel, delta_recon_row = calc_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
+    recon_shape, delta_voxel, delta_recon_row = calc_tct_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
 
     # Create a dictionary to store MBIR parameters
     translation_params = dict()
@@ -823,7 +823,7 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
 
     return translation_vectors
 
-def calc_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
+def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
     """
     Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
 
