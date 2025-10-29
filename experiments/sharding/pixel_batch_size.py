@@ -7,7 +7,7 @@ import mbirjax as mj
 
 class DummyClass:
 
-    def __init__(self, sinogram_shape, **kwargs):
+    def __init__(self, sinogram_shape, recon_shape, len_gpus, **kwargs):
 
         self.main_device, self.sinogram_device, self.worker = None, None, None
         self.replicated_device = None
@@ -15,7 +15,11 @@ class DummyClass:
         self.projector_functions = None
         self.prox_data = None
 
-        # The following may be adjusted based on memory in set_devices_and_batch_sizes()
+        self.sinogram_shape = sinogram_shape
+        self.recon_shape = recon_shape
+        self.len_gpus = len_gpus
+
+# The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
@@ -40,7 +44,7 @@ class DummyClass:
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
-        use_gpu = self.get_params('use_gpu')
+        use_gpu = 'automatic'
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
@@ -60,9 +64,9 @@ class DummyClass:
         self.cpu_memory = cpu_memory
 
         # Get basic parameters
-        sinogram_shape = self.get_params('sinogram_shape')
+        sinogram_shape = self.sinogram_shape
         num_views, num_det_rows, num_det_channels = sinogram_shape
-        recon_shape = self.get_params('recon_shape')
+        recon_shape = self.recon_shape
         num_slices = recon_shape[2]
 
         zero = jnp.zeros(1)
@@ -100,7 +104,7 @@ class DummyClass:
         mem_for_minimal_sinos_on_gpu = max(mem_for_vcd_sinos_gpu, mem_for_minimal_vcd_sinos_gpu + mem_per_projection / 4) + mem_per_voxel_batch
 
         mem_per_recon = mem_per_entry * np.prod(recon_shape)
-        recon_reps_for_vcd = 6
+        recon_reps_for_vcd = 5
         mem_for_all_vcd = recon_reps_for_vcd * mem_per_recon + mem_for_all_sinos_on_gpu - mem_per_voxel_batch
 
         frac_gpu_mem_to_use = 0.9
@@ -109,7 +113,7 @@ class DummyClass:
         # 'automatic' and more than one GPU: Everything will be done with sharding
         if True or use_gpu == 'automatic' and len(gpus) > 1:
 
-            num_gpus = len(gpus)
+            num_gpus = self.len_gpus
             excess_views = num_views % num_gpus
             if excess_views != 0:
                 raise ValueError(f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected."
@@ -138,10 +142,14 @@ class DummyClass:
             mem_sino_per_gpu = (mem_for_vcd_sinos_gpu + mem_per_projection_total) / num_gpus
             mem_budget_for_voxel = gpu_memory_to_use - mem_sino_per_gpu
 
-            if mem_budget_for_voxel < mem_per_cylinder:
+            # the results of the math were different from what has empirically been seen
+            mem_per_cylinder_conservative_factor = 600
+            conservative_mem_per_cylinder = mem_per_cylinder * mem_per_cylinder_conservative_factor
+
+            if mem_budget_for_voxel < conservative_mem_per_cylinder:
                 raise ValueError('Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
 
-            pixel_batch_size = int(np.floor(mem_budget_for_voxel / mem_per_cylinder))
+            pixel_batch_size = int(np.floor(mem_budget_for_voxel / conservative_mem_per_cylinder))
 
             self.pixel_batch_size_for_vmap = pixel_batch_size
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
@@ -157,7 +165,8 @@ class DummyClass:
 
 
 if __name__ == "__main__":
-    dummy = DummyClass((2000, 2000, 2000))
+    dummy = DummyClass((1800, 1800, 1800), (1800, 1800, 1800), 8)
+    dummy.set_devices_and_batch_sizes()
 
     print(dummy.mem_required_for_cpu)
     print(dummy.mem_required_for_gpu)
