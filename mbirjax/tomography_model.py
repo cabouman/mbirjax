@@ -248,22 +248,28 @@ class TomographyModel(ParameterHandler):
             self.replicated_device = NamedSharding(mesh, P())
             self.worker = gpus[0]
 
-            # create
+            # sharding requires a single view batch
             self.view_batch_size_for_vmap = num_views
 
-            # TODO: calculate this value based on the number of gpus and sinogram size
-            self.pixel_batch_size_for_vmap = 2048 
+            # Recalculate the memory per projection with the new batch size
+            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
+            mem_per_projection_total = mem_per_projection
+
+            mem_sino_per_gpu = (mem_for_vcd_sinos_gpu + mem_per_projection_total) / num_gpus
+            mem_budget_for_voxel = gpu_memory_to_use - mem_sino_per_gpu
+
+            if mem_budget_for_voxel < mem_per_cylinder:
+                raise ValueError('Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
+
+            pixel_batch_size = int(np.floor(mem_budget_for_voxel / mem_per_cylinder))
+
+            self.pixel_batch_size_for_vmap = pixel_batch_size
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
 
             # Recalculate the memory per voxel batch with the new batch size
             mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
 
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-
-            mem_required_for_gpu = max(mem_for_vcd_sinos_gpu,
-                                       mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
-            mem_required_for_gpu /= num_gpus
+            mem_required_for_gpu = mem_sino_per_gpu + mem_per_voxel_batch
             mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
         # 'full':  Everything on GPU
