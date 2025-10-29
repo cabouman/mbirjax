@@ -273,7 +273,7 @@ class TomographyModel(ParameterHandler):
             pixel_batch_size = int(np.floor(mem_budget_for_voxel / conservative_mem_per_cylinder))
 
             self.pixel_batch_size_for_vmap = pixel_batch_size
-            self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap * 50
+            self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
 
             # Recalculate the memory per voxel batch with the new batch size
             mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
