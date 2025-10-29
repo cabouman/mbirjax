@@ -28,12 +28,14 @@ def main():
     tct_model.set_params(sharpness=2.0)
     tct_model.auto_set_recon_shape(sino.shape)
     recon_shape = tct_model.get_params('recon_shape')
+    delta_det_channel = tct_model.get_params('delta_det_channel')
 
     # Set parameters for recon
-    tct_model.set_params(recon_shape=(20,)+recon_shape[1:])
-    tct_model.set_params(delta_recon_row=10)
+    tct_model.set_params(positivity_flag=True)
+    tct_model.set_params(recon_shape=(40,)+recon_shape[1:])
+    #tct_model.set_params(delta_recon_row=10 * delta_det_channel)
     tct_model.set_params(partition_sequence=50*[0,] + 100*[2,] + [3,])
-    tct_model.set_params(qggmrf_nbr_wts=[0.01, 1, 1])
+    tct_model.set_params(qggmrf_nbr_wts=[0.1, 1, 1])
 
     # Print model parameters and display translation array
     translation_vectors = translation_params['translation_vectors']
