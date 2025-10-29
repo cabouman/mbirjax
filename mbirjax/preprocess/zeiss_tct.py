@@ -885,8 +885,8 @@ def calc_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det
     # Compute the number of unknown pixels per view
     num_pixels_per_view = ((recon_box[0] + num_det_rows) * (recon_box[1] + num_det_channels)) / num_views
     num_measurements_per_view = num_det_channels * num_det_rows
-    # Select the number of rows to match the number of unknowns to the number of measurements
-    num_recon_rows = jnp.ceil(num_measurements_per_view / num_pixels_per_view)
+    # Select the number of rows so that (number of unknowns) = 2*(the number of measurements)
+    num_recon_rows = 2*jnp.ceil(num_measurements_per_view / num_pixels_per_view)
 
     # Make sure the object extends no further than halfway to the source
     max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
