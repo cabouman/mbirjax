@@ -16,7 +16,7 @@ tests_data_dependent/data/*
 *.ipynb
 
 # Mac OSX files
-.DS_Store
+*.DS_Store
 *.png
 *.jpg
 *.pdf
