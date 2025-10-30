@@ -827,9 +827,6 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     # Calculate magnification
     magnification = source_det_dist / source_iso_dist
 
-    # Calculate delta_voxel
-    delta_voxel = delta_det_channel / magnification
-
     # Calculate the width and height of the detector in ALU
     detect_box = jnp.array([delta_det_channel * num_det_channels, delta_det_row * num_det_rows])
 
@@ -844,6 +841,9 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     # However, we will use det_pixel_pitch_iso to calculate both the number rows and their pitch
     det_pixel_pitch_iso_vec = jnp.array([delta_det_row, delta_det_channel]) / magnification
     det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
+
+    # Set delta_voxel
+    delta_voxel = float(det_pixel_pitch_iso)
 
     ######### Compute the row pitch based on a heuristic #########
     # ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
