@@ -66,7 +66,7 @@ def back_project(size, output_filepath='output.csv'):
 
 if __name__ == "__main__":
 
-    size = 1024
+    size = 1800
     output_filepath = "../output/back_project_mem.txt"
 
     # the sinogram and recon will have shape (size, size, size)

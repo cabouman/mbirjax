@@ -254,25 +254,24 @@ class TomographyModel(ParameterHandler):
             # sharding requires a single view batch
             self.view_batch_size_for_vmap = num_views
 
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-            mem_per_projection_total = mem_per_projection * 0.55 # hack here
+            # calculate the projection memory budget
+            mem_sino_per_gpu = mem_for_vcd_sinos_gpu / num_gpus
+            mem_budget_for_proj = gpu_memory_to_use - mem_sino_per_gpu
 
-            mem_sino_per_gpu = (mem_for_vcd_sinos_gpu + mem_per_projection_total) / num_gpus
-            mem_budget_for_voxel = gpu_memory_to_use - mem_sino_per_gpu
+            # mem_per_cylinder:      mem_per_entry * pixel_batch_size * num_det_rows
+            # empirical working mem: mem_per_entry * pixel_batch_size * num_det_rows * num_views / 2.
+            # mem_budget_for_proj:   the memory available after all static sinogram are accounted for
+            # mem_budget_for_proj = mem_per_cylinder + empirical working mem
+            # mem_budget_for_proj = mem_per_entry * pixel_batch_size * num_det_rows
+            #                       + mem_per_entry * pixel_batch_size * num_det_rows * num_views / 2
+            pixel_batch_size = int(mem_budget_for_proj / (mem_per_entry * num_det_rows
+                                                          + mem_per_entry * num_det_rows * num_views / 2))
 
-            # the results of the math were different from what has empirically been seen so this conservative factor
-            # has been added until the math is changed
-            mem_per_cylinder_conservative_factor = 100
-            conservative_mem_per_cylinder = mem_per_cylinder * mem_per_cylinder_conservative_factor
-
-            if mem_budget_for_voxel < conservative_mem_per_cylinder:
+            if pixel_batch_size < 1:
                 raise ValueError(
                     'Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
 
-            pixel_batch_size = int(np.floor(mem_budget_for_voxel / conservative_mem_per_cylinder))
-
-            self.pixel_batch_size_for_vmap = 4000 # pixel_batch_size
+            self.pixel_batch_size_for_vmap = pixel_batch_size
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
 
             # Recalculate the memory per voxel batch with the new batch size
