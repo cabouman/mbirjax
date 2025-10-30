@@ -13,8 +13,7 @@ pp = pprint.PrettyPrinter(indent=4)
 logger = logging.getLogger(__name__)
 
 
-def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
-                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1):
+def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1):
     """
     Load Zeiss sinogram data and prepare arrays ana parameters for TranslationModel reconstruction.
 
@@ -29,7 +28,6 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
             - "obj_scan" (a subfolder containing the object scan)
             - "blank_scan" (a subfolder containing the blank scan)
             - "dark_scan" (a subfolder containing the dark scan)
-        downsample_factor (Tuple[int, int], optional): Downsampling factor for detector rows and channels. Defaults to (1, 1).
         crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. Defaults to None.
         crop_pixels_top (int, optional): Pixels to crop from top of the sinogram. Defaults to None.
         crop_pixels_bottom (int, optional): Pixels to crop from bottom of the sinogram. Defaults to None.
@@ -45,8 +43,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
         .. code-block:: python
 
             # Get data and reconstruction parameters
-            sino, translation_params, optional_params = mbirjax.preprocess.zeiss.compute_sino_and_params(
-            dataset_dir, downsample_factor=(1, 1))
+            sino, translation_params, optional_params = mbirjax.preprocess.zeiss.compute_sino_and_params(dataset_dir)
 
             # Create the model and set parameters
             tct_model = mbirjax.TranslationModel(**translation_params)
@@ -61,25 +58,18 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
     obj_scan, blank_scan, dark_scan, zeiss_params = \
         load_scans_and_params(dataset_dir, verbose=verbose)
 
-    translation_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=downsample_factor,
+    translation_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
                                                                           crop_pixels_bottom=crop_pixels_bottom)
 
     if verbose > 0:
-        print("\n\n########## Cropping and downsampling scans")
+        print("\n\n########## Cropping scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                 crop_pixels_sides=crop_pixels_sides,
                                                                                 crop_pixels_top=crop_pixels_top,
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
-
-    ### downsample the scans with block-averaging
-    if downsample_factor[0] * downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.downsample_view_data(obj_scan, blank_scan,
-                                                                                          dark_scan,
-                                                                                          downsample_factor=downsample_factor,
-                                                                                          defective_pixel_array=defective_pixel_array)
 
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
@@ -262,14 +252,12 @@ def load_scans_and_params(dataset_dir, verbose=1):
     return obj_scan, blank_scan, dark_scan, zeiss_params
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
-    Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop and downsample.
+    Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop.
 
     Args:
         zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
-        downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
-            If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
         crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
         crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
@@ -293,13 +281,6 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
 
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
-
-    # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
-    num_det_rows = num_det_rows // downsample_factor[0]
-    num_det_channels = num_det_channels // downsample_factor[1]
-
-    delta_det_row *= downsample_factor[0]
-    delta_det_channel *= downsample_factor[1]
 
     # Unit conversion table (relative to um)
     # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
