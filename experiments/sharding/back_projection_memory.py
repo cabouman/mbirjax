@@ -9,7 +9,7 @@ import mbirjax as mj
 def back_project(size, output_filepath='output.csv'):
 
     # sinogram shape
-    num_views, num_det_rows, num_det_channels = size, size*3, size*5
+    num_views, num_det_rows, num_det_channels = size, int(size*3/2), int(size*5/4)
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
     # angles
@@ -66,7 +66,7 @@ def back_project(size, output_filepath='output.csv'):
 
 if __name__ == "__main__":
 
-    size = 124
+    size = 1024
     output_filepath = "../output/back_project_mem.txt"
 
     # the sinogram and recon will have shape (size, size, size)
