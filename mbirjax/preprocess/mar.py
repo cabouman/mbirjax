@@ -331,7 +331,7 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     return corrected_plastic_sino
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4):
     """
     Perform beam hardening correction for CT sinograms with plastic and multiple metal components
     using a polynomial fitting model with regularization.
@@ -344,8 +344,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
-        gamma (float, optional): Stabilization factor.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
+        gamma (float, optional): Stabilization factor. Defaults to 0.4.
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -404,7 +404,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
 
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4, verbose=0):
+                           num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4, verbose=0):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
     then this performs a standard MBIR recon.
@@ -424,7 +424,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
         gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
             to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.4.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.

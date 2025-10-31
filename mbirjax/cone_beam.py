@@ -1044,14 +1044,20 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
 
         # -------- Reconstruct halves (pass weights if provided) --------
-        top_init_recon = init_recon[:, :, :top_recon_shape[2]]
+        if init_recon is not None:
+            top_init_recon = init_recon[:, :, :top_recon_shape[2]]
+        else:
+            top_init_recon = None
         recon_top_half, recon_top_dict = ct_model_top_half.recon(sino_top_half, weights=weights_top_half,
                                                                  init_recon=top_init_recon, max_iterations=max_iterations,
                                                                  stop_threshold_change_pct=stop_threshold_change_pct,
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
-        bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
+        if init_recon is not None:
+            bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
+        else:
+            bot_init_recon = None
         recon_bot_half, recon_bot_dict = ct_model_bot_half.recon(sino_bot_half, weights=weights_bot_half,
                                                                  init_recon=bot_init_recon, max_iterations=max_iterations,
                                                                  stop_threshold_change_pct=stop_threshold_change_pct,
