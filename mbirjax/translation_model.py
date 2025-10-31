@@ -205,9 +205,11 @@ class TranslationModel(mj.TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params,
+                                                existing_view=None):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
+        If `existing_view` is provided, the projection of the input voxels is added to `existing_view`.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
@@ -215,6 +217,7 @@ class TranslationModel(mj.TomographyModel):
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            existing_view (jax array): array of shape (num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -229,8 +232,8 @@ class TranslationModel(mj.TomographyModel):
         horizontal_fan_projector = TranslationModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, translation_vector, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, translation_vector, projector_params)
-
+        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, translation_vector, projector_params,
+                                                 existing_view)
         return sinogram_view
 
     @staticmethod
@@ -259,11 +262,13 @@ class TranslationModel(mj.TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params,
+                                                       existing_view=None):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
-        This function returns the resulting sinogram view.
+        This function returns the resulting sinogram view. If `existing_view` is provided, the projection of
+        the input voxels is added to `existing_view`.
 
         Args:
             voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
@@ -272,6 +277,7 @@ class TranslationModel(mj.TomographyModel):
                 the flattened array of size num_rows x num_cols.
             translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+            existing_view (jax array): array of shape (num_det_rows, num_det_channels)
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
@@ -287,7 +293,10 @@ class TranslationModel(mj.TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
 
         # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        if existing_view is None:
+            sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        else:
+            sinogram_view = existing_view
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
@@ -802,7 +811,7 @@ class TranslationModel(mj.TomographyModel):
             sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
             filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
+            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.main_device)) # TODO: determine if this can be left as sinogram_device
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
         filtered_sinogram *= jnp.pi / num_views
         return filtered_sinogram
