@@ -30,8 +30,9 @@ class ProjectionBase:
     control_params = None
     projection_model =  None
 
-    # inherit subTest method from unittest to make linter happy
+    # inherit methods from unittest to make linter happy
     subTest = unittest.TestCase.subTest
+    skipTest = unittest.TestCase.skipTest
 
     @classmethod
     def setUpClass(cls):
@@ -121,6 +122,24 @@ class ProjectionBase:
 
                 # Relative tolerance is within self.RTOL
                 assert jnp.allclose(recon, self.control_recon, rtol=self.RTOL)
+
+    def test_back_project_sharded(self):
+        """Back-project the control sinogram and compare against control reconstruction with sharding."""
+        if 'automatic' not in self.USE_GPU_OPTS:
+            self.skipTest("Unable to test sharding. No GPUs detected.")
+
+        self.projection_model.set_params(use_gpu='automatic')
+        if self.projection_model.use_gpu is not 'sharding':
+            self.skipTest("Unable to test sharding. Multiple GPUs not detected.")
+
+        recon = self.projection_model.back_project(self.control_sinogram)
+        recon = jax.device_put(recon)
+
+        # 99.8% of voxels are within self.ATOL
+        assert jnp.percentile(jnp.abs(recon - self.control_recon), 99.8) < self.ATOL
+
+        # Relative tolerance is within self.RTOL
+        assert jnp.allclose(recon, self.control_recon, rtol=self.RTOL)
 
     def test_back_project_rejects_biased_input_at_tol(self):
         """
