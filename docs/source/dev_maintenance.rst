@@ -16,6 +16,7 @@ Tests that use external data can also be run separately with the command::
 
     pytest -m data_dependent
 
+See how to create a new data dependent unit test here: `tests_data_dependent/adding_new_unit_test.rst <https://github.com/cabouman/mbirjax/tree/main/tests_data_dependent/adding_new_unit_test.rst>`__.
 
 Uploading to PyPI
 -----------------
