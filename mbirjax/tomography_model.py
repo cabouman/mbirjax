@@ -59,7 +59,7 @@ class TomographyModel(ParameterHandler):
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
 
         self.use_ror_mask = True
-        self.auto_set_recon_shape(sinogram_shape, no_compile=True, no_warning=True)
+        self.auto_set_recon_geometry(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
@@ -851,9 +851,9 @@ class TomographyModel(ParameterHandler):
         sigma_prox = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
-    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
         """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
-        raise NotImplementedError('auto_set_recon_shape must be implemented by each specific geometry model.')
+        raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 
     def get_voxels_at_indices(self, recon, indices):
         """

@@ -48,7 +48,7 @@ Recon Shape and Voxel Spacing
 
 .. automethod:: mbirjax.TomographyModel.get_magnification
 
-.. automethod:: mbirjax.TomographyModel.auto_set_recon_shape
+.. automethod:: mbirjax.TomographyModel.auto_set_recon_geometry
 
 
 .. _SaveLoadDocs:

@@ -26,7 +26,7 @@ def main():
     tct_model = mj.TranslationModel(**translation_params)
     tct_model.set_params(**optional_params)
     tct_model.set_params(sharpness=2.0)
-    # tct_model.auto_set_recon_shape(sino.shape)
+    # tct_model.auto_set_recon_geometry(sino.shape)
     recon_shape = tct_model.get_params('recon_shape')
     delta_det_channel = tct_model.get_params('delta_det_channel')
 
