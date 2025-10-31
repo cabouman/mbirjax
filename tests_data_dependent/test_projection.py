@@ -88,7 +88,7 @@ class ProjectionBase:
         Adding a small bias to the phantom should change the sinogram enough
         to break equality at the chosen tolerance.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         sinogram = self.projection_model.forward_project(self.control_phantom + 1e-3)
         sinogram = jax.device_put(sinogram)
         assert not bool(jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL)), \
@@ -99,7 +99,7 @@ class ProjectionBase:
         With zero tolerances, exact equality is (intentionally) too strict.
         We expect inequality due to floating-point roundoff.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         sinogram = self.projection_model.forward_project(self.control_phantom)
         sinogram = jax.device_put(sinogram)
         assert not bool(jnp.allclose(sinogram, self.control_sinogram, rtol=0.0, atol=0.0)), \
@@ -127,7 +127,7 @@ class ProjectionBase:
         Adding a small bias to the sinogram should change the reconstruction
         enough to break equality at the chosen tolerance.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         recon = self.projection_model.back_project(self.control_sinogram + 1e-3)
         recon = jax.device_put(recon)
         assert not bool(jnp.allclose(recon, self.control_recon, atol=self.ATOL)), \
@@ -138,7 +138,7 @@ class ProjectionBase:
         With zero tolerances, exact equality is (intentionally) too strict.
         We expect inequality due to floating-point roundoff.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         recon = self.projection_model.back_project(self.control_sinogram)
         recon = jax.device_put(recon)
         assert not bool(jnp.allclose(recon, self.control_recon, rtol=0.0, atol=0.0)), \
