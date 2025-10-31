@@ -233,10 +233,10 @@ class TomographyModel(ParameterHandler):
             excess_views = num_views % num_gpus
             if excess_views != 0:
                 raise ValueError(
-                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected."
-                    "The number of views must be an exact multiple of the number of GPUs."
-                    f"Currently there are {num_views} views and {num_gpus} detected GPUs, so there are {excess_views} excess views."
-                    "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected,"
+                    "but number of views must be an exact multiple of the number of GPUs."
+                    f"Currently there are {num_views} views and {num_gpus} detected GPUs, so there are {excess_views} "
+                    f"excess views. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
 
             self.use_gpu = 'sharding'
 
@@ -252,31 +252,16 @@ class TomographyModel(ParameterHandler):
             # sharding requires a single view batch
             self.view_batch_size_for_vmap = num_views
 
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-            mem_per_projection_total = mem_per_projection
-
-            mem_sino_per_gpu = (mem_for_vcd_sinos_gpu + mem_per_projection_total) / num_gpus
-            mem_budget_for_voxel = gpu_memory_to_use - mem_sino_per_gpu
-
-            # the results of the math were different from what has empirically been seen so this conservative factor
-            # has been added until the math is changed
-            mem_per_cylinder_conservative_factor = 600
-            conservative_mem_per_cylinder = mem_per_cylinder * mem_per_cylinder_conservative_factor
-
-            if mem_budget_for_voxel < conservative_mem_per_cylinder:
-                raise ValueError(
-                    'Insufficient GPU memory per shard to fit a voxel batch; reduce reconstruction size or GPU usage.')
-
-            pixel_batch_size = int(np.floor(mem_budget_for_voxel / conservative_mem_per_cylinder))
-
-            self.pixel_batch_size_for_vmap = pixel_batch_size
+            # pixel batch size is hardcoded because this empirically worked for the
+            # worst case 2K^3 recon with 8 GPUs
+            self.pixel_batch_size_for_vmap = 125
             self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
 
             # Recalculate the memory per voxel batch with the new batch size
             mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
 
-            mem_required_for_gpu = mem_sino_per_gpu + mem_per_voxel_batch
+            mem_for_vcd_sinos_per_gpu = mem_for_vcd_sinos_gpu / num_gpus
+            mem_required_for_gpu = mem_for_vcd_sinos_per_gpu + mem_per_voxel_batch
             mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
         # 'full':  Everything on GPU
