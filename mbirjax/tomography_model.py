@@ -706,8 +706,9 @@ class TomographyModel(ParameterHandler):
                                                                  pixel_indices[pixel_index_start:pixel_index_end]],
                                                                 self.worker)
                 sinogram_views = sinogram_views.block_until_ready()
-                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
-
+                sinogram_views = self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch,
+                                                                                 existing_views=sinogram_views,
+                                                                                 view_indices=view_indices_batch)
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
 
