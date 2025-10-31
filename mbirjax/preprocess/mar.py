@@ -331,7 +331,7 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     return corrected_plastic_sino
 
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4):
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4):
     """
     Perform beam hardening correction for CT sinograms with plastic and multiple metal components
     using a polynomial fitting model with regularization.
@@ -344,8 +344,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
-        gamma (float, optional): Stabilization factor.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
+        gamma (float, optional): Stabilization factor. Defaults to 0.4.
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -404,12 +404,15 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
 
 
 def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.02, gamma=0.4, verbose=0):
+                           num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4, verbose=0):
     """
-    Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
+    Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
+    then this performs a standard MBIR recon.
 
     This function alternates between beam hardening correction (via `correct_BH_plastic_metal`)
     and reconstruction, refining the image over several iterations to suppress metal-induced artifacts.
+
+    This function uses recon_split_sino by default in the case that ct_model is a ConeBeamModel.
 
     Args:
         ct_model: MBIRJAX cone beam model instance with `direct_recon` and `recon` methods.
@@ -421,7 +424,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.02.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
         gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
             to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.4.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
@@ -442,6 +445,21 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         ... )
         >>> mj.slice_viewer(recon)
     """
+    # Check for nonnegative num_metals
+    if num_metal < 0:
+        raise ValueError("num_metal must be >= 0")
+
+    # Use split sino recon by default for cone beam
+    recon_function = ct_model.recon
+    if 'ConeBeamModel' in ct_model.get_params('geometry_type'):
+        recon_function = ct_model.split_sino_recon
+
+    # Do a regular recon if num_metal == 0
+    if num_metal == 0:
+        recon, _ = recon_function(sino, weights=weights, stop_threshold_change_pct=stop_threshold_change_pct)
+        return recon
+
+    # Continue with beam hardening and segmentation
     if verbose >= 1:
         print("\n************ Perform initial FDK reconstruction  **************")
     recon = ct_model.direct_recon(sino)
@@ -453,7 +471,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         # Reconstruct Corrected Sinogram
         if verbose >= 1:
             print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
-        recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
+        recon, _ = recon_function(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
 
         if verbose >= 2:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")

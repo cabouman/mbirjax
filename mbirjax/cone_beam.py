@@ -171,20 +171,23 @@ class ConeBeamModel(TomographyModel):
 
         return psf_radius
 
-    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape cone beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        delta_voxel = self.get_params('delta_voxel')
+
+        # Compute delta_voxel
+        delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
+
+        # Compute the recon_shape
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
-
         num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
         num_recon_cols = num_recon_rows
         num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
-
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -1044,19 +1047,26 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
 
         # -------- Reconstruct halves (pass weights if provided) --------
+        if init_recon is not None:
+            top_init_recon = init_recon[:, :, :top_recon_shape[2]]
+        else:
+            top_init_recon = None
         recon_top_half, recon_top_dict = ct_model_top_half.recon(sino_top_half, weights=weights_top_half,
-                                                                 init_recon=init_recon, max_iterations=max_iterations,
+                                                                 init_recon=top_init_recon, max_iterations=max_iterations,
                                                                  stop_threshold_change_pct=stop_threshold_change_pct,
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        if init_recon is not None:
+            bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
+        else:
+            bot_init_recon = None
         recon_bot_half, recon_bot_dict = ct_model_bot_half.recon(sino_bot_half, weights=weights_bot_half,
-                                                                 init_recon=init_recon, max_iterations=max_iterations,
+                                                                 init_recon=bot_init_recon, max_iterations=max_iterations,
                                                                  stop_threshold_change_pct=stop_threshold_change_pct,
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
-
         # -------- Stitch together top and bottom reconstructions --------
         recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
 

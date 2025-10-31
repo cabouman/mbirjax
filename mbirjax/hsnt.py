@@ -47,8 +47,14 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
         >>> data.shape, denoised_data.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., N_k))
 
-    Note:
-        The function works with hyperspectral data in either sinogram or space domain.
+    Notes:
+        The function works with hyperspectral data in either sinogram or space
+        domain. The algorithm follows [1].
+
+    References:
+        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
+            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
+            2025. doi:10.1109/TCI.2025.3567854
     """
     # Get the data dimensions
     data_shape = data.shape
@@ -145,7 +151,13 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., 10), (10, N_k))
 
     Note:
-        The function works with hyperspectral data in either sinogram or space domain.
+        The function works with hyperspectral data in either sinogram or space
+        domain. The algorithm follows [1].
+
+    References:
+        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
+            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
+            2025. doi:10.1109/TCI.2025.3567854
     """
     # define epsilon
     epsilon = 1e-8
@@ -248,7 +260,13 @@ def rehydrate(dehydrated_data, hyperspectral_idx=None):
         ((N_x, N_y, N_z, ..., N_s), (N_s, N_k), (N_x, N_y, N_z, ..., 3))
 
     Note:
-        The function works with hyperspectral data in either sinogram or space domain.
+        The function works with hyperspectral data in either sinogram or space
+        domain. The algorithm follows [1].
+
+    References:
+        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
+            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
+            2025. doi:10.1109/TCI.2025.3567854
     """
     [subspace_data, subspace_basis, dataset_type] = dehydrated_data
     if hyperspectral_idx is None:

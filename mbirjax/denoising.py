@@ -71,7 +71,7 @@ class QGGMRFDenoiser(TomographyModel):
     def create_projectors(self):
         pass
 
-    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
         """Compute the default recon shape to equal the sinogram shape"""
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=sinogram_shape)
 
