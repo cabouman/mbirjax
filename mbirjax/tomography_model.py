@@ -628,6 +628,14 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
+        if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+            raise RuntimeError("sparse_forward_project_sharded support does not yet exist."
+                               "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -679,6 +687,14 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
+        if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+            raise RuntimeError("sparse_back_project_sharded support does not yet exist."
+                               "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
