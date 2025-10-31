@@ -126,14 +126,19 @@ class ParallelBeamModel(TomographyModel):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        delta_voxel = self.get_params('delta_voxel')
+
+        # Compute delta_voxel
+        delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
+
+        # Compute the recon_shape
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
         num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
         num_recon_cols = num_recon_rows
         num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape)
+
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
