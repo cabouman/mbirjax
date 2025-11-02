@@ -32,7 +32,7 @@ def create_recon_data(num_views, num_det_rows, num_det_channels):
     ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles,
                                                source_detector_dist=source_detector_dist,
                                                source_iso_dist=source_iso_dist)
-    ct_model_for_generation.set_params(use_gpu='none')
+    ct_model_for_generation.set_params(use_gpu='projection')
 
     # Generate phantom
     print('Creating phantom')
