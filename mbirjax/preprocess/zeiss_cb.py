@@ -12,8 +12,7 @@ pp = pprint.PrettyPrinter(indent=4)
 logger = logging.getLogger(__name__)
 
 
-def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
-                            crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1):
+def compute_sino_and_params(dataset_dir, subsample_view_factor=1, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1, is_preprocessed=True):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
@@ -24,18 +23,23 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
 
     Steps:
         1. Load object, blank, and dark scans and geometry.
-        2. Compute the sinogram from the scans (currently uses the object scan as the sinogram).
+        2. Compute the sinogram from the scans.
         3. Apply background offset correction.
 
     Args:
-        dataset_dir (str): Path to the Zeiss dataset. Accepts a ``.txrm`` file or an ``.xrm`` directory with:
+        dataset_dir (str): Path to the Zeiss dataset. Accepts a ``.txrm`` file with:
             - ``ImageData*/Image*`` (scan data)
             - Zeiss OLE metadata streams
-        downsample_factor (Tuple[int, int], optional): Block-averaging factor ``(rows, channels)``. Defaults to ``(1, 1)``.
+        subsample_view_factor (int, optional): Factor by which to subsample views. Defaults to 1.
         crop_pixels_sides (int, optional): Pixels to crop from each lateral side of the detector. Defaults to ``0``.
         crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to ``0``.
         crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to ``0``.
         verbose (int, optional): Verbosity level. Defaults to ``1``.
+
+        is_preprocessed (bool, optional):
+            If ``True``, assume the scan data read from the .txrm file is already preprocessed
+            and can be used directly as the sinogram. If ``False``, compute the sinogram
+            from the raw object, blank, and dark scans. Defaults to ``True``.
 
     Returns:
         tuple: ``(sino, cone_beam_params, optional_params, metadata)``
@@ -43,47 +47,42 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
             - ``sino`` (numpy.ndarray): Sinogram of shape ``(num_views, num_det_rows, num_channels)``.
             - ``cone_beam_params`` (dict): Parameters for initializing ``ConeBeamModel``.
             - ``optional_params`` (dict): Additional parameters to be set via ``ConeBeamModel.set_params``.
-            - ``metadata`` (dict): Zeiss metadata parsed from ``.txrm``/``.xrm``.
+            - ``metadata`` (dict): Zeiss metadata parsed from ``.txrm``.
 
     Example:
         .. code-block:: python
 
             from mbirjax.preprocess.zeiss_cb import compute_sino_and_params
             sino, cone_beam_params, optional_params, metadata = compute_sino_and_params(
-                dataset_dir, downsample_factor=(1, 1), verbose=1
+                dataset_dir, verbose=1
             )
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
             ct_model.set_params(**optional_params)
             recon, recon_dict = ct_model.recon(sino)
     """
     if verbose > 0:
-        print("\n\n########## Loading scan data and geometry parameters from Zeiss dataset directory")
-    obj_scan, blank_scan, dark_scan, zeiss_params, metadata = load_scans_and_params(dataset_dir)
+        print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
+    obj_scan, blank_scan, dark_scan, zeiss_params, metadata = load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed)
 
-    cone_beam_params, optional_params, metadata = convert_zeiss_to_mbirjax_params(zeiss_params, metadata, downsample_factor=downsample_factor,
+    cone_beam_params, optional_params, metadata = convert_zeiss_to_mbirjax_params(zeiss_params, metadata,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
                                                                           crop_pixels_bottom=crop_pixels_bottom)
 
     if verbose > 0:
-        print("\n\n########## Cropping and downsampling scans")
+        print("\n\n########## Cropping scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                 crop_pixels_sides=crop_pixels_sides,
                                                                                 crop_pixels_top=crop_pixels_top,
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
-    ### downsample the scans with block-averaging
-    if downsample_factor[0] * downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.downsample_view_data(obj_scan, blank_scan,
-                                                                                          dark_scan,
-                                                                                          downsample_factor=downsample_factor,
-                                                                                          defective_pixel_array=defective_pixel_array)
-
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
-    # TODO: For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
-    sino = obj_scan
+    if is_preprocessed:
+        sino = obj_scan
+    else:
+        sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
     scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
 
     if verbose > 0:
@@ -101,95 +100,122 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1),
     return sino, cone_beam_params, optional_params, metadata
 
 
-def load_scans_and_params(dataset_dir, verbose=1):
+def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, verbose=1):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
     Load the scan data and geometry from a Zeiss scan directory.
 
     Args:
-        dataset_dir (str): Path to a Zeiss scan directory (expect a `.txrm` file or an `.xrm` directory). Expected structure:
+        dataset_dir (str): Path to a Zeiss scan directory (expect a `.txrm` file). Expected structure:
             - ``ImageData*/Image*`` (scan data)
             - ``**/**`` (Zeiss metadata)
+        subsample_view_factor (int, optional): view subsample factor.
+        is_preprocessed (bool):
+            If ``True``, assume the scan data read from the .txrm file is already preprocessed
+            and can be used directly as the sinogram. If ``False``, compute the sinogram
+            from the raw object, blank, and dark scans.
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_metadata)
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params)
 
             - obj_scan (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
             - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
             - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
+                If no dark scan is available, returns a zero array of the same shape.
             - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
-            - Zeiss_metadata (dict): Metadata stored in Zeiss `.txrm` or `.xrm` files.
+            - Zeiss_params (dict): Metadata stored in Zeiss `.txrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
 
-    if isinstance(data_dir, tuple) and len(data_dir) == 3:
-        obj_scan_dir, blank_scan_dir, dark_scan_dir = data_dir
+    if verbose > 0:
+        print("The following files will be used to compute the Zeiss reconstruction:\n",
+              f"    - txrm file: {data_dir}\n")
 
-        if verbose > 0:
-            print("The following files will be used to compute the Zeiss reconstruction:\n",
-                  f"    - Object scan directory: {obj_scan_dir}\n",
-                  f"    - Blank scan directory: {blank_scan_dir}\n",
-                  f"    - Dark scan directory: {dark_scan_dir}\n")
+    # Read object scans and metadata
+    obj_scan, Zeiss_params = read_txrm(data_dir)
 
-        obj_scan, Zeiss_metadata = read_xrm_dir(obj_scan_dir)
-        blank_scan, _ = read_xrm_dir(blank_scan_dir)
+    # Subsample the views
+    obj_scan = obj_scan[::subsample_view_factor, :, :]
 
-        if dark_scan_dir is not None:
-            dark_scan, _ = read_xrm_dir(dark_scan_dir)
-        else:
-            dark_scan = np.zeros(blank_scan.shape)
-
-        if verbose > 0:
-            print("Scans loaded.")
-
+    # Read blank scans
+    if is_preprocessed:
+        blank_scan = np.zeros(obj_scan.shape, dtype=obj_scan.dtype)
     else:
-        if verbose > 0:
-            print("The following files will be used to compute the Zeiss reconstruction:\n",
-                  f"    - Projection data directory: {data_dir}\n")
+        if Zeiss_params.get("reference") is not None:
+            blank_scan = Zeiss_params["reference"]
+            blank_scan = blank_scan[None, :, :]
+        else:
+            raise ValueError("Missing blank scan; unable to compute sinogram for reconstruction.")
 
-        # TODO: For now, we assume the data we read from .txrm file to be the sinogram served as input to our model.
-        obj_scan, Zeiss_metadata = read_txrm(data_dir)
+    # Read dark scans
+    # TODO: Currently we assume that there is no dark scan for txrm file
+    dark_scan = np.zeros(obj_scan.shape, dtype=obj_scan.dtype)
 
-        # TODO: Currently we do not have blank scan and dark scan for txrm file
-        blank_scan = np.zeros((1, obj_scan.shape[1], obj_scan.shape[2]))
-        dark_scan = np.zeros((1, obj_scan.shape[1], obj_scan.shape[2]))
+    if verbose > 0:
+        print("Scans loaded.")
 
-        if verbose > 0:
-            print("Scans loaded.")
-
-    # source to iso distance (in mm)
-    source_iso_dist = Zeiss_metadata["source_iso_dist"][0] # mm
+    # source to iso distance
+    source_iso_dist = Zeiss_params["source_iso_dist"][0]
     source_iso_dist = float(np.abs(source_iso_dist))
 
-    # iso to detector distance (in mm)
-    iso_det_dist = Zeiss_metadata["iso_det_dist"][0] # mm
+    # iso to detector distance
+    iso_det_dist = Zeiss_params["iso_det_dist"][0]
     iso_det_dist = float(np.abs(iso_det_dist))
 
-    # detector pixel pitch (in um)
+    # detector pixel pitch
     # Zeiss detector pixel has equal width and height
     # TODO: The value of the stored detector pixel pitch seems to be wrong;
-    #  Read it directly from metadat to keep the issue visible for future correction
-    det_pixel_pitch = Zeiss_metadata["det_pixel_pitch"] # um
+    #  Read it directly from metadata to keep the issue visible for future correction
+    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
     # dimensions of radiograph
-    num_det_channels = Zeiss_metadata["num_det_channels"]
-    num_det_rows = Zeiss_metadata["num_det_rows"]
+    num_views = Zeiss_params["num_views"]
+    num_det_channels = Zeiss_params["num_det_channels"]
+    num_det_rows = Zeiss_params["num_det_rows"]
 
-    # Rotation angles (in radians)
-    angles = np.array(Zeiss_metadata['thetas'], dtype=float).ravel()
+    # Rotation angles
+    angles = np.array(Zeiss_params['thetas'], dtype=float).ravel()
+    angles = angles[::subsample_view_factor]
 
-    # Detector offset (in um)
-    # TODO: Need to check whether the detector offset parameter is correctly read from the file; Need to check the units of detector offset
-    #   For now, I assume that the detector offset has units of um.
-    #   Since I can only decoded one single float from the directory I found in the file, I just set det_channel_offset = det_row_offset = detector offset
-    detector_offset = Zeiss_metadata["det_offset"]
-    det_row_offset = detector_offset
+    # Detector offset
+    # TODO: Need to check whether the detector offset parameter is correctly read from the file
+    #   Since I can only decoded one single float from the directory I found in the file,
+    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
+    detector_offset = Zeiss_params["det_offset"]
     det_channel_offset = detector_offset
+    det_row_offset = 0.0
+
+    # Unit of parameters
+    axis_names = Zeiss_params["axis_names"]
+    axis_units = Zeiss_params["axis_units"]
+
+    source_iso_dist_unit = None
+    iso_det_dist_unit = None
+    delta_det_row_unit = None
+    delta_det_channel_unit = None
+    angle_unit = None
+
+    if axis_names is not None and axis_units is not None:
+        for name, unit in zip(axis_names, axis_units):
+            # TODO: Need to verify whether the geometry parameter units actually match the specified axis names.
+            if "Source Z" in name:
+                source_iso_dist_unit = unit
+                iso_det_dist_unit = unit
+
+            elif "CCD" in name and "X" in name:
+                delta_det_row_unit = unit
+                delta_det_channel_unit = unit
+
+            elif "Sample Theta" in name:
+                angle_unit = unit
+
+    else:
+        raise ValueError("Unknown units for geometry parameters; cannot safely convert to mbirjax format.")
 
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
@@ -205,27 +231,31 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'num_views': num_views,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
         'angles': angles,
         'det_row_offset': det_row_offset,
         'det_channel_offset': det_channel_offset,
+        'source_iso_dist_unit': source_iso_dist_unit,
+        'iso_det_dist_unit': iso_det_dist_unit,
+        'delta_det_row_unit': delta_det_row_unit,
+        'delta_det_channel_unit': delta_det_channel_unit,
+        'angle_unit': angle_unit,
     }
 
-    return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_metadata
+    return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
-    Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop and downsample.
+    Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop.
 
     Args:
         zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
-        Zeiss_metadata (dict): metadata stored in Zeiss txrm or xrm file.
-        downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
-            If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
+        Zeiss_metadata (dict): metadata stored in Zeiss txrm file.
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
         crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
         crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
@@ -233,42 +263,45 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     Returns:
         cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
         optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
-        metadata (dict): metadata stored in Zeiss txrm or xrm file.
+        metadata (dict): metadata stored in Zeiss txrm file.
     """
     # Get zeiss parameters and convert them
-    source_iso_dist, iso_det_dist = itemgetter('source_iso_dist', 'iso_det_dist')(zeiss_params)
-    delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(zeiss_params)
-    num_det_rows, num_det_channels, angles = itemgetter('num_det_rows', 'num_det_channels', 'angles')(zeiss_params)
+    source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
+    delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
+    num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
+    angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
+    source_detector_dist = source_iso_dist + iso_det_dist
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
 
-    # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
-    num_det_rows = num_det_rows // downsample_factor[0]
-    num_det_channels = num_det_channels // downsample_factor[1]
+    # Unit conversion table (relative to um)
+    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
+    #   For now, I assume that only um and mm appear in the txrm file
+    unit_conversion = {'um': 1.0, 'mm': 1000.0}
 
-    delta_det_row *= downsample_factor[0]
-    delta_det_channel *= downsample_factor[1]
+    # Set 1 ALU = 1 delta_det_channel_unit
+    ALU_unit = delta_det_channel_unit
+    Zeiss_metadata['ALU_unit'] = ALU_unit
+    Zeiss_metadata['ALU_value'] = 1
 
-    # Set 1 ALU = 1 um
-    axis_names = Zeiss_metadata["axis_names"]
-    axis_units = Zeiss_metadata["axis_units"]
-    if axis_names is not None and axis_units is not None:
-        # TODO: For now, I am not sure about the meaning of the axis names and axis units.
-        #   Based on reference value given by Zeiss people, I just set that source_iso_dist and source_detector_dist has units of mm,
-        #   and delta_det_channel and delta_det_row has units of um
-        source_iso_dist *= 1000 # mm to um
-        source_detector_dist *= 1000 # mm to um
+    # Convert physical units to ALU
+    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
 
-        # Include the ALU unit and value in metadata dictionary
-        Zeiss_metadata["ALU_unit"] = 'um'
-        Zeiss_metadata["ALU_value"] = 1
+    if angle_unit == 'deg':
+        angles = np.deg2rad(angles)
     else:
-        raise ValueError("Unknown units for source_iso_dist, and source_detector_dist; cannot safely convert to mbirjax format.")
+        pass
+
+    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[ALU_unit]
+
+    # ToDo: Need to check the units of detector offset
+    #  For now, we assume that the det_channel_offset have units of pixels.
+    det_channel_offset *= delta_det_channel  # pixels to ALU
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
@@ -284,7 +317,6 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
-    #ToDo: For now, we assume that the det_row_offset and det_channel_offset have units of um.
 
     return cone_beam_params, optional_params, Zeiss_metadata
 
@@ -295,13 +327,6 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
     Given a path to a Zeiss scan directory, automatically parse the paths to the following files and directories：
-
-    if the files are in xrm format：
-        - object scan directory
-        - blank scan directory
-        - dark scan directory (If exists)
-
-    if the files are in txrm format:
         - the txrm file store the projection data
 
     Args:
@@ -310,29 +335,13 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     Returns:
         Path to the txrm file storing the projection data
     """
-    # If the data is saved in txrm format
     if os.path.isfile(dataset_dir):
         if dataset_dir.endswith(".txrm"):
             return dataset_dir
-
-    # If the data is saved in xrm format
-    for root, dirs, files in os.walk(dataset_dir):
-        for filename in files:
-            if filename.endswith(".xrm"):
-                # Object scan directory
-                obj_scan_dir = os.path.join(dataset_dir, "obj_scan")
-
-                # Blank scan
-                blank_scan_dir = os.path.join(dataset_dir, "blank_scan")
-
-                # Dark scan
-                dark_scan_dir = os.path.join(dataset_dir, "dark_scan")
-                if not os.path.exists(dark_scan_dir):
-                    dark_scan_dir = None
-
-                return obj_scan_dir, blank_scan_dir, dark_scan_dir
-
-    return dataset_dir
+        else:
+            raise ValueError(f"Unsupported file type {dataset_dir}; only .txrm files are supported.")
+    else:
+        raise ValueError("This function currently supports only direct paths to .txrm files; please specify the exact .txrm file path.")
 
 
 def _check_read(fname):
@@ -537,7 +546,7 @@ def read_txrm(file_name):
     _log_imported_data(file_name, array_of_images)
 
     # Normalize the scan data
-    array_of_images = mjp.utilities._normalize_to_float32(array_of_images)
+    # array_of_images = mjp.utilities._normalize_to_float32(array_of_images)
 
     ole.close()
     return array_of_images, metadata
@@ -568,6 +577,7 @@ def read_metadata(ole):
         'num_det_channels': _read_ole_value(ole, 'ImageInfo/ImageWidth', '<I'),
         'num_det_rows': _read_ole_value(ole, 'ImageInfo/ImageHeight', '<I'),
         'data_type': _read_ole_value(ole, 'ImageInfo/DataType', '<1I'),
+        'reference_data_type': _read_ole_value(ole, 'referencedata/DataType', '<1I'),
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
@@ -578,7 +588,7 @@ def read_metadata(ole):
         'source_iso_dist': _read_ole_arr(
             ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
-            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)) * np.pi / 180.,
+            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
             ole, 'ImageInfo/XPosition', "<{0}f".format(number_of_images)),
         'y_positions': _read_ole_arr(
@@ -588,6 +598,12 @@ def read_metadata(ole):
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
+
+    if ole.exists('referencedata/image'):
+        reference = _read_ole_image(ole, 'referencedata/image', metadata, metadata['reference_data_type'])
+    else:
+        reference = None
+    metadata['reference'] = reference
 
     return metadata
 
@@ -764,40 +780,3 @@ def _read_ole_str(ole, label):
     return str
 
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
-
-
-######## subroutines for Zeiss-MBIR parameter conversion
-def calc_source_det_params(source_iso_dist, iso_det_dist):
-    """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
-    Calculate MBIRJAX geometry parameters: source_det_dist
-
-    Args:
-        source_iso_dist (float): Distance between the X-ray source and iso
-        iso_det_dist (float): Distance between the detector and iso
-
-    Returns:
-        source_detector_dist (float): Distance between the detector and source
-    """
-    source_det_dist = source_iso_dist + iso_det_dist
-    return source_det_dist
-
-
-def calc_row_params(crop_pixels_top, crop_pixels_bottom):
-    """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
-    Calculate the MBIRJAX geometry parameters: det_row_offset
-
-    Args:
-        crop_pixels_top (int): The number of pixels to crop from top of the sinogram.
-        crop_pixels_bottom (int): The number of pixels to crop from bottom of the sinogram.
-
-    Returns:
-        det_row_offset (float): Distance from center of detector to the source-detector line along a column.
-    """
-    det_row_offset = - (crop_pixels_top + crop_pixels_bottom) / 2
-    return det_row_offset
-
-######## END subroutines for Zeiss-MBIR parameter conversion
