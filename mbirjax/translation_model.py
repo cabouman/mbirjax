@@ -54,7 +54,7 @@ class TranslationModel(mj.TomographyModel):
                 source_iso_dist=500.0
             )
             model.set_params(delta_recon_row=2.0)
-            model.auto_set_recon_shape(sinogram_shape)
+            model.auto_set_recon_geometry(sinogram_shape)
     """
     DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
@@ -141,66 +141,22 @@ class TranslationModel(mj.TomographyModel):
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
-    def auto_set_recon_shape(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
         # Get model parameters
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        magnification = self.get_magnification()
-        delta_voxel = self.get_params('delta_voxel')
-        num_views, num_det_rows, num_det_channels = sinogram_shape
         translation_vectors = self.get_params('translation_vectors')
 
-        # Calculate the width and height of the detector in ALU
-        detect_box = jnp.array([delta_det_channel*num_det_channels, delta_det_row*num_det_rows])
+        # Calculate the reconstruction geometry parameters
+        recon_shape, delta_voxel, delta_recon_row = mj.utilities.calc_tct_recon_params(source_detector_dist,
+                                                                                       source_iso_dist, delta_det_row,
+                                                                                       delta_det_channel,
+                                                                                       sinogram_shape,
+                                                                                       translation_vectors)
 
-        # Compute cone_slope = tan(cone_angle/2) along the x and z directions
-        cone_slope = (detect_box/2) / source_detector_dist
-
-        # Compute detector pixel pitch at iso
-        # Note that this may differ from delta_voxel
-        # However, we will use det_pixel_pitch_iso to calculate both the number rows and their pitch
-        det_pixel_pitch_iso_vec = jnp.array([delta_det_row, delta_det_channel])/magnification
-        det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
-
-        # Compute the row pitch based on a heuristic
-        # This results in isotrqopic voxels when cone_angle/2 > 63 deg
-        #ToDo: There will be problems if cone_slope is small or zero. Discuss with Greg.
-        nominal_row_pitch = 2.0*det_pixel_pitch_iso_vec/cone_slope
-        nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
-        delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso) # Ensure that the row resolution is not higher than the (x,z) detector resolution
-        delta_recon_row = float(delta_recon_row)
-
-        # Compute cube = (width, depth, height) of the scanned region in ALU
-        max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
-        min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
-        cube = max_translation - min_translation
-
-        # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
-        # Nominal voxels are the voxels that would result using the detector pitch at iso
-        recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
-
-        # ************ Use a heuristic to determine a reasonable number of rows *************
-        # Compute the number of unknown pixels per view
-        num_pixels_per_view = ((recon_box[0] + num_det_rows)*(recon_box[1] + num_det_channels)) / num_views
-        num_measurements_per_view = num_det_channels*num_det_rows
-        # Select the number of rows to match the number of unknowns to the number of measurements
-        num_recon_rows = jnp.ceil( num_measurements_per_view / num_pixels_per_view )
-
-        # Make sure the object extends no further than halfway to the source
-        max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
-        if max_recon_rows < 1:
-            print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
-        num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
-
-        # Set the parameters to their computed values
-        num_recon_cols, num_recon_slices = recon_box
-        num_recon_cols = int(num_recon_cols)
-        num_recon_rows = int(num_recon_rows)
-        num_recon_slices = int(num_recon_slices)
-        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_recon_row=delta_recon_row)
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_recon_row=delta_recon_row, delta_voxel=delta_voxel)
 
 
     @staticmethod

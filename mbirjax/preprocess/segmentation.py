@@ -196,6 +196,9 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
             - plastic_scale (float): Scaling factor for plastic region.
             - metal_scales (List[float]): List of scaling factors for each metal region.
     """
+    if num_metal <= 0:
+        raise ValueError("num_metal must be positive")
+
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                        bottom_margin=bottom_margin)
