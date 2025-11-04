@@ -8,7 +8,7 @@ if [ "$CONDA_DEFAULT_ENV" = "$NEW_NAME" ]; then
 fi
 
 conda env remove --name "$NEW_NAME" -y
-conda create --name "$NEW_NAME" python=3.10 -y
+conda create --name "$NEW_NAME" python -y
 conda activate "$NEW_NAME"
 
 echo
