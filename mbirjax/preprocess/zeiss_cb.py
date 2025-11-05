@@ -1,6 +1,8 @@
 import os, sys
 from operator import itemgetter
 import numpy as np
+import jax
+import jax.numpy as jnp
 import warnings
 import mbirjax.preprocess as mjp
 import pprint
@@ -25,6 +27,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         1. Load object, blank, and dark scans and geometry.
         2. Compute the sinogram from the scans.
         3. Apply background offset correction.
+        4. Apply sinogram offset correction.
 
     Args:
         dataset_dir (str): Path to the Zeiss dataset. Accepts a ``.txrm`` file with:
@@ -98,6 +101,9 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     sino = sino - background_offset
     if verbose > 0:
         print("background_offset = ", background_offset)
+
+    # Correct sino offset
+    sino = correct_sino_offset(sino, cone_beam_params, optional_params, metadata, subsample_view_factor)
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
@@ -796,3 +802,80 @@ def _read_ole_str(ole, label):
     return str
 
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
+
+
+def correct_sino_offset(sino, cone_beam_params, optional_params, metadata, subsample_view_factor, pad=10):
+    """
+    Align each sinogram view based on the recorded object stage positions.
+
+    This function uses the stage positions (x, y, z) stored in the Zeiss TXRM metadata
+    to compensate for small view-to-view motion of the object across views.
+
+    Coordinate convention (view from source):
+      • +x points from the X-ray source toward the detector (beam axis)
+      • +y is parallel to detector channels (left → right across columns)
+      • +z is parallel to detector rows (top → bottom across rows)
+
+    For each view, the function:
+      1. Reads the object’s x, y, z positions.
+      2. Calculates position offsets relative to the mean position.
+      3. Converts those offsets to pixel shifts on the detector plane using the per-view magnification.
+      4. Applies the corresponding translation to the sinogram image.
+
+    Optional padding is added before shifting to handle image boundary,
+    and the padding is removed afterward.
+
+    Args:
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
+        optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
+        metadata (dict): metadata stored in Zeiss txrm file.
+        subsample_view_factor (float):
+        pad (int, optional): Number of pixels to pad on all sides before shifting. Default to 10
+
+    Returns:
+        corrected_sino (numpy array or jax array): 3D sinogram data after alignment
+    """
+    # Get objects position of each view in x, y, z axis from metadata
+    obj_x_positions = np.array(metadata['x_positions'], dtype=float).ravel()
+    obj_y_positions = np.array(metadata['y_positions'], dtype=float).ravel()
+    obj_z_positions = np.array(metadata['z_positions'], dtype=float).ravel()
+
+    obj_x_positions = obj_x_positions[::subsample_view_factor]
+    obj_y_positions = obj_y_positions[::subsample_view_factor]
+    obj_z_positions = obj_z_positions[::subsample_view_factor]
+
+    # Calculate object offset relative to mean position
+    obj_x_offset = obj_x_positions - np.mean(obj_x_positions)
+    obj_y_offset = obj_y_positions - np.mean(obj_y_positions)
+    obj_z_offset = obj_z_positions - np.mean(obj_z_positions)
+
+    # Compute per-view magnification
+    magnification = cone_beam_params['source_detector_dist'] / (obj_x_offset + cone_beam_params['source_iso_dist'])
+
+    # Convert object offset to sinogram offset in units of pixels
+    sino_y_offset = magnification * obj_y_offset / optional_params['delta_det_channel']
+    sino_z_offset = magnification * obj_z_offset / optional_params['delta_det_row']
+
+    # Pad the sinogram to handle boundaries
+    if pad > 0:
+        sino_pad = np.pad(sino, ((0, 0), (pad, pad), (pad, pad)), mode='edge')
+    else:
+        sino_pad = sino
+
+    # Apply per-view translation
+    corrected_sino = np.zeros_like(sino_pad)
+    for view in range(sino.shape[0]):
+        corrected_sino[view] = jax.image.scale_and_translate(sino_pad[view],
+                                      shape=sino_pad[view].shape,
+                                      spatial_dims=(0, 1),
+                                      scale=jnp.array([1.0, 1.0]),
+                                      translation=jnp.array([sino_y_offset[view], -sino_z_offset[view]]),
+                                      method='linear',
+                                      antialias=False)
+
+    # Remove padding
+    if pad > 0:
+        corrected_sino = corrected_sino[:, pad:-pad, pad:-pad]
+
+    return corrected_sino
