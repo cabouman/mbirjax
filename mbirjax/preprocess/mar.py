@@ -4,6 +4,7 @@ import mbirjax as mj
 import mbirjax.preprocess as mjp
 import random
 import warnings
+from jaxopt import OSQP
 
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
@@ -153,10 +154,10 @@ def _generate_metal_combinations(num_metal, max_order):
     return combinations
 
 
-def _generate_basis_vectors(recon, num_metal, ct_model, device):
+def _est_plastic_metal_sinos(recon, num_metal, ct_model, device):
     """
     Segment plastic and metal regions from a reconstruction, project them,
-    and return the unnormalized basis vectors for beam hardening modeling.
+    and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
 
     Args:
         recon (jnp.ndarray): Reconstructed image.
@@ -165,8 +166,8 @@ def _generate_basis_vectors(recon, num_metal, ct_model, device):
         device: JAX device to put the masks on for projection.
 
     Returns:
-        p (jnp.ndarray): Unnormalized plastic basis vector (flattened sinogram).
-        metals (list of jnp.ndarray): List of unnormalized metal basis vectors.
+        plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
+        metal_sino_est (list of jnp.ndarray): List of unnormalized metal sino estimation.
     """
     # --- Segment plastic and metal regions in the reconstruction ---
     # plastic_mask: Mask for plastic regions.
@@ -176,20 +177,20 @@ def _generate_basis_vectors(recon, num_metal, ct_model, device):
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
 
     # --- Forward project, scale and vectorize plastic ---
-    p = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+    plastic_sino_est = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
 
     # --- Forward project, scale and vectorize each metal in the metals list ---
-    metals = []
+    metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
-        m = scale * ct_model.forward_project(jax.device_put(mask, device)).reshape(-1)
-        metals.append(m)
+        m = ct_model.forward_project(jax.device_put(mask * recon, device)).reshape(-1)
+        metal_sino_est.append(m)
 
-    return p, metals
+    return plastic_sino_est, metal_sino_est
 
 
-def _get_column_H(col_index, p, metal_basis, H_exponent_list):
+def _get_column_H(col_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     """
-    Compute the col_index-th column of the basis matrix H.
+    Compute the col_index-th column of the matrix H.
 
     The column is constructed as a monomial of the form:
         H[:, col_index] = p^e0 * m_0^e1 * m_1^e2 * ... * m_{n-1}^en
@@ -198,41 +199,116 @@ def _get_column_H(col_index, p, metal_basis, H_exponent_list):
 
     Args:
         col_index (int): Index of the column to compute.
-        p (jnp.ndarray): Normalized plastic basis vector.
-        metal_basis (list of jnp.ndarray): Normalized metal basis vectors [m_0, m_1, ..., m_{n-1}].
+        plastic_sino_est (jnp.ndarray): Normalized plastic sinogram estimation.
+        metal_sino_est (list of jnp.ndarray): Normalized metal sinogram estimation [m_0, m_1, ..., m_{n-1}].
         H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
 
     Returns:
         jnp.ndarray: The computed column of H (same shape as p and m_i).
     """
     exponents = H_exponent_list[col_index]
-    assert len(exponents) == 1 + len(metal_basis), "Mismatch between exponent tuple and number of basis vectors."
+    assert len(exponents) == 1 + len(metal_sino_est), "Mismatch between exponent tuple and number of sinograms."
 
-    col = p ** exponents[0]
-    for metal, exp in zip(metal_basis, exponents[1:]):
+    col = plastic_sino_est ** exponents[0]
+    for metal, exp in zip(metal_sino_est, exponents[1:]):
         col *= metal ** exp
 
     return col
 
-def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta):
+def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     """
-    Estimate polynomial beam hardening model parameters by solving a regularized least squares system.
-
-    This function avoids constructing the full H matrix by computing HtH and Hty using only the columns of H
-    as needed via `_get_column_H()`.
+    Compute the row_index-th column of the matrix H.
 
     Args:
-        p (jnp.ndarray): Normalized plastic basis vector.
-        metal_basis (list of jnp.ndarray): List of normalized metal basis vectors.
-        y (jnp.ndarray): Measured sinogram.
-        H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the basis matrix H.
-        num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
-        alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
-        beta (float): Regularization strength scaling factor.
+        row_index (int): Index of the row to compute.
+        plastic_sino_est (jnp.ndarray): Normalized plastic sinogram estimation.
+        metal_sino_est (list of jnp.ndarray): Normalized metal sinogram estimation [m_0, m_1, ..., m_{n-1}].
+        H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
 
     Returns:
-        theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
+        jnp.ndarray: The computed row of H.
     """
+    pi = plastic_sino_est[row_index]
+    mi = [m[row_index] for m in metal_sino_est]
+    row_vals = []
+    for exps in H_exponent_list:
+        val = (pi ** exps[0])
+        for mk, ek in zip(mi, exps[1:]):
+            val = val * (mk ** ek)
+        row_vals.append(val)
+    return jnp.asarray(row_vals)
+
+
+def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms):
+    """
+    Compute the most violated constraints for the beam hardening model.
+
+    The BH model enforces two types of inequality constraints:
+        1. Plastic positivity:        H_p[i,:] θ_p ≥ 0
+       2. Residual positivity:       y[i] − H_m[i,:] θ_m ≥ 0
+
+    This function evaluates the indices and values of the entries that most violate
+    the constraints.
+
+    Returns:
+        i_min_Sp (int): Index of smallest Sp entry.
+       v_min_Sp (float): Value of Sp[i_min_Sp].
+       i_min_residual (int): Index of smallest (y − Sm) entry.
+       v_min_residual (float): Value of (y − Sm)[i_min_residual].
+    """
+    num_cols = len(H_exponent_list)
+    Sp = jnp.zeros_like(measured_sino)
+    for i in range(0, 1 + num_cross_terms):
+        # Use a dummy input of ones to extract the structure of the i-th column (i.e., coefficient of p)
+        Sp = Sp + theta[i] * _get_column_H(i, jnp.ones_like(plastic_sino_est), metal_sino_est, H_exponent_list)
+
+    # y_minus_Sm = y - metal-only
+    y_minus_Sm = measured_sino
+    # Subtract metal-only terms (from H columns after the cross terms)
+    for j in range(1 + num_cross_terms, num_cols):
+        y_minus_Sm = y_minus_Sm - theta[j] * _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
+
+    # Lower-bound violator: minimize Sp and y-Sm
+    i_min_Sp = int(jnp.argmin(Sp))
+    i_min_residual = int(jnp.argmin(y_minus_Sm))
+
+    v_min_Sp = Sp[i_min_Sp]
+    v_min_residual = y_minus_Sm[i_min_residual]
+
+    return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual
+
+
+
+def _estimate_BH_model_params_using_OSQP(Q, c, G, h):
+    """
+    Solve the constrained quadratic optimization problem:
+
+        minimize_θ   0.5 * θᵀ Q θ + cᵀ θ
+        subject to   G θ ≤ h
+
+    The problem is solved using the JAXOpt `OSQP` solver when constraints are provided.
+    If `G` or `h` is `None`, an unconstrained least-squares solution is computed directly.
+
+    Args:
+        Q (jnp.ndarray): Quadratic term matrix.
+        c (jnp.ndarray): Linear term vector.
+        G (jnp.ndarray): Inequality constraint matrix.
+        h (jnp.ndarray): Right-hand side vector for the inequality constraints.
+
+    Returns:
+        jnp.ndarray: Solution vector θ.
+    """
+    if G is None or h is None:
+        # No constraints - solve unconstrained QP directly
+        theta = jnp.linalg.solve(Q, -c)
+    else:
+        solver = OSQP()
+        sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
+        theta = sol.primal
+    return theta
+
+def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta):
+    """Compute entry for OSQP quadratic programming solver."""
     num_cols = len(H_exponent_list)
 
     HtH = jnp.zeros((num_cols, num_cols))
@@ -240,10 +316,10 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
 
     # Compute the upper triangle of HtH and mirror it.
     for i in range(num_cols):
-        h_i = _get_column_H(i, p, metal_basis, H_exponent_list)
-        Hty = Hty.at[i].set(jnp.dot(h_i, y))
+        h_i = _get_column_H(i, plastic_sino_est, metal_sino_est, H_exponent_list)
+        Hty = Hty.at[i].set(jnp.dot(h_i, measured_sino))
         for j in range(i, num_cols):
-            h_j = _get_column_H(j, p, metal_basis, H_exponent_list)
+            h_j = _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
             dot_ij = jnp.dot(h_i, h_j)
             HtH = HtH.at[i, j].set(dot_ij)
             if i != j:
@@ -262,12 +338,95 @@ def _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_term
     # --- Solve for theta ---
     scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
     lambda_reg = beta * scaling_const
-    HtH_reg = HtH + lambda_reg * weight_matrix
-    theta = jnp.linalg.solve(HtH_reg, Hty)
 
+    Q = HtH + lambda_reg * weight_matrix
+    c = -Hty
+
+    return Q, c
+
+def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter=10, tolerance=-1e-5):
+    """
+    Estimate polynomial beam hardening model parameters with iterative constraints search.
+
+    This function solves a regularized least squares problem with inequality constraints to
+    enforce nonnegativity on the plastic and residual sinograms. The optimization problem is:
+
+        minimize_θ   0.5‖Hθ − y‖² + 0.5λ‖θ‖²_Λ
+        subject to   H_p[i,:] θ_p ≥ 0 and y[i] − H_m[i,:] θ_m ≥ 0
+
+    where:
+        - H_p contains the plastic and plastic–metal cross-term columns.
+        - H_m contains the metal-only columns.
+
+    The function uses an iterative active constraint selection method:
+        1. Start from the unconstrained least squares estimate.
+        2. Identify indices where the constraints are violated.
+        3. Add the most violated constraints to the set.
+        4. Re-solve the quadratic program (QP) using OSQP.
+        5. Repeat until all constraints are satisfied or `num_constraint_update_iter` is reached.
+
+    Args:
+        plastic_sino_est (jnp.ndarray): Normalized plastic sinogram estimation.
+        metal_sino_est (list of jnp.ndarray): List of normalized metal sino estimation.
+        measured_sino (jnp.ndarray): Measured sinogram.
+        H_exponent_list (list of tuple[int]): List of exponent tuples defining each column of the matrix H.
+        num_cross_terms (int): Number of cross terms (plastic × metal); remaining terms are metal-only.
+        alpha (float): Regularization exponent; higher alpha penalizes higher-degree terms more.
+        beta (float): Regularization strength scaling factor.
+        num_constraint_update_iter (int): Number of iterations for updating constraints.
+        tolerance (float): Tolerance for stopping criteria.
+
+    Returns:
+        theta (jnp.ndarray): Estimated model parameters corresponding to each column in H.
+
+    """
+    num_cols = len(H_exponent_list)
+    dp = 1 + num_cross_terms
+
+    # Lists that store the indices of the points that most violate the constraints
+    C_p = []
+    C_m = []
+
+    # Construct the entries Q, c, G and h of OSQP for solving the constraint optimization
+    Q, c = _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta)
+    G = jnp.zeros((0, num_cols))  # no active constraints yet
+    h = jnp.zeros((0,))
+
+    # Initial θ solved without constraint
+    theta = _estimate_BH_model_params_using_OSQP(Q, c, G=None, h=None)
+
+    for iter in range(num_constraint_update_iter):
+        # Find the indices and values of the points that most violate each constraint
+        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms)
+
+        # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
+        if v_min_Sp < tolerance and (i_min_Sp not in C_p):
+            row_p = _get_row_H(i_min_Sp, jnp.ones_like(measured_sino), metal_sino_est, H_exponent_list)
+            # Negative row_p[:dp] to ensure Hpθp >= 0
+            g_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
+            h_p = jnp.array([0.0])
+            G = jnp.vstack([G, g_p[None, :]])
+            h = jnp.concatenate([h, h_p])
+            C_p.append(i_min_Sp)
+
+        # (2) y − Hm θm ≥ 0  ->  (Hm) θ ≤ y
+        if v_min_residual < tolerance and (i_min_residual not in C_m):
+            row_m = _get_row_H(i_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
+            # Positive row_m[dp:] to ensure y-Hmθm >= 0
+            g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
+            h_m = jnp.array([measured_sino[i_min_residual]])
+            G = jnp.vstack([G, g_m[None, :]])
+            h = jnp.concatenate([h, h_m])
+            C_m.append(i_min_residual)
+
+        # Early exit if both constraints are satisfied (within tolerances)
+        if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
+            break
+        theta = _estimate_BH_model_params_using_OSQP(Q, c, G, h)
     return theta
 
-def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
+
+def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
     """
     Perform beam hardening correction on the plastic sinogram.
 
@@ -275,7 +434,7 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     and normalizes the result using the linear plastic component, yielding a corrected
     sinogram that approximates the plastic-only contribution.
 
-    The correction is based on a polynomial basis matrix H whose columns correspond to:
+    The correction is based on a polynomial matrix H whose columns correspond to:
         - Plastic term: p
         - Cross terms: p*m, p*m^2, ...
         - Metal-only terms: m, m^2, m^3, ...
@@ -287,9 +446,9 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     and numerical instability.
 
     Args:
-        y (jnp.ndarray): Measured sinogram.
-        p (jnp.ndarray): Normalized plastic-only sinogram.
-        metal_basis (list of jnp.ndarray): List of sinograms of different metals.
+        measured_sino (jnp.ndarray): Measured sinogram.
+        plastic_sino_est (jnp.ndarray): Normalized plastic sino estimation.
+        metal_sino_est (list of jnp.ndarray): List of normalized metal sino estimation..
         theta (jnp.ndarray): Estimated coefficients for the polynomial terms in H.
         H_exponent_list (list of tuple): Exponent tuples defining each column of H.
         num_cross_terms (int): Number of cross terms involving both p and metal.
@@ -302,36 +461,48 @@ def _correct_plastic_sinogram(y, p, metal_basis, theta, H_exponent_list, num_cro
     """
 
     # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
-    linear_plastic_coef = jnp.zeros_like(y)
+    Sp = jnp.zeros_like(measured_sino)
     for i in range(0, 1 + num_cross_terms):
-        # Use a dummy input of ones to extract the structure of the i-th basis column (i.e., coefficient of p)
-        linear_plastic_coef += theta[i] * _get_column_H(i, jnp.ones_like(y), metal_basis, H_exponent_list)
+        # Use a dummy input of ones to extract the structure of the i-th column (i.e., coefficient of p)
+        Sp += theta[i] * _get_column_H(i, jnp.ones_like(measured_sino), metal_sino_est, H_exponent_list)
 
-    y_minus_metal = y
+    y_minus_Sm = measured_sino
     # Subtract metal-only terms (from H columns after the cross terms)
     for j in range(1 + num_cross_terms, 1 + num_cross_terms + num_metal_terms):
-        y_minus_metal -= theta[j] * _get_column_H(j, p, metal_basis, H_exponent_list)
+        y_minus_Sm -= theta[j] * _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
 
     # Enforce non-negativity on the residual sinogram (plastic + cross terms)
-    y_minus_metal = jnp.maximum(y_minus_metal, 0)
+    y_minus_Sm = jnp.maximum(y_minus_Sm, 0)
 
     # Compute median of plastic coefficients (used to define a stabilization floor)
-    median_plastic_coef = jnp.median(linear_plastic_coef)
-    min_plastic_coef = gamma * median_plastic_coef
+    median_plastic_coef = jnp.median(Sp)
+    Sp_floor = gamma * median_plastic_coef
 
     # A negative median would be non-physical and may indicate instability in the algorithm
     # In that case, issue a runtime warning to flag the potential problem
     if float(median_plastic_coef) <= 0:
-        warnings.warn("Median of linear_plastic_coef is negative", RuntimeWarning)
+        warnings.warn("Median of Sp is negative", RuntimeWarning)
 
-    # Clamp linear_plastic_coef at min_plastic_coef to prevent division by very small or negative values
-    clamped_plastic_coef = jnp.maximum(linear_plastic_coef, min_plastic_coef)
-    corrected_plastic_sino = p_normalization * y_minus_metal / clamped_plastic_coef
+    # Clamp Sp at Sp_floor to prevent division by very small or negative values
+    clamped_plastic_coef = jnp.maximum(Sp, Sp_floor)
+    corrected_plastic_sino = p_normalization * y_minus_Sm / clamped_plastic_coef
 
     return corrected_plastic_sino
 
+def _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, plastic_sino_corrected):
+    # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
+    # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
+    metal_absent = jnp.ones_like(plastic_sino_est, dtype=bool)
+    for metal in metal_sino_est:
+        metal_absent = metal_absent & (metal == 0)
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4):
+    # Find the metal-absent indices
+    condition = (plastic_sino_est != 0) & metal_absent
+
+    plastic_sino_scale = mjp.compute_scaling_factor(measured_sino[condition], plastic_sino_corrected[condition])
+    return plastic_sino_scale
+
+def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
     """
     Perform beam hardening correction for CT sinograms with plastic and multiple metal components
     using a polynomial fitting model with regularization.
@@ -344,8 +515,9 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
-        gamma (float, optional): Stabilization factor. Defaults to 0.4.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.002.
+        gamma (float, optional): Stabilization factor. Defaults to 0.1.
+        num_constraint_update_iter (int, optional): Number of iterations for updating constraints. Defaults to 10.
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -356,7 +528,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     num_metal_terms = len(metal_exponent_list)
     num_cross_terms = len(cross_exponent_list)
 
-    # Construct the exponent list for each column of the basis matrix H.
+    # Construct the exponent list for each column of the matrix H.
     # Each entry in H_exponent_list is a tuple representing the exponents of (p, m_0, m_1, ..., m_{num_metal-1}).
     # - Linear plastic term: (1, 0, 0, ...)
     # - Cross terms: The leading 1 indicates the presence of a linear p term.
@@ -368,65 +540,58 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
             [(0, *t) for t in metal_exponent_list])
 
     device = ct_model.main_device
-    y = measured_sino.reshape(-1)
+    sino_shape = measured_sino.shape
+    measured_sino = measured_sino.reshape(-1)
 
-    # Get normalized basis vectors p and [m_0, m_1, ...]
-    p, metal_basis = _generate_basis_vectors(recon, num_metal, ct_model, device)
-    p_normalization = jnp.max(jnp.abs(p))
-    metals_normalization = [jnp.max(jnp.abs(arr)) for arr in metal_basis]
-    p = p / p_normalization
-    metal_basis = [arr / norm for arr, norm in zip(metal_basis, metals_normalization)]
+    # Get normalized sinogram p and [m_0, m_1, ...]
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos(recon, num_metal, ct_model, device)
+    plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))
+    metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
+    plastic_sino_est = plastic_sino_est / plastic_sino_scale
+    metal_sino_est = [arr / norm for arr, norm in zip(metal_sino_est, metal_sino_scale)]
 
     # Estimate beam hardening model parameters theta
-    theta = _estimate_BH_model_params(p, metal_basis, y, H_exponent_list, num_cross_terms, alpha, beta)
+    theta = _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter)
     # print(f'theta = {theta}')
 
     # Compute the corrected plastic sinogram
-    corrected_plastic_sino = _correct_plastic_sinogram(y, p, metal_basis, theta,H_exponent_list,
-                                                       num_cross_terms, num_metal_terms, p_normalization, gamma)
+    plastic_sino_corrected = _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list,
+                                                       num_cross_terms, num_metal_terms, plastic_sino_scale, gamma)
 
-    # Compute a scaling factor by performing least-squares fitting between the corrected plastic sinogram
-    # and the measured sinogram at plastic-only locations (i.e., where plastic is present and all metals are absent)
-    metal_absent = jnp.ones_like(p, dtype=bool)
-    for metal in metal_basis:
-        metal_absent = metal_absent & (metal == 0)
-    condition = (p != 0) & metal_absent
-    plastic_only_indices = jnp.where(condition)[0]
+    # Compute and apply the scaling of the corrected plastic sino
+    plastic_sino_corrected_scale = _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, plastic_sino_corrected)
+    scaled_corrected_plastic_sino = plastic_sino_corrected_scale * plastic_sino_corrected
 
-    plastic_scale = mjp.compute_scaling_factor(y[plastic_only_indices], corrected_plastic_sino[plastic_only_indices])
-    scaled_corrected_plastic_sino = plastic_scale * corrected_plastic_sino
+    # Combine the scaled corrected plastic sino and the metal sinos
+    corrected_sino_flat = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_sino_est, metal_sino_scale))
+    corrected_sino = corrected_sino_flat.reshape(sino_shape)
 
-    # Combine all scaled components, denormalize the metals
-    corrected_sino_flat = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_basis, metals_normalization))
-
-    corrected_sino = corrected_sino_flat.reshape(measured_sino.shape)
     return corrected_sino
 
 
-def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.004, gamma=0.4, verbose=0):
+def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
+                           num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0):
     """
-    Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
-    then this performs a standard MBIR recon.
+    Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
 
     This function alternates between beam hardening correction (via `correct_BH_plastic_metal`)
     and reconstruction, refining the image over several iterations to suppress metal-induced artifacts.
-
-    This function uses recon_split_sino by default in the case that ct_model is a ConeBeamModel.
 
     Args:
         ct_model: MBIRJAX cone beam model instance with `direct_recon` and `recon` methods.
         sino (jnp.ndarray):  Input sinogram data to be corrected.
         weights (jnp.ndarray): Transmission weights used in the reconstruction algorithm.
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
+        num_constraint_update_iter (int, optional): Number of iterations for updating constraints.
+            At each iteration, the most violated constraints are activated and the quadratic program is re-solved via OSQP.
         stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
-        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.004.
+        beta (float, optional): Regularization strength for ridge regression. Defaults to 0.002.
         gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
-            to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.4.
+            to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.1.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
 
     Returns:
@@ -445,33 +610,18 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, stop_th
         ... )
         >>> mj.slice_viewer(recon)
     """
-    # Check for nonnegative num_metals
-    if num_metal < 0:
-        raise ValueError("num_metal must be >= 0")
-
-    # Use split sino recon by default for cone beam
-    recon_function = ct_model.recon
-    if 'ConeBeamModel' in ct_model.get_params('geometry_type'):
-        recon_function = ct_model.split_sino_recon
-
-    # Do a regular recon if num_metal == 0
-    if num_metal == 0:
-        recon, _ = recon_function(sino, weights=weights, stop_threshold_change_pct=stop_threshold_change_pct)
-        return recon
-
-    # Continue with beam hardening and segmentation
     if verbose >= 1:
         print("\n************ Perform initial FDK reconstruction  **************")
     recon = ct_model.direct_recon(sino)
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma)
+        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
 
         # Reconstruct Corrected Sinogram
         if verbose >= 1:
             print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
-        recon, _ = recon_function(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
+        recon, _ = ct_model.recon(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
 
         if verbose >= 2:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
