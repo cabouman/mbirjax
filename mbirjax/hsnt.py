@@ -13,7 +13,7 @@ from sklearn.utils.extmath import randomized_svd
 
 
 def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-                  batch_size=2 ** 24, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+                  batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration.
 
@@ -76,7 +76,7 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
 
 
 def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-              batch_size=2 ** 24, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+              batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
 
