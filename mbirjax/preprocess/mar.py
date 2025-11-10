@@ -122,7 +122,7 @@ def BH_correction(sino, alpha, batch_size=64):
     return corrected_sino
 
 
-def _generate_metal_combinations(num_metal, max_order):
+def _generate_metal_exponent_list(num_metal, max_order):
     """
     Generate all combinations of polynomial powers such that the total degree
     (sum of exponents) is <= max_order, excluding the all-zero combination.
@@ -154,7 +154,7 @@ def _generate_metal_combinations(num_metal, max_order):
     return combinations
 
 
-def _est_plastic_metal_sinos(recon, num_metal, ct_model, device):
+def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
     """
     Segment plastic and metal regions from a reconstruction, project them,
     and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
@@ -179,7 +179,7 @@ def _est_plastic_metal_sinos(recon, num_metal, ct_model, device):
     # --- Forward project, scale and vectorize plastic ---
     plastic_sino_est = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
 
-    # --- Forward project, scale and vectorize each metal in the metals list ---
+    # --- Forward project the masked out metal regions ---
     metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
         m = ct_model.forward_project(jax.device_put(mask * recon, device)).reshape(-1)
@@ -502,10 +502,10 @@ def _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, p
     plastic_sino_scale = mjp.compute_scaling_factor(measured_sino[condition], plastic_sino_corrected[condition])
     return plastic_sino_scale
 
-def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
+def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
     """
-    Perform beam hardening correction for CT sinograms with plastic and multiple metal components
-    using a polynomial fitting model with regularization.
+    This function corrects the measured sinogram of an object with plastic and multiple metal components by fitting a
+    beam hardening model to the sinogram and removing the metal contributions.
 
     Args:
         ct_model: CT model object with a `forward_project` method and a `main_device` attribute.
@@ -523,8 +523,8 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
     """
     # Construct the exponent list of the metal sinograms.
-    metal_exponent_list = _generate_metal_combinations(num_metal, order)
-    cross_exponent_list = _generate_metal_combinations(num_metal, order - 1)
+    metal_exponent_list = _generate_metal_exponent_list(num_metal, order)
+    cross_exponent_list = _generate_metal_exponent_list(num_metal, order - 1)
     num_metal_terms = len(metal_exponent_list)
     num_cross_terms = len(cross_exponent_list)
 
@@ -544,7 +544,7 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     measured_sino = measured_sino.reshape(-1)
 
     # Get normalized sinogram p and [m_0, m_1, ...]
-    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos(recon, num_metal, ct_model, device)
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     plastic_sino_est = plastic_sino_est / plastic_sino_scale
@@ -569,12 +569,12 @@ def correct_BH_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=
     return corrected_sino
 
 
-def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
-                           num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0):
+def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
+                        num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0):
     """
-    Perform iterative metal artifact reduction using plastic-metal beam hardening correction.
+    Perform iterative metal artifact reduction for object with plastic and metal components.
 
-    This function alternates between beam hardening correction (via `correct_BH_plastic_metal`)
+    This function alternates between adaptive beam hardening correction (via `correct_sino_plastic_metal`)
     and reconstruction, refining the image over several iterations to suppress metal-induced artifacts.
 
     Args:
@@ -598,7 +598,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_con
          jnp.ndarray: The final corrected reconstruction after iterative beam hardening correction.
 
     Example:
-        >>> recon = recon_BH_plastic_metal(
+        >>> recon = recon_plastic_metal(
         ...     ct_model, sino, weights,
         ...     num_BH_iterations=3,
         ...     stop_threshold_change_pct=0.5,
@@ -616,7 +616,7 @@ def recon_BH_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_con
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
-        corrected_sinogram = correct_BH_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
+        corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
 
         # Reconstruct Corrected Sinogram
         if verbose >= 1:
