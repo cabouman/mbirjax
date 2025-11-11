@@ -32,7 +32,7 @@ def create_recon_data(num_views, num_det_rows, num_det_channels):
     ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles,
                                                source_detector_dist=source_detector_dist,
                                                source_iso_dist=source_iso_dist)
-    ct_model_for_generation.set_params(use_gpu='projection')
+    ct_model_for_generation.set_params(use_gpu='projections')
 
     # Generate phantom
     print('Creating phantom')
@@ -71,6 +71,7 @@ def recon(num_views, num_det_rows, num_det_channels, output_filepath='output.csv
     except:
         pass
 
+    # weights = None
     weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
     print("\nGPU STARTING MEMORY STATS:")
@@ -80,9 +81,21 @@ def recon(num_views, num_det_rows, num_det_channels, output_filepath='output.csv
     recon_model.set_params(use_gpu="automatic")
     recon, _ = recon_model.recon(sinogram,
                                  weights=weights,
-                                 max_iterations=2,
+                                 max_iterations=10,
                                  stop_threshold_change_pct=0)
     recon.block_until_ready()
+
+    print("\nSTARTING RECON SECOND PASS:")
+    recon_model.set_params(use_gpu="automatic")
+    time0 = time.time()
+    recon, _ = recon_model.recon(sinogram,
+                                 weights=weights,
+                                 max_iterations=10,
+                                 stop_threshold_change_pct=0)
+    recon.block_until_ready()
+    elapsed = time.time() - time0
+
+    print('\nELAPSED TIME: {:.3f} seconds'.format(elapsed))
 
     print("\nGPU FINAL MEMORY STATS:")
     mem_stats = mj.get_memory_stats()
@@ -108,9 +121,9 @@ if __name__ == "__main__":
         num_det_channels = int(sys.argv[3])
         output_filepath = sys.argv[4]
     except:
-        num_views = 256
-        num_det_rows = 256
-        num_det_channels = 256
+        num_views = 904
+        num_det_rows = 1496
+        num_det_channels = 1800
         output_filepath = "logs/recon_mem.txt"
 
     create_recon_data(num_views, num_det_rows, num_det_channels)
