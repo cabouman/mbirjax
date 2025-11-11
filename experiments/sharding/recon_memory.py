@@ -84,6 +84,7 @@ def recon(num_views, num_det_rows, num_det_channels, output_filepath='output.csv
                                  max_iterations=10,
                                  stop_threshold_change_pct=0)
     recon.block_until_ready()
+    del recon
 
     print("\nSTARTING RECON SECOND PASS:")
     recon_model.set_params(use_gpu="automatic")
