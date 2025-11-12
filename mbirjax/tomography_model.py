@@ -141,15 +141,13 @@ class TomographyModel(ParameterHandler):
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
-            gpu_bytes_limit = float(gpu_memory_stats['bytes_limit'])
-            gpu_memory = gpu_bytes_limit - float(gpu_memory_stats['bytes_in_use'])
+            gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
             gpu_memory /= gb
         except RuntimeError:
             if use_gpu not in ['automatic', 'none']:
                 warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
                               "Use 'set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
             gpus = []
-            gpu_bytes_limit = 0
             gpu_memory = 0
         self.gpu_memory = gpu_memory
 
@@ -189,8 +187,7 @@ class TomographyModel(ParameterHandler):
 
         zero = jnp.zeros(1)
         bits_per_byte = 8
-        bytes_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte
-        mem_per_entry = bytes_per_entry / gb  # Parse floatXX to get the number of bits
+        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
         mem_per_cylinder = num_slices * mem_per_entry
 
         # Make an empirical estimate of memory used per projection (on H100 as of 2025):
@@ -260,6 +257,8 @@ class TomographyModel(ParameterHandler):
             self.view_batch_size_for_vmap = num_views
 
             # determine memory sizes
+            bytes_per_entry = mem_per_entry * gb
+            gpu_bytes_limit = gpu_memory * gb
             target_peak_bytes_per_gpu = gpu_bytes_limit * BATCH_SIZE_PEAK_MEMORY_FACTOR
             bytes_per_sinogram_with_floor = bytes_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
             bytes_for_vcd_sinos_per_gpu = bytes_per_sinogram_with_floor * recon_reps_for_vcd / num_gpus
