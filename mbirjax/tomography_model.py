@@ -141,13 +141,15 @@ class TomographyModel(ParameterHandler):
         try:
             gpus = jax.devices('gpu')
             gpu_memory_stats = gpus[0].memory_stats()
-            gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
+            gpu_bytes_limit = float(gpu_memory_stats['bytes_limit'])
+            gpu_memory = gpu_bytes_limit - float(gpu_memory_stats['bytes_in_use'])
             gpu_memory /= gb
         except RuntimeError:
             if use_gpu not in ['automatic', 'none']:
                 warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
                               "Use 'set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
             gpus = []
+            gpu_bytes_limit = 0
             gpu_memory = 0
         self.gpu_memory = gpu_memory
 
@@ -187,7 +189,8 @@ class TomographyModel(ParameterHandler):
 
         zero = jnp.zeros(1)
         bits_per_byte = 8
-        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
+        bytes_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte
+        mem_per_entry = bytes_per_entry / gb  # Parse floatXX to get the number of bits
         mem_per_cylinder = num_slices * mem_per_entry
 
         # Make an empirical estimate of memory used per projection (on H100 as of 2025):
@@ -229,6 +232,10 @@ class TomographyModel(ParameterHandler):
         # 'automatic' and more than one GPU: Everything will be done with sharding
         if use_gpu == 'automatic' and len(gpus) > 1:
 
+            # Constants used for choosing batch size
+            BATCH_SIZE_EMPIRICAL_SCALING_CONSTANT = 6
+            BATCH_SIZE_PEAK_MEMORY_FACTOR = 0.75
+
             num_gpus = len(gpus)
             excess_views = num_views % num_gpus
             if excess_views != 0:
@@ -252,17 +259,34 @@ class TomographyModel(ParameterHandler):
             # sharding requires a single view batch
             self.view_batch_size_for_vmap = num_views
 
-            # pixel batch size is hardcoded because this empirically worked for the
-            # worst case 2K^3 recon with 8 GPUs
-            self.pixel_batch_size_for_vmap = 125
-            self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap
+            # determine memory sizes
+            target_peak_bytes_per_gpu = gpu_bytes_limit * BATCH_SIZE_PEAK_MEMORY_FACTOR
+            bytes_per_sinogram_with_floor = bytes_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
+            bytes_for_vcd_sinos_per_gpu = bytes_per_sinogram_with_floor * recon_reps_for_vcd / num_gpus
+            scratch_bytes_per_gpu = target_peak_bytes_per_gpu - bytes_for_vcd_sinos_per_gpu
+            if scratch_bytes_per_gpu < 0:
+                raise RuntimeError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
+                    "there is not enough memory for reconstruction with sharding. Either downsample the sinogram"
+                    f"or disable sharding. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
 
-            # Recalculate the memory per voxel batch with the new batch size
-            mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
+            # calculate the pixel batch size
+            views_per_gpu = num_views / num_gpus
+            bytes_per_cylinder = num_slices * bytes_per_entry
+            pixel_batch_size_for_vmap = (scratch_bytes_per_gpu //
+                                              (BATCH_SIZE_EMPIRICAL_SCALING_CONSTANT * views_per_gpu * bytes_per_cylinder
+                                              + bytes_per_cylinder))
+            aaa = pixel_batch_size_for_vmap
+            self.pixel_batch_size_for_vmap = pixel_batch_size_for_vmap
+            self.transfer_pixel_batch_size = self.pixel_batch_size_for_vmap  # to avoid concatenation when projecting
+            if self.transfer_pixel_batch_size < 100:
+                raise ValueError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
+                    "there is not enough memory for for a pixel batch size greater than 100. Either downsample the"
+                    f"sinogram or disable sharding. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
 
-            mem_for_vcd_sinos_per_gpu = mem_for_vcd_sinos_gpu / num_gpus
-            mem_required_for_gpu = mem_for_vcd_sinos_per_gpu + mem_per_voxel_batch
-            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
+            mem_required_for_gpu = target_peak_bytes_per_gpu / gb
+            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram
 
         # 'full':  Everything on GPU
         elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
