@@ -30,8 +30,9 @@ class ProjectionBase:
     control_params = None
     projection_model =  None
 
-    # inherit subTest method from unittest to make linter happy
+    # inherit methods from unittest to make linter happy
     subTest = unittest.TestCase.subTest
+    skipTest = unittest.TestCase.skipTest
 
     @classmethod
     def setUpClass(cls):
@@ -82,6 +83,20 @@ class ProjectionBase:
                 sinogram = jax.device_put(sinogram)
                 assert bool(jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL)), \
                     f"[{self.MODEL.__name__}] forward mismatch (use_gpu={opt})"
+
+    def test_forward_project_sharded(self):
+        """Forward-project the control phantom and compare against control sinogram with sharding."""
+        if 'automatic' not in self.USE_GPU_OPTS:
+            self.skipTest("Unable to test sharding. No GPUs detected.")
+
+        self.projection_model.set_params(use_gpu='automatic')
+        if self.projection_model.use_gpu is not 'sharding':
+            self.skipTest("Unable to test sharding. Multiple GPUs not detected.")
+
+        sinogram = self.projection_model.forward_project(self.control_phantom)
+        sinogram = jax.device_put(sinogram)
+        assert bool(jnp.allclose(sinogram, self.control_sinogram, atol=self.ATOL)), \
+            f"[{self.MODEL.__name__}] forward mismatch (use_gpu='sharding')"
 
     def test_forward_project_rejects_biased_input_at_tol(self):
         """
