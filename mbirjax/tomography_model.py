@@ -738,6 +738,46 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
+    def sparse_back_project_sharded(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
+        """
+        Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
+        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
+        The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
+        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
+        be the indices into the sinogram that is passed in here.
+        Args:
+            sinogram (jnp array): 3D jax array containing the full sinogram.
+            pixel_indices (jnp array): Array of indices specifying which voxels to back project.
+            coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
+            output_device (jax device, optional): Device on which to put the output
+        Returns:
+            A jax array of shape (len(indices), num_slices)
+        """
+        # Batch the views and pixels for possible transfer to the gpu
+        transfer_pixel_batch_size = self.transfer_pixel_batch_size
+        num_views = sinogram.shape[0]
+
+        # determine pixel batch indices
+        num_pixels = len(pixel_indices)
+
+        pixel_batch_start_indices = jnp.arange(num_pixels, step=transfer_pixel_batch_size, dtype=int)
+        pixel_batch_end_indices = jnp.concatenate([pixel_batch_start_indices[1:], num_pixels * jnp.ones(1, dtype=int)])
+
+        # Loop over pixel batches
+        voxel_batch_list = []
+        view_indices = jnp.arange(num_views)[:, None]
+        sinogram, view_indices = jax.device_put([sinogram, view_indices], device=self.sinogram_device)
+        for pixel_index_start, pixel_index_end in zip(pixel_batch_start_indices, pixel_batch_end_indices):
+            pixel_index_batch = jax.device_put(pixel_indices[pixel_index_start:pixel_index_end], self.replicated_device)
+            voxel_batch = self.projector_functions.sparse_back_project(sinogram, pixel_index_batch,
+                                                                       view_indices=view_indices,
+                                                                       coeff_power=coeff_power)
+            voxel_batch = voxel_batch.block_until_ready()
+            voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
+
+        recon_at_indices = jnp.concatenate(voxel_batch_list, axis=0)
+        return recon_at_indices
+
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
@@ -761,8 +801,8 @@ class TomographyModel(ParameterHandler):
                 raise ValueError("The view_indices option has been invoked. "
                                  "This is not compatible with multi-GPU sharding. "
                                  "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
-            raise RuntimeError("sparse_back_project_sharded support does not yet exist."
-                               "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+            return self.sparse_back_project_sharded(sinogram, pixel_indices, coeff_power, output_device)
+
 
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
