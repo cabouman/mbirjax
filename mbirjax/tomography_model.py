@@ -18,6 +18,7 @@ from jax.errors import JaxRuntimeError
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 import mbirjax
 import mbirjax as mj
@@ -69,6 +70,7 @@ class TomographyModel(ParameterHandler):
         self.verify_valid_params()
 
         self.main_device, self.sinogram_device, self.worker = None, None, None
+        self.replicated_device = None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
@@ -224,8 +226,69 @@ class TomographyModel(ParameterHandler):
         frac_gpu_mem_to_use = 0.9
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
+        # 'automatic' and more than one GPU: Everything will be done with sharding
+        if use_gpu == 'automatic' and len(gpus) > 1:
+
+            # Constants used for choosing batch size
+            batch_size_empirical_scaling_constant = 6
+            frac_gpu_mem_for_batch_size = 0.75
+
+            num_gpus = len(gpus)
+            excess_views = num_views % num_gpus
+            if excess_views != 0:
+                raise ValueError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected,"
+                    "but number of views must be an exact multiple of the number of GPUs."
+                    f"Currently there are {num_views} views and {num_gpus} detected GPUs, so there are {excess_views} "
+                    f"excess views. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
+            self.use_gpu = 'sharding'
+
+            # create devices and named shardings
+            devices = np.array(gpus).reshape((-1, 1))
+            mesh = Mesh(devices, ('views', 'rows'))
+
+            self.main_device = cpus[0]
+            self.sinogram_device = NamedSharding(mesh, P('views'))
+            self.replicated_device = NamedSharding(mesh, P())
+            self.worker = gpus[0]
+
+            # sharding requires a single view batch
+            self.view_batch_size_for_vmap = num_views
+
+            # determine memory sizes
+            bytes_per_entry = mem_per_entry * gb
+            gpu_bytes_limit = gpu_memory * gb
+            target_peak_bytes_per_gpu = gpu_bytes_limit * frac_gpu_mem_for_batch_size
+            bytes_per_sinogram_with_floor = bytes_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
+            bytes_for_vcd_sinos_per_gpu = bytes_per_sinogram_with_floor * recon_reps_for_vcd / num_gpus
+            bytes_for_projection_per_gpu = target_peak_bytes_per_gpu - bytes_for_vcd_sinos_per_gpu
+            if bytes_for_projection_per_gpu < 0:
+                raise RuntimeError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
+                    "there is not enough memory for reconstruction with sharding. Either downsample the sinogram"
+                    f"or disable sharding. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
+            # calculate the pixel batch size
+            views_per_gpu = num_views / num_gpus
+            bytes_per_cylinder = num_slices * bytes_per_entry
+            pixel_batch_size = (bytes_for_projection_per_gpu //
+                               (batch_size_empirical_scaling_constant * views_per_gpu * bytes_per_cylinder
+                                + bytes_per_cylinder))
+
+            self.pixel_batch_size_for_vmap = pixel_batch_size
+            self.transfer_pixel_batch_size = pixel_batch_size  # to avoid concatenation when projecting
+            if self.transfer_pixel_batch_size < 100:
+                raise ValueError(
+                    f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
+                    "there is not enough memory for for a pixel batch size greater than 100. Either downsample the"
+                    f"sinogram or disable sharding. To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
+            mem_required_for_gpu = target_peak_bytes_per_gpu / gb
+            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram
+
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
+        elif use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
             self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
@@ -588,6 +651,14 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
+        if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+            raise RuntimeError("sparse_forward_project_sharded support does not yet exist."
+                               "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -639,6 +710,14 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
+        if self.use_gpu == 'sharding':
+            if view_indices:
+                raise ValueError("The view_indices option has been invoked. "
+                                 "This is not compatible with multi-GPU sharding. "
+                                 "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+            raise RuntimeError("sparse_back_project_sharded support does not yet exist."
+                               "To disable sharding, use ct_model.set_params(use_gpu='sinograms').")
+
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size

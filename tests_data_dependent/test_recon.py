@@ -104,7 +104,7 @@ class ReconBase:
         Adding a small bias to the sinogram should change the reconstruction
         enough to break equality at the chosen tolerance.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         recon, _ = self.projection_model.recon(self.control_sinogram + 1,
                                                max_iterations=15,
                                                stop_threshold_change_pct=0)
@@ -127,7 +127,7 @@ class ReconBase:
         With zero tolerances, exact equality is (intentionally) too strict.
         We expect inequality due to floating-point roundoff.
         """
-        self.projection_model.set_params(use_gpu="automatic")
+        self.projection_model.set_params(use_gpu="sinograms")
         recon, _ = self.projection_model.recon(self.control_sinogram,
                                                max_iterations=15,
                                                stop_threshold_change_pct=0)
