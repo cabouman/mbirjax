@@ -262,8 +262,8 @@ class TomographyModel(ParameterHandler):
             target_peak_bytes_per_gpu = gpu_bytes_limit * BATCH_SIZE_PEAK_MEMORY_FACTOR
             bytes_per_sinogram_with_floor = bytes_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
             bytes_for_vcd_sinos_per_gpu = bytes_per_sinogram_with_floor * recon_reps_for_vcd / num_gpus
-            scratch_bytes_per_gpu = target_peak_bytes_per_gpu - bytes_for_vcd_sinos_per_gpu
-            if scratch_bytes_per_gpu < 0:
+            bytes_for_projection_per_gpu = target_peak_bytes_per_gpu - bytes_for_vcd_sinos_per_gpu
+            if bytes_for_projection_per_gpu < 0:
                 raise RuntimeError(
                     f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
                     "there is not enough memory for reconstruction with sharding. Either downsample the sinogram"
@@ -272,7 +272,7 @@ class TomographyModel(ParameterHandler):
             # calculate the pixel batch size
             views_per_gpu = num_views / num_gpus
             bytes_per_cylinder = num_slices * bytes_per_entry
-            pixel_batch_size_for_vmap = (scratch_bytes_per_gpu //
+            pixel_batch_size_for_vmap = (bytes_for_projection_per_gpu //
                                               (BATCH_SIZE_EMPIRICAL_SCALING_CONSTANT * views_per_gpu * bytes_per_cylinder
                                               + bytes_per_cylinder))
             aaa = pixel_batch_size_for_vmap
