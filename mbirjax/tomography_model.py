@@ -276,8 +276,8 @@ class TomographyModel(ParameterHandler):
                                (batch_size_empirical_scaling_constant * views_per_gpu * bytes_per_cylinder
                                 + bytes_per_cylinder))
 
-            self.pixel_batch_size_for_vmap = pixel_batch_size
-            self.transfer_pixel_batch_size = pixel_batch_size  # to avoid concatenation when projecting
+            self.pixel_batch_size_for_vmap = int(pixel_batch_size)
+            self.transfer_pixel_batch_size = int(pixel_batch_size)  # to avoid concatenation when projecting
             if self.transfer_pixel_batch_size < 100:
                 raise ValueError(
                     f"Sharding has been invoked because use_gpu='automatic' and multiple GPUs are detected, but"
