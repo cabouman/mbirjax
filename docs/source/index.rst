@@ -76,6 +76,7 @@ MBIRJAX: High-performance tomographic reconstruction
    quick_start
    advanced_features
    theory
+   unit_conversion
    credits
 
 .. toctree::
