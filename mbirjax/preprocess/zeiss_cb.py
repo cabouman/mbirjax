@@ -103,7 +103,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         print("background_offset = ", background_offset)
 
     # Correct sino offset
-    sino = correct_sino_offset(sino, cone_beam_params, optional_params, metadata, subsample_view_factor)
+    sino = correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor)
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
@@ -609,6 +609,8 @@ def read_metadata(ole):
             ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_arr(
             ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
+        'ref_iso_det_dist': _read_ole_value(ole, 'ReferenceData/RefD2RADistance', '<f'),
+        'ref_source_iso_dist': _read_ole_value(ole, 'ReferenceData/RefS2RADistance', '<f'),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
@@ -617,6 +619,12 @@ def read_metadata(ole):
             ole, 'ImageInfo/YPosition', "<{0}f".format(number_of_images)),
         'z_positions': _read_ole_arr(
             ole, 'ImageInfo/ZPosition', "<{0}f".format(number_of_images)),
+        'x-shifts':_read_ole_arr(
+            ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
+        'y-shifts': _read_ole_arr(
+            ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
+        'center_shift': _read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
+        'opt_mag': _read_ole_value(ole, 'ReferenceData/ImageInfo/OpticalMagnification', '<f'),
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
@@ -804,62 +812,51 @@ def _read_ole_str(ole, label):
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
-def correct_sino_offset(sino, cone_beam_params, optional_params, metadata, subsample_view_factor, pad=10):
+def correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor):
     """
-    Align each sinogram view based on the recorded object stage positions.
+    Align each sinogram view based on the per-view projection offset.
 
-    This function uses the stage positions (x, y, z) stored in the Zeiss TXRM metadata
-    to compensate for small view-to-view motion of the object across views.
+    The txrm file stores the horizontal (x-shift) and vertical (y-shift) offsets for each projection.
+    This function compensates the object's vibration by shifting each view of the sinogram accordingly.
 
     Coordinate convention (view from source):
-      • +x points from the X-ray source toward the detector (beam axis)
-      • +y is parallel to detector channels (left → right across columns)
-      • +z is parallel to detector rows (top → bottom across rows)
+      • x-shift: shift should be applied in the horizontal direction. Positive x-shift means the view should be shifted to the right
+      • y-shift: shift should be applied in the vertical direction. Positive y-shift means the view should be shifted down
 
     For each view, the function:
-      1. Reads the object’s x, y, z positions.
-      2. Calculates position offsets relative to the mean position.
-      3. Converts those offsets to pixel shifts on the detector plane using the per-view magnification.
-      4. Applies the corresponding translation to the sinogram image.
+      1. Reads the corresponding offset (x-shift, y-shift)
+      2. Translate the view based on the (x-shift, y-shift)
 
-    Optional padding is added before shifting to handle image boundary,
+    Padding is added before shifting to handle image boundary,
     and the padding is removed afterward.
 
     Args:
         sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
-        optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
         metadata (dict): metadata stored in Zeiss txrm file.
-        subsample_view_factor (float):
-        pad (int, optional): Number of pixels to pad on all sides before shifting. Default to 10
+        downsample_factor (Tuple[int, int], optional): Downsample factors for detector rows and channels. Defaults to (1, 1).
+        subsample_view_factor (int, optional): Factor by which to subsample views. Defaults to 1.
 
     Returns:
         corrected_sino (numpy array or jax array): 3D sinogram data after alignment
     """
-    # Get objects position of each view in x, y, z axis from metadata
-    obj_x_positions = np.array(metadata['x_positions'], dtype=float).ravel()
-    obj_y_positions = np.array(metadata['y_positions'], dtype=float).ravel()
-    obj_z_positions = np.array(metadata['z_positions'], dtype=float).ravel()
+    # Get sinogram view offset
+    # TODO: Currrently I assume that the view offset has units of pixels
+    #   I test it and think that this assumption is correct
+    sino_x_offset = metadata["x-shifts"][::subsample_view_factor]
+    sino_y_offset = metadata["y-shifts"][::subsample_view_factor]
 
-    obj_x_positions = obj_x_positions[::subsample_view_factor]
-    obj_y_positions = obj_y_positions[::subsample_view_factor]
-    obj_z_positions = obj_z_positions[::subsample_view_factor]
+    sino_x_offset /= downsample_factor[1]
+    sino_y_offset /= downsample_factor[0]
 
-    # Calculate object offset relative to mean position
-    obj_x_offset = obj_x_positions - np.mean(obj_x_positions)
-    obj_y_offset = obj_y_positions - np.mean(obj_y_positions)
-    obj_z_offset = obj_z_positions - np.mean(obj_z_positions)
+    ### Pad the sinogram to handle boundaries
+    # Set pad size as the largest shift in pixels across views
+    max_x_offset = np.max(sino_x_offset) - np.min(sino_x_offset)
+    max_y_offset = np.max(sino_y_offset) - np.min(sino_y_offset)
 
-    # Compute per-view magnification
-    magnification = cone_beam_params['source_detector_dist'] / (obj_x_offset + cone_beam_params['source_iso_dist'])
+    pad_size = int(np.ceil(np.maximum(max_x_offset, max_y_offset)))
 
-    # Convert object offset to sinogram offset in units of pixels
-    sino_y_offset = magnification * obj_y_offset / optional_params['delta_det_channel']
-    sino_z_offset = magnification * obj_z_offset / optional_params['delta_det_row']
-
-    # Pad the sinogram to handle boundaries
-    if pad > 0:
-        sino_pad = np.pad(sino, ((0, 0), (pad, pad), (pad, pad)), mode='edge')
+    if pad_size > 0:
+        sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')
     else:
         sino_pad = sino
 
@@ -870,12 +867,12 @@ def correct_sino_offset(sino, cone_beam_params, optional_params, metadata, subsa
                                       shape=sino_pad[view].shape,
                                       spatial_dims=(0, 1),
                                       scale=jnp.array([1.0, 1.0]),
-                                      translation=jnp.array([sino_y_offset[view], -sino_z_offset[view]]),
+                                      translation=jnp.array([sino_y_offset[view], sino_x_offset[view]]),
                                       method='linear',
                                       antialias=False)
 
     # Remove padding
-    if pad > 0:
-        corrected_sino = corrected_sino[:, pad:-pad, pad:-pad]
+    if pad_size > 0:
+        corrected_sino = corrected_sino[:, pad_size:-pad_size, pad_size:-pad_size]
 
     return corrected_sino
