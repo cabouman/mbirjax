@@ -192,7 +192,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     num_det_rows = Zeiss_params["num_det_rows"]
 
     # Rotation angles
-    angles = np.array(Zeiss_params['thetas'], dtype=float).ravel()
+    angles = -np.array(Zeiss_params['thetas'], dtype=float).ravel()
     angles = angles[::subsample_view_factor]
 
     # Detector offset
