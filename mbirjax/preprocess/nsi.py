@@ -645,13 +645,13 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
     r_v = np.cross(r_n, r_h) # r_v = r_n x r_h
 
     # vector pointing from center of detector to the first row and column of detector along detector columns.
-    c_v = -(num_det_rows-1)/2*delta_det_row*r_v
+    c_v = (num_det_rows-1)/2*delta_det_row*r_v
     # vector pointing from center of detector to the first row and column of detector along detector rows.
-    c_h = -(num_det_channels-1)/2*delta_det_channel*r_h
+    c_h = (num_det_channels-1)/2*delta_det_channel*r_h
     # vector pointing from source to first row and column of detector.
     r_s_r = r_r - r_s
     # vector pointing from source-detector line to center of detector.
-    r_delta = r_s_r - mjp.project_vector_to_vector(r_s_r, r_n) - c_v - c_h
+    r_delta = r_s_r - mjp.project_vector_to_vector(r_s_r, r_n) + c_v + c_h
     # detector row and channel offsets
     det_channel_offset = -np.dot(r_delta, r_h)
     det_row_offset = -np.dot(r_delta, r_v)
