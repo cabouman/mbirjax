@@ -38,7 +38,6 @@ dependencies = [
     "olefile",
     "scikit-learn",
     "osqp",
-    "jaxopt",
 ]
 
 [project.optional-dependencies]
