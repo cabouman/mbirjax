@@ -656,9 +656,8 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
     det_channel_offset = -np.dot(r_delta, r_h)
     det_row_offset = -np.dot(r_delta, r_v)
     # rotation offset
-    delta_source = r_s - mjp.project_vector_to_vector(r_s, r_n)
-    delta_rot = delta_source - mjp.project_vector_to_vector(delta_source, r_a)# rotation offset vector (perpendicular to rotation axis)
-    rotation_offset = np.dot(delta_rot, np.cross(r_n, r_a))
+    r_a = mjp.unit_vector(r_a)  # make sure r_a is normalized
+    rotation_offset = np.dot(r_s, np.cross(r_n, r_a))
     det_channel_offset += rotation_offset*magnification
     return det_channel_offset, det_row_offset
 
