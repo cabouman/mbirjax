@@ -1,11 +1,12 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 import random
 import warnings
-from jaxopt import OSQP
-
+from scipy.sparse import csc_matrix
+import osqp
 
 def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     """
@@ -279,36 +280,47 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
 
 
 
-def _estimate_BH_model_params_using_OSQP(Q, c, G, h):
+def _estimate_BH_model_params_using_OSQP(P, q, A, u):
     """
     Solve the constrained quadratic optimization problem:
 
-        minimize_θ   0.5 * θᵀ Q θ + cᵀ θ
-        subject to   G θ ≤ h
+        minimize_θ   0.5 * θᵀ P θ + qᵀ θ
+        subject to   A θ ≤ u
 
-    The problem is solved using the JAXOpt `OSQP` solver when constraints are provided.
-    If `G` or `h` is `None`, an unconstrained least-squares solution is computed directly.
+    The problem is solved using the OSQP solver when constraints are provided.
+    If `A` or `u` is `None`, an unconstrained least-squares solution is computed directly.
 
     Args:
-        Q (jnp.ndarray): Quadratic term matrix.
-        c (jnp.ndarray): Linear term vector.
-        G (jnp.ndarray): Inequality constraint matrix.
-        h (jnp.ndarray): Right-hand side vector for the inequality constraints.
+        P (jnp.ndarray): Quadratic term matrix.
+        q (jnp.ndarray): Linear term vector.
+        A (jnp.ndarray): Inequality constraint matrix.
+        u (jnp.ndarray): Right-hand side vector for the inequality constraints.
 
     Returns:
         jnp.ndarray: Solution vector θ.
     """
-    if G is None or h is None:
+    if A is None or u is None:
         # No constraints - solve unconstrained QP directly
-        theta = jnp.linalg.solve(Q, -c)
-    else:
-        solver = OSQP()
-        sol = solver.run(params_obj=(Q, c), params_eq=None, params_ineq=(G, h)).params
-        theta = sol.primal
+        return jnp.linalg.solve(P, -q)
+
+    # Convert arrays as required by OSQP. These matrices are small.
+    P_numpy = np.asarray(P)
+    q_numpy = np.asarray(q)
+    A_numpy = np.asarray(A)
+    u_numpy = np.asarray(u)
+
+    P_sparse = csc_matrix(P_numpy)
+    A_sparse = csc_matrix(A_numpy)
+
+    solver = osqp.OSQP()
+    solver.setup(P=P_sparse, q=q_numpy, A=A_sparse, u=u_numpy, alpha=1.0)
+    result = solver.solve()
+    theta = jnp.asarray(result.x, dtype=jnp.float32)
+
     return theta
 
 def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta):
-    """Compute entry for OSQP quadratic programming solver."""
+    """Compute entries for OSQP quadratic programming solver."""
     num_cols = len(H_exponent_list)
 
     HtH = jnp.zeros((num_cols, num_cols))
@@ -339,10 +351,10 @@ def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_e
     scaling_const = jnp.trace(HtH) / jnp.trace(weight_matrix)
     lambda_reg = beta * scaling_const
 
-    Q = HtH + lambda_reg * weight_matrix
-    c = -Hty
+    P = HtH + lambda_reg * weight_matrix
+    q = -Hty
 
-    return Q, c
+    return P, q
 
 def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter=10, tolerance=-1e-5):
     """
@@ -387,13 +399,13 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
     C_p = []
     C_m = []
 
-    # Construct the entries Q, c, G and h of OSQP for solving the constraint optimization
-    Q, c = _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta)
-    G = jnp.zeros((0, num_cols))  # no active constraints yet
-    h = jnp.zeros((0,))
+    # Construct the entries P, q, A and u of OSQP for solving the constraint optimization
+    P, q = _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta)
+    A = jnp.zeros((0, num_cols))  # no active constraints yet
+    u = jnp.zeros((0,))
 
     # Initial θ solved without constraint
-    theta = _estimate_BH_model_params_using_OSQP(Q, c, G=None, h=None)
+    theta = _estimate_BH_model_params_using_OSQP(P, q, A=None, u=None)
 
     for iter in range(num_constraint_update_iter):
         # Find the indices and values of the points that most violate each constraint
@@ -405,8 +417,8 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
             # Negative row_p[:dp] to ensure Hpθp >= 0
             g_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             h_p = jnp.array([0.0])
-            G = jnp.vstack([G, g_p[None, :]])
-            h = jnp.concatenate([h, h_p])
+            A = jnp.vstack([A, g_p[None, :]])
+            u = jnp.concatenate([u, h_p])
             C_p.append(i_min_Sp)
 
         # (2) y − Hm θm ≥ 0  ->  (Hm) θ ≤ y
@@ -415,14 +427,14 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
             h_m = jnp.array([measured_sino[i_min_residual]])
-            G = jnp.vstack([G, g_m[None, :]])
-            h = jnp.concatenate([h, h_m])
+            A = jnp.vstack([A, g_m[None, :]])
+            u = jnp.concatenate([u, h_m])
             C_m.append(i_min_residual)
 
         # Early exit if both constraints are satisfied (within tolerances)
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
             break
-        theta = _estimate_BH_model_params_using_OSQP(Q, c, G, h)
+        theta = _estimate_BH_model_params_using_OSQP(P, q, A, u)
     return theta
 
 
