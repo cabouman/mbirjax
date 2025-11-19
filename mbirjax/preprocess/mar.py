@@ -415,20 +415,20 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
             row_p = _get_row_H(i_min_Sp, jnp.ones_like(measured_sino), metal_sino_est, H_exponent_list)
             # Negative row_p[:dp] to ensure Hpθp >= 0
-            g_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
-            h_p = jnp.array([0.0])
-            A = jnp.vstack([A, g_p[None, :]])
-            u = jnp.concatenate([u, h_p])
+            A_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
+            u_p = jnp.array([0.0])
+            A = jnp.vstack([A, A_p[None, :]])
+            u = jnp.concatenate([u, u_p])
             C_p.append(i_min_Sp)
 
         # (2) y − Hm θm ≥ 0  ->  (Hm) θ ≤ y
         if v_min_residual < tolerance and (i_min_residual not in C_m):
             row_m = _get_row_H(i_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
-            g_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
-            h_m = jnp.array([measured_sino[i_min_residual]])
-            A = jnp.vstack([A, g_m[None, :]])
-            u = jnp.concatenate([u, h_m])
+            A_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
+            u_m = jnp.array([measured_sino[i_min_residual]])
+            A = jnp.vstack([A, A_m[None, :]])
+            u = jnp.concatenate([u, u_m])
             C_m.append(i_min_residual)
 
         # Early exit if both constraints are satisfied (within tolerances)
