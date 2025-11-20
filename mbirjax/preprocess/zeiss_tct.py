@@ -1,6 +1,7 @@
 import os, sys
 from operator import itemgetter
 import numpy as np
+import jax.numpy as jnp
 import warnings
 import mbirjax.preprocess as mjp
 import pprint
@@ -123,59 +124,97 @@ def load_scans_and_params(dataset_dir, verbose=1):
             - ``zeiss_params`` (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
     """
     ### automatically parse the paths to Zeiss scans from dataset—dir
-    obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_obj_scan_path = \
+    obj_scan_dir, blank_scan_dir, dark_scan_dir = \
         _parse_filenames_from_dataset_dir(dataset_dir)
 
     if verbose > 0:
         print("The following files will be used to compute the Zeiss reconstruction:\n",
               f"    - Object scan directory: {obj_scan_dir}\n",
               f"    - Blank scan directory: {blank_scan_dir}\n",
-              f"    - Dark scan directory: {dark_scan_dir}\n",
-              f"    - Object scan file when object at iso (no translation): {iso_obj_scan_path}\n")
+              f"    - Dark scan directory: {dark_scan_dir}\n",)
 
     _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
-    _, Zeiss_params_iso_obj_scan = read_xrm(iso_obj_scan_path) # Zeiss parameters of the object scan when object at iso
 
-    # source to iso distance (in mm)
-    source_iso_dist = Zeiss_params["source_iso_dist"] # mm
+    # source to iso distance
+    source_iso_dist = Zeiss_params["source_iso_dist"]
     source_iso_dist = float(np.abs(source_iso_dist))
 
-    # iso to detector distance (in mm)
-    iso_det_dist = Zeiss_params["iso_det_dist"] # mm
+    # iso to detector distance
+    iso_det_dist = Zeiss_params["iso_det_dist"]
     iso_det_dist = float(np.abs(iso_det_dist))
 
-    # detector pixel pitch (in um)
+    # detector pixel pitch
     # Zeiss detector pixel has equal width and height
-    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"] # um
-    delta_det_row = iso_pixel_pitch
-    delta_det_channel = iso_pixel_pitch
+    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
+    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
+    delta_det_row = det_pixel_pitch
+    delta_det_channel = det_pixel_pitch
 
     # dimensions of radiograph
+    num_views = Zeiss_params["num_views"]
     num_det_channels = Zeiss_params["num_det_channels"]
     num_det_rows = Zeiss_params["num_det_rows"]
 
-    # object positions in x, y, z axis (in um)
+    # Detector offset
+    # TODO: Need to check whether the detector offset parameter is correctly read from the file
+    #   Since I can only decoded one single float from the directory I found in the file,
+    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
+    detector_offset = Zeiss_params["det_offset"]
+    det_channel_offset = detector_offset
+    det_row_offset = 0.0
+
+    # object positions in x, y, z axis
     # The scanner uses a coordinate system different from MBIRJAX
+    # ToDo: Perform experiments to determine the Zeiss coordinates
     # Axis mapping:
-    #   Scanner z-axis -> MBIRJAX x-axis
-    #   Scanner x-axis -> MBIRJAX y-axis
-    #   Scanner y-axis -> MBIRJAX z-axis
+    #   Scanner z-axis -> MBIRJAX x-axis or -x-axis not sure
+    #   Scanner x-axis -> MBIRJAX y-axis or -y-axis not sure
+    #   Scanner y-axis -> MBIRJAX z-axis or -z-axis not sure
     obj_x_positions = np.array(Zeiss_params['z_positions'], dtype=float).ravel()
     obj_y_positions = np.array(Zeiss_params['x_positions'], dtype=float).ravel()
     obj_z_positions = np.array(Zeiss_params['y_positions'], dtype=float).ravel()
 
-    # object position at iso in x, y, z axis (in um)
-    iso_x_position = float(np.asarray(Zeiss_params_iso_obj_scan['z_positions']).ravel()[0])
-    iso_y_position = float(np.asarray(Zeiss_params_iso_obj_scan['x_positions']).ravel()[0])
-    iso_z_position = float(np.asarray(Zeiss_params_iso_obj_scan['y_positions']).ravel()[0])
+    # Unit of parameters
+    axis_names = Zeiss_params["axis_names"]
+    axis_units = Zeiss_params["axis_units"]
+
+    source_iso_dist_unit = None
+    iso_det_dist_unit = None
+    delta_det_row_unit = None
+    delta_det_channel_unit = None
+    obj_x_position_unit = None
+    obj_y_position_unit = None
+    obj_z_position_unit = None
+
+    if axis_names is not None and axis_units is not None:
+        for name, unit in zip(axis_names, axis_units):
+            # TODO: Need to verify whether the geometry parameter units actually match the specified axis names.
+            if name == "Source Z":
+                source_iso_dist_unit = unit
+                iso_det_dist_unit = unit
+
+            elif name == "CCD_X":
+                delta_det_row_unit = unit
+                delta_det_channel_unit = unit
+
+            elif name == "Sample X":
+                obj_x_position_unit = unit
+
+            elif name == "Sample Y":
+                obj_y_position_unit = unit
+
+            elif name == "Sample Z":
+                obj_z_position_unit = unit
+
+    else:
+        raise ValueError("Unknown units for geometry parameters; cannot safely convert to mbirjax format.")
 
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
-        print(f"Source to iso distance: {source_iso_dist} [mm]")
-        print(f"Iso to detector distance: {iso_det_dist} [mm]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({iso_pixel_pitch:.3f}, {iso_pixel_pitch:.3f}) [um]")
+        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
+        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
+        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f} [{delta_det_row_unit}], {det_pixel_pitch:.3f} [{delta_det_channel_unit}])")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
-        print(f"Object position at iso in x, y, z axis : (obj_position_x, obj_position_y, obj_position_z) = ({iso_x_position:.3f}, {iso_y_position:.3f}, {iso_z_position:.3f}) [um]")
         print("############ End Zeiss geometry parameters ############")
     ### END load Zeiss parameters from scan data
 
@@ -203,14 +242,21 @@ def load_scans_and_params(dataset_dir, verbose=1):
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'num_views': num_views,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
+        'det_row_offset': det_row_offset,
+        'det_channel_offset': det_channel_offset,
         'obj_x_positions': obj_x_positions,
         'obj_y_positions': obj_y_positions,
         'obj_z_positions': obj_z_positions,
-        'iso_x_position': iso_x_position,
-        'iso_y_position': iso_y_position,
-        'iso_z_position': iso_z_position
+        'source_iso_dist_unit': source_iso_dist_unit,
+        'iso_det_dist_unit': iso_det_dist_unit,
+        'delta_det_row_unit': delta_det_row_unit,
+        'delta_det_channel_unit': delta_det_channel_unit,
+        'obj_x_position_unit': obj_x_position_unit,
+        'obj_y_position_unit': obj_y_position_unit,
+        'obj_z_position_unit': obj_z_position_unit,
     }
 
     return obj_scan, blank_scan, dark_scan, zeiss_params
@@ -221,7 +267,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop and downsample.
 
     Args:
-        zeiss_params (dict):
+        zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
         downsample_factor ((int, int), optional) - Down-sample factors along the detector rows and channels respectively.
             If scan size is not divisible by `downsample_factor`, the scans will be first truncated to a size that is divisible by `downsample_factor`.
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
@@ -233,19 +279,20 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
         optional_params (dict): Additional TranslationModel parameters to be set using set_params()
     """
     # Get zeiss parameters and convert them
-    source_iso_dist, iso_det_dist = itemgetter('source_iso_dist', 'iso_det_dist')(zeiss_params)
-    delta_det_channel, delta_det_row = itemgetter('delta_det_channel', 'delta_det_row')(zeiss_params)
-    num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
-    obj_x_positions, obj_y_positions, obj_z_positions = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions')(zeiss_params)
-    iso_x_position, iso_y_position, iso_z_position = itemgetter('iso_x_position', 'iso_y_position', 'iso_z_position')(zeiss_params)
+    source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
+    delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
+    num_views, num_det_rows, num_det_channels = itemgetter('num_views', 'num_det_rows', 'num_det_channels')(zeiss_params)
+    obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
+    det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    source_detector_dist = calc_source_det_params(source_iso_dist, iso_det_dist)
-    translation_vectors = calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, obj_x_positions, obj_y_positions, obj_z_positions)
-    det_row_offset = calc_row_params(crop_pixels_top, crop_pixels_bottom)
+    source_detector_dist = source_iso_dist + iso_det_dist
+    translation_vectors = calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions)
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
+
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]
@@ -254,17 +301,37 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = delta_det_channel
-    source_iso_dist /= (delta_det_channel / 1000) # mm to ALU
-    source_detector_dist /= (delta_det_channel / 1000) # mm to ALU
-    translation_vectors /= delta_det_channel # um to ALU
-    delta_det_row /= delta_det_channel
-    delta_det_channel = 1.0
+    # Unit conversion table (relative to um)
+    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
+    #   For now, I assume that only um and mm appear in the xrm file
+    unit_conversion = {'um': 1.0, 'mm': 1000.0}
+
+    # Set 1 ALU = 1 delta_det_channel_unit
+    ALU_unit = delta_det_channel_unit
+
+    # Convert physical units to ALU
+    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+
+    if obj_x_position_unit == obj_y_position_unit == obj_z_position_unit:
+        translation_vectors = translation_vectors * unit_conversion[obj_x_position_unit] / unit_conversion[ALU_unit]
+    else:
+        translation_vectors[:, 0] = translation_vectors[:, 0] * unit_conversion[obj_x_position_unit] / unit_conversion[ALU_unit]
+        translation_vectors[:, 1] = translation_vectors[:, 1] * unit_conversion[obj_y_position_unit] / unit_conversion[ALU_unit]
+        translation_vectors[:, 2] = translation_vectors[:, 2] * unit_conversion[obj_z_position_unit] / unit_conversion[ALU_unit]
+
+    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[ALU_unit]
+
+    # ToDo: Need to check the units of detector offset
+    #  For now, we assume that the det_channel_offset have units of pixels.
+    det_channel_offset *= delta_det_channel # pixels to ALU
+
+    # Calculate recon_shape, delta_voxel, and delta_recon_row parameters
+    recon_shape, delta_voxel, delta_recon_row = calc_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
 
     # Create a dictionary to store MBIR parameters
-    num_views = translation_vectors.shape[0]
     translation_params = dict()
-    translation_params['sinogram_shape'] = (num_views, num_det_rows, num_det_channels)
+    translation_params['sinogram_shape'] = sinogram_shape
     translation_params['translation_vectors'] = translation_vectors
     translation_params['source_detector_dist'] = source_detector_dist
     translation_params['source_iso_dist'] = source_iso_dist
@@ -272,8 +339,11 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params = dict()
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
-    optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
+    optional_params['delta_voxel'] = delta_voxel
+    optional_params['delta_recon_row'] = delta_recon_row
+    optional_params['recon_shape'] = recon_shape
     optional_params['det_row_offset'] = det_row_offset
+    optional_params['det_channel_offset'] = det_channel_offset
 
     return translation_params, optional_params
 
@@ -285,7 +355,6 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
         - object scan directory
         - blank scan directory
         - dark scan directory
-        - object scan when object at iso (no translation)
 
     Args:
         dataset_dir (string): Path to the directory containing the Zeiss scan files.
@@ -295,7 +364,6 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
             - obj_scan_dir (string): Path to the object scan directory
             - blank_scan_dir (string): Path to the blank scan directory
             - dark_scan_dir (string): Path to the dark scan directory
-            - iso_obj_scan_path (string): Path to the object scan file when object at iso (no translation)
     """
     # Object scan directory
     obj_scan_dir = os.path.join(dataset_dir, "obj_scan")
@@ -306,10 +374,7 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     # Dark scan
     dark_scan_dir = os.path.join(dataset_dir, "dark_scan")
 
-    # Object scan when object at iso (no translation)
-    iso_object_scan_path = os.path.join(obj_scan_dir, "MC.xrm")
-
-    return obj_scan_dir, blank_scan_dir, dark_scan_dir, iso_object_scan_path
+    return obj_scan_dir, blank_scan_dir, dark_scan_dir
 
 
 def _check_read(fname):
@@ -530,6 +595,8 @@ def read_ole_metadata(ole):
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        # TODO: Need to check whether we read the correct detector offset parameter from the file
+        'det_offset': _read_ole_value(ole, 'DetAssemblyInfo/CameraOffset', '<f'),
         'iso_det_dist': _read_ole_arr(
             ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_arr(
@@ -545,7 +612,9 @@ def read_ole_metadata(ole):
         'x-shifts': _read_ole_arr(
             ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
         'y-shifts': _read_ole_arr(
-            ole, 'alignment/y-shifts', "<{0}f".format(number_of_images))
+            ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
+        'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
+        'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
     return metadata
@@ -700,33 +769,38 @@ def _read_ole_image(ole, label, metadata, datatype=None):
         (metadata["num_det_rows"], metadata["num_det_channels"], )
     )
     return image
+
+
+def _read_ole_str(ole, label):
+    """
+    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
+
+    Reads the string associated with label in an ole file
+
+    Args:
+        ole (OleFileIO) : An ole file to read from.
+        label (str) : Label associated with the OLE file.
+
+    Returns:
+        list: A list contain all the strings from the binary stream if the label exists
+    """
+    str = None
+    if ole.exists(label):
+        stream = ole.openstream(label)
+        data = stream.read()
+        str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
+    return str
+
+
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
 ######## subroutines for Zeiss-MBIR parameter conversion
-def calc_source_det_params(source_iso_dist, iso_det_dist):
-    """
-    Calculate MBIRJAX geometry parameters: source_det_dist
-
-    Args:
-        source_iso_dist (float): Distance between the X-ray source and iso
-        iso_det_dist (float): Distance between the detector and iso
-
-    Returns:
-        source_detector_dist (float): Distance between the detector and source
-    """
-    source_det_dist = source_iso_dist
-    return source_det_dist
-
-
-def calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, obj_x_positions, obj_y_positions, obj_z_positions):
+def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions):
     """
     Calculate the translation geometry parameters: translation_vectors
 
     Args:
-        iso_x_position (float) : The object position at iso in x-axis [in um]
-        iso_y_position (float): The object position at iso in y-axis [in um]
-        iso_z_position (float): The object position at iso in z-axis [in um]
         obj_x_positions (tuple): The object positions of all views in x-axis with shape (num_views,)
         obj_y_positions (tuple): The object positions of all views in y-axis with shape (num_views,)
         obj_z_positions (tuple): The object positions of all views in z-axis with shape (num_views,)
@@ -737,27 +811,95 @@ def calc_translation_vec_params(iso_x_position, iso_y_position, iso_z_position, 
     # Stack the object positions of all views in x, y, z axis into a 3D array of shape (number of views, 3)
     obj_xyz_positions = np.stack([obj_x_positions, obj_y_positions, obj_z_positions], axis=1)
 
-    # Stack the object position at iso in x, y, z axis into a 1D array of shape (3,)
-    iso_xyz_position = np.array([iso_x_position, iso_y_position, iso_z_position], float)
+    # Calculate the max and min of object positions along the x, y, z axis
+    max_obj_xyz_positions = np.max(obj_xyz_positions, axis=0)
+    min_obj_xyz_positions = np.min(obj_xyz_positions, axis=0)
+
+    # Set the object position at the center to be the midpoint of the extremes along the x, y, z axis
+    center_xyz_position = (max_obj_xyz_positions + min_obj_xyz_positions) / 2
 
     # Compute the translation vectors in um
-    translation_vectors = iso_xyz_position - obj_xyz_positions
+    translation_vectors = center_xyz_position - obj_xyz_positions
 
     return translation_vectors
 
-
-def calc_row_params(crop_pixels_top, crop_pixels_bottom):
+def calc_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
     """
-    Calculate the MBIRJAX geometry parameters: det_row_offset
+    Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
 
     Args:
-        crop_pixels_top (int): The number of pixels to crop from top of the sinogram.
-        crop_pixels_bottom (int): The number of pixels to crop from bottom of the sinogram.
+        source_det_dist (float): distance from the X-ray source to the detector (in ALU)
+        source_iso_dist (float): distance from the X-ray source to the isocenter (in ALU)
+        delta_det_row (float): the spacing between detector rows (in ALU)
+        delta_det_channel (float): the spacing between detector channels (in ALU)
+        sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels)
+        translation_vectors (numpy array): A (num_views, 3) array of translations (x, y, z) in ALU
 
     Returns:
-        det_row_offset (float): Distance from center of detector to the source-detector line along a column.
+        recon_shape (tuple): Shape of the reconstruction shape as (num_recon_rows, num_recon_cols, num_recon_slices)
+        delta_voxel (float): the voxel pitch at isocenter (in ALU)
+        delta_recon_row (float): the row pitch of the reocnstruction (in ALU)
     """
-    det_row_offset = - (crop_pixels_top + crop_pixels_bottom) / 2
-    return det_row_offset
+    # Get parameters
+    num_views, num_det_rows, num_det_channels = sinogram_shape
 
+    # Calculate magnification
+    magnification = source_det_dist / source_iso_dist
+
+    # Calculate delta_voxel
+    delta_voxel = delta_det_channel / magnification
+
+    # Calculate the width and height of the detector in ALU
+    detect_box = jnp.array([delta_det_channel * num_det_channels, delta_det_row * num_det_rows])
+
+    # Compute avg_view_slope = tan(cone_angle/2) along the x and z directions
+    # This is the average slope of a view that a pixel at iso sees.
+    # detect_box/4 = distance from the (center of the detector) to (halfway to the edge of the detector).
+    # Using the average seems to be better than using the maximum.
+    avg_view_slope = (detect_box / 4) / source_det_dist
+
+    # Compute detector pixel pitch at iso
+    # Note that this may differ from delta_voxel
+    # However, we will use det_pixel_pitch_iso to calculate both the number rows and their pitch
+    det_pixel_pitch_iso_vec = jnp.array([delta_det_row, delta_det_channel]) / magnification
+    det_pixel_pitch_iso = jnp.max(det_pixel_pitch_iso_vec)
+
+    ######### Compute the row pitch based on a heuristic #########
+    # ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
+    # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
+    nominal_row_pitch = 4.0 * det_pixel_pitch_iso_vec / avg_view_slope
+    nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
+    delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
+    delta_recon_row = float(delta_recon_row)
+
+    # Compute cube = (width, depth, height) of the scanned region in ALU
+    max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
+    min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
+    cube = max_translation - min_translation
+
+    # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
+    # Nominal voxels are the voxels that would result using the detector pitch at iso
+    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
+
+    # ************ Use a heuristic to determine a reasonable number of rows *************
+    # Compute the number of unknown pixels per view
+    num_pixels_per_view = ((recon_box[0] + num_det_rows) * (recon_box[1] + num_det_channels)) / num_views
+    num_measurements_per_view = num_det_channels * num_det_rows
+    # Select the number of rows so that (number of unknowns) = 2*(the number of measurements)
+    num_recon_rows = 2*jnp.ceil(num_measurements_per_view / num_pixels_per_view)
+
+    # Make sure the object extends no further than halfway to the source
+    max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
+    if max_recon_rows < 1:
+        print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
+    num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
+
+    # Set the parameters to their computed values
+    num_recon_cols, num_recon_slices = recon_box
+    num_recon_cols = int(num_recon_cols)
+    num_recon_rows = int(num_recon_rows)
+    num_recon_slices = int(num_recon_slices)
+    recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+
+    return recon_shape, delta_voxel, delta_recon_row
 ######## END subroutines for Zeiss-MBIR parameter conversion

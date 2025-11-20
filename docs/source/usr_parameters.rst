@@ -38,10 +38,18 @@ Smaller values produce softer and less edgy images.
 
 qggmrf_nbr_wts
 """"""""""""""
-:Type: list (num_rows, num_cols, num_slices)
+:Type: list (Defaults to [1.0, 1.0, 1.0])
 
 This parameter controls the relative QGGMRF regularization strength along the row, column, and slice direction.
 ``qggmrf_nbr_wts = [1.0, 1.0, 1.0]`` corresponds to isotropic regularization.
+
+.. _param-positivity_flag:
+
+positivity_flag
+"""""""""""""""
+:Type: boolean (Defaults to False)
+
+This parameter determines if positivity is enforced in MBIR reconstruction.
 
 .. _param-verbose:
 
