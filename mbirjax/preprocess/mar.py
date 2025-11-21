@@ -313,7 +313,7 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
     A_sparse = csc_matrix(A_numpy)
 
     solver = osqp.OSQP()
-    solver.setup(P=P_sparse, q=q_numpy, A=A_sparse, u=u_numpy, alpha=1.0)
+    solver.setup(P=P_sparse, q=q_numpy, A=A_sparse, l=None, u=u_numpy, alpha=1.0)
     result = solver.solve()
     theta = jnp.asarray(result.x, dtype=jnp.float32)
 
