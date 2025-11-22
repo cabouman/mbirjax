@@ -178,13 +178,14 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     iso_det_dist = Zeiss_params["iso_det_dist"][0]
     iso_det_dist = float(np.abs(iso_det_dist))
 
-    # detector pixel pitch
+    # Physical detector pixel pitch
     # Zeiss detector pixel has equal width and height
-    # TODO: The value of the stored detector pixel pitch seems to be wrong;
-    #  Read it directly from metadata to keep the issue visible for future correction
     det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
+
+    # Optical Magnification
+    opt_mag = Zeiss_params["opt_mag"]
 
     # dimensions of radiograph
     num_views = Zeiss_params["num_views"]
@@ -199,7 +200,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     # TODO: Need to check whether the detector offset parameter is correctly read from the file
     #   Since I can only decoded one single float from the directory I found in the file,
     #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
-    detector_offset = Zeiss_params["det_offset"]
+    detector_offset = Zeiss_params["center_shift"]
     det_channel_offset = detector_offset
     det_row_offset = 0.0
 
@@ -244,6 +245,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'opt_mag': opt_mag,
         'num_views': num_views,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
@@ -283,11 +285,16 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
     # Get zeiss parameters and convert them
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
+    opt_mag = itemgetter('opt_mag')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
     source_detector_dist = source_iso_dist + iso_det_dist
+
+    if opt_mag is not None:
+        delta_det_channel /= opt_mag
+        delta_det_row /= opt_mag
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -526,11 +533,7 @@ def read_txrm(file_name):
 
     Read data from a .txrm file, a compilation of .xrm files.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         file_name (str): String defining the path of file or file name.
@@ -580,11 +583,7 @@ def read_metadata(ole):
 
     Read metadata from an xradia OLE file (.xrm, .txrm, .txm).
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         ole (OleFileIO instance) : An ole file to read from.
@@ -603,14 +602,10 @@ def read_metadata(ole):
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        # TODO: Need to check whether we read the correct detector offset parameter from the file
-        'det_offset': _read_ole_value(ole, 'DetAssemblyInfo/CameraOffset', '<f'),
         'iso_det_dist': _read_ole_arr(
             ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_arr(
             ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
-        'ref_iso_det_dist': _read_ole_value(ole, 'ReferenceData/RefD2RADistance', '<f'),
-        'ref_source_iso_dist': _read_ole_value(ole, 'ReferenceData/RefS2RADistance', '<f'),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
@@ -623,8 +618,16 @@ def read_metadata(ole):
             ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
         'y-shifts': _read_ole_arr(
             ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
+        'current': _read_ole_value(
+            ole, "ImageInfo/XrayCurrent", "<{0}f".format(number_of_images)),
+        'voltage': _read_ole_value(
+            ole, "ImageInfo/XrayVoltage", "<{0}f".format(number_of_images)),
+        'ExpTimes': _read_ole_value(
+            ole, "ImageInfo/ExpTimes", "<{0}f".format(number_of_images)),
         'center_shift': _read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
         'opt_mag': _read_ole_value(ole, 'ReferenceData/ImageInfo/OpticalMagnification', '<f'),
+        'fan_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/FanAngle', '<f'),
+        'cone_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/ConeAngle', '<f'),
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
@@ -642,11 +645,7 @@ def _log_imported_data(fname, arr):
     """
     Log information about imported data.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         fname (str) : Path of the file from which data was imported.
@@ -660,11 +659,7 @@ def _get_ole_data_type(metadata, datatype=None):
     """
     Determine the Numpy data type for image data stored in a Zeiss OLE (.xrm, .txrm, .txm) file.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         metadata (dict) : Dictionary containing metadata extracted from the OLE file.
@@ -689,11 +684,7 @@ def _read_ole_struct(ole, label, struct_fmt):
     """
     Reads the struct associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -715,11 +706,7 @@ def _read_ole_value(ole, label, struct_fmt):
     """
     Reads the value associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -739,11 +726,7 @@ def _read_ole_arr(ole, label, struct_fmt):
     """
     Reads the numpy array associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -763,11 +746,7 @@ def _read_ole_image(ole, label, metadata, datatype=None):
     """
     Reads the image data associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
 
     Args:
         ole (OleFileIO) : An ole file to read from.
