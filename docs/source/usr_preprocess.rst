@@ -63,7 +63,7 @@ MAR utilities
 
 .. autofunction:: gen_huber_weights
 .. autofunction:: BH_correction
-.. autofunction:: recon_BH_plastic_metal
+.. autofunction:: recon_plastic_metal
 
 
 Stripe/Ring/Offset Removal

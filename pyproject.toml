@@ -36,7 +36,8 @@ dependencies = [
     "gdown",
     "pywavelets",
     "olefile",
-    "scikit-learn"
+    "scikit-learn",
+    "osqp",
 ]
 
 [project.optional-dependencies]
