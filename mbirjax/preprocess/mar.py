@@ -218,7 +218,7 @@ def _get_column_H(col_index, plastic_sino_est, metal_sino_est, H_exponent_list):
 
 def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     """
-    Compute the row_index-th column of the matrix H.
+    Compute the row_index-th row of the matrix H.
 
     Args:
         row_index (int): Index of the row to compute.
@@ -246,16 +246,16 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
 
     The BH model enforces two types of inequality constraints:
         1. Plastic positivity:        H_p[i,:] θ_p ≥ 0
-       2. Residual positivity:       y[i] − H_m[i,:] θ_m ≥ 0
+        2. Residual positivity:       y[i] − H_m[i,:] θ_m ≥ 0
 
     This function evaluates the indices and values of the entries that most violate
     the constraints.
 
     Returns:
         i_min_Sp (int): Index of smallest Sp entry.
-       v_min_Sp (float): Value of Sp[i_min_Sp].
-       i_min_residual (int): Index of smallest (y − Sm) entry.
-       v_min_residual (float): Value of (y − Sm)[i_min_residual].
+        v_min_Sp (float): Value of Sp[i_min_Sp].
+        i_min_residual (int): Index of smallest (y − Sm) entry.
+        v_min_residual (float): Value of (y − Sm)[i_min_residual].
     """
     num_cols = len(H_exponent_list)
     Sp = jnp.zeros_like(measured_sino)
@@ -460,7 +460,7 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
     Args:
         measured_sino (jnp.ndarray): Measured sinogram.
         plastic_sino_est (jnp.ndarray): Normalized plastic sino estimation.
-        metal_sino_est (list of jnp.ndarray): List of normalized metal sino estimation..
+        metal_sino_est (list of jnp.ndarray): List of normalized metal sino estimation.
         theta (jnp.ndarray): Estimated coefficients for the polynomial terms in H.
         H_exponent_list (list of tuple): Exponent tuples defining each column of H.
         num_cross_terms (int): Number of cross terms involving both p and metal.
