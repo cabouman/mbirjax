@@ -15,7 +15,6 @@ def main():
     sharpness = 1.0
     downsample_factor = 2
     subsample_view_factor = 2
-    max_iterations = 20
 
     # Path to the dataset
     dataset_dir = '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm'
@@ -53,7 +52,7 @@ def main():
 
     # Perform MBIR reconstruction
     print("\n********** Perform MBIR reconstruction **************")
-    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations)
+    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     # Save recon to hdf5
     print("\n*********** save mbir and fdk recon in h5 format *************")
