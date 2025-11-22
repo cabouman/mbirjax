@@ -18,10 +18,12 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
-    Compute Zeiss sinogram and MBIR-JAX geometry parameters.
+    Compute sinogram and parameters from txrm file produced by Zeiss Versa scanner.
 
-    This reads object/blank/dark scans and Zeiss geometry from a dataset directory, builds a
-    sinogram, and applies a background-offset correction.
+    Notes:
+        Thanks to contributions of Amir Koushyar Ziabari of Oak Ridge National Laboratory (ORNL).
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Steps:
         1. Load object, blank, and dark scans and geometry.
@@ -118,6 +120,11 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
     Load the scan data and geometry from a Zeiss scan directory.
+
+    Notes:
+        Thanks to contributions of Amir Koushyar Ziabari of Oak Ridge National Laboratory (ORNL).
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         dataset_dir (str): Path to a Zeiss scan directory (expect a `.txrm` file). Expected structure:
@@ -268,6 +275,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
 
     Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop.
 
+    Notes:
+        Thanks to contributions of Amir Koushyar Ziabari of Oak Ridge National Laboratory (ORNL).
+
     Args:
         zeiss_params (dict): Required Zeiss geometry parameters for reconstruction.
         Zeiss_metadata (dict): metadata stored in Zeiss txrm file.
@@ -353,8 +363,6 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, Zeiss_metadata, downsample_fac
 ######## subroutines for parsing Zeiss object scan, blank scan, and dark scan
 def _parse_filenames_from_dataset_dir(dataset_dir):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Given a path to a Zeiss scan directory, automatically parse the paths to the following files and directories：
         - the txrm file store the projection data
 
@@ -375,15 +383,11 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
 
 def _check_read(fname):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Validate the file path and ensure it has a recognized extension.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         fname (str) : Path to the file to be read. Must be a string and have one of the recognized file extensions:
@@ -411,15 +415,11 @@ def _check_read(fname):
 
 def read_xrm(fname):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Read data from xrm file.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         fname (str): String defining the path of file or file name.
@@ -466,16 +466,12 @@ def read_xrm(fname):
 
 def read_xrm_dir(dir_path):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Read all .xrm files in a directory (filesystem order), stack into (num_views, num_det_rows, num_det_cols),
     and concatenate selected metadata.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         dir_path (str) : Path to the directory to be read.
@@ -529,8 +525,6 @@ def read_xrm_dir(dir_path):
 
 def read_txrm(file_name):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Read data from a .txrm file, a compilation of .xrm files.
 
     Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
@@ -579,11 +573,11 @@ def read_txrm(file_name):
 
 def read_metadata(ole):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Read metadata from an xradia OLE file (.xrm, .txrm, .txm).
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO instance) : An ole file to read from.
@@ -645,7 +639,9 @@ def _log_imported_data(fname, arr):
     """
     Log information about imported data.
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         fname (str) : Path of the file from which data was imported.
@@ -659,7 +655,9 @@ def _get_ole_data_type(metadata, datatype=None):
     """
     Determine the Numpy data type for image data stored in a Zeiss OLE (.xrm, .txrm, .txm) file.
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         metadata (dict) : Dictionary containing metadata extracted from the OLE file.
@@ -684,7 +682,9 @@ def _read_ole_struct(ole, label, struct_fmt):
     """
     Reads the struct associated with label in an ole file
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -706,7 +706,9 @@ def _read_ole_value(ole, label, struct_fmt):
     """
     Reads the value associated with label in an ole file
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -726,7 +728,9 @@ def _read_ole_arr(ole, label, struct_fmt):
     """
     Reads the numpy array associated with label in an ole file
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -746,7 +750,9 @@ def _read_ole_image(ole, label, metadata, datatype=None):
     """
     Reads the image data associated with label in an ole file
 
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
+    Notes:
+        Portions of this code are adapted from the DXchange library:
+            https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -770,8 +776,6 @@ def _read_ole_image(ole, label, metadata, datatype=None):
 
 def _read_ole_str(ole, label):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Reads the string associated with label in an ole file
 
     Args:
