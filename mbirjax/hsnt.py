@@ -2,7 +2,8 @@ import numpy as np
 import h5py
 import warnings
 import matplotlib.pyplot as plt
-from sklearn.decomposition import non_negative_factorization
+from scipy.ndimage import gaussian_filter1d
+from sklearn.decomposition import non_negative_factorization as nmf
 from sklearn.utils.extmath import randomized_svd
 
 
@@ -12,7 +13,7 @@ from sklearn.utils.extmath import randomized_svd
 
 
 def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-                  batch_size=2 ** 24, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+                  batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration.
 
@@ -56,68 +57,26 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
             IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
             2025. doi:10.1109/TCI.2025.3567854
     """
-    # Get the data dimensions
-    data_shape = data.shape
-    num_bands = data_shape[-1]  # Number of wavelength bands
-    num_points = data.size // num_bands  # Number of pixels or voxels
+    # --------------------- Dehydrate ----------------------
+    dehydrated_data = dehydrate(data,
+                                dataset_type=dataset_type,
+                                subspace_dimension=subspace_dimension,
+                                subspace_basis=subspace_basis,
+                                safety_factor=safety_factor,
+                                batch_size=batch_size,
+                                beta_loss=beta_loss,
+                                max_iter=max_iter,
+                                tolerance=tolerance,
+                                verbose=verbose)
 
-    # Reshape the hyperspectral data to 2D (number of data points x number of spectral bands)
-    data = data.reshape(num_points, num_bands)
-
-    # Determine number of batches
-    num_points_batch = batch_size // num_bands  # Number of hyperspectral pixels or voxels per batch
-    num_batches = int(np.ceil(num_points / num_points_batch))  # Number of batches
-
-    if verbose >= 1:
-        print("hyper_denoise(): ")
-        print("   -Number of batches: ", num_batches)
-
-    # Estimate subspace basis (if not provided) from sampled data if the dataset is too big
-    if num_batches > 1 and subspace_basis is None:
-        # Sample rows without replacement
-        rng = np.random.default_rng()
-        row_idx = rng.choice(num_points, size=num_points_batch, replace=False)
-        sample_data = data[row_idx, :]
-
-        _, subspace_basis, _ = dehydrate(sample_data,
-                                         dataset_type=dataset_type,
-                                         subspace_dimension=subspace_dimension,
-                                         subspace_basis=subspace_basis,
-                                         safety_factor=safety_factor,
-                                         beta_loss=beta_loss,
-                                         max_iter=max_iter,
-                                         tolerance=tolerance,
-                                         verbose=verbose)
-        verbose = 0  # dehydrate already printed verbose info, so we won't do it in the loop below
-
-    # Denoise data in batches
-    denoised_data = np.zeros_like(data)
-    for batch in range(num_batches):
-        batch_start = batch * num_points_batch
-        batch_stop = min((batch + 1) * num_points_batch, num_points)
-        batch_data = data[batch_start: batch_stop]
-
-        dehydrated_data = dehydrate(batch_data,
-                                    dataset_type=dataset_type,
-                                    subspace_dimension=subspace_dimension,
-                                    subspace_basis=subspace_basis,
-                                    safety_factor=safety_factor,
-                                    beta_loss=beta_loss,
-                                    max_iter=max_iter,
-                                    tolerance=tolerance,
-                                    verbose=verbose)  # verbose may be 0 here if the info was printed above
-        verbose = 0  # dehydrate already printed verbose info, so we won't do it the next time through
-
-        denoised_data[batch_start: batch_stop] = rehydrate(dehydrated_data)
-
-    # Reshape back to original dimensions
-    denoised_data = denoised_data.reshape(data_shape)
+    # --------------------- Rehydrate ----------------------
+    denoised_data = rehydrate(dehydrated_data)
 
     return denoised_data
 
 
 def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-              beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+              batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
 
@@ -134,6 +93,7 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
             estimated directly from the data. Defaults to None.
         safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
             safer final choice. Defaults to 2.
+        batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2**24.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-6.
@@ -159,81 +119,129 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
             IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
             2025. doi:10.1109/TCI.2025.3567854
     """
-    # define epsilon
-    epsilon = 1e-8
+    epsilon = 1e-8  # Define epsilon
 
-    # Check that the dataset_type is either 'attenuation' or 'transmission'
+    # --------------- Dataset type validation --------------
     if dataset_type not in ('attenuation', 'transmission'):
         raise ValueError("'dataset_type' must be either 'attenuation' or 'transmission'.")
 
-    # Get the data dimensions
+    # ------------------ Data preparation ------------------
     data_shape = data.shape
+    num_bands = data_shape[-1]
+    num_points = data.size // num_bands
+    data = data.reshape(num_points, num_bands).astype(np.float64)  # Reshape to 2D and cast to float64 for stability
 
-    # Reshape the hyperspectral data to 2D (number of data points x number of spectral bins)
-    data = data.reshape(-1, data_shape[-1])
-
-    # Convert data to attenuation if it is transmission
     if dataset_type == 'transmission':
         data[data < epsilon] = epsilon
-        data = - np.log(data)
+        data = - np.log(data)  # Convert to attenuation
 
-    # Replace values less than zero with zeros as NMF expects all the matrices to be non-negative
-    data[data < 0] = 0
+    data[data < 0] = 0  # Enforce non-negativity
 
-    # Cast to float64 for numerical stability in svd
-    data = np.asarray(data, dtype=np.float64)
     if subspace_basis is not None:
-        subspace_basis = np.asarray(subspace_basis, dtype=np.float64)
+        subspace_basis = np.asarray(subspace_basis, dtype=np.float64)  # Cast to float64 for stability
 
-    # Set options based on subspace basis availability
-    if subspace_basis is None:
-        init = 'nndsvd'  # Initialize NMF basis (H) and data (W) using Non-Negative Double Singular Value Decomposition
-        update_basis = True
-    else:
-        init = 'custom'  # Initialize NMF basis (H) and data (W) using given input and an array of zeros, respectively
-        update_basis = False
-        subspace_dimension = subspace_basis.shape[0]
+    # --------------------- Batch setup ---------------------
+    num_points_batch = max(1, batch_size // num_bands)  # Number of hyperspectral points per batch
+    num_batches = int(np.ceil(num_points / num_points_batch))  # Number of batches
 
-    # Automatically estimate the dimension of the subspace if required
-    if subspace_dimension is None:
-        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor, verbose=verbose)
-
-    # Set NMF solver based on the selected beta loss
+    # ------------------- NMF solver setup ------------------
     if beta_loss == 'frobenius':
-        solver = 'cd'
+        solver = 'cd'  # Coordinate Descent
     elif beta_loss == 'kullback-leibler':
-        solver = 'mu'
+        solver = 'mu'  # Multiplicative Update
     else:
         warnings.warn(f"Invalid beta_loss '{beta_loss}' specified: falling back to 'frobenius'.")
         beta_loss = 'frobenius'
         solver = 'cd'
 
-    # Perform NMF using Scikit-learn
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        subspace_data, subspace_basis, _ = non_negative_factorization(data,
-                                                                      n_components=subspace_dimension,
-                                                                      init=init,
-                                                                      W=None,  # If None, initialized via init
-                                                                      H=subspace_basis,  # If None, initialized via init
-                                                                      beta_loss=beta_loss,
-                                                                      solver=solver,
-                                                                      tol=tolerance,
-                                                                      max_iter=max_iter,
-                                                                      update_H=update_basis)
+    # ------------- Subspace dimension setup -----------------
+    if subspace_dimension is None and subspace_basis is None:
+        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor, verbose=verbose)
+    elif subspace_dimension is None and subspace_basis is not None:
+        subspace_dimension = subspace_basis.shape[0]
 
-    # Reshape subspace data to original dimensions (except the spectral axis)
-    subspace_data = subspace_data.reshape(*data_shape[:-1], -1)
+    # ------- Subspace basis estimation for multi-batch ------
+    if subspace_basis is None and num_batches > 1:
+        row_idx = np.random.permutation(num_points)
+        subspace_basis_batch = [None] * num_batches
 
+        # Estimate subspace basis for each batch using NMF
+        for batch in range(num_batches):
+            b_start = batch * num_points_batch
+            b_stop = min((batch + 1) * num_points_batch, num_points)
+            batch_data = data[row_idx[b_start: b_stop]]
+
+            if batch == 0:
+                nmf_init = 'nndsvd'  # Initialize NMF using Non-Negative Double Singular Value Decomposition
+                subspace_basis_init = None
+                subspace_data_init = None
+            else:
+                nmf_init = 'custom'  # Initialize NMF based on subspace basis from the previous batch
+                subspace_basis_init = gaussian_filter1d(subspace_basis_batch[batch-1], sigma=10, axis=1)
+                subspace_data_init = abs(batch_data @ np.linalg.pinv(subspace_basis_init))
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _, subspace_basis_batch[batch], _ = nmf(batch_data,
+                                                        n_components=subspace_dimension,
+                                                        init=nmf_init,
+                                                        W=subspace_data_init,
+                                                        H=subspace_basis_init,
+                                                        beta_loss=beta_loss,
+                                                        solver=solver,
+                                                        tol=tolerance,
+                                                        max_iter=max(5, max_iter // num_batches),
+                                                        update_H=True)
+
+        # Estimate final subspace basis from batch estimations using NMF
+        subspace_basis_batch = np.reshape(np.array(subspace_basis_batch), (-1, num_bands))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, subspace_basis, _ = nmf(subspace_basis_batch,
+                                       n_components=subspace_dimension,
+                                       init='nndsvd',
+                                       beta_loss=beta_loss,
+                                       solver=solver,
+                                       tol=tolerance,
+                                       max_iter=max_iter)
+
+    # --------------- Subspace data estimation ---------------
+    if num_batches == 1:
+        nmf_init, update_basis = 'nndsvd', True
+    else:
+        nmf_init, update_basis = 'custom', False
+
+    # Estimate subspace data in batches using NMF
+    subspace_data = np.zeros((num_points, subspace_dimension))
+    for batch in range(num_batches):
+        b_start = batch * num_points_batch
+        b_stop = min((batch + 1) * num_points_batch, num_points)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            subspace_data[b_start: b_stop], subspace_basis, _ = nmf(data[b_start: b_stop],
+                                                                    n_components=subspace_dimension,
+                                                                    init=nmf_init,
+                                                                    H=subspace_basis,
+                                                                    beta_loss=beta_loss,
+                                                                    solver=solver,
+                                                                    tol=tolerance,
+                                                                    max_iter=max_iter,
+                                                                    update_H=update_basis)
+
+    # ------------------ Final formatting -------------------
+    subspace_data = subspace_data.reshape(*data_shape[:-1], -1)  # Reshape to original dimensions (except last axis)
+    subspace_data = np.asarray(subspace_data, dtype=np.float32)  # Cast to float32 to reduce memory footprint
+    subspace_basis = np.asarray(subspace_basis, dtype=np.float32)  # Cast to float32 to reduce memory footprint
+    dehydrated_data = [subspace_data, subspace_basis, dataset_type]  # Package outputs for return
+
+    # --------------- Print details if required -------------
     if verbose >= 1:
         print("dehydrate(): ")
+        print("   -Number of data batches: ", num_batches)
         print("   -Original spectral dimension: ", data.shape[-1])
         print("   -Estimated/given subspace dimension: ", subspace_data.shape[-1])
 
-    # Cast back to float32 for memory efficiency
-    subspace_data = np.asarray(subspace_data, dtype=np.float32)
-    subspace_basis = np.asarray(subspace_basis, dtype=np.float32)
-    dehydrated_data = [subspace_data, subspace_basis, dataset_type]
     return dehydrated_data
 
 
@@ -268,14 +276,16 @@ def rehydrate(dehydrated_data, hyperspectral_idx=None):
             IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
             2025. doi:10.1109/TCI.2025.3567854
     """
-    [subspace_data, subspace_basis, dataset_type] = dehydrated_data
+    [subspace_data, subspace_basis, dataset_type] = dehydrated_data  # Unpack data
+
+    # Retrieve original data dimensions
     if hyperspectral_idx is None:
         rehydrated_data = subspace_data @ subspace_basis
     else:
         rehydrated_data = subspace_data @ subspace_basis[:, hyperspectral_idx]
 
     if dataset_type == 'transmission':
-        rehydrated_data = np.exp(-rehydrated_data)
+        rehydrated_data = np.exp(-rehydrated_data)  # Convert to transmission
 
     return rehydrated_data
 

@@ -8,8 +8,8 @@ The ``preprocess`` module provides scanner-specific preprocessing and more gener
 See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
 `mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo for example uses.
 
-NorthStar Instrument (NSI) functions
-------------------------------------
+NorthStar Instrument (NSI) reader
+---------------------------------
 
 .. currentmodule:: mbirjax.preprocess.nsi
 
@@ -17,8 +17,8 @@ NorthStar Instrument (NSI) functions
 .. autofunction:: load_scans_and_params
 
 
-Zeiss cone beam functions
--------------------------
+Zeiss Versa cone beam reader
+----------------------------
 
 .. currentmodule:: mbirjax.preprocess.zeiss_cb
 
@@ -63,7 +63,7 @@ MAR utilities
 
 .. autofunction:: gen_huber_weights
 .. autofunction:: BH_correction
-.. autofunction:: recon_BH_plastic_metal
+.. autofunction:: recon_plastic_metal
 
 
 Stripe/Ring/Offset Removal
