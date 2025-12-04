@@ -33,6 +33,8 @@ _forward_model_defaults_dict = {
     'det_row_offset': Param(0.0, True),
     'det_channel_offset': Param(0.0, True),
     'sigma_y': Param(1.0, False),
+    'alu_units': Param(None, False),
+    'alu_value': Param(1.0, False),
 }
 
 _recon_model_defaults_dict = {
