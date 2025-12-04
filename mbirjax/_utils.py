@@ -24,6 +24,7 @@ class Param:
 
 
 # The order and content of these dictionaries must match the headings and list of dicts below
+# NOTE:  additions/deletions here should also be made to ParameterHandler.ParamNames
 _forward_model_defaults_dict = {
     'geometry_type': Param(None, False),  # The geometry type should never change during a recon.
     'file_format': Param(FILE_FORMAT_NUMBER, False),
@@ -90,7 +91,7 @@ def update_param_literal(verify_match_and_exit=False):
     """
     param_file = Path(__file__).parent / "parameter_handler.py"
 
-    print('Checking for updates to parameter names in ParameterHandler...')
+    print('Checking for updates to parameter names in ParameterHandler.ParamNames')
 
     try:
         content = param_file.read_text()
@@ -117,19 +118,21 @@ def update_param_literal(verify_match_and_exit=False):
         return False
 
     old_param_name = match_for_name.group(0)
-
-    param_names_match = old_param_name.strip() == new_param_name.strip()
+    old_param_name = old_param_name.strip().replace(' ', '').replace('\n', '')
+    new_param_name = new_param_name.strip().replace(' ', '').replace('\n', '')
+    param_names_match = old_param_name == new_param_name
 
     if param_names_match:
         print("✅ ParamNames are already up to date.")
         return True
 
-    if verify_match_and_exit:
-        return False
-
-    print('Proposed changes shown below:  additions in green, subtractions in red.')
+    print('\033[91m' + 'Proposed changes shown below:' + '\033[0m')
+    print('Additions to ParameterHandler.ParamNames are in green, subtractions in red.')
     if not param_names_match:
         highlight_differences(old_param_name, new_param_name)
+
+    if verify_match_and_exit:
+        return False
 
     confirm = input("Replace old entries with new ones? (y/n): ").strip().lower()
     if confirm == 'y':
