@@ -528,8 +528,7 @@ def project_vector_to_vector(u1, u2):
     u1_proj = np.dot(u1, u2)*u2
     return u1_proj
 
-from functools import partial
-@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin'])
+
 def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
@@ -564,7 +563,7 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     radius = base_radius - radial_margin
 
     # Create circular mask in (row, col) plane
-    row_coords, col_coords = jnp.meshgrid(jnp.arange(num_recon_rows), jnp.arange(num_recon_cols), indexing='ij')
+    row_coords, col_coords = np.meshgrid(np.arange(num_recon_rows), np.arange(num_recon_cols), indexing='ij')
     dist_sq = (row_coords - row_center) ** 2 + (col_coords - col_center) ** 2
     circular_mask = (dist_sq <= radius ** 2).astype(recon.dtype)
 
@@ -573,9 +572,9 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     # Zero out top and bottom slices along Z
     if top_margin > 0:
-        recon = recon.at[:, :, :top_margin].set(0)
+        recon[:, :, :top_margin] = 0
     if bottom_margin > 0:
-        recon = recon.at[:, :, -bottom_margin:].set(0)
+        recon[:, :, -bottom_margin:] = 0
 
     return recon
 

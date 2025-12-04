@@ -574,19 +574,15 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    @jax.jit
-    def process_recon(local_recon):
+    recon = np.asarray(jax.device_get(recon))
 
-        if remove_flash:
-            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
+    if remove_flash:
+        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
-        # Convert to right-handed coordinate system
-        local_recon = jnp.transpose(local_recon, (2, 1, 0))
-        local_recon = jax.device_get(local_recon)
-        return local_recon
+    # Convert to right-handed coordinate system
+    recon = np.transpose(recon, (2, 1, 0))
 
-    recon = jax.device_get(recon)
-    recon = process_recon(recon)
+    # Save the recon
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
