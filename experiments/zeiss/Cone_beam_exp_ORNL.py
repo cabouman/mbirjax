@@ -57,6 +57,11 @@ def main():
     else:
         mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
+    # Convert MBIR Recon to unit of mm^-1
+    if metadata['ALU_unit'] == 'um':
+        direct_recon *= 1000
+        mbir_recon *= 1000
+
     # Save recon to hdf5
     print("\n*********** save mbir and fdk recon in h5 format *************")
     os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
