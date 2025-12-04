@@ -52,7 +52,10 @@ def main():
 
     # Perform MBIR reconstruction
     print("\n********** Perform MBIR reconstruction **************")
-    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+    if downsample_factor == 1:
+        mbir_recon, recon_dict = ct_model.split_sino_recon(sinogram, weights=weights)
+    else:
+        mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     # Save recon to hdf5
     print("\n*********** save mbir and fdk recon in h5 format *************")
