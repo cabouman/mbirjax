@@ -327,7 +327,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
     optional_params['recon_shape'] = recon_shape
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
-    optional_params['alu_units'] = ALU_unit
+    optional_params['alu_unit'] = ALU_unit
     optional_params['alu_value'] = ALU_value
 
     return translation_params, optional_params

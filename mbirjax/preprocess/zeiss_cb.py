@@ -352,7 +352,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
-    optional_params['alu_units'] = ALU_unit
+    optional_params['alu_unit'] = ALU_unit
     optional_params['alu_value'] = ALU_value
 
     return cone_beam_params, optional_params

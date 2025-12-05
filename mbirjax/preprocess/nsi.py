@@ -428,7 +428,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     optional_params["det_channel_offset"] = det_channel_offset
     optional_params["det_row_offset"] = det_row_offset
     optional_params["det_rotation"] = det_rotation # tilt angle of rotation axis
-    optional_params["alu_units"] = 'mm' # NSI always uses mm has the unit
+    optional_params["alu_unit"] = 'mm' # NSI always uses mm has the unit
     optional_params["alu_value"] = 1.0  # We have set everything in mm, so 1 ALU = 1 mm
 
     return cone_beam_params, optional_params
