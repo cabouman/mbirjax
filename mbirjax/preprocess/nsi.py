@@ -405,14 +405,6 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = delta_det_channel
-    source_detector_dist /= delta_det_channel # mm to ALU
-    source_iso_dist /= delta_det_channel # mm to ALU
-    det_channel_offset /= delta_det_channel # mm to ALU
-    det_row_offset /= delta_det_channel # mm to ALU
-    delta_det_row /= delta_det_channel
-    delta_det_channel = 1.0
-
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
     cone_beam_params = dict()
