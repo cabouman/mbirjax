@@ -10,7 +10,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 
 def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
-                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None, verbose=1):
+                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None, verbose=1, offset_correction=True):
     """
     Load NSI sinogram data and prepare arrays and parameters for ConeBeamModel reconstruction.
 
@@ -36,6 +36,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         crop_pixels_top (int, optional): Pixels to crop from the top. If None, uses NSI config file.
         crop_pixels_bottom (int, optional): Pixels to crop from the bottom. If None, uses NSI config file.
         verbose (int, optional): Verbosity level. Defaults to 1.
+        offset_correction (bool): Whether to apply detector offset correction using values from the Geometry Report. Defaults to True.
 
     Returns:
         tuple: (sino, cone_beam_params, optional_params)
@@ -62,7 +63,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
     obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array = \
-            load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor, verbose=verbose)
+            load_scans_and_params(dataset_dir, subsample_view_factor=subsample_view_factor, verbose=verbose, offset_correction=offset_correction)
 
     # Get the crops from the config file if not provided and make sure they are symmetric
     # TODO:  adjust detector offsets for asymmetric crops
@@ -122,7 +123,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     return sino, cone_beam_params, optional_params
 
 
-def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsample_view_factor=1, verbose=1):
+def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsample_view_factor=1, verbose=1, offset_correction=True):
     """
     Load the object scan, blank scan, dark scan, view angles, defective pixel information, and geometry parameters from an NSI scan directory.
 
@@ -140,6 +141,8 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
         view_id_end (int, optional): view index corresponding to the last view. If None, this will be equal to the total number of object scan images in ``obj_scan_dir``.
         subsample_view_factor (int, optional): view subsample factor.
         verbose (int, optional): Verbosity level. Defaults to 1.
+        offset_correction (bool): Whether to apply detector offset correction using values from the Geometry Report. Defaults to True.
+
 
     Returns:
         tuple: (obj_scan, blank_scan, dark_scan, nsi_params, defective_pixel_array)
@@ -194,11 +197,18 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     r_r = np.array([np.single(elem) for elem in r_r])
 
     # correct the coordinate of (0,0) detector pixel based on "Geometry Report.rtf"
-    x_r, y_r = _read_detector_location_from_geom_report(geom_report_path)
-    r_r[0] = x_r
-    r_r[1] = y_r
-    if verbose > 0:
-        print("Corrected coordinate of (0,0) detector pixel (from Geometry Report) = ", r_r)
+    if offset_correction:
+        if geom_report_path is not None:
+            x_r, y_r = _read_detector_location_from_geom_report(geom_report_path)
+            r_r[0] = x_r
+            r_r[1] = y_r
+            if verbose > 0:
+                print("Corrected coordinate of (0,0) detector pixel (from Geometry Report) =", r_r)
+        else:
+            pass
+    else:
+        if verbose > 0:
+            print("Offset correction disabled. Using original r_r =", r_r)
 
     # detector pixel pitch
     pixel_pitch_det = raw_nsi_fields[2].split(' ')
@@ -395,14 +405,6 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Set 1 ALU = delta_det_channel
-    source_detector_dist /= delta_det_channel # mm to ALU
-    source_iso_dist /= delta_det_channel # mm to ALU
-    det_channel_offset /= delta_det_channel # mm to ALU
-    det_row_offset /= delta_det_channel # mm to ALU
-    delta_det_row /= delta_det_channel
-    delta_det_channel = 1.0
-
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
     cone_beam_params = dict()
@@ -418,6 +420,8 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     optional_params["det_channel_offset"] = det_channel_offset
     optional_params["det_row_offset"] = det_row_offset
     optional_params["det_rotation"] = det_rotation # tilt angle of rotation axis
+    optional_params["alu_unit"] = 'mm' # NSI always uses mm has the unit
+    optional_params["alu_value"] = 1.0  # We have set everything in mm, so 1 ALU = 1 mm
 
     return cone_beam_params, optional_params
 
@@ -450,7 +454,11 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
 
     # geometry report
     geom_report_path_list = glob.glob(os.path.join(dataset_dir, "Geometry*.rtf"))
-    geom_report_path = _prompt_user_choice("geometry report files", geom_report_path_list)
+    if len(geom_report_path_list) == 0:
+        print("No Geometry Report found. Skipping offset correction.")
+        geom_report_path = None
+    else:
+        geom_report_path = _prompt_user_choice("Geometry Report", geom_report_path_list)
 
     # Radiograph directory
     obj_scan_dir_list = glob.glob(os.path.join(dataset_dir, "Radiographs*"))
@@ -645,20 +653,19 @@ def calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_de
     r_v = np.cross(r_n, r_h) # r_v = r_n x r_h
 
     # vector pointing from center of detector to the first row and column of detector along detector columns.
-    c_v = -(num_det_rows-1)/2*delta_det_row*r_v
+    c_v = (num_det_rows-1)/2*delta_det_row*r_v
     # vector pointing from center of detector to the first row and column of detector along detector rows.
-    c_h = -(num_det_channels-1)/2*delta_det_channel*r_h
+    c_h = (num_det_channels-1)/2*delta_det_channel*r_h
     # vector pointing from source to first row and column of detector.
     r_s_r = r_r - r_s
     # vector pointing from source-detector line to center of detector.
-    r_delta = r_s_r - mjp.project_vector_to_vector(r_s_r, r_n) - c_v - c_h
+    r_delta = r_s_r - mjp.project_vector_to_vector(r_s_r, r_n) + c_v + c_h
     # detector row and channel offsets
     det_channel_offset = -np.dot(r_delta, r_h)
     det_row_offset = -np.dot(r_delta, r_v)
     # rotation offset
-    delta_source = r_s - mjp.project_vector_to_vector(r_s, r_n)
-    delta_rot = delta_source - mjp.project_vector_to_vector(delta_source, r_a)# rotation offset vector (perpendicular to rotation axis)
-    rotation_offset = np.dot(delta_rot, np.cross(r_n, r_a))
+    r_a = mjp.unit_vector(r_a)  # make sure r_a is normalized
+    rotation_offset = np.dot(r_s, np.cross(r_n, r_a))
     det_channel_offset += rotation_offset*magnification
     return det_channel_offset, det_row_offset
 

@@ -84,6 +84,7 @@ MBIRJAX: High-performance tomographic reconstruction
    :caption: User Guide
 
    install
+   unit_conversion
    usr_api
    demos_and_faqs
 
