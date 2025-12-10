@@ -529,8 +529,8 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 from functools import partial
-@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin'])
-def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
+@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin', 'slice_start', 'total_slices'])
+def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0, slice_start=None, total_slices=None):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
 
@@ -540,11 +540,23 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
+    The function can process either the entire reconstruction volume at once or process it in smaller
+    slice batches to manage memory constraints.
+
+    Note:
+        When `slice_start` and `total_slices` are None, the function processes the entire recon volume.
+        When both are provided (batch mode), the function correctly applies top/bottom margins based on
+        the batch's position in the full recon volume, ensuring identical results to full-volume processing.
+
     Args:
         recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
         top_margin (int): Number of top slices to set to zero along the Z-axis.
         bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
+        slice_start (int, optional): Starting slice index when processing batches.
+                                     If None, processes full recon volume (default behavior).
+        total_slices (int, optional): Total number of slices in full volume when batching.
+                                      If None, uses recon.shape[2] (default behavior).
 
     Returns:
         jnp.ndarray: Masked 3D volume of the same shape as `recon`.
@@ -572,10 +584,27 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     recon = recon * circular_mask[:, :, None]
 
     # Zero out top and bottom slices along Z
-    if top_margin > 0:
-        recon = recon.at[:, :, :top_margin].set(0)
-    if bottom_margin > 0:
-        recon = recon.at[:, :, -bottom_margin:].set(0)
+    if slice_start is None and total_slices is None:
+        # Apply top/bottom margin to full recon volume
+        if top_margin > 0:
+            recon = recon.at[:, :, :top_margin].set(0)
+        if bottom_margin > 0:
+            recon = recon.at[:, :, -bottom_margin:].set(0)
+    else:
+        # Apply top/bottom margin to recon slice batches
+        slice_end = slice_start + num_slices
+
+        # Zero top slices only if this batch overlaps with top margin region in full recon volume
+        if top_margin > 0 and slice_start < top_margin:
+            top_margin_batch = min(top_margin - slice_start, num_slices)
+            recon = recon.at[:, :, :top_margin_batch].set(0)
+
+        # Zero bottom slices only if this batch overlaps with bottom margin region in full recon volume
+        if bottom_margin > 0:
+            bottom_start = total_slices - bottom_margin
+            if slice_end > bottom_start:
+                bottom_margin_batch = max(0, bottom_start - slice_start)
+                recon = recon.at[:, :, bottom_margin_batch:].set(0)
 
     return recon
 
