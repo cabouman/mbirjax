@@ -550,13 +550,14 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
 
 
 
-def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10):
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10, batch_size=1024):
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function transposes the input volume to right-hand coordinates (slice, row, col),
-    optionally applies a cylindrical mask to remove peripheral and top/bottom slices (referred to as `flash`),
-    and writes the volume and optional metadata to an HDF5 file.
+    This function processes the input recon volume in batches to avoid GPU memory issues, transposes it
+    to right-hand coordinates (slice, col, row), optionally applies a cylindrical mask to remove
+    peripheral and top/bottom slices (referred to as `flash`), and writes the volume and optional
+    metadata to an HDF5 file.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -566,6 +567,7 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
         top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
         bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
+        batch_size (int, optional): Number of slices to process at a time. Defaults to 1024.
 
     Example:
         >>> from mbirjax.utilities import export_recon_hdf5
@@ -574,19 +576,33 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    @jax.jit
-    def process_recon(local_recon):
+    # Move recon to CPU
+    recon = jax.device_get(recon)
+
+    # Process recon in batches
+    num_rows, num_cols, num_slices = recon.shape
+
+    output = np.zeros((num_slices, num_cols, num_rows), dtype=recon.dtype)
+
+    # Process recon slices in batches to manage GPU memory
+    for start in range(0, num_slices, batch_size):
+        end = min(start + batch_size, num_slices)
+
+        batch = jax.device_put(recon[:, :, start:end])
 
         if remove_flash:
-            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
+            batch = mj.preprocess.apply_cylindrical_mask(batch, radial_margin, top_margin, bottom_margin, start, num_slices)
 
-        # Convert to right-handed coordinate system
-        local_recon = jnp.transpose(local_recon, (2, 1, 0))
-        local_recon = jax.device_get(local_recon)
-        return local_recon
+        # Convert the batch to right-handed coordinate system
+        batch = jnp.transpose(batch, (2, 1, 0))
 
-    recon = jax.device_get(recon)
-    recon = process_recon(recon)
+        # Move back to CPU and store
+        output[start:end, :, :] = jax.device_get(batch)
+
+        # Clear GPU memory
+        jax.clear_caches()
+
+    recon = output
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
