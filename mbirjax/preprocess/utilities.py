@@ -583,32 +583,40 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     # Apply cylindrical mask to all slices
     recon = recon * circular_mask[:, :, None]
 
-    # Zero out top and bottom slices along Z
-    if slice_start is None and total_slices is None:
-        # Apply top/bottom margin to full recon volume
-        if top_margin > 0:
-            recon = recon.at[:, :, :top_margin].set(0)
-        if bottom_margin > 0:
-            recon = recon.at[:, :, -bottom_margin:].set(0)
-    else:
-        # Validate that both batch parameters are provided
-        if slice_start is None or total_slices is None:
-            raise ValueError("Both slice_start and total_slices params must be provided together for batch processing.")
+    # Apply a mask to the top and bottom margins
+    slice_mask = jnp.ones((num_slices, ))
+    if top_margin > 0:
+        slice_mask = slice_mask.at[:top_margin].set(0)
+    if bottom_margin > 0:
+        slice_mask = slice_mask.at[-bottom_margin:].set(0)
+    recon = recon * slice_mask[None, None, :]
 
-        # Apply top/bottom margin to recon slice batches
-        slice_end = slice_start + num_slices
-
-        # Zero top slices only if this batch overlaps with top margin region in full recon volume
-        if top_margin > 0 and slice_start < top_margin:
-            top_margin_batch = min(top_margin - slice_start, num_slices)
-            recon = recon.at[:, :, :top_margin_batch].set(0)
-
-        # Zero bottom slices only if this batch overlaps with bottom margin region in full recon volume
-        if bottom_margin > 0:
-            bottom_start = total_slices - bottom_margin
-            if slice_end > bottom_start:
-                bottom_margin_batch = max(0, bottom_start - slice_start)
-                recon = recon.at[:, :, bottom_margin_batch:].set(0)
+    # # Zero out top and bottom slices along Z
+    # if slice_start is None and total_slices is None:
+    #     # Apply top/bottom margin to full recon volume
+    #     if top_margin > 0:
+    #         recon = recon.at[:, :, :top_margin].set(0)
+    #     if bottom_margin > 0:
+    #         recon = recon.at[:, :, -bottom_margin:].set(0)
+    # else:
+    #     # Validate that both batch parameters are provided
+    #     if slice_start is None or total_slices is None:
+    #         raise ValueError("Both slice_start and total_slices params must be provided together for batch processing.")
+    #
+    #     # Apply top/bottom margin to recon slice batches
+    #     slice_end = slice_start + num_slices
+    #
+    #     # Zero top slices only if this batch overlaps with top margin region in full recon volume
+    #     if top_margin > 0 and slice_start < top_margin:
+    #         top_margin_batch = min(top_margin - slice_start, num_slices)
+    #         recon = recon.at[:, :, :top_margin_batch].set(0)
+    #
+    #     # Zero bottom slices only if this batch overlaps with bottom margin region in full recon volume
+    #     if bottom_margin > 0:
+    #         bottom_start = total_slices - bottom_margin
+    #         if slice_end > bottom_start:
+    #             bottom_margin_batch = max(0, bottom_start - slice_start)
+    #             recon = recon.at[:, :, bottom_margin_batch:].set(0)
 
     return recon
 

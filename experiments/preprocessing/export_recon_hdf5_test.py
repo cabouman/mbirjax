@@ -23,7 +23,7 @@ test_volume = np.random.rand(num_rows, num_cols, num_slices).astype(np.float32)
 print(f"Test volume: {test_volume.shape}, {test_volume.nbytes / (1024 ** 3):.3f} GB\n")
 
 # Output directory
-output_path = '/home/yang1581/Data/test_export/'
+output_path = './test_export/'
 os.makedirs(output_path, exist_ok=True)
 
 # ============================================================================
