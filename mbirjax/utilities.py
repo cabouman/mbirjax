@@ -576,6 +576,9 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
+
     # Move recon to CPU
     recon = jax.device_get(recon)
 
@@ -598,9 +601,6 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
 
         # Move back to CPU and store
         output[start:end, :, :] = jax.device_get(batch)
-
-        # Clear GPU memory
-        jax.clear_caches()
 
     recon = output
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
