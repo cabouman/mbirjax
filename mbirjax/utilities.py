@@ -554,9 +554,10 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function transposes the input volume to right-hand coordinates (slice, row, col),
-    optionally applies a cylindrical mask to remove peripheral and top/bottom slices (referred to as `flash`),
-    and writes the volume and optional metadata to an HDF5 file.
+    This function processes the input recon volume in batches to avoid GPU memory issues, transposes it
+    to right-hand coordinates (slice, col, row), optionally applies a cylindrical mask to remove
+    peripheral and top/bottom slices (referred to as `flash`), and writes the volume and optional
+    metadata to an HDF5 file.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -574,19 +575,15 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    @jax.jit
-    def process_recon(local_recon):
 
-        if remove_flash:
-            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
-
-        # Convert to right-handed coordinate system
-        local_recon = jnp.transpose(local_recon, (2, 1, 0))
-        local_recon = jax.device_get(local_recon)
-        return local_recon
-
+    # Move recon to CPU
     recon = jax.device_get(recon)
-    recon = process_recon(recon)
+
+    if remove_flash:
+        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+
+    recon = jnp.transpose(recon, (2, 1, 0))
+
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
@@ -615,7 +612,7 @@ def import_recon_hdf5(file_path):
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
     recon = recon[::-1, :, :]
-    recon = np.transpose(recon, axes=(1, 2, 0))
+    recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
 
