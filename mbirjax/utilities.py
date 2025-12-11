@@ -550,7 +550,7 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
 
 
 
-def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10, batch_size=1024):
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
@@ -567,7 +567,6 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         radial_margin (int, optional): Margin in pixels to subtract from the cylinder radius. Defaults to 10.
         top_margin (int, optional): Number of top slices to set to zero along the Z-axis. Defaults to 10.
         bottom_margin (int, optional): Number of bottom slices to set to zero along the Z-axis. Defaults to 10.
-        batch_size (int, optional): Number of slices to process at a time. Defaults to 1024.
 
     Example:
         >>> from mbirjax.utilities import export_recon_hdf5
@@ -576,33 +575,15 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
 
     # Move recon to CPU
     recon = jax.device_get(recon)
 
-    # Process recon in batches
-    num_rows, num_cols, num_slices = recon.shape
+    if remove_flash:
+        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
-    output = np.zeros((num_slices, num_cols, num_rows), dtype=recon.dtype)
+    recon = jnp.transpose(recon, (2, 1, 0))
 
-    # Process recon slices in batches to manage GPU memory
-    for start in range(0, num_slices, batch_size):
-        end = min(start + batch_size, num_slices)
-
-        batch = jax.device_put(recon[:, :, start:end])
-
-        if remove_flash:
-            batch = mj.preprocess.apply_cylindrical_mask(batch, radial_margin, top_margin, bottom_margin, start, num_slices)
-
-        # Convert the batch to right-handed coordinate system
-        batch = jnp.transpose(batch, (2, 1, 0))
-
-        # Move back to CPU and store
-        output[start:end, :, :] = jax.device_get(batch)
-
-    recon = output
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
@@ -631,7 +612,7 @@ def import_recon_hdf5(file_path):
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
     recon = recon[::-1, :, :]
-    recon = np.transpose(recon, axes=(1, 2, 0))
+    recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
 

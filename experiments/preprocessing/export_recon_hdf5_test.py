@@ -7,11 +7,12 @@ import os
 import numpy as np
 import time
 import jax
+import jax.numpy as jnp
 import mbirjax as mj
 import warnings
 
 # Volume shape parameters
-factor = 3
+factor = 2
 num_rows = 1024 * factor
 num_cols = 1024 * factor
 num_slices = 1024 * factor
@@ -46,6 +47,7 @@ try:
         top_margin=10,
         bottom_margin=10
     )
+    masked_full = jnp.transpose(masked_full, (2, 1, 0))
     masked_full = masked_full.block_until_ready()
     elapsed_time = time.time() - start_time
     masked_full = jax.device_get(masked_full)
@@ -63,109 +65,39 @@ except Exception as e:
         warnings.warn(f"Test 1 failed: {type(e).__name__}: {e}. Skipping comparison.", RuntimeWarning)
     run_comparison = False
 
-mj.slice_viewer(test_volume, masked_full)
-# Test with slice_start and total_slices (batch processing)
-print("\nTest 2: Batch processing with slice_start and total_slices")
-batch_result = np.zeros_like(test_volume)
-batch_size = batch_size
-
-for start in range(0, num_slices, batch_size):
-    end = min(start + batch_size, num_slices)
-    batch = test_volume[:, :, start:end]
-
-    print(f"  Processing slices {start}-{end - 1} (slice_start={start}, total_slices={num_slices})")
-
-    masked_batch = mj.preprocess.apply_cylindrical_mask(
-        batch,
-        radial_margin=10,
-        top_margin=10,
-        bottom_margin=10,
-        slice_start=start,
-        total_slices=num_slices
-    )
-
-    batch_result[:, :, start:end] = masked_batch
-
-# Compare results
-if run_comparison:
-    max_diff = np.max(np.abs(masked_full - batch_result))
-    print(f"\nMax difference between full and batch: {max_diff}")
-    if max_diff < 1e-6:
-        print("✓ Batch processing matches full volume processing!\n")
-    else:
-        print("✗ WARNING: Batch processing does NOT match full volume processing!\n")
-else:
-    print("\n Comparison skipped (full volume test did not complete)\n")
-
-
-# Test error handling: only slice_start provided
-print("\nTest 3: Error handling - only slice_start provided (should raise ValueError)")
-try:
-    batch = test_volume[:, :, :batch_size]
-    masked_batch = mj.preprocess.apply_cylindrical_mask(
-        batch,
-        radial_margin=10,
-        top_margin=10,
-        bottom_margin=10,
-        slice_start=0,
-        total_slices=None
-    )
-    print("✗ ERROR: Should have raised ValueError but did not!\n")
-except ValueError as e:
-    print(f"✓ Correctly raised ValueError: {e}\n")
-except Exception as e:
-    print(f"✗ ERROR: Raised unexpected exception: {type(e).__name__}: {e}\n")
-
-
-# Test error handling: only total_slices provided
-print("\nTest 4: Error handling - only total_slices provided (should raise ValueError)")
-try:
-    batch = test_volume[:, :, :batch_size]
-    masked_batch = mj.preprocess.apply_cylindrical_mask(
-        batch,
-        radial_margin=10,
-        top_margin=10,
-        bottom_margin=10,
-        slice_start=None,
-        total_slices=num_slices
-    )
-    print("✗ ERROR: Should have raised ValueError but did not!\n")
-except ValueError as e:
-    print(f"✓ Correctly raised ValueError: {e}\n")
-except Exception as e:
-    print(f"✗ ERROR: Raised unexpected exception: {type(e).__name__}: {e}\n")
+mj.slice_viewer(test_volume, masked_full, slice_axis=0)
 
 
 # ============================================================================
 # Test export_recon_hdf5 with batch_size parameter
 # ============================================================================
 print("=" * 70)
-print("Testing export_recon_hdf5 with batch_size parameter")
+print("Testing export_recon_hdf5")
 print("=" * 70)
 
-# Test cases with different batch_size values
-batch_sizes = [16, 32, 64, 128, 256, 512, 1024]
+file_path = os.path.join(output_path, f"test_export_recon.h5")
 
-print(f"\nRunning {len(batch_sizes)} test cases with different batch_size:\n")
+t0 = time.time()
+mj.export_recon_hdf5(
+    file_path,
+    test_volume,
+    recon_dict=None,
+    remove_flash=True,
+    radial_margin=10,
+    top_margin=10,
+    bottom_margin=10,
+)
+t1 = time.time()
+print(f"  Time to save: {t1 - t0:.1f}s\n")
 
-for i, batch_size in enumerate(batch_sizes, 1):
-    print(f"Test {i}/{len(batch_sizes)}: batch_size={batch_size}")
+t0 = time.time()
+loaded_volume, loaded_dict = mj.load_data_hdf5(file_path)
+t1 = time.time()
+print(f"  Time to load: {t1 - t0:.1f}s\n")
 
-    file_path = os.path.join(output_path, f"test_batch_{batch_size}.h5")
-
-    t0 = time.time()
-    mj.export_recon_hdf5(
-        file_path,
-        test_volume,
-        recon_dict=None,
-        remove_flash=True,
-        radial_margin=10,
-        top_margin=10,
-        bottom_margin=10,
-        batch_size=batch_size
-    )
-    t1 = time.time()
-    print(f"  Elapsed: {t1 - t0:.1f}s\n")
+max_diff = np.amax(np.abs(masked_full - loaded_volume))
+print(f"Max difference: {max_diff:.3f}\n")
+mj.slice_viewer(masked_full, loaded_volume, slice_axis=0)
 
 print("=" * 70)
 print("All tests completed!")
