@@ -556,7 +556,7 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         slice_start (int, optional): Starting slice index when processing batches.
                                      If None, processes full recon volume (default behavior).
         total_slices (int, optional): Total number of slices in full volume when batching.
-                                      If None, uses recon.shape[2] (default behavior).
+                                      If None, process full recon volume (default behavior).
 
     Returns:
         jnp.ndarray: Masked 3D volume of the same shape as `recon`.
@@ -591,6 +591,10 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         if bottom_margin > 0:
             recon = recon.at[:, :, -bottom_margin:].set(0)
     else:
+        # Validate that both batch parameters are provided
+        if slice_start is None or total_slices is None:
+            raise ValueError("Both slice_start and total_slices params must be provided together for batch processing.")
+
         # Apply top/bottom margin to recon slice batches
         slice_end = slice_start + num_slices
 
