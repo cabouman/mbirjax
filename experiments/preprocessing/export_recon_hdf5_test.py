@@ -11,15 +11,16 @@ import mbirjax as mj
 import warnings
 
 # Volume shape parameters
-num_rows = 1024
-num_cols = 1024
-num_slices = 1024
+factor = 3
+num_rows = 1024 * factor
+num_cols = 1024 * factor
+num_slices = 1024 * factor
 
 # Define batch size for testing apply_cylindrical_mask
 batch_size = 64
 
 # Create test volume
-test_volume = np.random.rand(num_rows, num_cols, num_slices).astype(np.float32)
+test_volume = np.ones((num_rows, num_cols, num_slices)).astype(np.float32)
 print(f"Test volume: {test_volume.shape}, {test_volume.nbytes / (1024 ** 3):.3f} GB\n")
 
 # Output directory
@@ -37,14 +38,18 @@ print("=" * 70)
 # Test without slice_start and total_slices (full volume processing)
 print("\nTest 1: Full volume (slice_start=None, total_slices=None)")
 try:
+    import time
+    start_time = time.time()
     masked_full = mj.preprocess.apply_cylindrical_mask(
         test_volume,
         radial_margin=10,
         top_margin=10,
         bottom_margin=10
     )
+    masked_full = masked_full.block_until_ready()
+    elapsed_time = time.time() - start_time
     masked_full = jax.device_get(masked_full)
-    print("✓ Full volume processing completed successfully")
+    print("✓ Full volume processing completed successfully in {} seconds".format(elapsed_time))
     run_comparison = True
 except Exception as e:
     if "out of memory" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
@@ -58,7 +63,7 @@ except Exception as e:
         warnings.warn(f"Test 1 failed: {type(e).__name__}: {e}. Skipping comparison.", RuntimeWarning)
     run_comparison = False
 
-
+mj.slice_viewer(test_volume, masked_full)
 # Test with slice_start and total_slices (batch processing)
 print("\nTest 2: Batch processing with slice_start and total_slices")
 batch_result = np.zeros_like(test_volume)
