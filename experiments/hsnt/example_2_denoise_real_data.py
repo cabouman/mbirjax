@@ -122,7 +122,9 @@ def main():
     start_time = time.time()
 
     # Choose dataset
-    dataset_name = 'Nilotinib-P, 50X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
+    # 'Nilotinib-P, 50X, 785, 1200_01.csv', 'Nilotinib-P, 50X, 785, 1200_01(1).csv'
+    # 'Nilotinib-AS, 50X, 785, 1200_01.csv', 'Nilotinib-AS, 50X, 785, 1200_01(1).csv'
+    dataset_name = 'Nilotinib-AS, 50X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
     input_path = './raman_data/'  # path to import input noisy data
     output_path = './raman_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
@@ -130,9 +132,32 @@ def main():
     calibration_values, data_cube = read_measurement_csv(input_path, dataset_name)
     hsnt_data = data_cube / calibration_values[None, None, :]
     # mj.slice_viewer(hsnt_data)
+    num_bins = hsnt_data.shape[2]
+    hsnt_flat = hsnt_data.reshape((-1, num_bins))
+    hsnt_mean = np.mean(hsnt_flat, axis=0)
+    hsnt_centered = hsnt_flat - hsnt_mean
+    u, s, vh = np.linalg.svd(hsnt_centered, full_matrices=False)
+
+    for inds in [[0, 1, 2], [3, 4, 5]]:
+        rgb = s[inds, None] * vh[inds] @ hsnt_centered.T
+        rgb_flat = rgb.T
+        rgb = rgb.T.reshape(hsnt_data.shape[:2] + (3,))
+        rgb2 = np.percentile(rgb, 2)
+        rgb98 = np.percentile(rgb, 98)
+        rgb = (rgb - rgb2) / (rgb98 - rgb2)
+        plt.figure()
+        plt.imshow(rgb)
+        plt.title(f"PCA: ({dataset_name})")
+        plt.figure()
+        for k in inds:
+            plt.plot(vh[k] * (-1)**(k+1))
+        plt.title('PCA components {}'.format(inds))
+    plt.show()
 
     # Denoiser parameters
-    subspace_dimension = 4  # Subspace dimension
+    subspace_dimension = 3  # Subspace dimension
+    loss_type = 'frobenius' # 'kullback-leibler'  # 'frobenius'
+
     verbose = 2  # Verbosity level
     test_denoise = False  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
 
@@ -158,20 +183,24 @@ def main():
     if test_denoise:
         if verbose >= 1:
             print("Running hyperspectral denoising (i.e., dehydrate + rehydrate)")
-        hsnt_denoised = hyper_denoise(hsnt_data, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
+        hsnt_denoised = hyper_denoise(hsnt_data, beta_loss=loss_type, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
     else:
         if verbose >= 1:
             print("Running hyperspectral dehydrate followed by rehydrate (i.e., denoising)")
-        hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
+        hsnt_dehydrated = dehydrate(hsnt_data, beta_loss=loss_type, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
         hsnt_denoised = rehydrate(hsnt_dehydrated)
-        mj.slice_viewer(hsnt_dehydrated[0])
+
+        plt.figure()
+        plt.imshow(hsnt_dehydrated[0])
+        plt.title(f"DeHy: ({dataset_name})")
+        plt.figure()
         plt.plot(hsnt_dehydrated[1].T)
         # Write out dehydrated data
         filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
         export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata)
 
 
-    # mj.slice_viewer(hsnt_data, hsnt_denoised)
+    mj.slice_viewer(hsnt_data, np.abs(hsnt_denoised - hsnt_data), vmin=0, vmax=0.5)
 
     # Write out denoised/rehydrated data
     filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
