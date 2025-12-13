@@ -120,12 +120,11 @@ def read_measurement_csv(
 
 
 def main():
-    start_time = time.time()
 
     # Choose dataset
     # 'Nilotinib-P, 50X, 785, 1200_01.csv', 'Nilotinib-P, 50X, 785, 1200_01(1).csv'
     # 'Nilotinib-AS, 50X, 785, 1200_01.csv', 'Nilotinib-AS, 50X, 785, 1200_01(1).csv'
-    dataset_name = 'Nilotinib-AS, 50X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
+    dataset_name = 'Nilotinib-P, 50X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
     input_path = './raman_data/'  # path to import input noisy data
     output_path = './raman_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
@@ -134,73 +133,11 @@ def main():
     calibration_values, data_cube = read_measurement_csv(input_path, dataset_name)
     hsnt_data = data_cube / calibration_values[None, None, :]
     # mj.slice_viewer(hsnt_data)
-    num_bins = hsnt_data.shape[2]
-    hsnt_flat = hsnt_data.reshape((-1, num_bins))
-    hsnt_mean = np.mean(hsnt_flat, axis=0)
-    hsnt_centered = hsnt_flat - hsnt_mean
-    u, s, vh = np.linalg.svd(hsnt_centered, full_matrices=False)
 
+    # Start HSNT
     # Define the components to use and determine the range
     ind_sets = [[0], [1, 2], [3, 4, 5]]
     unique_inds = np.unique(np.concatenate(ind_sets))
-    # Compute symmetric y-limits across selected components
-    ymax = 0.0
-    for k in unique_inds:
-        comp = vh[k] * (-1) ** (k + 1)
-        ymax = max(ymax, np.max(np.abs(comp)))
-
-    # Add a small margin so curves don't touch the border
-    ymax *= 1.05
-
-    # Show PCA components and images obtained using the specified subset of components
-    plt.figure()
-    plt.plot(hsnt_mean)
-    plt.title('Mean spectrum')
-    for inds in ind_sets:
-        recon_svd = u[:, inds] @ (s[inds, None] * vh[inds])
-        nrmse = np.linalg.norm(recon_svd - hsnt_centered) / np.linalg.norm(hsnt_centered)
-        pct_explained = 1 - nrmse**2
-        recon_svd += hsnt_mean
-        recon_svd = recon_svd.reshape(hsnt_data.shape)
-        print('Pct variance for PCA recon with inds = {}: {}'.format(inds, pct_explained))
-
-        # Create a false-color image using the specified components of the PCA as the RGB channels
-        image = s[inds, None] * vh[inds] @ hsnt_centered.T
-        image_flat = image.T
-        image = image_flat.reshape(hsnt_data.shape[:2] + (image_flat.shape[1],))
-        # Fill in an extra channel if needed
-        if image.shape[2] == 2:
-            image = np.stack([image[:, :, 0], image[:, :, 1], 0*(image[:, :, 0] + image[:, :, 1])/2], axis=2)
-        # Normalize by 2 and 98 percentile
-        image2 = np.percentile(image, 2)
-        image98 = np.percentile(image, 98)
-        image = (image - image2) / (image98 - image2)
-        image = np.clip(image, 0, 1)
-
-        # Plot the false color image next to the plot of the PCA components
-        fig, (ax_img, ax_plot) = plt.subplots(nrows=1, ncols=2, figsize=(12, 5))
-
-        # Left: image
-        ax_img.imshow(image)
-        ax_img.set_title(
-            f"PCA: ({dataset_name})\n"
-            f"Component(s) {inds} explain {100 * pct_explained:.4g}% of variance"
-        )
-        ax_img.axis("off")
-
-        # Right: PCA components
-        for k in inds:
-            ax_plot.plot(vh[k] * (-1) ** (k + 1))
-
-        ax_plot.set_ylim(-ymax, ymax)
-        ax_plot.set_title(f"PCA components {inds}")
-        ax_plot.set_xlabel("Index")
-        ax_plot.set_ylabel("Amplitude")
-
-        plt.tight_layout()
-
-    # Start HSNT
-    # Denoiser parameters
     subspace_dimension = np.amax(unique_inds) + 1  # Subspace dimension
     loss_type = 'frobenius' # 'kullback-leibler'  # 'frobenius'
 
@@ -219,15 +156,19 @@ def main():
     hsnt_dehydrated = dehydrate(hsnt_data, beta_loss=loss_type, dataset_type=dataset_type,
                                 subspace_dimension=subspace_dimension, verbose=verbose)
 
+    # Set up for plotting
+    nrows = len(ind_sets)
+    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(12, 5*nrows))
+    fig.suptitle(f"NNMF: ({dataset_name})\n")
+
     hsnt_spectra = hsnt_dehydrated[1]
     hsnt_image_per_component = hsnt_dehydrated[0]
     cum_inds = []
-    for inds in ind_sets:
+    for j, inds in enumerate(ind_sets):
         cum_inds = cum_inds + inds
         hsnt_denoised = hsnt_image_per_component[:, :, cum_inds] @ hsnt_spectra[cum_inds]
         nrmse = np.linalg.norm(hsnt_denoised - hsnt_data)**2 / np.linalg.norm(hsnt_data)**2
         print('NRMSE for NNMF for inds = {}: {:.4g}%'.format(cum_inds, 100 * nrmse))
-        fig, (ax_img, ax_plot) = plt.subplots(nrows=1, ncols=2, figsize=(12, 5))
 
         # Fill in an extra channel if needed
         image = hsnt_image_per_component[:, :, inds]
@@ -239,10 +180,10 @@ def main():
         image = (image - image2) / (image98 - image2)
         image = np.clip(image, 0, 1)
 
+        ax_img, ax_plot = axes[j]
         # Left: image
         ax_img.imshow(image)
         ax_img.set_title(
-            f"NNMF: ({dataset_name})\n"
             f"Image using component(s) {inds} only"
         )
         ax_img.axis("off")
