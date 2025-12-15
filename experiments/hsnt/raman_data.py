@@ -147,7 +147,7 @@ def main():
     np.random.seed(129)
 
     # Import real hyperspectral data
-    dataset_type = 'attenuation'
+    dataset_type = 'transmission'
 
     if verbose >= 1:
         print("Hyperspectral data shape: ", hsnt_data.shape)
@@ -180,7 +180,10 @@ def main():
         image = (image - image2) / (image98 - image2)
         image = np.clip(image, 0, 1)
 
-        ax_img, ax_plot = axes[j]
+        if len(ind_sets) > 1:
+            ax_img, ax_plot = axes[j]
+        else:
+            ax_img, ax_plot = axes
         # Left: image
         ax_img.imshow(image)
         ax_img.set_title(
