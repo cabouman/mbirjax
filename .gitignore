@@ -34,6 +34,13 @@ tests_data_dependent/data/*
 *.zip
 *.xrm
 *.txrm
+.npy
+.csv
+.docx
+.xlsx
+.pptx
+.ppt
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
