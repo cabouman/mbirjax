@@ -119,7 +119,7 @@ def read_measurement_csv(
     return calibration_values, data_cube
 
 
-def run_pca(hsnt_data, dataset_name):
+def run_pca(hsnt_data, dataset_name, ind_sets):
     num_bins = hsnt_data.shape[2]
     hsnt_flat = hsnt_data.reshape((-1, num_bins))
     hsnt_mean = np.mean(hsnt_flat, axis=0)
@@ -127,7 +127,6 @@ def run_pca(hsnt_data, dataset_name):
     u, s, vh = np.linalg.svd(hsnt_centered, full_matrices=False)
     # Compute symmetric y-limits across selected components
     ymax = 0.0    # Define the components to use and determine the range
-    ind_sets = [[0], [1, 2], [3, 4, 5]]
     unique_inds = np.unique(np.concatenate(ind_sets))
     for k in unique_inds:
         comp = vh[k] * (-1) ** (k + 1)
@@ -202,15 +201,17 @@ def main():
     output_path = './raman_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
+    ind_sets = [[0], [1, 2], [3, 4, 5]]
+
     # Load the data and do PCA
     calibration_values, data_cube = read_measurement_csv(input_path, dataset_name)
     hsnt_data = data_cube / calibration_values[None, None, :]
-    # mj.slice_viewer(hsnt_data)
-    run_pca(hsnt_data, dataset_name)
+    # mj.slice_viewer(hsnt_data / hsnt_data[:, :, 0:1], cmap='hsv')
+
+    run_pca(hsnt_data, dataset_name, ind_sets)
 
     # Start HSNT
     # Define the components to use and determine the range
-    ind_sets = [[0], [1, 2], [3, 4, 5]]
     unique_inds = np.unique(np.concatenate(ind_sets))
     subspace_dimension = np.amax(unique_inds) + 1  # Subspace dimension
     loss_type = 'frobenius' # 'kullback-leibler'  # 'frobenius'
