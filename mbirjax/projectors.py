@@ -88,7 +88,7 @@ class Projectors:
             return summed_output
 
         @partial(jax.jit, static_argnames=('views_per_batch', 'use_vmap_views'))
-        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=(), views_per_batch=None, use_vmap_views=False):
+        def sparse_forward_project_pixel_batch_v1(voxel_values, pixel_indices, view_indices=(), views_per_batch=None, use_vmap_views=True):
             """
             Compute the sinogram obtained by forward projecting the specified batch of voxels. The voxels
             are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
@@ -131,6 +131,39 @@ class Projectors:
             sinogram = concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array, views_per_batch)
 
             return sinogram
+
+        @partial(jax.jit, static_argnames=('views_per_batch',))
+        def sparse_forward_project_pixel_batch(voxel_values, pixel_indices, view_indices=(), views_per_batch=16):
+            """
+            Compute the sinogram obtained by forward projecting the specified batch of voxels. The voxels
+            are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
+            and for each such 2D index, the voxels in all slices at that location are projected.
+
+            This version maps over views using `jax.lax.map` with optional internal microbatching via the
+            `batch_size` keyword.  It does not use `concatenate_function_in_batches`.
+
+            Args:
+                voxel_values: 2D array of shape (len(pixel_indices), num_slices) of voxel values
+                pixel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
+                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
+                    If None or empty, then all views are used.
+                views_per_batch (int or None, optional): Maximum number of views to process per internal microbatch
+                    when mapping over views using `jax.lax.map(..., batch_size=views_per_batch)`.
+
+            Returns:
+                3D array of shape (num_views, num_det_rows, num_det_cols)
+            """
+            cur_view_params_array = view_params_array
+            if len(view_indices) > 0:
+                cur_view_params_array = view_params_array[view_indices]
+
+            def forward_project_single_view(single_view_params):
+                # Use closure to define a mappable function that operates on a single view with the given voxel values.
+                return forward_project_pixel_batch_to_one_view(
+                    voxel_values, pixel_indices, single_view_params, projector_params
+                )
+
+            return jax.lax.map(forward_project_single_view, cur_view_params_array, batch_size=views_per_batch)
 
         def sparse_back_project_fcn(sinogram, pixel_indices, coeff_power=1, view_indices=()):
             """
