@@ -57,6 +57,8 @@ class Projectors:
         view_params_array = self.tomography_model.get_params(view_params_name)
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
         views_per_vmap = self.tomography_model.view_batch_size_for_vmap
+        micro_batch_factor = 1
+        views_per_microbatch = views_per_vmap // micro_batch_factor
 
         def sparse_forward_project_fcn(voxel_values, pixel_indices, view_indices=()):
             """
@@ -118,7 +120,7 @@ class Projectors:
                     voxel_values, pixel_indices, single_view_params, projector_params
                 )
 
-            return jax.lax.map(forward_project_single_view, cur_view_params_array, batch_size=views_per_batch)
+            return jax.lax.map(forward_project_single_view, cur_view_params_array, batch_size=views_per_microbatch)
 
         def sparse_back_project_fcn(sinogram, pixel_indices, coeff_power=1, view_indices=()):
             """
@@ -158,47 +160,6 @@ class Projectors:
             return summed_output
 
         @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
-        def sparse_back_project_view_batch_v1(view_batch, view_params_batch, pixel_indices, coeff_power=1,
-                                           pixels_per_batch=None):
-            """
-            This function creates batches of pixels and collects the results to form the full sinogram.
-            Also, since the geometry-specific projectors map between a batch of voxel cylinders and a single view,
-            we need to map over views and add the results to get the correct back projection for each voxel.
-
-            Args:
-                view_batch (ndarray or jax array): 3D array of shape (cur_num_views, num_det_rows, num_det_cols)
-                view_params_batch (jax array): 1D or 2D array of parameters, view_params_batch[i] describes view_batch[i]
-                pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape
-                (num_recon_rows, num_recon_cols)
-                coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
-                    Normally 1, but should be 2 when computing Hessian diagonal.
-
-            Returns:
-                jax array of size (pixel_indices.shape[0], num_recon_slices)
-            """
-            def back_project_pixel_batch(pixel_indices_batch):
-                """
-                Apply back_project_one_view_to_pixel_batch to each pixel batch and each view
-                Add over the views and concatenate over the pixels.
-
-                Args:
-                    pixel_indices_batch:
-
-                Returns:
-                    jax array of size (pixel_indices.shape[0], num_recon_slices)
-                """
-                #
-                bp_vmap = jax.vmap(back_project_one_view_to_pixel_batch, in_axes=(0, None, 0, None, None))
-                per_view_voxel_values_batch = bp_vmap(view_batch, pixel_indices_batch, view_params_batch,
-                                                      projector_params, coeff_power)
-
-                voxel_values_batch = jnp.sum(per_view_voxel_values_batch, axis=0)
-                return voxel_values_batch
-
-            new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixels_per_batch)
-            return new_voxel_values
-
-        @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
         def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power=1,
                                            pixels_per_batch=None):
             """
@@ -227,16 +188,8 @@ class Projectors:
                 Backproject all views in `view_batch` to a batch of voxel cylinders, summing over views, and return
                 array of shape (len(pixel_indices_batch), num_recon_slices).
                 """
-
-                # Define per-view backproject for this pixel batch.
-                def back_project_one_view(view_and_params):
-                    single_view, single_view_params = view_and_params
-                    return back_project_one_view_to_pixel_batch(
-                        single_view, pixel_indices_batch, single_view_params, projector_params, coeff_power
-                    )
-
                 # Microbatch size over views (closure variable).
-                vmb = views_per_vmap
+                vmb = views_per_microbatch
                 num_views = view_batch.shape[0]
                 vmb = num_views if vmb is None else vmb  # treat None as "all views"
 
