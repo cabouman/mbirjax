@@ -1368,6 +1368,92 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
+        def vcd_subset_updater_v2(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times):
+            """
+            VCD subset updater (v2): uses an approximate alpha that avoids computing forward_linear/forward_quadratic
+            from a full delta_sinogram. Assumes positivity is disabled.
+
+            Changes vs v1:
+              - forward_linear computed exactly in recon space:
+                    forward_linear = -sum(forward_grad * delta_recon_at_indices)
+              - forward_quadratic approximated using diagonal surrogate:
+                    forward_quadratic_approx = sum(forward_hess * delta_recon_at_indices**2)
+              - one forward projection per subset (of the *scaled* delta) to update error_sinogram
+            """
+            assert positivity_flag is False, "vcd_subset_updater_v2 assumes positivity_flag is False."
+
+            # ---- Prior terms (grad/hess) on main_device ----
+            if prox_input is None:
+                with jax.default_device(self.main_device):
+                    if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+                        prior_grad, prior_hess = mj.qggmrf_gradient_and_hessian_at_indices_transfer(
+                            flat_recon, recon_shape, pixel_indices, qggmrf_params, self.main_device, self.worker
+                        )
+                    else:
+                        prior_grad, prior_hess = mj.qggmrf_gradient_and_hessian_at_indices(
+                            flat_recon, recon_shape, pixel_indices, qggmrf_params
+                        )
+            else:
+                prior_hess = 1 / (sigma_prox ** 2)
+                prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+
+            # ---- Weighted error sinogram on sinogram_device ----
+            if not const_weights:
+                weighted_error_sinogram = weights * error_sinogram
+            else:
+                weighted_error_sinogram = error_sinogram
+
+            # ---- Forward-model gradient on main_device ----
+            forward_grad = -fm_constant * sparse_back_project(
+                weighted_error_sinogram, pixel_indices_worker, output_device=self.main_device
+            )
+
+            # ---- Forward-model diagonal Hessian (subset) on main_device ----
+            forward_hess = fm_constant * fm_hessian[pixel_indices]
+
+            # ---- Compute recon-domain update direction (subset) on main_device ----
+            delta_recon_at_indices = -((forward_grad + prior_grad) / (forward_hess + prior_hess))
+
+            # ---- Prior linear / quadratic surrogate terms ----
+            prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
+
+            prior_overrelaxation_factor = 2.0
+            prior_quadratic_approx = (1.0 / prior_overrelaxation_factor) * jnp.sum(
+                prior_hess * (delta_recon_at_indices ** 2)
+            )
+
+            # ---- Forward linear (exact, recon space) ----
+            # forward_linear = fm_constant * <W e, A delta> = - <forward_grad, delta>
+            forward_linear = -jnp.sum(forward_grad * delta_recon_at_indices)
+
+            # ---- Forward quadratic (approx, diagonal surrogate) ----
+            num_subsets = np.pi / 4 * int(flat_recon.shape[0]) / int(delta_recon_at_indices.shape[0])
+            eta = 1.1 if num_subsets > 64 else 5 if num_subsets > 16 else 20 if num_subsets > 4 else 100
+            forward_quadratic_approx = jnp.sum(forward_hess * (delta_recon_at_indices ** 2)) * eta
+            # ---- Compute approximate optimal step size alpha ----
+            alpha_numerator = forward_linear - prior_linear
+            alpha_denominator = forward_quadratic_approx + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
+            alpha = alpha_numerator / alpha_denominator
+            alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, self.max_over_relaxation)
+
+            # ---- Apply scaled update to recon on main_device ----
+            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+            delta_recon_at_indices = alpha * delta_recon_at_indices
+            flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
+
+            # ---- One forward projection (scaled delta) to update error_sinogram on sinogram_device ----
+            delta_sinogram_scaled = sparse_forward_project(
+                delta_recon_at_indices, pixel_indices_worker, output_device=self.sinogram_device
+            )
+            error_sinogram = error_sinogram - delta_sinogram_scaled
+
+            # ---- Stats ----
+            ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
+            alpha_for_subset = alpha
+
+            time_names = []
+            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
+
         def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
@@ -1487,9 +1573,13 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('forlqu')
             # time_start = time.time()
-            forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
-                                                                          weights, fm_constant, const_weights,
-                                                                          output_device=self.main_device)
+            # ---- Forward linear (exact, recon space) ----
+            # Original formulation:
+            # forward_linear = fm_constant * <weighted_error_sinogram, delta_sinogram>
+            # Using the adjoint property and previous definitions gives
+            # forward_linear = - <forward_grad, delta_recon_at_indices>
+            forward_linear = -jnp.sum(forward_grad * delta_recon_at_indices)
+            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
             # Compute optimal update step
             alpha_numerator = forward_linear - prior_linear
