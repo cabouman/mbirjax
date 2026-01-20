@@ -56,7 +56,7 @@ class Projectors:
         view_params_name = self.tomography_model.get_params('view_params_name')
         view_params_array = self.tomography_model.get_params(view_params_name)
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
-        view_batch_size = self.tomography_model.view_batch_size_for_vmap
+        views_per_vmap = self.tomography_model.view_batch_size_for_vmap
 
         def sparse_forward_project_fcn(voxel_values, pixel_indices, view_indices=()):
             """
@@ -81,7 +81,7 @@ class Projectors:
 
             def forward_project_pixel_batch_wrapper(local_values, local_pix_indices):
                 return sparse_forward_project_pixel_batch(local_values, local_pix_indices, view_indices,
-                                                          view_batch_size)
+                                                          views_per_vmap)
 
             summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
                                                     pixel_batch_size)
@@ -148,19 +148,17 @@ class Projectors:
             if len(view_indices) > 0:
                 cur_view_params_array = view_params_array[view_indices]
 
-            batch_size = view_batch_size
-
             def back_project_view_batch_helper(local_view_batch, local_view_params_batch, local_pixel_indices):
                 return sparse_back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices,
                                                       coeff_power, pixels_per_batch=pixel_batch_size)
 
             data_to_batch = (sinogram, cur_view_params_array)  # Apply ensure_tuple
-            summed_output = sum_function_in_batches(back_project_view_batch_helper, data_to_batch, batch_size,
+            summed_output = sum_function_in_batches(back_project_view_batch_helper, data_to_batch, views_per_vmap,
                                                     pixel_indices)
             return summed_output
 
         @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
-        def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power=1,
+        def sparse_back_project_view_batch_v1(view_batch, view_params_batch, pixel_indices, coeff_power=1,
                                            pixels_per_batch=None):
             """
             This function creates batches of pixels and collects the results to form the full sinogram.
@@ -200,6 +198,83 @@ class Projectors:
             new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixels_per_batch)
             return new_voxel_values
 
+        @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
+        def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power=1,
+                                           pixels_per_batch=None):
+            """
+            Backproject a batch of views to the specified voxel cylinders (pixel_indices), summing over views.
+
+            This version avoids materializing the large intermediate
+                (num_views_in_batch, num_pixels_in_pixel_batch, num_recon_slices)
+            by processing views in microbatches of size `views_per_vmap` (from the outer closure), using `vmap`
+            within each microbatch and accumulating (summing) into the output.
+
+            Args:
+                view_batch (ndarray or jax array): 3D array of shape (cur_num_views, num_det_rows, num_det_cols)
+                view_params_batch (jax array): 1D or 2D array of parameters, view_params_batch[i] describes view_batch[i]
+                pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape
+                    (num_recon_rows, num_recon_cols)
+                coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
+                    Normally 1, but should be 2 when computing Hessian diagonal.
+                pixels_per_batch (int or None): max number of pixels to process at once.
+
+            Returns:
+                jax array of shape (pixel_indices.shape[0], num_recon_slices)
+            """
+
+            def back_project_pixel_batch(pixel_indices_batch):
+                """
+                Backproject all views in `view_batch` to a batch of voxel cylinders, summing over views, and return
+                array of shape (len(pixel_indices_batch), num_recon_slices).
+                """
+
+                # Define per-view backproject for this pixel batch.
+                def back_project_one_view(view_and_params):
+                    single_view, single_view_params = view_and_params
+                    return back_project_one_view_to_pixel_batch(
+                        single_view, pixel_indices_batch, single_view_params, projector_params, coeff_power
+                    )
+
+                # Microbatch size over views (closure variable).
+                vmb = views_per_vmap
+                num_views = view_batch.shape[0]
+                vmb = num_views if vmb is None else vmb  # treat None as "all views"
+
+                # Helper that processes a microbatch using vmap for speed, then sums over views.
+                def process_microbatch(v_batch, p_batch):
+                    bp_vmap = jax.vmap(back_project_one_view_to_pixel_batch, in_axes=(0, None, 0, None, None))
+                    per_view = bp_vmap(v_batch, pixel_indices_batch, p_batch, projector_params, coeff_power)
+                    return jnp.sum(per_view, axis=0)
+
+                # Initial microbatch is either full vmb or the remainder if not divisible.
+                num_remaining = num_views % vmb
+                initial_vmb = vmb if num_remaining == 0 else num_remaining
+
+                acc = process_microbatch(view_batch[:initial_vmb], view_params_batch[:initial_vmb])
+
+                # Process remaining full microbatches using scan.
+                if initial_vmb < num_views:
+                    remaining_views = view_batch[initial_vmb:]
+                    remaining_params = view_params_batch[initial_vmb:]
+
+                    num_full = (num_views - initial_vmb) // vmb
+
+                    # Reshape into (num_full, vmb, ...)
+                    v_batched = jnp.reshape(remaining_views, (num_full, vmb) + remaining_views.shape[1:])
+                    p_batched = jnp.reshape(remaining_params, (num_full, vmb) + remaining_params.shape[1:])
+
+                    def add_one_microbatch(cur_acc, microbatch):
+                        v_mb, p_mb = microbatch
+                        cur_acc = cur_acc + process_microbatch(v_mb, p_mb)
+                        return cur_acc, None
+
+                    acc, _ = jax.lax.scan(add_one_microbatch, acc, (v_batched, p_batched))
+
+                return acc
+
+            new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices,
+                                                               pixels_per_batch)
+            return new_voxel_values
         # Set the compiled projectors
         projector_functions = (jax.jit(sparse_forward_project_fcn),
                                jax.jit(sparse_back_project_fcn, static_argnames='coeff_power'))
