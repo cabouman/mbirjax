@@ -127,11 +127,11 @@ def load_scans_and_params(dataset_dir, verbose=1):
     _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
 
     # source to iso distance
-    source_iso_dist = Zeiss_params["source_iso_dist"]
+    source_iso_dist = Zeiss_params["source_iso_dist"][0]
     source_iso_dist = float(np.abs(source_iso_dist))
 
     # iso to detector distance
-    iso_det_dist = Zeiss_params["iso_det_dist"]
+    iso_det_dist = Zeiss_params["iso_det_dist"][0]
     iso_det_dist = float(np.abs(iso_det_dist))
 
     # detector pixel pitch
