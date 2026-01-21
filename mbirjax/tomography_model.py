@@ -1314,8 +1314,8 @@ class TomographyModel(ParameterHandler):
         # Optional adaptive safety factor for v2-style updaters.
         # If the updater returns an extra scalar `eta_obs`, we update `eta_state` here.
         eta_state = 100.0
-        eta_safety = 1.2
-        eta_beta = 0.1
+        eta_safety = 1.1
+        eta_beta = 0.3
         eta_min = 1.0
         eta_max = 1.0e4
 
