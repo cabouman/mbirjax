@@ -57,7 +57,7 @@ _reconstruction_defaults_dict = {
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
-    'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'projections', 'none'
+    'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
 }
 
 # These headings should match the dictionaries

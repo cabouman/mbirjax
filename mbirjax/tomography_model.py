@@ -124,7 +124,7 @@ class TomographyModel(ParameterHandler):
         or for the entire reconstruction, or nothing.
 
         This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
-        'automatic', 'full', 'sinograms', 'projections', 'none'
+        'automatic', 'full', 'sinograms', 'none'
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
@@ -222,15 +222,15 @@ class TomographyModel(ParameterHandler):
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
-            self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
+        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'sinograms']):
+            self.main_device, self.sinogram_device = gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
             mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
 
         # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none', 'projections']):
-            self.main_device, self.sinogram_device, self.worker = cpus[0], gpus[0], gpus[0]
+        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none']):
+            self.main_device, self.sinogram_device = cpus[0], gpus[0]
             self.use_gpu = 'sinograms'
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
             projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
@@ -245,32 +245,22 @@ class TomographyModel(ParameterHandler):
                                        mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
             mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
-        # 'projections': Only projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'projections' or (mem_per_projection / 16 < gpu_memory_to_use and use_gpu not in ['none']):
-            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], gpus[0]
-            self.use_gpu = 'projections'
-            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch
-            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
-            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
-            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
-
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-
-            mem_required_for_gpu = mem_per_projection
-            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + sino_reps_for_vcd * mem_per_sinogram
+        # 'projections': Only projections on GPU.  No longer supported.
+        elif use_gpu == 'projections':
+            raise ValueError("use_gpu == 'projections' is no longer supported.")
 
         # 'none': All on CPU
         else:
             if gpu_memory > 0:
                 warnings.warn('MBIRJAX is installed with cuda, but there is not enough GPU memory to use cuda. This may lead to a fatal error.')
 
-            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], cpus[0]
+            self.main_device, self.sinogram_device = cpus[0], cpus[0]
             self.use_gpu = 'none'
 
             mem_required_for_gpu = 0
             mem_required_for_cpu = mem_for_all_vcd
+
+        self.worker = self.sinogram_device
 
         if cpu_memory < mem_required_for_cpu:
             warnings.warn('CPU memory may be insufficient for this problem.  This may lead to a fatal error.')
@@ -741,12 +731,11 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'sinograms', 'projections', 'none']:
+        if use_gpu not in ['automatic', 'full', 'sinograms', 'none']:
             error_message = "use_gpu must be one of \n"
             error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
             error_message += " 'full' (use gpu for all calculations),\n"
             error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
-            error_message += " 'projections' (use gpu for projections only),\n"
             error_message += " 'none' (do not use gpu at all)."
             raise ValueError(error_message)
 
@@ -1034,7 +1023,7 @@ class TomographyModel(ParameterHandler):
                 if self.use_gpu == 'full':
                     self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
                 elif self.use_gpu == 'sinograms':
-                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
+                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='none') before calling recon")
         else:
             self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
 
