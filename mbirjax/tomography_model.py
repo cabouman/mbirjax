@@ -1311,12 +1311,46 @@ class TomographyModel(ParameterHandler):
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
         partition_worker = jax.device_put(partition, self.worker)
+        # Optional adaptive safety factor for v2-style updaters.
+        # If the updater returns an extra scalar `eta_obs`, we update `eta_state` here.
+        eta_state = 100.0
+        eta_safety = 1.2
+        eta_beta = 0.1
+        eta_min = 1.0
+        eta_max = 1.0e4
+
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
-            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(flat_recon,
-                                                                                                       error_sinogram,
-                                                                                                       subset, subset_worker, times)
+
+            result = vcd_subset_updater(
+                flat_recon,
+                error_sinogram,
+                subset,
+                subset_worker,
+                times,
+                eta_state,
+            )
+
+            if len(result) == 6:
+                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = result
+            elif len(result) == 7:
+                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs = result
+
+                # Update eta_state: increase quickly if needed; decrease slowly otherwise.
+                try:
+                    eta_obs_val = float(eta_obs)
+                except TypeError:
+                    eta_obs_val = float(jax.device_get(eta_obs))
+
+                eta_target = max(eta_min, min(eta_max, eta_safety * eta_obs_val))
+                if eta_target > eta_state:
+                    eta_state = eta_target
+                else:
+                    eta_state = (1.0 - eta_beta) * eta_state + eta_beta * eta_target
+            else:
+                raise ValueError(f"vcd_subset_updater returned unexpected tuple length {len(result)}")
+
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
         # # Debug code to go with timing info in vcd_subset_updater
@@ -1368,7 +1402,7 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
-        def vcd_subset_updater_v2(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times):
+        def vcd_subset_updater_v2(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
             """
             VCD subset updater (v2): uses an approximate alpha that avoids computing forward_linear/forward_quadratic
             from a full delta_sinogram. Assumes positivity is disabled.
@@ -1427,9 +1461,10 @@ class TomographyModel(ParameterHandler):
             forward_linear = -jnp.sum(forward_grad * delta_recon_at_indices)
 
             # ---- Forward quadratic (approx, diagonal surrogate) ----
-            num_subsets = np.pi / 4 * int(flat_recon.shape[0]) / int(delta_recon_at_indices.shape[0])
-            eta = 1.1 if num_subsets > 64 else 5 if num_subsets > 16 else 20 if num_subsets > 4 else 100
-            forward_quadratic_approx = jnp.sum(forward_hess * (delta_recon_at_indices ** 2)) * eta
+            # Use an adaptive safety factor `eta_state` supplied by the Python partition loop.
+            quad_diag = jnp.sum(forward_hess * (delta_recon_at_indices ** 2))
+            eta = jnp.asarray(eta_state, dtype=quad_diag.dtype)
+            forward_quadratic_approx = quad_diag * eta
             # ---- Compute approximate optimal step size alpha ----
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic_approx + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
@@ -1447,14 +1482,24 @@ class TomographyModel(ParameterHandler):
             )
             error_sinogram = error_sinogram - delta_sinogram_scaled
 
+            # Estimate eta_obs = quad_true / quad_diag using the scaled projection.
+            # quad_true_scaled = fm_constant * sum( (A(alpha*delta))^2 * weights ) = alpha^2 * quad_true
+            eps32 = jnp.finfo(jnp.float32).eps
+            if not const_weights:
+                quad_true_scaled = fm_constant * jnp.sum((delta_sinogram_scaled ** 2) * weights)
+            else:
+                quad_true_scaled = fm_constant * jnp.sum(delta_sinogram_scaled ** 2)
+            quad_true = quad_true_scaled / (alpha * alpha + eps32)
+            eta_obs = quad_true / (quad_diag + eps32)
+
             # ---- Stats ----
             ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
             alpha_for_subset = alpha
 
             time_names = []
-            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
+            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -1659,7 +1704,7 @@ class TomographyModel(ParameterHandler):
 
             return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
 
-        return vcd_subset_updater
+        return vcd_subset_updater_v2
 
     def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
                              output_device=None):
