@@ -164,7 +164,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     Args:
         sino (numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
-        background_offset (optional, float): background offset subtracted from sinogram data before correction.
+        background_offset (np.ndarray): per-view offsets with shape (num_views,)
         batch_size (int): Number of views to process in each batch to avoid memory overload.
 
     Returns:
@@ -175,13 +175,18 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     import dm_pix
     import tqdm
     num_views = sino.shape[0]  # Total number of views
+    if background_offset.shape != (num_views,):
+        raise ValueError(f"background_offset must have shape (num_views,), got {background_offset.shape}")
+
     sino_batches_list = []  # Initialize a list to store sinogram batches
 
     # Process in batches with looping and progress printing
     for i in tqdm.tqdm(range(0, num_views, batch_size)):
 
         # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)]) - background_offset
+        j = min(i + batch_size, num_views)
+
+        sino_batch = jnp.array(sino[i:j]) - jnp.array(background_offset[i:j])[:, None, None]
 
         # Apply the rotation on this batch
         sino_batch = sino_batch.transpose(1, 2, 0)
@@ -198,27 +203,32 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
 
 def estimate_background_offset(sino, edge_width=9):
     """
-    Estimate background offset of a sinogram using JAX for GPU acceleration.
+    Estimate per-view background offset of a sinogram using JAX for GPU acceleration.
 
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
         edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
 
     Returns:
-        offset (float): Background offset value.
+        offset (np.ndarray): shape (num_views,)
     """
 
     if edge_width < 1:
         edge_width = 1
         warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
 
-    _, _, num_det_channels = sino.shape
+    num_views, num_det_rows, num_det_channels = sino.shape
 
-    # Extract edge regions from the sinogram (top, left, right)
-    sino_edge_left = sino[:, :, :edge_width].flatten()
-    sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
-    sino_edge_top = sino[:, :edge_width, :].flatten()
-    offset = np.median(np.concatenate((sino_edge_left, sino_edge_right, sino_edge_top)))
+    # For each view, collect edges:
+    # left edge:  (V, R, W)
+    # right edge: (V, R, W)
+    # top edge:   (V, W, C)
+    left  = sino[:, :, :edge_width].reshape(num_views, -1)
+    right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
+    top   = sino[:, :edge_width, :].reshape(num_views, -1)
+
+    edges = np.concatenate((left, right, top), axis=1)  # (V, total_edge_pixels)
+    offset = np.median(edges, axis=1)                          # (V,)
 
     return offset
 
