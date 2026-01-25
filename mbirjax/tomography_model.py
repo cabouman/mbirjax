@@ -1165,12 +1165,13 @@ class TomographyModel(ParameterHandler):
         else:
             alpha = 1
 
-        error_sinogram = sinogram - alpha * error_sinogram
+        weighted_error_sinogram = weights * (sinogram - alpha * error_sinogram)
+        del error_sinogram
         init_recon = alpha * init_recon
 
         recon = init_recon
         recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
-        error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
+        weighted_error_sinogram = jax.device_put(weighted_error_sinogram, self.sinogram_device)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -1227,15 +1228,15 @@ class TomographyModel(ParameterHandler):
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(vcd_subset_updater,
+            flat_recon, weighted_error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(vcd_subset_updater,
                                                                                                  flat_recon,
-                                                                                                 error_sinogram,
+                                                                                                 weighted_error_sinogram,
                                                                                                  partition)
 
             # Compute the stats and display as desired
-            fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights)
+            fm_rmse[i] = self.get_forward_model_loss(weighted_error_sinogram, sigma_y, weights)
             nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_recon))
-            es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
+            wes_rmse = jnp.linalg.norm(weighted_error_sinogram) / jnp.sqrt(float(weighted_error_sinogram.size))
             alpha_values[i] = alpha
 
             if verbose >= 1:
@@ -1256,7 +1257,7 @@ class TomographyModel(ParameterHandler):
                     iter_output += ', Prior loss={:.4f}, Weighted total loss={:.4f}'.format(pm_loss[i], total_loss)
 
                 self.logger.info(iter_output)
-                self.logger.info(f'Relative step size (alpha)={alpha:.2f}, Error sino RMSE={es_rmse:.4f}')
+                self.logger.info(f'Relative step size (alpha)={alpha:.2f}, Wtd error sino RMSE={wes_rmse:.4f}')
                 self.logger.info('Number subsets = {}'.format(partition.shape[0]))
                 if verbose >= 2:
                     output = io.StringIO()
@@ -1271,21 +1272,21 @@ class TomographyModel(ParameterHandler):
         return self.reshape_recon(flat_recon), (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
                                                 alpha_values[0:num_iters])
 
-    def vcd_partition_iterator(self, vcd_subset_updater, flat_recon, error_sinogram, partition):
+    def vcd_partition_iterator(self, vcd_subset_updater, flat_recon, weighted_error_sinogram, partition):
         """
         Calculate a full iteration of the VCD algorithm by scanning over the subsets of the partition.
         Each iteration of the algorithm should return a better reconstructed recon.
-        The error_sinogram should always be:  error_sinogram = measured_sinogram - forward_proj(recon)
+        The weighted_error_sinogram should always be:  weighted_error_sinogram = weights * (measured_sinogram - forward_proj(recon))
         where measured_sinogram is the measured sinogram and recon is the current reconstruction.
 
         Args:
             vcd_subset_updater (callable): Function to iterate over each subset in the partition.
             flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-            error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+            weighted_error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
             partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
 
         Returns:
-            (flat_recon, error_sinogram, ell1_for_partition, alpha): The first two have the same shape as above, but
+            (flat_recon, weighted_error_sinogram, ell1_for_partition, alpha): The first two have the same shape as above, but
             are updated to reduce overall loss function.
             The ell1_for_partition includes the changes from all subsets of this partition.
             alpha is the relative step size in the gradient descent step, averaged over the subsets
@@ -1314,7 +1315,7 @@ class TomographyModel(ParameterHandler):
 
             result = vcd_subset_updater(
                 flat_recon,
-                error_sinogram,
+                weighted_error_sinogram,
                 subset,
                 subset_worker,
                 times,
@@ -1322,9 +1323,9 @@ class TomographyModel(ParameterHandler):
             )
 
             if len(result) == 6:
-                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = result
+                flat_recon, weighted_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = result
             elif len(result) == 7:
-                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs = result
+                flat_recon, weighted_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs = result
 
                 # Update eta_state: increase quickly if needed; decrease slowly otherwise.
                 try:
@@ -1356,7 +1357,7 @@ class TomographyModel(ParameterHandler):
         # print(formatted_times)
         # # End debug code
 
-        return flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0]
+        return flat_recon, weighted_error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0]
 
     def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
@@ -1368,7 +1369,7 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
-            (callable) vcd_subset_updater(error_sinogram, flat_recon, pixel_indices) that updates the recon.
+            (callable) vcd_subset_updater(weighted_error_sinogram, flat_recon, pixel_indices) that updates the recon.
         """
 
         positivity_flag = self.get_params('positivity_flag')
@@ -1391,7 +1392,7 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
-        def vcd_subset_updater_v2(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
+        def vcd_subset_updater_v2(flat_recon, weighted_error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
             """
             VCD subset updater (v2): uses an approximate alpha that avoids computing forward_linear/forward_quadratic
             from a full delta_sinogram. Assumes positivity is disabled.
@@ -1401,7 +1402,7 @@ class TomographyModel(ParameterHandler):
                     forward_linear = -sum(forward_grad * delta_recon_at_indices)
               - forward_quadratic approximated using diagonal surrogate:
                     forward_quadratic_approx = sum(forward_hess * delta_recon_at_indices**2)
-              - one forward projection per subset (of the *scaled* delta) to update error_sinogram
+              - one forward projection per subset (of the *scaled* delta) to update weighted_error_sinogram
             """
             assert positivity_flag is False, "vcd_subset_updater_v2 assumes positivity_flag is False."
 
@@ -1419,12 +1420,6 @@ class TomographyModel(ParameterHandler):
             else:
                 prior_hess = 1 / (sigma_prox ** 2)
                 prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
-
-            # ---- Weighted error sinogram on sinogram_device ----
-            if not const_weights:
-                weighted_error_sinogram = weights * error_sinogram
-            else:
-                weighted_error_sinogram = error_sinogram
 
             # ---- Forward-model gradient on main_device ----
             forward_grad = -fm_constant * sparse_back_project(
@@ -1465,11 +1460,11 @@ class TomographyModel(ParameterHandler):
             delta_recon_at_indices = alpha * delta_recon_at_indices
             flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
 
-            # ---- One forward projection (scaled delta) to update error_sinogram on sinogram_device ----
+            # ---- One forward projection (scaled delta) to update weighted_error_sinogram on sinogram_device ----
             delta_sinogram_scaled = sparse_forward_project(
                 delta_recon_at_indices, pixel_indices_worker, output_device=self.sinogram_device
             )
-            error_sinogram = error_sinogram - delta_sinogram_scaled
+            weighted_error_sinogram = weighted_error_sinogram - weights * delta_sinogram_scaled
 
             # Estimate eta_obs = quad_true / quad_diag using the scaled projection.
             # quad_true_scaled = fm_constant * sum( (A(alpha*delta))^2 * weights ) = alpha^2 * quad_true
@@ -1486,26 +1481,26 @@ class TomographyModel(ParameterHandler):
             alpha_for_subset = alpha
 
             time_names = []
-            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs
+            return flat_recon, weighted_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names, eta_obs
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
+        def vcd_subset_updater(flat_recon, weighted_error_sinogram, pixel_indices, pixel_indices_worker, times, eta_state):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
-            The combination of (error_sinogram, recon) forms an overcomplete state that makes computation efficient.
+            The combination of (weighted_error_sinogram, recon) forms an overcomplete state that makes computation efficient.
             However, it is important that at each application the state should meet the constraint that:
-            error_sinogram = measured_sinogram - forward_proj(recon)
+            weighted_error_sinogram = measured_sinogram - forward_proj(recon)
             where measured_sinogram forward_proj() is whatever forward projection is being used in reconstruction.
 
             Args:
                 flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-                error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
+                weighted_error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                 pixel_indices (jax array): 1D array of pixel indices.
                 pixel_indices_worker (jax array): Same as pixel_indices, but copied onto the worker device.
                 times (ndarray): 1D array of elapsed times for debugging/performance tuning.
 
             Returns:
-                flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset:
+                flat_recon, weighted_error_sinogram, ell1_for_subset, alpha_for_subset:
                 The first two have the same shape as above, but are updated to reduce the overall loss function.
                 ell1_for_subset is for the change to the recon from this one subset.
                 alpha is the relative step size for this subset.
@@ -1538,16 +1533,6 @@ class TomographyModel(ParameterHandler):
                 prior_hess = 1 / (sigma_prox ** 2)
                 prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
             # prior_grad = prior_grad.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # time_names.append('wterrsin')
-            # time_start = time.time()
-            if not const_weights:
-                weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
-            else:
-                weighted_error_sinogram = error_sinogram
-            # weighted_error_sinogram = weighted_error_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
 
@@ -1616,8 +1601,8 @@ class TomographyModel(ParameterHandler):
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
             # Compute optimal update step
-            alpha_numerator = forward_linear - prior_linear
-            alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
+            alpha_numerator = forward_linear.item() - prior_linear.item()
+            alpha_denominator = forward_quadratic.item() + prior_quadratic_approx.item() + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
             max_alpha = self.max_over_relaxation
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
@@ -1678,7 +1663,7 @@ class TomographyModel(ParameterHandler):
             # time_names.append('deltsin')
             # time_start = time.time()
             delta_sinogram = float(alpha) * delta_sinogram
-            error_sinogram = error_sinogram - delta_sinogram
+            weighted_error_sinogram = weighted_error_sinogram - weights * delta_sinogram
             # error_sinogram = error_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -1691,9 +1676,9 @@ class TomographyModel(ParameterHandler):
             # times[time_index] += time.time() - time_start
             # time_index += 1
 
-            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
+            return flat_recon, weighted_error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
 
-        return vcd_subset_updater_v2
+        return vcd_subset_updater
 
     def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
                              output_device=None):
@@ -1783,6 +1768,7 @@ class TomographyModel(ParameterHandler):
         return forward_linear, forward_quadratic
 
     @staticmethod
+    @jax.jit
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
