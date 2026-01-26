@@ -256,7 +256,7 @@ class ParallelBeamModel(TomographyModel):
                 of that column into the voxel cylinder for pixel i.
 
             So for one offset we form:
-                • gathered_row_pix with shape (R, P), where gathered_row_pix[:, i] = sinogram_view[:, n[i]]
+                • gathered_voxel_cyl with shape (R, P), where gathered_voxel_cyl[:, i] = sinogram_view[:, n[i]]
                 • then scale each column i by A[i] and add into the accumulator
 
             We accumulate in (rows, pixels) so that the gather result is already in the same layout.
