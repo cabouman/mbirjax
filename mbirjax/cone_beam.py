@@ -428,26 +428,10 @@ class ConeBeamModel(TomographyModel):
 
             return new_column_batch
 
-        # Build the detector column in a padded buffer so each batch write has static shape.
-        det_column_padded_len = num_det_row_batches * det_rows_per_batch
-        det_column_padded = jnp.zeros((det_column_padded_len,), dtype=voxel_cylinder.dtype)
-
-        def write_det_column_batch(b, det_column_acc):
-            """Write one detector-row batch into the padded detector-column accumulator.
-
-            Args:
-                b (int): Batch index in [0, num_det_row_batches).
-                det_column_acc (jax array): Accumulator of shape (det_column_padded_len,).
-
-            Returns:
-                jax array: Updated accumulator of shape (det_column_padded_len,).
-            """
-            start_index = b * det_rows_per_batch
-            batch_vals = create_det_column_rows(start_index)
-            return jax.lax.dynamic_update_slice(det_column_acc, batch_vals, (start_index,))
-
-        det_column_padded = jax.lax.fori_loop(0, num_det_row_batches, write_det_column_batch, det_column_padded)
-        det_column = jax.lax.slice_in_dim(det_column_padded, 0, num_det_rows)
+        # Build the detector column using map.  Each batch returns a vector of length det_rows_per_batch.
+        det_column = jax.lax.map(create_det_column_rows, det_row_indices)
+        det_column = det_column.flatten()
+        det_column = jax.lax.slice_in_dim(det_column, 0, num_det_rows)
         return det_column
 
     @staticmethod
