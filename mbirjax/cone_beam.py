@@ -389,6 +389,7 @@ class ConeBeamModel(TomographyModel):
             # to each detector.
             # First project the detector centers to the voxel cylinder
             m_center = start_index + row_batch  # Center of detector elements
+            valid_m = (m_center >= 0) & (m_center < num_det_rows)
             v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
             z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
             # Convert to voxel fractional index and find the center of each voxel
@@ -397,23 +398,56 @@ class ConeBeamModel(TomographyModel):
             # Then map the center of the voxels back to the detector.
             m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
 
-            # Allocate space
-            new_column_batch = jnp.zeros(det_rows_per_batch)
-            # Do the vertical projection
-            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
+            def accumulate_voxel_offset(k, acc_batch):
+                """Accumulate detector-row contributions for one vertical PSF voxel-index offset.
+
+                Args:
+                    k (int): Loop index in [0, 2*bp_psf_radius], mapped to k_offset = k - bp_psf_radius.
+                    acc_batch (jax array): Accumulator of shape (det_rows_per_batch,).
+
+                Returns:
+                    jax array: Updated accumulator of shape (det_rows_per_batch,).
+                """
+                k_offset = k - gp.bp_psf_radius
                 k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
+
                 # The projection of these centers is the projection of k_m_center (which is m_p) plus
                 # the offset times the slope of the map from voxel index to detector index
-                abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
-                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)  # Fraction of the detector hit by this voxel
-                A_row_k *= (k_ind >= 0) * (k_ind < num_slices)
-                new_column_batch = jnp.add(new_column_batch, A_row_k * scaled_voxel_values[k_ind])
+                abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)
+                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
 
-            return new_column_batch, None
+                # Mask out-of-bounds slice indices and out-of-bounds detector rows; clip for safe gather.
+                valid_k = (k_ind >= 0) & (k_ind < num_slices)
+                k_ind_clipped = jnp.clip(k_ind, 0, num_slices - 1)
+                A_row_k = A_row_k * valid_k * valid_m
 
-        det_column, _ = jax.lax.map(create_det_column_rows, det_row_indices)
-        det_column = det_column.flatten()
-        det_column = jax.lax.slice_in_dim(det_column, 0, num_det_rows)
+                return acc_batch + A_row_k * scaled_voxel_values[k_ind_clipped]
+
+            new_column_batch = jnp.zeros(det_rows_per_batch)
+            new_column_batch = jax.lax.fori_loop(0, 2 * gp.bp_psf_radius + 1, accumulate_voxel_offset, new_column_batch)
+
+            return new_column_batch
+
+        # Build the detector column in a padded buffer so each batch write has static shape.
+        det_column_padded_len = num_det_row_batches * det_rows_per_batch
+        det_column_padded = jnp.zeros((det_column_padded_len,), dtype=voxel_cylinder.dtype)
+
+        def write_det_column_batch(b, det_column_acc):
+            """Write one detector-row batch into the padded detector-column accumulator.
+
+            Args:
+                b (int): Batch index in [0, num_det_row_batches).
+                det_column_acc (jax array): Accumulator of shape (det_column_padded_len,).
+
+            Returns:
+                jax array: Updated accumulator of shape (det_column_padded_len,).
+            """
+            start_index = b * det_rows_per_batch
+            batch_vals = create_det_column_rows(start_index)
+            return jax.lax.dynamic_update_slice(det_column_acc, batch_vals, (start_index,))
+
+        det_column_padded = jax.lax.fori_loop(0, num_det_row_batches, write_det_column_batch, det_column_padded)
+        det_column = jax.lax.slice_in_dim(det_column_padded, 0, num_det_rows)
         return det_column
 
     @staticmethod
