@@ -272,56 +272,19 @@ class ConeBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1, W_p_c)
 
-        # Work in (channels, rows) for accumulation; we will transpose at the end.
-        # This enables reduce-by-channel accumulation using segment sums.
+        # Allocate the sinogram array
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
-        def accumulate_offset_contributions(k, acc_view):
-            """Accumulate sinogram contributions for a single PSF channel offset.
-
-            The reduce-by-channel structure (what we want):
-                For each channel c, sum contributions of all pixels i whose n[i] == c.
-                That’s a group-by-key reduction, i.e. a segment sum.
-
-            So we form:
-                •	scaled.T with shape (P, R) (per-pixel cylinder, already scaled by its weight)
-                •	then “sum rows of scaled.T grouped by n” to get (C, R)
-
-            Args:
-                k (int): Loop index in [0, 2 * psf_radius], mapped to n_offset = k - psf_radius.
-                acc_view (jax array): Accumulator of shape (num_det_channels, num_det_rows).
-
-            Returns:
-                jax array: Updated accumulator of shape (num_det_channels, num_det_rows).
-            """
-            n_offset = k - gp.psf_radius
-            n = n_p_center + n_offset  # (num_pixels,)
-
-            # Compute weights for this offset.
+        # Do the horizontal projection
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+            n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n *= (n >= 0) * (n < num_det_channels)
+            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
-            # Mask out-of-bounds channels; clip indices to keep segment ids valid.
-            valid = (n >= 0) & (n < num_det_channels)
-            A_chan_n = A_chan_n * valid
-            n_clipped = jnp.clip(n, 0, num_det_channels - 1)
-
-            # Form per-pixel cylinders scaled by A, then reduce-by-channel.
-            # voxel_values is (num_pixels, num_det_rows); scale rows by A -> (num_pixels, num_det_rows).
-            scaled_pix_row = voxel_values * A_chan_n.reshape((-1, 1))
-            # segment_sum over pixels (leading axis) -> (num_det_channels, num_det_rows)
-            chan_row = jax.ops.segment_sum(scaled_pix_row, n_clipped, num_segments=num_det_channels)
-
-            return acc_view + chan_row
-
-        # Accumulate over offsets using an XLA loop.
-        acc_chan_row = jnp.zeros((num_det_channels, num_det_rows), dtype=voxel_values.dtype)
-        acc_chan_row = jax.lax.fori_loop(0, 2 * gp.psf_radius + 1, accumulate_offset_contributions, acc_chan_row)
-
-        # Return in (rows, channels)
-        sinogram_view = acc_chan_row.T
         return sinogram_view
-
 
     @staticmethod
     def forward_vertical_fan_one_pixel_to_one_view(voxel_cylinder, pixel_index, angle, projector_params):
@@ -389,7 +352,6 @@ class ConeBeamModel(TomographyModel):
             # to each detector.
             # First project the detector centers to the voxel cylinder
             m_center = start_index + row_batch  # Center of detector elements
-            valid_m = (m_center >= 0) & (m_center < num_det_rows)
             v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
             z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
             # Convert to voxel fractional index and find the center of each voxel
@@ -398,38 +360,21 @@ class ConeBeamModel(TomographyModel):
             # Then map the center of the voxels back to the detector.
             m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
 
-            def accumulate_voxel_offset(k, acc_batch):
-                """Accumulate detector-row contributions for one vertical PSF voxel-index offset.
-
-                Args:
-                    k (int): Loop index in [0, 2*bp_psf_radius], mapped to k_offset = k - bp_psf_radius.
-                    acc_batch (jax array): Accumulator of shape (det_rows_per_batch,).
-
-                Returns:
-                    jax array: Updated accumulator of shape (det_rows_per_batch,).
-                """
-                k_offset = k - gp.bp_psf_radius
+            # Allocate space
+            new_column_batch = jnp.zeros(det_rows_per_batch)
+            # Do the vertical projection
+            for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius+1):
                 k_ind = k_m_center + k_offset  # Indices of the current set of voxels touched by the detector elements
-
                 # The projection of these centers is the projection of k_m_center (which is m_p) plus
                 # the offset times the slope of the map from voxel index to detector index
-                abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)
-                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+                abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)  # Distance from projection of center of voxel to center of detector
+                A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)  # Fraction of the detector hit by this voxel
+                A_row_k *= (k_ind >= 0) * (k_ind < num_slices)
+                new_column_batch = jnp.add(new_column_batch, A_row_k * scaled_voxel_values[k_ind])
 
-                # Mask out-of-bounds slice indices and out-of-bounds detector rows; clip for safe gather.
-                valid_k = (k_ind >= 0) & (k_ind < num_slices)
-                k_ind_clipped = jnp.clip(k_ind, 0, num_slices - 1)
-                A_row_k = A_row_k * valid_k * valid_m
+            return new_column_batch, None
 
-                return acc_batch + A_row_k * scaled_voxel_values[k_ind_clipped]
-
-            new_column_batch = jnp.zeros(det_rows_per_batch)
-            new_column_batch = jax.lax.fori_loop(0, 2 * gp.bp_psf_radius + 1, accumulate_voxel_offset, new_column_batch)
-
-            return new_column_batch
-
-        # Build the detector column using map.  Each batch returns a vector of length det_rows_per_batch.
-        det_column = jax.lax.map(create_det_column_rows, det_row_indices)
+        det_column, _ = jax.lax.map(create_det_column_rows, det_row_indices)
         det_column = det_column.flatten()
         det_column = jax.lax.slice_in_dim(det_column, 0, num_det_rows)
         return det_column
@@ -493,54 +438,20 @@ class ConeBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1, W_p_c)
 
-        # We'll gather directly from sinogram_view (shape: rows, channels) for each pixel/channel.
+        # Allocate the voxel cylinder array
+        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
 
-        def accumulate_offset_backprojection(k, acc_voxel_cyl):
-            """Accumulate backprojected voxel-cylinder contributions for a single PSF channel offset.
-
-            The gather-by-channel structure (what we want):
-                For each pixel i, gather the detector column hit by n[i] and accumulate a weighted copy
-                of that column into the voxel cylinder for pixel i.
-
-            So for one offset we form:
-                • gathered_voxel_cyl with shape (R, P), where gathered_voxel_cyl[:, i] = sinogram_view[:, n[i]]
-                • then scale each column i by A[i] and add into the accumulator
-
-            We accumulate in (rows, pixels) so that the gather result is already in the same layout.
-
-            Args:
-                k (int): Loop index in [0, 2 * psf_radius], mapped to n_offset = k - psf_radius.
-                acc_voxel_cyl (jax array): Accumulator of shape (num_det_rows, num_pixels).
-
-            Returns:
-                jax array: Updated accumulator of shape (num_det_rows, num_pixels).
-            """
-            n_offset = k - gp.psf_radius
-            n = n_p_center + n_offset  # (num_pixels,)
-
+        # Do the horizontal projection
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+            n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n *= (n >= 0) * (n < num_det_channels)
+            A_chan_n = A_chan_n ** coeff_power
+            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
 
-            # Mask out-of-bounds channels and clip indices for safe gather.
-            valid = (n >= 0) & (n < num_det_channels)
-            A_chan_n = (A_chan_n * valid) ** coeff_power
-            n_clipped = jnp.clip(n, 0, num_det_channels - 1)
-
-            # Gather sinogram values for each pixel/channel hit.
-            # sinogram_view is (num_det_rows, num_det_channels). We gather columns for each pixel to get (rows, pixels).
-            gathered_voxel_cyl = jnp.take_along_axis(sinogram_view, n_clipped.reshape((1, -1)), axis=1)
-
-            # Scale columns by A and accumulate in (rows, pixels).
-            return acc_voxel_cyl + gathered_voxel_cyl * A_chan_n.reshape((1, -1))
-
-        acc_row_pix = jnp.zeros((num_det_rows, num_pixels), dtype=sinogram_view.dtype)
-        acc_row_pix = jax.lax.fori_loop(0, 2 * gp.psf_radius + 1, accumulate_offset_backprojection, acc_row_pix)
-
-        # Return in (pixels, rows)
-        det_voxel_cylinder = acc_row_pix.T
         return det_voxel_cylinder
-
 
     @staticmethod
     def back_vertical_fan_one_view_to_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,
