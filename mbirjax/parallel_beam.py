@@ -140,9 +140,52 @@ class ParallelBeamModel(TomographyModel):
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
 
+
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+        """
+        Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
+        slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
+        This function returns the resulting sinogram view.
+
+        Args:
+            voxel_values (jax array):  2D array of shape (num_pixels, num_recon_slices) of voxel values, where
+                voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
+            pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
+                the flattened array of size num_rows x num_cols.
+            angle (float):  Angle for this view
+            projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_det_rows, num_det_channels)
+        """
+        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
+        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        gp = projector_params.geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+
+        # Get the data needed for horizontal projection
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        L_max = jnp.minimum(1.0, W_p_c)
+
+        # Allocate the sinogram array
+        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+
+        # Do the projection
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
+            n = n_p_center + n_offset
+            abs_delta_p_c_n = jnp.abs(n_p - n)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n *= (n >= 0) * (n < num_det_channels)
+            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+
+        return sinogram_view
+
+    @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
+    def forward_project_pixel_batch_to_one_view_v2(voxel_values, pixel_indices, angle, projector_params):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
@@ -217,6 +260,45 @@ class ParallelBeamModel(TomographyModel):
         # Return in (rows, channels)
         sinogram_view = acc_chan_row.T
         return sinogram_view
+
+    @staticmethod
+    @partial(jax.jit, static_argnames='projector_params')
+    def forward_project_pixel_batch_to_one_view_v3(voxel_values, pixel_indices, angle, projector_params):
+        gp = projector_params.geometry_params
+        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+
+        # Pre-calc projection data
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle,
+                                                                                     projector_params)
+        L_max = jnp.minimum(1.0, W_p_c)
+
+        # OPTIMIZATION 1: Work with Transposed Sinogram (Channels, Rows)
+        # This ensures sinogram_view_T[n, :] accesses contiguous memory (a full column of the original detector)
+        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
+
+        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+            n = n_p_center + n_offset
+
+            # ... (Same geometric calcs) ...
+            abs_delta_p_c_n = jnp.abs(n_p - n)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+
+            # Masking
+            valid_mask = (n >= 0) & (n < num_det_channels)
+            A_chan_n *= valid_mask
+
+            # OPTIMIZATION 2: Direct broadcast without Transpose
+            # A_chan_n: (pixels,) -> (pixels, 1)
+            # voxel_values: (pixels, slices)
+            # Result: (pixels, slices)
+            contribution = A_chan_n.reshape((-1, 1)) * voxel_values
+
+            # Scatter add into contiguous rows of the transposed array
+            sinogram_view_T = sinogram_view_T.at[n, :].add(contribution)
+
+        # Transpose back to match expected output (Rows, Channels)
+        return sinogram_view_T.T
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
