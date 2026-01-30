@@ -219,16 +219,19 @@ def estimate_background_offset(sino, edge_width=9):
 
     num_views, num_det_rows, num_det_channels = sino.shape
 
-    # For each view, collect edges:
-    # left edge:  (V, R, W)
-    # right edge: (V, R, W)
-    # top edge:   (V, W, C)
     left  = sino[:, :, :edge_width].reshape(num_views, -1)
     right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
     top   = sino[:, :edge_width, :].reshape(num_views, -1)
 
-    edges = np.concatenate((left, right, top), axis=1)  # (V, total_edge_pixels)
-    offset = np.median(edges, axis=1)                          # (V,)
+    # Median of each edge (per view)
+    med_left  = np.median(left, axis=1)   # (V,)
+    med_right = np.median(right, axis=1)  # (V,)
+    med_top   = np.median(top, axis=1)    # (V,)
+
+    # Stack and take median again
+    edge_medians = np.stack([med_left, med_right, med_top], axis=1)  # (V, 3)
+
+    offset = np.median(edge_medians, axis=1)   # (V,)
 
     return offset
 
