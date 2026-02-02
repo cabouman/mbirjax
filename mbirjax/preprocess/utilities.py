@@ -156,7 +156,7 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
 
 
 
-def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=0.0, batch_size=30):
+def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=None, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -175,6 +175,9 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     import dm_pix
     import tqdm
     num_views = sino.shape[0]  # Total number of views
+
+    if background_offset is None:
+        background_offset = np.zeros(num_views)
     if background_offset.shape != (num_views,):
         raise ValueError(f"background_offset must have shape (num_views,), got {background_offset.shape}")
 
@@ -203,7 +206,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
 
 def estimate_background_offset(sino, edge_width=9):
     """
-    Estimate per-view background offset of a sinogram using JAX for GPU acceleration.
+    Estimate per-view background offset of a sinogram.
 
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
