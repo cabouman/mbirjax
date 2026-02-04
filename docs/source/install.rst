@@ -1,7 +1,7 @@
 .. _InstallationDocs:
 
 ============
-Installation 
+Installation
 ============
 
 The ``MBIRJAX`` package is available through PyPI or from source on GitHub.
@@ -36,3 +36,9 @@ Clean install using mbirjax/dev_scripts - We provide bash scripts that will do a
     source clean_install_all.sh
 
 
+
+**Installing on Windows**
+
+In order to use MBIRJAX on a windows computer with an NVIDIA GPU,
+we recommend that you use Windows Subsystem for Linux (WSL).
+Download `this pdf file <https://www.datadepot.rcac.purdue.edu/bouman/data/MBIRJAX_on_windows.pdf>`_ for details on how to install MBIRJAX with WSL.
