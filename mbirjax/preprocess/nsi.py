@@ -179,7 +179,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
                         ['flipV', 'Correction'],                        # Vertical flip (boolean)
                         ['angleStep', 'Object Radiograph'],             # step size of adjacent view angles
                         ['clockwise', 'Processed'],                     # rotation direction (boolean)
-                        ['axis', 'Result'],                             # unit vector in direction ofrotation axis
+                        ['axis', 'Result'],                             # unit vector in direction of rotation axis
                         ['normal', 'Result'],                           # unit vector in direction of source-detector line
                         ['horizontal', 'Result'],                       # unit vector in direction of detector rows
                         ['crop', 'Radiograph']                          # 4-tuple of pixels to crop from each view
