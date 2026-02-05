@@ -156,7 +156,7 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
 
 
 
-def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=0.0, batch_size=30):
+def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -164,7 +164,6 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     Args:
         sino (numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
-        background_offset (optional, float): background offset subtracted from sinogram data before correction.
         batch_size (int): Number of views to process in each batch to avoid memory overload.
 
     Returns:
@@ -181,7 +180,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     for i in tqdm.tqdm(range(0, num_views, batch_size)):
 
         # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)]) - background_offset
+        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)])
 
         # Apply the rotation on this batch
         sino_batch = sino_batch.transpose(1, 2, 0)

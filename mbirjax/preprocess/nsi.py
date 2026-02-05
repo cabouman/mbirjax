@@ -112,7 +112,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         print("background_offset = ", background_offset)
 
     det_rotation = optional_params["det_rotation"]
-    sino = mjp.correct_det_rotation_and_background(sino, det_rotation=det_rotation, background_offset=background_offset)
+    sino = mjp.correct_det_rotation(sino, det_rotation=det_rotation)
     del optional_params["det_rotation"]  # We delete this since it's not an allowed parameter in TomographyModel.
 
     if verbose > 0:
