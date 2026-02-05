@@ -136,9 +136,7 @@ class TestNSIPreprocessing(unittest.TestCase):
                                                              defective_pixel_array=defective_pixel_array)
 
         # Compute background offsets
-        background_offset = preprocess.estimate_background_offset(sino_computed, edge_width=self.edge_width)
-        print("background_offset = ", background_offset)
-        sino_computed = sino_computed - background_offset
+        sino_computed = preprocess.correct_background_offset(sino_computed, edge_width=self.edge_width)
 
         sino_gt_cropped, _, _, _ = preprocess.crop_view_data(self.sino_gt, self.blank_scan, self.dark_scan,
                                                              crop_pixels_sides=self.crop_pixels_sides,
