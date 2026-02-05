@@ -50,7 +50,7 @@ General preprocess functions
 .. autofunction:: compute_sino_transmission
 .. autofunction:: interpolate_defective_pixels
 .. autofunction:: correct_det_rotation_and_background
-.. autofunction:: estimate_background_offset
+.. autofunction:: correct_background_offset
 .. autofunction:: downsample_view_data
 .. autofunction:: crop_view_data
 .. autofunction:: apply_cylindrical_mask
