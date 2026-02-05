@@ -19,8 +19,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     1. Loads object, blank, and dark scans, and geometry parameters from the dataset.
     2. Computes the sinogram from the scan images.
     3. Replaces defective pixels with interpolated values.
-    4. Applies background offset correction.
-    5. Corrects for detector rotation.
+    4. Corrects for detector rotation.
+    5. Applies background offset correction.
 
     Args:
         dataset_dir (str): Path to the NSI scan directory. Expected structure:
