@@ -393,6 +393,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
 
     source_detector_dist, source_iso_dist, magnification, det_rotation = calc_source_detector_params(r_a, r_n, r_h, r_s, r_r)
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
+    recon_slice_offset = - det_row_offset / magnification
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -419,6 +420,7 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist/source_detector_dist)
     optional_params["det_channel_offset"] = det_channel_offset
     optional_params["det_row_offset"] = det_row_offset
+    optional_params['recon_slice_offset'] = recon_slice_offset
     optional_params["det_rotation"] = det_rotation # tilt angle of rotation axis
     optional_params["alu_unit"] = 'mm' # NSI always uses mm has the unit
     optional_params["alu_value"] = 1.0  # We have set everything in mm, so 1 ALU = 1 mm
