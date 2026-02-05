@@ -98,10 +98,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and sino offset")
-    background_offset = mjp.estimate_background_offset(sino)
-    sino = sino - background_offset
-    if verbose > 0:
-        print("background_offset = ", background_offset)
+    sino = mjp.correct_background_offset(sino)
 
     # Correct sino offset
     sino = correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor)

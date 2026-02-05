@@ -195,32 +195,58 @@ def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
     return sino_rotated
 
 
-def estimate_background_offset(sino, edge_width=9):
+def correct_background_offset(sino, edge_width=9, option='global'):
     """
-    Estimate background offset of a sinogram using JAX for GPU acceleration.
+    Correct background offset in a sinogram.
 
     Args:
-        sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
+        sino (numpy.ndarray): Shape (num_views, num_det_rows, num_det_channels).
+        edge_width (int): Width of edge region.
+        option (str): "global" or "per_view". Defaults to 'global'.
 
     Returns:
-        offset (float): Background offset value.
+        sino_corrected (numpy.ndarray)
     """
 
-    if edge_width < 1:
-        edge_width = 1
-        warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
+    if option == "global":
+        _, _, num_det_channels = sino.shape
 
-    _, _, num_det_channels = sino.shape
+        sino_edge_left  = sino[:, :, :edge_width].flatten()
+        sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
+        sino_edge_top   = sino[:, :edge_width, :].flatten()
 
-    # Extract edge regions from the sinogram (top, left, right)
-    sino_edge_left = sino[:, :, :edge_width].flatten()
-    sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
-    sino_edge_top = sino[:, :edge_width, :].flatten()
-    offset = np.median(np.concatenate((sino_edge_left, sino_edge_right, sino_edge_top)))
+        med_left = np.median(sino_edge_left)
+        med_right = np.median(sino_edge_right)
+        med_top = np.median(sino_edge_top)
 
-    return offset
+        offset = np.median([med_left, med_right, med_top])
 
+        sino_corrected = sino - offset
+
+
+    elif option == "per_view":
+        num_views, _, num_det_channels = sino.shape
+
+        sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
+        sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
+        sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
+
+        med_left  = np.median(sino_edge_left, axis=1)
+        med_right = np.median(sino_edge_right, axis=1)
+        med_top   = np.median(sino_edge_top, axis=1)
+
+        edge_medians = np.stack([med_left, med_right, med_top], axis=1)
+
+        offset = np.median(edge_medians, axis=1)   # (num_views,)
+
+        # Apply correction
+        sino_corrected = sino - offset[:, None, None]
+
+
+    else:
+        raise ValueError("option must be 'global' or 'per_view'")
+
+    return sino_corrected
 
 
 # ####### subroutines for image cropping and down-sampling
