@@ -57,7 +57,7 @@ def compute_sino_and_params(filename, bh_correction=True):
 
         if np.abs(det_rotation) > 1e-6:
             # Correct the sinogram for detector rotation
-            sinogram = mjp.correct_det_rotation_and_background(sinogram, det_rotation=det_rotation)
+            sinogram = mjp.correct_det_rotation(sinogram, det_rotation=det_rotation)
             warnings.warn('TODO: Verify the direction of sinogram rotation.')
 
     return sinogram, cone_beam_params, optional_params

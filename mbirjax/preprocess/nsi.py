@@ -19,8 +19,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     1. Loads object, blank, and dark scans, and geometry parameters from the dataset.
     2. Computes the sinogram from the scan images.
     3. Replaces defective pixels with interpolated values.
-    4. Applies background offset correction.
-    5. Corrects for detector rotation.
+    4. Corrects for detector rotation.
+    5. Applies background offset correction.
 
     Args:
         dataset_dir (str): Path to the NSI scan directory. Expected structure:
@@ -107,13 +107,14 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
-    background_offset = mjp.estimate_background_offset(sino)
-    if verbose > 0:
-        print("background_offset = ", background_offset)
 
+    # Rotation correction
     det_rotation = optional_params["det_rotation"]
-    sino = mjp.correct_det_rotation_and_background(sino, det_rotation=det_rotation, background_offset=background_offset)
+    sino = mjp.correct_det_rotation(sino, det_rotation=det_rotation)
     del optional_params["det_rotation"]  # We delete this since it's not an allowed parameter in TomographyModel.
+
+    # Background offset correction
+    sino = mjp.correct_background_offset(sino, option='per_view')
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
