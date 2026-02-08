@@ -208,14 +208,14 @@ class QGGMRFDenoiser(TomographyModel):
             init_image = image.copy()
 
         flat_error_image = (image - init_image).reshape((-1, image.shape[-1]))
-        flat_error_image = jax.device_put(flat_error_image, self.worker)
+        flat_error_image = jax.device_put(flat_error_image, self.sinogram_device)
         image_out = init_image
 
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
 
         # Initialize the output image
         flat_image = image_out.reshape((-1, image_shape[2]))
-        flat_image = jax.device_put(flat_image, self.worker)
+        flat_image = jax.device_put(flat_image, self.sinogram_device)
 
         # Create the finer grained image update operators
 

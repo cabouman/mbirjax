@@ -25,7 +25,7 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-model_type = 'parallel'  # 'cone' or 'parallel'
+model_type = 'cone'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -39,6 +39,7 @@ num_det_channels = 128
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels)
+phantom = np.array(phantom)
 angles = params['angles']
 
 # View the sinogram
