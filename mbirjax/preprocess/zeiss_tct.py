@@ -80,10 +80,7 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
-    background_offset = mjp.estimate_background_offset(sino)
-    sino = sino - background_offset
-    if verbose > 0:
-        print("background_offset = ", background_offset)
+    sino = mjp.correct_background_offset(sino)
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
