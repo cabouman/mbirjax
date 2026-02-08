@@ -65,10 +65,12 @@ use_gpu
 """""""
 :Type: string (Defaults to 'automatic')
 
-Possible values are 'automatic', 'full', 'sinograms', 'worker', 'none'. 'full' tries to perform the entire reconstruction on the GPU;
-'sinograms' uses the GPU for all of the sinogram storage and calculations but uses CPU memory for the reconstructions;
-'worker' uses the CPU for some computations and the GPU for projections only (to conserve memory);
-'automatic' tries to determine the appropriate choice based on available memory; 'none' disables GPU use.
+Possible values are 'automatic', 'full', 'sinograms', 'none'.
+
+ * 'automatic' - recommended setting in which MBIRJAX determines the appropriate use of the GPU based on the available memory;
+ * 'full' - performs entire reconstruction on the GPU;
+ * 'sinograms' - uses the GPU for the sinogram storage and calculations but uses CPU memory for the reconstructions;
+ * 'none' - disables GPU use.
 
 
 Geometry Parameters
