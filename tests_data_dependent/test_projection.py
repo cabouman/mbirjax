@@ -52,8 +52,8 @@ class ProjectionBase:
             p = pathlib.Path(cls.data_filepath)
             actual = sha256_file(p)
             if actual.lower() != cls.DATA_FILE_SHA256.lower():
-                warnings.warn(f"Checksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
-                              "Failures may be due to unexpected input data.")
+                print(f"\033[33mChecksum mismatch for {p.name}: expected {cls.DATA_FILE_SHA256}, got {actual}. "
+                              "Failures may be due to unexpected input data.\033[0m")
         except Exception as e:
             warnings.warn(f"Checksum skipped for {cls.data_filepath}: {e}")
 
