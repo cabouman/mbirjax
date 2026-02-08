@@ -64,7 +64,7 @@ class TomographyModel(ParameterHandler):
         self.set_params(geometry_type=str(type(self)))
         self.verify_valid_params()
 
-        self.main_device, self.sinogram_device, self.worker = None, None, None
+        self.main_device, self.sinogram_device= None, None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
@@ -124,7 +124,7 @@ class TomographyModel(ParameterHandler):
         or for the entire reconstruction, or nothing.
 
         This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
-        'automatic', 'full', 'sinograms', 'projections', 'none'
+        'automatic', 'full', 'sinograms', 'none'
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
@@ -222,15 +222,15 @@ class TomographyModel(ParameterHandler):
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'projections', 'sinograms']):
-            self.main_device, self.sinogram_device, self.worker = gpus[0], gpus[0], gpus[0]
+        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'sinograms']):
+            self.main_device, self.sinogram_device = gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
             mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
 
         # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none', 'projections']):
-            self.main_device, self.sinogram_device, self.worker = cpus[0], gpus[0], gpus[0]
+        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none']):
+            self.main_device, self.sinogram_device = cpus[0], gpus[0]
             self.use_gpu = 'sinograms'
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
             projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
@@ -245,28 +245,16 @@ class TomographyModel(ParameterHandler):
                                        mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
             mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
 
-        # 'projections': Only projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'projections' or (mem_per_projection / 16 < gpu_memory_to_use and use_gpu not in ['none']):
-            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], gpus[0]
-            self.use_gpu = 'projections'
-            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch
-            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
-            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
-            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
-
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-
-            mem_required_for_gpu = mem_per_projection
-            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + sino_reps_for_vcd * mem_per_sinogram
+        # 'projections': Only projections on GPU.  No longer supported.
+        elif use_gpu == 'projections':
+            raise ValueError("use_gpu == 'projections' is no longer supported.")
 
         # 'none': All on CPU
         else:
             if gpu_memory > 0:
                 warnings.warn('MBIRJAX is installed with cuda, but there is not enough GPU memory to use cuda. This may lead to a fatal error.')
 
-            self.main_device, self.sinogram_device, self.worker = cpus[0], cpus[0], cpus[0]
+            self.main_device, self.sinogram_device = cpus[0], cpus[0]
             self.use_gpu = 'none'
 
             mem_required_for_gpu = 0
@@ -602,14 +590,14 @@ class TomographyModel(ParameterHandler):
 
         sinogram = []
         for view_indices_batch in view_indices_batched:
-            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.worker)
+            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.sinogram_device)
             # Loop over pixel batches
             for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
-                # Send a batch of pixels to worker
+                # Send a batch of pixels to sinogram_device
                 pixel_index_end = pixel_batch_boundaries[k + 1]
                 voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
                                                                  pixel_indices[pixel_index_start:pixel_index_end]],
-                                                                self.worker)
+                                                                self.sinogram_device)
                 sinogram_views = sinogram_views.block_until_ready()
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
 
@@ -646,7 +634,7 @@ class TomographyModel(ParameterHandler):
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
 
-        pixel_indices = jax.device_put(pixel_indices, self.worker)
+        pixel_indices = jax.device_put(pixel_indices, self.sinogram_device)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
 
@@ -658,7 +646,7 @@ class TomographyModel(ParameterHandler):
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
         for view_indices_batch in view_indices_batched:
             view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.worker)
+            view_batch = jax.device_put(view_batch, self.sinogram_device)
 
             # Loop over pixel batches
             voxel_batch_list = []
@@ -742,12 +730,11 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'sinograms', 'projections', 'none']:
+        if use_gpu not in ['automatic', 'full', 'sinograms', 'none']:
             error_message = "use_gpu must be one of \n"
             error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
             error_message += " 'full' (use gpu for all calculations),\n"
             error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
-            error_message += " 'projections' (use gpu for projections only),\n"
             error_message += " 'none' (do not use gpu at all)."
             raise ValueError(error_message)
 
@@ -1035,7 +1022,7 @@ class TomographyModel(ParameterHandler):
                 if self.use_gpu == 'full':
                     self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
                 elif self.use_gpu == 'sinograms':
-                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='projections') before calling recon")
+                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='none') before calling recon")
         else:
             self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
 
@@ -1311,7 +1298,7 @@ class TomographyModel(ParameterHandler):
 
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
-        partition_worker = jax.device_put(partition, self.worker)
+        partition_worker = jax.device_put(partition, self.sinogram_device)
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
@@ -1406,10 +1393,10 @@ class TomographyModel(ParameterHandler):
 
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
                 with jax.default_device(self.main_device):
-                    if self.worker != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+                    if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
                         prior_grad, prior_hess = (
                             mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params, self.main_device, self.worker))
+                                                                           qggmrf_params, self.main_device, self.sinogram_device))
                     else:
                         prior_grad, prior_hess = (
                             mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
@@ -1595,65 +1582,6 @@ class TomographyModel(ParameterHandler):
         """
         forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
         forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-
-        # The code below does batching of the sinogram on the GPU, but in a comparison on a sinogram
-        # of size 1800x512x512, it was noticeably faster to do the computation on the CPU.
-
-        # If this can be done without data transfer, then do it.
-        # if True:  # self.worker == self.sinogram_device:
-        #     forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
-        #     forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-        #
-        # Otherwise batch the sinogram by view, send to the worker and calculate linear and quadratic terms
-        # First apply the batch projector directly to an initial batch to get the initial output
-        # else:
-        #     num_views = weighted_error_sinogram.shape[0]
-        #     views_per_batch = self.view_batch_size_for_vmap
-        #     views_per_batch = num_views if views_per_batch is None else views_per_batch
-        #     num_remaining = num_views % views_per_batch
-        #
-        #     # If the input is a multiple of batch_size, then we'll do a full batch, otherwise just the excess.
-        #     initial_batch_size = views_per_batch if num_remaining == 0 else num_remaining
-        #     # Make the weights into a 1D vector along views if it's a constant
-        #
-        #     def linear_quadratic(start_ind, stop_ind, previous_linear=0, previous_quadratic=0):
-        #         """
-        #         Send a batch to the worker and compute forward linear and quadratic for that batch.
-        #         """
-        #         worker_wes = jax.device_put(weighted_error_sinogram[start_ind:stop_ind], self.worker)
-        #         worker_ds = jax.device_put(delta_sinogram[start_ind:stop_ind], self.worker)
-        #         if not const_weights:
-        #             worker_wts = jax.device_put(weights[start_ind:stop_ind], self.worker)
-        #         else:
-        #             worker_wts = weights
-        #
-        #         # previous_linear += fm_constant * jnp.sum(worker_wes * worker_ds)
-        #         # previous_quadratic += fm_constant * jnp.sum(worker_ds * worker_ds * worker_wts)
-        #
-        #         previous_linear += sum_product(worker_wes, worker_ds)
-        #         worker_ds = jax.vmap(jnp.multiply)(worker_ds, worker_ds)
-        #         if not const_weights:
-        #             quadratic_entries = sum_product(worker_ds, worker_wts)
-        #         else:
-        #             quadratic_entries = jnp.sum(worker_ds)
-        #         previous_quadratic += quadratic_entries
-        #
-        #         del worker_wes, worker_ds, worker_wts
-        #         return previous_linear, previous_quadratic
-        #
-        #     forward_linear, forward_quadratic = linear_quadratic(0, initial_batch_size)
-        #
-        #     # Then deal with the batches if there are any
-        #     if views_per_batch < num_views:
-        #         num_batches = (num_views - initial_batch_size) // views_per_batch
-        #         for j in jnp.arange(num_batches):
-        #             start_ind_j = initial_batch_size + j * views_per_batch
-        #             stop_ind_j = start_ind_j + views_per_batch
-        #             forward_linear, forward_quadratic = linear_quadratic(start_ind_j, stop_ind_j,
-        #                                                                  forward_linear, forward_quadratic)
-        #
-        #     forward_linear = fm_constant * forward_linear
-        #     forward_quadratic = fm_constant * forward_quadratic
 
         forward_linear = jax.device_put(forward_linear, output_device)
         forward_quadratic = jax.device_put(forward_quadratic, output_device)

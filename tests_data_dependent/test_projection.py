@@ -9,7 +9,7 @@ class ProjectionBase:
       - SOURCE_FILEPATH (str)
     """
     HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
-    USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
+    USE_GPU_OPTS = ["automatic", "full", "sinograms", "none"] if HAS_GPU else ["none"]
     ATOL = 1e-3
     RTOL = 1e-2
     TEST_DIR = os.path.dirname(os.path.abspath(__file__))
