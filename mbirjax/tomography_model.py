@@ -1387,73 +1387,140 @@ class TomographyModel(ParameterHandler):
             # time_index = 0
             time_names = []
 
-            # Compute the prior model gradient and hessian (i.e., second derivative) terms
-            # time_names.append('qggmrf')
-            # time_start = time.time()
-            if prox_input is None:
-
-                # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                with jax.default_device(self.main_device):
-                    if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
-                        prior_grad, prior_hess = (
-                            mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params, self.main_device, self.sinogram_device))
-                    else:
-                        prior_grad, prior_hess = (
-                            mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params))
-            else:
-                # Proximal map prior - compute the prior model gradient at each pixel in the index set.
-                prior_hess = 1 / (sigma_prox ** 2)
-                prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
-            # prior_grad = prior_grad.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # Transfer to worker for later use
-            # time_names.append('bproj')
-            # time_start = time.time()
-
-            # Back project to get the gradient
-            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
-                                                               output_device=self.main_device)
-            # forward_grad = forward_grad.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # Get the forward hessian for this subset
-            # time_names.append('forhess')
-            # time_start = time.time()
-            forward_hess = fm_constant * fm_hessian[pixel_indices]
-            # forward_hess = forward_hess.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # Compute update vector update direction in recon domain
-            # time_names.append('deltrec')
-            # time_start = time.time()
-            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
-            # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
-            # time_start = time.time()
-            # time_names.append('priorlin')
-            prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
-            # prior_linear = prior_linear.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
-
-            # Estimated upper bound for hessian
-            # time_names.append('pquad')
-            # time_start = time.time()
+            ##################
+            # delta_recon_at_indices_2 = batch_delta_recon(flat_recon, weighted_error_sinogram, pixel_indices, pixel_indices_worker)
+            delta_recon_at_indices = []
+            transfer_pixel_batch_size = self.transfer_pixel_batch_size
+            num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
+            pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
             prior_overrelaxation_factor = 2
-            prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
-                                      jnp.sum(prior_hess * delta_recon_at_indices ** 2))
-            # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
-            # times[time_index] += time.time() - time_start
-            # time_index += 1
+
+            recon_shape = self.get_params('recon_shape')
+            prior_linear = 0
+            prior_quadratic_approx = 0
+
+            # Loop over pixel batches
+            for pixel_index_batch in pixel_indices_batched:
+                # Get grad and hess for the prior for this pixel batch
+                if prox_input is None:
+                    # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+                    prior_grad_batch, prior_hess_batch = (
+                                mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_index_batch,
+                                                                          qggmrf_params))
+                else:
+                    # Proximal map prior - compute the prior model gradient at each pixel in the index set.
+                    prior_hess_batch = 1 / (sigma_prox ** 2)
+                    prior_grad_batch = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_index_batch, sigma_prox)
+
+                # Get the grad and hess for the forward and total for this batch
+                for_grad_batch = self.sparse_back_project(weighted_error_sinogram, pixel_index_batch,
+                                                          output_device=prior_grad_batch.device)
+                for_grad_batch = - fm_constant * for_grad_batch.block_until_ready()
+                grad_batch = for_grad_batch + prior_grad_batch
+
+                forward_hess_batch = fm_constant * fm_hessian[pixel_index_batch]
+                hess_batch = forward_hess_batch + prior_hess_batch
+
+                # Get the unscaled recon update for this batch
+                delta_recon_at_indices_batch = - grad_batch / hess_batch
+                delta_recon_at_indices.append(delta_recon_at_indices_batch)
+
+                # Get the parts of the scaling factor alpha that can be calculated per batch.
+
+                # ---- Forward linear (exact, recon space) ----
+                # Original formulation:
+                # forward_linear = fm_constant * <weighted_error_sinogram, delta_sinogram>
+                # Using the adjoint property and previous definitions gives
+                # forward_linear = fm_constant * < weighted_error_sinogram, A * delta_recon_at_indices >
+                # forward_linear = fm_constant * < A.T * weighted_error_sinogram, delta_recon_at_indices >
+                # forward_linear = - <forward_grad, delta_recon_at_indices>
+                forward_linear = - jnp.sum(for_grad_batch * delta_recon_at_indices_batch)
+
+                prior_linear += jnp.sum(prior_grad_batch * delta_recon_at_indices_batch)
+                prior_quadratic_approx += ((1 / prior_overrelaxation_factor) *
+                                          jnp.sum(prior_hess_batch * delta_recon_at_indices_batch ** 2))
+
+
+            delta_recon_at_indices = jnp.concatenate(delta_recon_at_indices)
+
+            ################
+            #
+            # # Compute the prior model gradient and hessian (i.e., second derivative) terms
+            # # time_names.append('qggmrf')
+            # # time_start = time.time()
+            # if prox_input is None:
+            #
+            #     # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
+            #     with jax.default_device(self.main_device):
+            #         if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+            #             prior_grad, prior_hess = (
+            #                 mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
+            #                                                                qggmrf_params, self.main_device, self.sinogram_device))
+            #         else:
+            #             prior_grad, prior_hess = (
+            #                 mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+            #                                                                qggmrf_params))
+            # else:
+            #     # Proximal map prior - compute the prior model gradient at each pixel in the index set.
+            #     prior_hess = 1 / (sigma_prox ** 2)
+            #     prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+            # # prior_grad = prior_grad.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            #
+            # # Transfer to worker for later use
+            # # time_names.append('bproj')
+            # # time_start = time.time()
+            #
+            # # Back project to get the gradient
+            # forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
+            #                                                    output_device=self.main_device)
+            # # forward_grad = forward_grad.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            #
+            # # Get the forward hessian for this subset
+            # # time_names.append('forhess')
+            # # time_start = time.time()
+            # forward_hess = fm_constant * fm_hessian[pixel_indices]
+            # # forward_hess = forward_hess.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            #
+            # # Compute update vector update direction in recon domain
+            # # time_names.append('deltrec')
+            # # time_start = time.time()
+            # delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+            # # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            #
+            # a = jnp.amax(jnp.abs(delta_recon_at_indices - delta_recon_at_indices_2))
+            # assert a < 1e-6
+            #
+            # # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
+            # # time_start = time.time()
+            # # time_names.append('priorlin')
+            # prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
+            # # prior_linear = prior_linear.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            # #
+            # a = jnp.abs(prior_linear_2 - prior_linear) / jnp.abs(prior_linear)
+            # assert a < 1e-6
+            #
+            # # Estimated upper bound for hessian
+            # # time_names.append('pquad')
+            # # time_start = time.time()
+            # prior_overrelaxation_factor = 2
+            # prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
+            #                           jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+            # # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
+            # # times[time_index] += time.time() - time_start
+            # # time_index += 1
+            #
+            # a = jnp.abs(prior_quadratic_approx_2 - prior_quadratic_approx) / jnp.abs(prior_quadratic_approx)
+            # assert a < 1e-6
 
             # Compute update direction in sinogram domain
             # time_names.append('fproj')
@@ -1466,14 +1533,6 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('forlqu')
             # time_start = time.time()
-            # ---- Forward linear (exact, recon space) ----
-            # Original formulation:
-            # forward_linear = fm_constant * <weighted_error_sinogram, delta_sinogram>
-            # Using the adjoint property and previous definitions gives
-            # forward_linear = fm_constant * < weighted_error_sinogram, A * delta_recon_at_indices >
-            # forward_linear = fm_constant * < A.T * weighted_error_sinogram, delta_recon_at_indices >
-            # forward_linear = - <forward_grad, delta_recon_at_indices>
-            forward_linear = -jnp.sum(forward_grad * delta_recon_at_indices)
             forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
             # Compute optimal update step
