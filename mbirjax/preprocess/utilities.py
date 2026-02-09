@@ -610,3 +610,94 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     return recon
 
+def est_crop_width(sino, safety_buffer=20):
+    """Estimate crop widths for removing blank margins in a 3D sinogram.
+
+    Args:
+        sino (np.ndarray): Input sinogram array .
+        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
+            detected object region on each boundary. Defaults to 20.
+
+    Returns:
+        crop_top (int): Number of detector rows to crop from the top.
+        crop_bottom (int): Number of detector rows to crop from the bottom.
+        crop_left (int): Number of detector channels to crop from the left.
+        crop_right (int): Number of detector channels to crop from the right.
+
+    """
+    percent_noise_floor = 10
+    threshold1 = (0.01 * percent_noise_floor) * np.mean(np.fabs(sino))
+    mask1 = (sino > threshold1)
+    threshold2 = np.percentile(sino[mask1], 30)
+    sino_indicator_mask = np.int8(sino > threshold2)
+
+    union_mask = np.any(sino_indicator_mask, axis=0)
+
+    rows = np.any(union_mask, axis=1)
+    cols = np.any(union_mask, axis=0)
+
+    # argmax of the binary returns the first 1's index
+    top_width = np.argmax(rows)
+    bottom_width = np.argmax(rows[::-1])
+    left_width = np.argmax(cols)
+    right_width = np.argmax(cols[::-1])
+
+    # Include a margin to save some empty region on each boundary
+    crop_pixels_top = max(top_width - safety_buffer, 0)
+    crop_pixels_bottom = max(bottom_width - safety_buffer, 0)
+    crop_pixels_left = max(left_width - safety_buffer, 0)
+    crop_pixels_right = max(right_width - safety_buffer, 0)
+
+    return crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right
+
+
+def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buffer=20):
+    """
+    Automatically crop unused sinogram margins and update cone-beam geometry parameters.
+
+    This reduces the reconstruction volume by removing blank detector margins in the sinogram and
+    updating the corresponding geometry offsets so the physical coordinate system remains consistent.
+
+    Args:
+        sino (np.ndarray): Input sinogram array with shape (num_views, num_det_rows, num_det_channels).
+        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
+        optional_params (dict): Optional geometry parameters set after the model is constructed.
+        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the detected object region.
+            Defaults to 20.
+
+    Returns:
+        tuple:
+            A 3-tuple ``(sino, cone_beam_params, optional_params)`` where:
+
+            * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
+            * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
+            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``,
+              ``'det_channel_offset'``, and ``'recon_slice_offset'``.
+    """
+    crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
+
+    Nr_lo = crop_pixels_top
+    Nr_hi = sino.shape[1] - crop_pixels_bottom
+
+    Nc_lo = crop_pixels_left
+    Nc_hi = sino.shape[2] - crop_pixels_right
+
+    sino = sino[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
+
+    # Correct geometry parameters det_row_offset and det_channel_offset after cropping
+    cone_beam_params['sinogram_shape'] = sino.shape
+    delta_det_row, delta_det_channel = optional_params['delta_det_row'], optional_params['delta_det_channel']
+    optional_params['det_row_offset'] += (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row
+    optional_params['det_channel_offset'] += (crop_pixels_right - crop_pixels_left)/2 * delta_det_channel
+
+    # Correct geometry parameter recon_slice_offset
+    recon_slice_offset = optional_params['recon_slice_offset']
+    source_detector_dist = cone_beam_params["source_detector_dist"]
+    source_iso_dist = cone_beam_params["source_iso_dist"]
+    magnification = source_detector_dist / source_iso_dist
+
+    # Sign convention: positive recon_slice_offset reconstructs below the iso, vice versa
+    recon_slice_offset -= (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row / magnification
+    optional_params['recon_slice_offset'] = recon_slice_offset
+
+    return sino, cone_beam_params, optional_params
