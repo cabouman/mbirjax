@@ -652,21 +652,27 @@ def est_crop_width(sino, safety_buffer=20):
 
 
 def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buffer=20):
-    """Automatically reduce the reconstruction volume by cropping unused
-    sinogram regions and updating the corresponding geometry parameters. This function is for Cone Beam geometry.
+    """
+    Automatically crop unused sinogram margins and update cone-beam geometry parameters.
+
+    This reduces the reconstruction volume by removing blank detector margins in the sinogram and
+    updating the corresponding geometry offsets so the physical coordinate system remains consistent.
 
     Args:
-        sino (np.ndarray): Input sinogram array.
-        optional_params (dict): Dictionary of geometry parameters.
-        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
-            detected object region on each boundary. Defaults to 20.
-    Returns:
-        sino (np.ndarray): Cropped sinogram with updated shape.
-        cone_beam_params (dict): Updated parameters with adjusted
-            'sinogram_shape' and 'recon_slice_offset'.
-        optional_params (dict): Updated parameters with adjusted
-            'det_row_offset' and 'det_channel_offset'.
+        sino (np.ndarray): Input sinogram array with shape (num_views, num_det_rows, num_det_channels).
+        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
+        optional_params (dict): Optional geometry parameters set after the model is constructed.
+        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the detected object region.
+            Defaults to 20.
 
+    Returns:
+        tuple:
+            A 3-tuple ``(sino, cone_beam_params, optional_params)`` where:
+
+            * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
+            * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
+            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``,
+              ``'det_channel_offset'``, and ``'recon_slice_offset'``.
     """
     crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
 
