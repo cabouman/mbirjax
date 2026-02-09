@@ -1393,7 +1393,7 @@ class TomographyModel(ParameterHandler):
                 # Get the grad and hess for the forward and total for this batch
                 for_grad_batch = self.sparse_back_project(weighted_error_sinogram, pixel_index_batch,
                                                           output_device=prior_grad_batch.device)
-                for_grad_batch = - fm_constant * for_grad_batch.block_until_ready()
+                for_grad_batch = - fm_constant * for_grad_batch
                 grad_batch = for_grad_batch + prior_grad_batch
 
                 forward_hess_batch = fm_constant * fm_hessian[pixel_index_batch]
