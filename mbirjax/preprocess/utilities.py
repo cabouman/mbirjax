@@ -625,10 +625,11 @@ def est_crop_width(sino, safety_buffer=20):
         crop_right (int): Number of detector channels to crop from the right.
 
     """
-    percent_noise_floor = 10
-    threshold1 = (0.01 * percent_noise_floor) * np.mean(np.fabs(sino))
+    noise_floor_percent = 25
+    threshold1 = (0.01 * noise_floor_percent) * np.mean(np.fabs(sino))
     mask1 = (sino > threshold1)
-    threshold2 = np.percentile(sino[mask1], 30)
+    object_level_percent = 25
+    threshold2 = (0.01 * object_level_percent) * np.median(sino[mask1])
     sino_indicator_mask = np.int8(sino > threshold2)
 
     union_mask = np.any(sino_indicator_mask, axis=0)
