@@ -52,7 +52,7 @@ def main():
     # Perform sinogram per-view alignment
     print("\n********** Perform sinogram alignment **************")
     t0 = time.time()
-    aligned_sino = mjp.sino_view_alignment(ct_model, sinogram, direct_recon)
+    aligned_sino = mjp.align_sino_views(ct_model, sinogram, direct_recon)
     t1 = time.time()
     print(f"Elapsed time for sinogram alignment: {t1 - t0:.3f}s")
 

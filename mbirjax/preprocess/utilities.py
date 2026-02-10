@@ -795,7 +795,7 @@ def sino_high_pass_filtering(sino, sigma_row=3.0, sigma_col=15.0, subtract_view_
     return filtered_sino
 
 
-def sino_view_alignment(ct_model, sino, direct_recon):
+def align_sino_views(ct_model, sino, direct_recon):
     """
     Align each sinogram view using estimated per-view shifts.
 

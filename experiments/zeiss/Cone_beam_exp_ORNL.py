@@ -52,7 +52,7 @@ def main():
 
     # Perform sinogram per-view alignment
     print("\n********** Perform sinogram alignment **************")
-    sinogram = mjp.sino_view_alignment(ct_model, sinogram, direct_recon)
+    sinogram = mjp.align_sino_views(ct_model, sinogram, direct_recon)
 
     # Weights
     weights = mj.gen_weights(sinogram, weight_type='transmission_root')
