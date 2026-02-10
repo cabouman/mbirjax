@@ -12,7 +12,8 @@ pp = pprint.PrettyPrinter(indent=4)
 
 def main():
     # Recon parameters
-    sharpness = 1.0
+    sharpness = 1.5
+    snr_db = 35.0
     downsample_factor = 2
     subsample_view_factor = 2
 
@@ -36,9 +37,8 @@ def main():
     # Rerun auto-parameter functions because we changed the assumed detector pitch
     ct_model.auto_set_recon_geometry(sinogram.shape) # Reset default recon shape
 
-    # Sharpness and weights
-    ct_model.set_params(sharpness=sharpness)
-    weights = mj.gen_weights(sinogram, weight_type='transmission_root')
+    # Sharpness and snr_db
+    ct_model.set_params(sharpness=sharpness, snr_db=snr_db)
 
     # Display the sinogram
     mj.slice_viewer(sinogram, slice_axis=0, title='Original sinogram')
@@ -50,8 +50,19 @@ def main():
     print("\n********** Perform FDK reconstruction **************")
     direct_recon = ct_model.direct_recon(sinogram)
 
+    # Perform sinogram per-view alignment
+    print("\n********** Perform sinogram alignment **************")
+    sinogram = mjp.sino_view_alignment(ct_model, sinogram, direct_recon)
+
+    # Weights
+    weights = mj.gen_weights(sinogram, weight_type='transmission_root')
+
+    # Perform FDK reconstruction
+    print("\n********** Perform FDK reconstruction after alignment **************")
+    direct_recon = ct_model.direct_recon(sinogram)
+
     # Perform MBIR reconstruction
-    print("\n********** Perform MBIR reconstruction **************")
+    print("\n********** Perform MBIR reconstruction after alignment **************")
     mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     # Save recon to hdf5
