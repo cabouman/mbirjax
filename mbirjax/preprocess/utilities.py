@@ -4,6 +4,7 @@ import glob
 import os
 import jax.numpy as jnp
 import jax
+import cv2
 
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
@@ -701,3 +702,131 @@ def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buff
     optional_params['recon_slice_offset'] = recon_slice_offset
 
     return sino, cone_beam_params, optional_params
+
+
+def estimate_sino_view_offset(ct_model, sino, direct_recon):
+    """
+    Estimate per-view 2D shifts for a sinogram.
+
+    This function estimate the shifts in three steps:
+    1. Forward project the preliminary reconstruction using the CT model.
+    2. Apply high-pass filtering to both the sinogram and the
+        forward projection of the preliminary reconstruction.
+    3. For each view, estimate a 2D shift that aligns the sinogram view
+        to the corresponding forward-projected view using an image alignment method from OpenCV
+
+    Args:
+        ct_model (mj.TomographyModel): A CT model object that defined the CT geometry.
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        direct_recon (numpy array or jax array): A preliminary 3D reconstruction of the sinogram.
+
+    Returns:
+        estimated_shifts (numpy.array or jax array): A (num_views, 2) array of per-view shift (y, x) in pixels.
+            Each shift specified how much the corresponding sinogram slice should be shifted to match forward projection.
+            Positive x shifts the view right. Positive y shifts the view down.
+    """
+    # Verify the input recon shape
+    recon_shape = ct_model.get_params('recon_shape')
+    if direct_recon.shape != recon_shape:
+        raise ValueError("Input recon shape does not match ct_model's recon shape.")
+
+    # Forward project the reconstruction
+    sino_from_recon = ct_model.forward_project(direct_recon)
+
+    # Apply a high-pass filter to sinogram and forward projection of the reconstruction
+    filtered_sino = sino_high_pass_filtering(sino)
+    filtered_sino_from_recon = sino_high_pass_filtering(sino_from_recon)
+
+    # Estimate the shift between original sinogram and forward projected recon
+    num_slices, num_rows, num_channels = sino.shape
+    estimated_shifts = np.zeros((num_slices, 2))
+
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
+    for slice_index in range(num_slices):
+        sino_from_recon_view = np.asarray(filtered_sino_from_recon[slice_index, :, :], dtype=sino_from_recon.dtype)
+        sino_view = np.asarray(filtered_sino[slice_index, :, :], dtype=sino.dtype)
+        cc, warp_matrix = cv2.findTransformECC(sino_from_recon_view, sino_view, warp_matrix,
+                                               cv2.MOTION_TRANSLATION)
+        estimated_shifts[slice_index, 0] = -warp_matrix[1, 2]
+        estimated_shifts[slice_index, 1] = -warp_matrix[0, 2]
+
+    return estimated_shifts
+
+
+def sino_high_pass_filtering(sino, sigma_row=3.0, sigma_col=15.0, subtract_view_mean=True):
+    """
+    High-pass filter for 3D cone-beam sinogram.
+
+    Args:
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        sigma_row (float, optional): Gaussian sigma along detector rows (vertical). Use smaller value than sigma_col.
+        Defaults to 3.0.
+        sigma_col (float, optional): Gaussian sigma along detector channels (horizontal). Defaults to 15.0.
+        subtract_view_mean (bool, optional): If True, subtract per-view mean (DC offset removal). Defaults to True.
+
+    Returns:
+        filtered_sino (numpy array): High-pass filtered sinogram, same shape as input.
+    """
+    sino_np = np.asarray(sino)
+    if sino_np.ndim != 3:
+        raise ValueError(f"Expected shape (num_views, num_det_rows, num_det_channels), got {sino_np.shape}")
+
+    num_views, num_det_rows, num_det_channels = sino_np.shape
+    filtered_sino = np.empty_like(sino_np)
+
+    for view in range(num_views):
+        single_view = sino_np[view]
+
+        # Subtract per-view mean
+        if subtract_view_mean:
+            single_view = single_view - single_view.mean()
+
+        # Estimate low frequency component for each view
+        loss_pass_estimate = cv2.GaussianBlur(
+            single_view,
+            ksize=(0, 0),
+            sigmaX=sigma_col,
+            sigmaY=sigma_row,
+            borderType=cv2.BORDER_REFLECT,
+        )
+
+        filtered_sino[view] = single_view - loss_pass_estimate
+
+    return filtered_sino
+
+
+def align_sino_views(ct_model, sino, direct_recon):
+    """
+    Align each sinogram view using estimated per-view shifts.
+
+    This function performs sinogram alignment in two steps:
+    1. Estimate a 2D shift for each sinogram view.
+    2. Align each sinogram view using the estimated shift with the forward projected reconstruction.
+
+    The alignment helps correct small per-view misalignments between the
+    measured sinogram and the forward projection of a preliminary reconstruction.
+
+    Args:
+        ct_model (mj.TomographyModel): A CT model object that defined the CT geometry.
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        direct_recon (numpy array or jax array): A preliminary 3D reconstruction of the sinogram.
+
+    Returns:
+        jax array: Aligned sinogram with the same shape as the input sinogram (num_views, num_det_rows, num_det_channels).
+    """
+    # Estimate per-view shift of the sinogram
+    estimated_shifts = estimate_sino_view_offset(ct_model, sino, direct_recon)
+
+    # Align each view of the sinogram using estimated shifts
+    def shift_view(sino_view, shift):
+        dy, dx = shift
+        shifted_view = jax.image.scale_and_translate(sino_view,
+                                                      shape=sino_view.shape,
+                                                      spatial_dims=(0, 1),
+                                                      scale=jnp.array([1.0, 1.0]),
+                                                      translation=jnp.array([dy, dx]),
+                                                      method="linear",
+                                                      antialias=False)
+        return shifted_view
+
+    return jax.vmap(shift_view, in_axes=(0, 0))(sino, estimated_shifts)
