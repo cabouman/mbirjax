@@ -63,6 +63,7 @@ def main():
                     title='Comparison of FDK before and after alignment')
 
     # Visualize the MBIR recon before and after sinogram alignment
+    print("\n********** Perform MBIR reconstruction before and after alignment **************")
     mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     aligned_sino_weights = mj.gen_weights(aligned_sino, weight_type='transmission_root')
