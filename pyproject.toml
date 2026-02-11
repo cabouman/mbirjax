@@ -38,6 +38,7 @@ dependencies = [
     "olefile",
     "scikit-learn",
     "osqp",
+    "opencv-python",
 ]
 
 [project.optional-dependencies]

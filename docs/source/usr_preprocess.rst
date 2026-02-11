@@ -48,6 +48,8 @@ General preprocess functions
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: compute_sino_transmission
+.. autofunction:: auto_crop_sino_conebeam
+.. autofunction:: align_sino_views
 .. autofunction:: interpolate_defective_pixels
 .. autofunction:: correct_det_rotation
 .. autofunction:: correct_background_offset
