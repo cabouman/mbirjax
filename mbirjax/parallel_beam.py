@@ -184,7 +184,7 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view_v2(voxel_values, pixel_indices, angle, projector_params):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
