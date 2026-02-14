@@ -8,35 +8,17 @@ from tqdm import tqdm
 import mbirjax as mj
 
 
-def debug_plot_partitions(partitions, recon_shape):
+def debug_plot_partitions(partitions, recon_shape, grid):
     """
     Visualizes a set of partitions as color images in a single row, where each partition is represented by a different color.
 
     Parameters:
-        partitions (tuple of arrays): A tuple where each element is a 2D numpy array representing a partition.
+        partitions (tuple or list of arrays): A tuple where each element is a 2D numpy array representing a partition.
         recon_shape (tuple): Shape of phantom in (rows, columns, slices).
     """
     num_recon_rows, recon_shape = recon_shape[:2]
     font_size = plt.rcParams["font.size"]
     plt.rcParams.update({'font.size': 24})  # Adjust font size here
-    num_partitions = len(partitions)
-    fig = plt.figure(figsize=(23, 5))
-    # ImageGrid spacing units are inches; tune these for row/column spacing density.
-    grid_axes_pad = (0.20, 0.30)   # (horizontal, vertical) spacing between subplots
-    grid_cbar_pad = 0.10           # spacing between last column and colorbar
-    grid_cbar_size = "2.5%"        # colorbar width
-    grid = ImageGrid(
-        fig,
-        111,
-        nrows_ncols=(1, num_partitions),
-        axes_pad=grid_axes_pad,
-        share_all=False,
-        aspect=False,
-        cbar_mode=None,
-        cbar_location="right",
-        cbar_pad=grid_cbar_pad,
-        cbar_size=grid_cbar_size,
-    )
 
     for i, partition in enumerate(partitions):
         # Create an empty image array to fill with subset colors
@@ -65,27 +47,31 @@ def debug_plot_partitions(partitions, recon_shape):
             ax.set_title(f'{len(partition)} subsets')
         ax.axis('off')  # Turn off axis labels
 
-    plt.tight_layout()
-    plt.show()
-
     plt.rcParams.update({'font.size': font_size})  # Reset the font size
 
 
 if __name__ == "__main__":
 
-    # Generate sequence of partition images for Figure 1
-    recon_shape = (32, 32, 1)
+    # Set parameters
+    recon_shape = (128, 128, 1)
+    granularity = [1, 4, 16, 64, 128]
+    use_grid_subsets = True
+    min_num_indices = 32
+    font_size = 20
+    vmin = 0.1
+    # ImageGrid spacing units are inches; tune these for row/column spacing density.
+    grid_axes_pad = (0.02, 0.5)   # (horizontal, vertical) spacing between subplots
+    grid_cbar_pad = 0.10           # spacing between last column and colorbar
+    grid_cbar_size = "2.5%"        # colorbar width
+
+    # Calculate derived parameters
+    plt.rcParams.update({'font.size': font_size})
+    fig = plt.figure(figsize=(4*len(granularity), 15))
     num_angles = recon_shape[0] // 2
     angles = np.linspace(0, np.pi, num=num_angles, endpoint=False)
     num_views = len(angles)
     sinogram_shape = (num_views, 1, recon_shape[0])
     ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
-
-    granularity = [1, 4, 16, 64, 128]
-    use_ror_mask = True
-    use_grid_subsets = True
-    min_num_indices = 32  # len(partitions[-1][0])
-
     if use_grid_subsets:
         gen_partition = mj.gen_pixel_partition_grid
     else:
@@ -93,26 +79,18 @@ if __name__ == "__main__":
 
     partitions = []
     for num_subsets in granularity:
-        partition = gen_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
+        partition = gen_partition(recon_shape, num_subsets, use_ror_mask=True)
         partitions.append(partition)
 
-    # Plot the set of partitions
-    debug_plot_partitions(partitions=partitions, recon_shape=recon_shape)
-
-    vmin = 0.1
     log_vmin = np.log10(vmin)
     log_vmax = None
     # Plot A^T A for each of the subsets
     ncols = len(partitions)
-    fig = plt.figure(figsize=(23, 10))
-    # ImageGrid spacing units are inches; tune these for row/column spacing density.
-    grid_axes_pad = (0.20, 0.30)   # (horizontal, vertical) spacing between subplots
-    grid_cbar_pad = 0.10           # spacing between last column and colorbar
-    grid_cbar_size = "2.5%"        # colorbar width
+
     grid = ImageGrid(
         fig,
         111,
-        nrows_ncols=(2, ncols),
+        nrows_ncols=(3, ncols),
         axes_pad=grid_axes_pad,
         share_all=False,
         aspect=False,
@@ -121,7 +99,10 @@ if __name__ == "__main__":
         cbar_pad=grid_cbar_pad,
         cbar_size=grid_cbar_size,
     )
-    plt.rcParams.update({'font.size': 24})
+
+    # Plot the set of partitions
+    debug_plot_partitions(partitions=partitions, recon_shape=recon_shape, grid=grid)
+
     # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
     # Each column is A^T A applied to a basis vector e_j in the restricted index set.
     restricted_indices = np.asarray(partitions[0][0]).flatten()
@@ -163,7 +144,7 @@ if __name__ == "__main__":
         )
 
         # Plot the full A^T A
-        top_ax = grid[i]
+        top_ax = grid[ncols + i]
         im = top_ax.imshow(
             cur_at_a,
             cmap='viridis',
@@ -194,7 +175,7 @@ if __name__ == "__main__":
 
         # Then the zoomed A^T A
         zoom_log_at_a = cur_at_a[:min_num_indices, :min_num_indices]
-        bottom_ax = grid[ncols + i]
+        bottom_ax = grid[2*ncols + i]
         bottom_ax.imshow(
             zoom_log_at_a,
             cmap='viridis',
