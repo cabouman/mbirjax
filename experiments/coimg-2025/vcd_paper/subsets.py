@@ -2,6 +2,8 @@ import numpy as np
 import os
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+from mpl_toolkits.axes_grid1 import ImageGrid
 from tqdm import tqdm
 import mbirjax as mj
 
@@ -15,7 +17,8 @@ def debug_plot_partitions(partitions, recon_shape):
         recon_shape (tuple): Shape of phantom in (rows, columns, slices).
     """
     num_recon_rows, recon_shape = recon_shape[:2]
-    plt.rcParams.update({'font.size': 24})  # Adjust font size here
+    font_size = plt.rcParams["font.size"]
+    plt.rcParams.update({'font.size': 18})  # Adjust font size here
     num_partitions = len(partitions)
     fig, axes = plt.subplots(nrows=1, ncols=num_partitions, figsize=(5 * num_partitions, 5))
 
@@ -38,19 +41,21 @@ def debug_plot_partitions(partitions, recon_shape):
 
         cax = ax.imshow(image, cmap='nipy_spectral', interpolation='nearest')
         if len(partition) == 1:
-            ax.set_title(f'{len(partition)} Subset')
+            ax.set_title(f'{len(partition)} subset')
         else:
-            ax.set_title(f'{len(partition)} Subsets')
+            ax.set_title(f'{len(partition)} subsets')
         ax.axis('off')  # Turn off axis labels
 
     plt.tight_layout()
     plt.show()
 
+    plt.rcParams.update({'font.size': font_size})  # Reset the font size
+
 
 if __name__ == "__main__":
 
     # Generate sequence of partition images for Figure 1
-    recon_shape = (32, 32, 1)
+    recon_shape = (128, 128, 1)
     num_angles = recon_shape[0] // 2
     angles = np.linspace(0, np.pi, num=num_angles, endpoint=False)
     num_views = len(angles)
@@ -59,8 +64,7 @@ if __name__ == "__main__":
 
     granularity = [1, 4, 16, 64, 128]
     use_ror_mask = True
-    use_grid_subsets = False
-    plot_full_images = False
+    use_grid_subsets = True
     min_num_indices = 32  # len(partitions[-1][0])
 
     if use_grid_subsets:
@@ -74,7 +78,7 @@ if __name__ == "__main__":
         partitions.append(partition)
 
     # Plot the set of partitions
-    # mj.debug_plot_partitions(partitions=partitions, recon_shape=recon_shape)
+    debug_plot_partitions(partitions=partitions, recon_shape=recon_shape)
 
     # for i, partition in enumerate(partitions):
     #     # Create an empty image array to fill with subset colors
@@ -110,7 +114,23 @@ if __name__ == "__main__":
     log_vmax = None
     # Plot A^T A for each of the subsets
     ncols = len(partitions)
-    fig, ax = plt.subplots(nrows=2, ncols=ncols, figsize=(23, 10))
+    fig = plt.figure(figsize=(23, 10))
+    # ImageGrid spacing units are inches; tune these for row/column spacing density.
+    grid_axes_pad = (0.20, 0.30)   # (horizontal, vertical) spacing between subplots
+    grid_cbar_pad = 0.10           # spacing between last column and colorbar
+    grid_cbar_size = "2.5%"        # colorbar width
+    grid = ImageGrid(
+        fig,
+        111,
+        nrows_ncols=(2, ncols),
+        axes_pad=grid_axes_pad,
+        share_all=False,
+        aspect=False,
+        cbar_mode="single",
+        cbar_location="right",
+        cbar_pad=grid_cbar_pad,
+        cbar_size=grid_cbar_size,
+    )
 
     # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
     # Each column is A^T A applied to a basis vector e_j in the restricted index set.
@@ -153,83 +173,51 @@ if __name__ == "__main__":
         )
 
         # Plot the full A^T A
-        im = ax[0, i].imshow(cur_at_a, cmap='viridis', aspect='equal', vmin=log_vmin, vmax=log_vmax)
-        title = '# subsets = {}\n'.format(len(partitions[i]))
+        top_ax = grid[i]
+        im = top_ax.imshow(
+            cur_at_a,
+            cmap='viridis',
+            aspect='auto',
+            vmin=log_vmin,
+            vmax=log_vmax,
+            extent=(0.0, 1.0, 0.0, 1.0),
+            origin='upper',
+            interpolation='nearest',
+        )
+        num_subsets = len(partition)
+        if num_subsets == 1:
+            title = '{} subset\n'.format(num_subsets)
+        else:
+            title = '{} subsets\n'.format(num_subsets)
         title += r'$A^T A$: '
         cur_num_rows = cur_at_a.shape[0]
         title += '{} x {}'.format(cur_num_rows, cur_num_rows)
-        ax[0, i].set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
-        ax[0, i].axis("off")
+        top_ax.set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
+        top_ax.axis("off")
 
         # Then the zoomed A^T A
         zoom_log_at_a = cur_at_a[:min_num_indices, :min_num_indices]
-        ax[1, i].imshow(zoom_log_at_a, cmap='viridis', aspect='equal', vmin=log_vmin, vmax=log_vmax)
+        bottom_ax = grid[ncols + i]
+        bottom_ax.imshow(
+            zoom_log_at_a,
+            cmap='viridis',
+            aspect='auto',
+            vmin=log_vmin,
+            vmax=log_vmax,
+            extent=(0.0, 1.0, 0.0, 1.0),
+            origin='upper',
+            interpolation='nearest',
+        )
         title = r'$A^T A$ zoom: '
         cur_num_rows = zoom_log_at_a.shape[0]
         title += '{} x {}'.format(cur_num_rows, cur_num_rows)
-        ax[1, i].set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
-        ax[1, i].axis("off")
+        bottom_ax.set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
+        bottom_ax.axis("off")
 
-
-
-    # # For each partition, we'll map the first-subset indices into row/col positions of restricted_indices.
-    # # First get the dict from restricted indices into rows/cols of at_a_restricted
-    # for i, partition in enumerate(partitions):
-    #     cur_subset_indices = np.asarray(partition[0]).flatten()
-    #     if not plot_full_images:
-    #         cur_subset_indices = cur_subset_indices[:min_num_indices]
-    #     # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
-    #     # Each column is A^T A applied to a basis vector e_j in the restricted index set.
-    #     restricted_indices = cur_subset_indices
-    #     num_restricted = restricted_indices.size
-    #     num_pixels = int(np.prod(recon_shape))
-    #     at_a_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
-    #
-    #     basis_vector = np.zeros(num_pixels, dtype=np.float32)
-    #     for col, pixel_index in tqdm(
-    #         enumerate(restricted_indices),
-    #         total=num_restricted,
-    #         desc="Building (A^T A)[I, I]",
-    #     ):
-    #         basis_vector[pixel_index] = 1.0
-    #         basis_image = basis_vector.reshape(recon_shape)
-    #         sinogram = ct_model.forward_project(basis_image)
-    #         back_projection = ct_model.back_project(sinogram)
-    #         back_projection_flat = np.asarray(back_projection).reshape(-1)
-    #         at_a_restricted[:, col] = back_projection_flat[restricted_indices]
-    #         basis_vector[pixel_index] = 0.0
-    #     log_abs_at_a_restricted = np.log10(np.clip(np.abs(at_a_restricted), vmin, None))
-    #     if log_vmax is None:
-    #         log_vmax = log_abs_at_a_restricted.max()
-    #     print(f"Restricted index count: {num_restricted}")
-    #     print(f"(A^T A)[I, I] shape: {at_a_restricted.shape}")
-    #     print(f"log abs(M) min: {log_abs_at_a_restricted.min():.6g}")
-    #     print(f"log abs(M) max: {log_abs_at_a_restricted.max():.6g}")
-    #
-    #     im = ax[i].imshow(log_abs_at_a_restricted, cmap='viridis', aspect='equal', vmin=log_vmin, vmax=log_vmax)
-    #     title = '# subsets = {}\n'.format(len(partitions[i]))
-    #     if plot_full_images:
-    #         title += r'$A^T A$: '
-    #     else:
-    #         title += r'$A^T A$ zoom: '
-    #     cur_num_rows = log_abs_at_a_restricted.shape[0]
-    #     title += '{} x {}'.format(cur_num_rows, cur_num_rows)
-    #     ax[i].set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
-    #     ax[i].axis("off")
-    # plt.colorbar(label=r"$log |M_{ij}|$")
-    # # Single colorbar for the whole figure:
-    import matplotlib as mpl
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # Single colorbar spanning both rows.
     norm = mpl.colors.Normalize(vmin=log_vmin, vmax=log_vmax)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap='viridis')
     sm.set_array([])
-
-    # Force colorbar to use all subplot axes as one group
-    cbar = fig.colorbar(
-        sm,  # or im from first imshow
-        ax=ax.ravel().tolist(),
-        location="right",
-        pad=0.02
-    )
-    # plt.tight_layout()
+    cbar = grid.cbar_axes[0].colorbar(sm)
+    cbar.ax.set_ylabel(r'$\log_{10}|A^T A|$')
     plt.show()
