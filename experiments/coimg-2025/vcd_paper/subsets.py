@@ -18,9 +18,25 @@ def debug_plot_partitions(partitions, recon_shape):
     """
     num_recon_rows, recon_shape = recon_shape[:2]
     font_size = plt.rcParams["font.size"]
-    plt.rcParams.update({'font.size': 18})  # Adjust font size here
+    plt.rcParams.update({'font.size': 24})  # Adjust font size here
     num_partitions = len(partitions)
-    fig, axes = plt.subplots(nrows=1, ncols=num_partitions, figsize=(5 * num_partitions, 5))
+    fig = plt.figure(figsize=(23, 5))
+    # ImageGrid spacing units are inches; tune these for row/column spacing density.
+    grid_axes_pad = (0.20, 0.30)   # (horizontal, vertical) spacing between subplots
+    grid_cbar_pad = 0.10           # spacing between last column and colorbar
+    grid_cbar_size = "2.5%"        # colorbar width
+    grid = ImageGrid(
+        fig,
+        111,
+        nrows_ncols=(1, num_partitions),
+        axes_pad=grid_axes_pad,
+        share_all=False,
+        aspect=False,
+        cbar_mode=None,
+        cbar_location="right",
+        cbar_pad=grid_cbar_pad,
+        cbar_size=grid_cbar_size,
+    )
 
     for i, partition in enumerate(partitions):
         # Create an empty image array to fill with subset colors
@@ -34,12 +50,15 @@ def debug_plot_partitions(partitions, recon_shape):
         image = image.reshape((num_recon_rows, recon_shape))
 
         # Plotting
-        if num_partitions == 1:
-            ax = axes
-        else:
-            ax = axes[i]
-
-        cax = ax.imshow(image, cmap='nipy_spectral', interpolation='nearest')
+        ax = grid[i]
+        im = ax.imshow(
+            image,
+            cmap='nipy_spectral',
+            aspect='equal',
+            extent=(0.0, 1.0, 0.0, 1.0),
+            origin='upper',
+            interpolation='nearest',
+        )
         if len(partition) == 1:
             ax.set_title(f'{len(partition)} subset')
         else:
@@ -55,7 +74,7 @@ def debug_plot_partitions(partitions, recon_shape):
 if __name__ == "__main__":
 
     # Generate sequence of partition images for Figure 1
-    recon_shape = (128, 128, 1)
+    recon_shape = (32, 32, 1)
     num_angles = recon_shape[0] // 2
     angles = np.linspace(0, np.pi, num=num_angles, endpoint=False)
     num_views = len(angles)
@@ -80,35 +99,6 @@ if __name__ == "__main__":
     # Plot the set of partitions
     debug_plot_partitions(partitions=partitions, recon_shape=recon_shape)
 
-    # for i, partition in enumerate(partitions):
-    #     # Create an empty image array to fill with subset colors
-    #     subset = np.zeros((recon_shape[0] * recon_shape[1]), dtype=int)
-    #
-    #     # Assign nonzeros to this subset
-    #     indices = partition[0]
-    #     subset[indices.flatten()] = 1.0
-    #
-    #     # Reshape the image array back to 2D format
-    #     subset = subset.reshape(recon_shape)
-    #
-    #     sinogram = ct_model.forward_project(subset)
-    #     back_projection = ct_model.back_project(sinogram)
-    #
-    #     sinogram /= sinogram.max()
-    #     back_projection /= back_projection.max()
-    #
-    #     _, ax = plt.subplots(nrows=1, ncols=2, figsize=(10, 5))
-    #     ax[0].imshow(subset[:, :, 0])
-    #     ax[0].set_title(r"Subset, $S$")
-    #     ax[0].axis('off')
-    #
-    #     ax[1].imshow(back_projection[:, :, 0])
-    #     ax[1].set_title(r"$A^T A S$")
-    #     ax[1].axis('off')
-    #
-    #     plt.tight_layout()
-    #     plt.show()
-
     vmin = 0.1
     log_vmin = np.log10(vmin)
     log_vmax = None
@@ -131,7 +121,7 @@ if __name__ == "__main__":
         cbar_pad=grid_cbar_pad,
         cbar_size=grid_cbar_size,
     )
-
+    plt.rcParams.update({'font.size': 24})
     # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
     # Each column is A^T A applied to a basis vector e_j in the restricted index set.
     restricted_indices = np.asarray(partitions[0][0]).flatten()
@@ -177,7 +167,7 @@ if __name__ == "__main__":
         im = top_ax.imshow(
             cur_at_a,
             cmap='viridis',
-            aspect='auto',
+            aspect='equal',
             vmin=log_vmin,
             vmax=log_vmax,
             extent=(0.0, 1.0, 0.0, 1.0),
@@ -185,13 +175,20 @@ if __name__ == "__main__":
             interpolation='nearest',
         )
         num_subsets = len(partition)
-        if num_subsets == 1:
-            title = '{} subset\n'.format(num_subsets)
-        else:
-            title = '{} subsets\n'.format(num_subsets)
-        title += r'$A^T A$: '
+        # if num_subsets == 1:
+        #     title = '{} subset\n'.format(num_subsets)
+        # else:
+        #     title = '{} subsets\n'.format(num_subsets)
+        title = r'$A^T A$: '
         cur_num_rows = cur_at_a.shape[0]
-        title += '{} x {}'.format(cur_num_rows, cur_num_rows)
+        if cur_num_rows < 1000:
+            title += '{} x {}'.format(cur_num_rows, cur_num_rows)
+        else:
+            if cur_num_rows < 10000:
+                display_rows = np.round(cur_num_rows / 1000.0, decimals=1)
+            else:
+                display_rows = np.round(cur_num_rows / 1000.0).astype(int)
+                title += '{}K x {}K'.format(display_rows, display_rows)
         top_ax.set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
         top_ax.axis("off")
 
@@ -201,16 +198,15 @@ if __name__ == "__main__":
         bottom_ax.imshow(
             zoom_log_at_a,
             cmap='viridis',
-            aspect='auto',
+            aspect='equal',
             vmin=log_vmin,
             vmax=log_vmax,
             extent=(0.0, 1.0, 0.0, 1.0),
             origin='upper',
             interpolation='nearest',
         )
-        title = r'$A^T A$ zoom: '
         cur_num_rows = zoom_log_at_a.shape[0]
-        title += '{} x {}'.format(cur_num_rows, cur_num_rows)
+        title = '{} x {} corner'.format(cur_num_rows, cur_num_rows)
         bottom_ax.set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
         bottom_ax.axis("off")
 
