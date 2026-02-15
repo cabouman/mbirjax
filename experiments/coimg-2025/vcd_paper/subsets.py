@@ -169,7 +169,7 @@ if __name__ == "__main__":
                 display_rows = np.round(cur_num_rows / 1000.0, decimals=1)
             else:
                 display_rows = np.round(cur_num_rows / 1000.0).astype(int)
-                title += '{}K x {}K'.format(display_rows, display_rows)
+            title += '{}K x {}K'.format(display_rows, display_rows)
         top_ax.set_title(title)  # (r"Heatmap of $log |(A^T A)[I, I]|$")
         top_ax.axis("off")
 
