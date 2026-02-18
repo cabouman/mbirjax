@@ -53,7 +53,7 @@ def debug_plot_partitions(partitions, recon_shape, grid):
 if __name__ == "__main__":
 
     # Set parameters
-    recon_shape = (128, 128, 1)
+    recon_shape = (64, 64, 1)
     granularity = [1, 4, 16, 64, 128]
     use_grid_subsets = True
     min_num_indices = 32
