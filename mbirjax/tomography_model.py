@@ -1562,11 +1562,10 @@ class TomographyModel(ParameterHandler):
     def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
                              output_device=None):
         """
-        Compute
-            forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
-            forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-        with batching to the worker if needed, which is feasible since the data transfer is mostly from
-        the main deice to the worker, with only 2 floats sent back with each batch.
+        Compute forward model terms used in line-search updates:
+        ``forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)`` and
+        ``forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)``.
+        This supports batching to a worker, with only two floats returned per batch.
 
         Args:
             weighted_error_sinogram (jax array):
@@ -1577,8 +1576,7 @@ class TomographyModel(ParameterHandler):
             output_device (jax device): device on which the output will be placed
 
         Returns:
-            tuple:
-            forward_linear, forward_quadratic
+            tuple: ``(forward_linear, forward_quadratic)``
         """
         forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
         forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
