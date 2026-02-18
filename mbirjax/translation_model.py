@@ -68,7 +68,7 @@ class TranslationModel(mj.TomographyModel):
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
                          source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
 
-        self.max_over_relaxation = 1.0  # We override this value due to observed instabilities with larger values
+        self.max_over_relaxation = 1.3  # We override this value due to observed instabilities with larger values
 
     def get_magnification(self):
         """
@@ -252,7 +252,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = L_p_c_n / cos_theta_p
+            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -420,7 +420,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = L_p_c_n / cos_theta_p
+            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
