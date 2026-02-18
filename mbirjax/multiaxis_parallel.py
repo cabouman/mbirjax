@@ -21,6 +21,7 @@ class MultiAxisParallelModel(TomographyModel):
     When elevation = 0, this model is mathematically equivalent to ParallelBeamModel (mirroring its behavior exactly).
 
     Novelty/Extension:
+        - Parallel beam laminography is a special case of this geometry.
         - Introduces split vertical/horizontal fan projectors (mirrors ConeBeamModel and TranslationModel).
         - Supports arbitrary elevation without assuming slice independence (generalization of ParallelBeamModel).
         - Directional velocity-weighted ramp filter in direct_recon (extension of standard ramp in ParallelBeamModel).
