@@ -11,13 +11,21 @@ def main():
     sharpness = 2.0
     num_recon_rows = 40
 
-    # Load the ground truth phantom and synthetic sinogram
-    gt_phantom = np.load("./output/TCT_simulated_phantom.npy")
+    # Load the ground truth phantom, synthetic sinogram and reconstruction parameters
+    simulated_data_path = "./output/TCT_simulated_data.npz"
 
-    sino_and_config = np.load("./output/TCT_synthetic_sino_and_config.npz", allow_pickle=True)
-    sinogram = sino_and_config["sino"]
-    translation_params = sino_and_config["translation_params"].item()
-    optional_params = sino_and_config["optional_params"].item()
+    try:
+        simulated_data = np.load(simulated_data_path, allow_pickle=True)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Cannot find '{simulated_data_path}'. "
+            "Please run TCT_generate_phantom.py first to generate the simulated data."
+        )
+
+    gt_phantom = simulated_data["phantom"]
+    sinogram = simulated_data["sino"]
+    translation_params = simulated_data["translation_params"].item()
+    optional_params = simulated_data["optional_params"].item()
 
     # Output path
     output_path = './output/'  # path to store output recon images
@@ -67,7 +75,7 @@ def main():
     # Display results
     mj.slice_viewer(gt_phantom.transpose(0, 2, 1), direct_recon.transpose(0, 2, 1), mbir_recon.transpose(0, 2, 1),
                     data_dicts=[None, direct_dict, mbir_dict],
-                    vmin=0, vmax=0.0066, title='Object (left), FDK recon (middle), MBIR reconstruction (right)',
+                    vmin=0, vmax=1.2, title='Object (left), FDK recon (middle), MBIR reconstruction (right)',
                     slice_axis=0)
 
 
