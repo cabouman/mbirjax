@@ -12,3 +12,4 @@ from .viewer import *
 from . import preprocess
 from .translation_model import *
 from .hsnt import *
+from .multiaxis_parallel_beam import *
