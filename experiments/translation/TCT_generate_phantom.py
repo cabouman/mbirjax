@@ -169,7 +169,7 @@ def main():
     optional_params['alu_unit'] = ALU_unit
     optional_params['alu_value'] = ALU_value
 
-    # Save the synthetic sinogram and config file together
+    # Save the synthetic sinogram and reconstruction parameters together
     sino_config_path = os.path.join(output_path, 'TCT_synthetic_sino_and_config.npz')
     np.savez(sino_config_path, sino=sino, translation_params=translation_params, optional_params=optional_params)
 
