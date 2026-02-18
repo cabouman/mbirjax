@@ -38,9 +38,8 @@ def main():
                                                                          translation_vectors)
 
     tct_model.set_params(recon_shape=(num_recon_rows,)+recon_shape[1:])
-    tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(positivity_flag=True)
-    tct_model.set_params(partition_sequence=50*[0,] + 100*[2,] + [3,])
+    tct_model.set_params(partition_sequence=5*[0,] + 100*[1, 3,])
     tct_model.set_params(qggmrf_nbr_wts=[0.1, 1, 1])
 
     # Print model parameters and display translation array
@@ -61,7 +60,6 @@ def main():
     mbir_recon, mbir_dict = tct_model.recon(sinogram, max_iterations=200, stop_threshold_change_pct=0.1)
 
     # Save reconstruction results
-    output_path = './output/'  # path to store output recon
     os.makedirs(output_path, exist_ok=True)
     output_path = os.path.join(output_path, f'TCT_simulation_recon.h5')
     mj.export_recon_hdf5(output_path, mbir_recon, recon_dict=mbir_dict, top_margin=0, bottom_margin=0)
@@ -69,7 +67,7 @@ def main():
     # Display results
     mj.slice_viewer(gt_phantom.transpose(0, 2, 1), direct_recon.transpose(0, 2, 1), mbir_recon.transpose(0, 2, 1),
                     data_dicts=[None, direct_dict, mbir_dict],
-                    vmin=0, vmax=1, title='Object (left), FDK recon (middle), MBIR reconstruction (right)',
+                    vmin=0, vmax=0.0066, title='Object (left), FDK recon (middle), MBIR reconstruction (right)',
                     slice_axis=0)
 
 
