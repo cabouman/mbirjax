@@ -10,7 +10,7 @@ import warnings
 MultiAxisParallelBeamParamNames = mj.ParamNames | Literal['angles', 'recon_slice_offset']
 
 
-class MultiAxisParallelBeamModel(TomographyModel):
+class MultiAxisParallelModel(TomographyModel):
     """
     Parallel beam geometry allowing for a per-view elevation (tilt) angle.
 
@@ -170,12 +170,12 @@ class MultiAxisParallelBeamModel(TomographyModel):
         """
         # 1. Vertical Projection: Project voxel cylinders (slices) to detector rows
         # Output: (num_pixels, num_det_rows)
-        vertical_projector = MultiAxisParallelBeamModel.forward_vertical_fan_pixel_batch_to_one_view
+        vertical_projector = MultiAxisParallelModel.forward_vertical_fan_pixel_batch_to_one_view
         rows_data = vertical_projector(voxel_values, pixel_indices, single_view_params, projector_params)
 
         # 2. Horizontal Projection: Scatter pixel-rows to detector channels
         # Output: (num_det_rows, num_det_channels)
-        horizontal_projector = MultiAxisParallelBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
+        horizontal_projector = MultiAxisParallelModel.forward_horizontal_fan_pixel_batch_to_one_view
         sinogram_view = horizontal_projector(rows_data, pixel_indices, single_view_params, projector_params)
 
         return sinogram_view
@@ -186,7 +186,7 @@ class MultiAxisParallelBeamModel(TomographyModel):
         Maps (pixels, slices) -> (pixels, rows) using scatter (generalization of TranslationModel).
         """
         # Vmap over the pixel batch
-        pixel_map = jax.vmap(MultiAxisParallelBeamModel.forward_vertical_fan_one_pixel_to_one_view,
+        pixel_map = jax.vmap(MultiAxisParallelModel.forward_vertical_fan_one_pixel_to_one_view,
                              in_axes=(0, 0, None, None))
         new_pixels = pixel_map(voxel_values, pixel_indices, single_view_params, projector_params)
         return new_pixels
@@ -336,11 +336,11 @@ class MultiAxisParallelBeamModel(TomographyModel):
         Back project: Horizontal (Channels -> Rows) then Vertical (Rows -> Slices) (mirrors ConeBeamModel).
         """
         # 1. Horizontal Backproj: (rows, channels) -> (pixels, rows)
-        horizontal_bp = MultiAxisParallelBeamModel.back_horizontal_fan_one_view_to_pixel_batch
+        horizontal_bp = MultiAxisParallelModel.back_horizontal_fan_one_view_to_pixel_batch
         rows_data = horizontal_bp(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
 
         # 2. Vertical Backproj: (pixels, rows) -> (pixels, slices)
-        vertical_bp = MultiAxisParallelBeamModel.back_vertical_fan_one_view_to_pixel_batch
+        vertical_bp = MultiAxisParallelModel.back_vertical_fan_one_view_to_pixel_batch
         voxel_values = vertical_bp(rows_data, pixel_indices, single_view_params, projector_params, coeff_power)
 
         return voxel_values
@@ -390,7 +390,7 @@ class MultiAxisParallelBeamModel(TomographyModel):
     def back_vertical_fan_one_view_to_pixel_batch(rows_data, pixel_indices, single_view_params, projector_params,
                                                   coeff_power=1):
         # Vmap the per-pixel logic
-        pixel_map = jax.vmap(MultiAxisParallelBeamModel.back_vertical_fan_one_view_to_one_pixel,
+        pixel_map = jax.vmap(MultiAxisParallelModel.back_vertical_fan_one_view_to_one_pixel,
                              in_axes=(0, 0, None, None, None))
         return pixel_map(rows_data, pixel_indices, single_view_params, projector_params, coeff_power)
 
@@ -525,3 +525,7 @@ class MultiAxisParallelBeamModel(TomographyModel):
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         filtered_sinogram = self.fbp_filter(sinogram, filter_name, view_batch_size)
         return self.back_project(filtered_sinogram)
+
+
+# Backward-compatible public API name used throughout docs/examples.
+MultiAxisParallelBeamModel = MultiAxisParallelModel

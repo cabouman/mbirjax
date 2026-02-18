@@ -13,8 +13,8 @@ angles_tilt = jnp.column_stack([azimuths, elevation])
 
 # 2. Models
 model_pb = mj.ParallelBeamModel(sinogram_shape, azimuths)
-model_ma_zero = mj.MultiAxisParallelBeamModel(sinogram_shape, angles_zero)
-model_ma_tilt = mj.MultiAxisParallelBeamModel(sinogram_shape, angles_tilt)
+model_ma_zero = mj.MultiAxisParallelModel(sinogram_shape, angles_zero)
+model_ma_tilt = mj.MultiAxisParallelModel(sinogram_shape, angles_tilt)
 
 recon_shape = (150,150,100)
 model_pb.set_params(recon_shape=recon_shape)
@@ -49,10 +49,10 @@ plt.imshow(sino_pb[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
 plt.title(f'ParallelBeamModel Sinogram View \n Azimuth={jnp.rad2deg(azimuths[3]):.1f}°')
 plt.subplot(1,3,2)
 plt.imshow(sino_ma_zero[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
-plt.title(f'MultiAxisParallelBeamModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,0°)')
+plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,0°)')
 plt.subplot(1,3,3)
 plt.imshow(sino_ma_tilt[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
-plt.title(f'MultiAxisParallelBeamModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,20°)')
+plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,20°)')
 plt.show()
 
 time_start=time.time()
@@ -80,8 +80,8 @@ print(f"Max Direct Reconstruction Difference vs Standard (Elevation 20°): {max_
 
 # Display Direct Reconstructions
 
-mj.slice_viewer(recon_pb, recon_ma_zero, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=0', slice_axis=2, slice_label='Slice')
-mj.slice_viewer(recon_pb, recon_ma_tilt, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=20', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_zero, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=0', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_tilt, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=20', slice_axis=2, slice_label='Slice')
 
 time_start=time.time()
 recon_pb,_=model_pb.recon(sino_pb)
@@ -108,5 +108,5 @@ print(f"Max Reconstruction Difference vs Standard (Elevation 0): {max_diff_recon
 print(f"Max Reconstruction Difference vs Standard (Elevation 20°): {max_diff_recon_tilt:.2e}")
 
 # Display MBIR Reconstructions
-mj.slice_viewer(recon_pb, recon_ma_zero, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=0', slice_axis=2, slice_label='Slice')
-mj.slice_viewer(recon_pb, recon_ma_tilt, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=20', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_zero, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=0', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_tilt, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=20', slice_axis=2, slice_label='Slice')
