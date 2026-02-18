@@ -44,7 +44,7 @@ def main():
                                                                          source_iso_dist, delta_det_row,
                                                                          delta_det_channel, sino_shape,
                                                                          translation_vectors)
-
+    tct_model.set_params(delta_recon_row=delta_recon_row)
     tct_model.set_params(recon_shape=(num_recon_rows,)+recon_shape[1:])
     tct_model.set_params(positivity_flag=True)
     tct_model.set_params(partition_sequence=5*[0,] + 100*[1, 3,])
