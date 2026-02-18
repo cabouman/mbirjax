@@ -59,14 +59,20 @@ def read_measurement_csv(
     # --- Convert the first row to calibration values ---
     # Columns 2..end
     try:
-        calibration_values = np.array(
-            [float(x) for x in rows[0][2:]],
-            dtype=float
-        )
+        row = rows[0][2:]
+        for i, x in enumerate(row):
+            if x.find(",") != -1:
+                x = x.replace(',', '.')
+                row[i] = float(x)
+            elif float(x) < 10000:
+                row[i] = float(x)
+            else:
+                row[i] = float(x) / 1000
+        raman_shifts = np.array(row, dtype=float)
     except ValueError:
         raise ValueError("Calibration row contains non-numeric values.")
 
-    num_measurements = calibration_values.shape[0]
+    num_measurements = raman_shifts.shape[0]
 
     # --- Process data rows ---
     coord_list_0 = []
@@ -85,7 +91,17 @@ def read_measurement_csv(
             continue
 
         # measurement values
-        vals = np.array([float(x) for x in row[2:]], dtype=float)
+        row = row[2:]
+        for i, x in enumerate(row):
+            if x.find(",") != -1:
+                x = x.replace(',', '.')
+                row[i] = float(x)
+            elif float(x) < 10000:
+                row[i] = float(x)
+            else:
+                row[i] = float(x) / 1000.0
+        vals = np.array(row, dtype=float)
+
         if vals.size != num_measurements:
             raise ValueError(
                 f"Row has {vals.size} measurement columns, but expected {num_measurements}."
@@ -99,13 +115,12 @@ def read_measurement_csv(
     coord1 = np.array(coord_list_1, dtype=int)
     measurements = np.vstack(meas_list) if meas_list else np.zeros((0, num_measurements))
 
-    # --- Map odd coordinates in [-25,25]\{0} to indices 0..25 ---
+    # --- Map integer coordinates to indices 0...
     def coord_to_index(c: np.ndarray) -> np.ndarray:
-        if np.any(c == 0):
-            raise ValueError("Coordinate 0 encountered; expected odd integers ±1..±25.")
-        if np.any((c < -25) | (c > 25) | (c % 2 == 0)):
-            raise ValueError("Coordinates must be odd integers in [-25,-1] ∪ [1,25].")
-        return (c + 25) // 2
+        min_index = np.min(c)
+        unique_inds = np.unique(c)
+        step = unique_inds[1] - unique_inds[0]
+        return (c - min_index) // step
 
     idx0 = coord_to_index(coord0)
     idx1 = coord_to_index(coord1)
@@ -116,12 +131,12 @@ def read_measurement_csv(
     for i, j, vec in zip(idx0, idx1, measurements):
         data_cube[i, j, :] = vec
 
-    return calibration_values, data_cube
+    return raman_shifts, data_cube
 
 
-def run_pca(hsnt_data, dataset_name, ind_sets):
-    num_bins = hsnt_data.shape[2]
-    hsnt_flat = hsnt_data.reshape((-1, num_bins))
+def run_pca(data_cube, dataset_name, ind_sets, raman_shifts):
+    num_bins = data_cube.shape[2]
+    hsnt_flat = data_cube.reshape((-1, num_bins))
     hsnt_mean = np.mean(hsnt_flat, axis=0)
     hsnt_centered = hsnt_flat - hsnt_mean
     u, s, vh = np.linalg.svd(hsnt_centered, full_matrices=False)
@@ -137,7 +152,7 @@ def run_pca(hsnt_data, dataset_name, ind_sets):
 
     # Show PCA components and images obtained using the specified subset of components
     plt.figure()
-    plt.plot(hsnt_mean)
+    plt.plot(raman_shifts, hsnt_mean)
     plt.title('Mean spectrum')
 
     # Set up for plotting
@@ -150,13 +165,13 @@ def run_pca(hsnt_data, dataset_name, ind_sets):
         nrmse = np.linalg.norm(recon_svd - hsnt_centered) / np.linalg.norm(hsnt_centered)
         pct_explained = 1 - nrmse**2
         recon_svd += hsnt_mean
-        recon_svd = recon_svd.reshape(hsnt_data.shape)
+        recon_svd = recon_svd.reshape(data_cube.shape)
         print('Pct variance for PCA recon with inds = {}: {}'.format(inds, pct_explained))
 
         # Create a false-color image using the specified components of the PCA as the RGB channels
         image = s[inds, None] * vh[inds] @ hsnt_centered.T
         image_flat = image.T
-        image = image_flat.reshape(hsnt_data.shape[:2] + (image_flat.shape[1],))
+        image = image_flat.reshape(data_cube.shape[:2] + (image_flat.shape[1],))
         # Fill in an extra channel if needed
         if image.shape[2] == 2:
             image = np.stack([image[:, :, 0], image[:, :, 1], 0*(image[:, :, 0] + image[:, :, 1])/2], axis=2)
@@ -181,11 +196,11 @@ def run_pca(hsnt_data, dataset_name, ind_sets):
 
         # Right: PCA components
         for k in inds:
-            ax_plot.plot(vh[k] * (-1) ** (k + 1))
+            ax_plot.plot(raman_shifts, vh[k] * (-1) ** (k + 1))
 
         ax_plot.set_ylim(-ymax, ymax)
         ax_plot.set_title(f"PCA components {inds}")
-        ax_plot.set_xlabel("Index")
+        ax_plot.set_xlabel("Raman shift")
         ax_plot.set_ylabel("Amplitude")
 
         plt.tight_layout()
@@ -196,19 +211,19 @@ def main():
     # Choose dataset
     # 'Nilotinib-P, 50X, 785, 1200_01.csv', 'Nilotinib-P, 50X, 785, 1200_01(1).csv'
     # 'Nilotinib-AS, 50X, 785, 1200_01.csv', 'Nilotinib-AS, 50X, 785, 1200_01(1).csv'
-    dataset_name = 'Nilotinib-P, 50X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
+    dataset_name = 'Nilotinib-AS, 20X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
     input_path = './raman_data/'  # path to import input noisy data
     output_path = './raman_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
-    ind_sets = [[0], [1, 2], [3, 4, 5]]
+    ind_sets = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
 
     # Load the data and do PCA
-    calibration_values, data_cube = read_measurement_csv(input_path, dataset_name)
-    hsnt_data = data_cube / calibration_values[None, None, :]
-    # mj.slice_viewer(hsnt_data / hsnt_data[:, :, 0:1], cmap='hsv')
+    raman_shifts, data_cube = read_measurement_csv(input_path, dataset_name)
+    # data_cube = data_cube[::2, ::2]
+    # mj.slice_viewer(data_cube / data_cube[:, :, 0:1], cmap='hsv')
 
-    run_pca(hsnt_data, dataset_name, ind_sets)
+    run_pca(data_cube, dataset_name, ind_sets, raman_shifts)
 
     # Start HSNT
     # Define the components to use and determine the range
@@ -222,13 +237,13 @@ def main():
     np.random.seed(129)
 
     # Import real hyperspectral data
-    dataset_type = 'transmission'
+    dataset_type = 'attenuation'
 
     if verbose >= 1:
-        print("Hyperspectral data shape: ", hsnt_data.shape)
+        print("Hyperspectral data shape: ", data_cube.shape)
         print("Running hyperspectral dehydrate followed by rehydrate (i.e., denoising)")
 
-    hsnt_dehydrated = dehydrate(hsnt_data, beta_loss=loss_type, dataset_type=dataset_type,
+    hsnt_dehydrated = dehydrate(data_cube, beta_loss=loss_type, dataset_type=dataset_type,
                                 subspace_dimension=subspace_dimension, verbose=verbose)
 
     # Set up for plotting
@@ -242,7 +257,7 @@ def main():
     for j, inds in enumerate(ind_sets):
         cum_inds = cum_inds + inds
         hsnt_denoised = hsnt_image_per_component[:, :, cum_inds] @ hsnt_spectra[cum_inds]
-        nrmse = np.linalg.norm(hsnt_denoised - hsnt_data)**2 / np.linalg.norm(hsnt_data)**2
+        nrmse = np.linalg.norm(hsnt_denoised - data_cube)**2 / np.linalg.norm(data_cube)**2
         print('NRMSE for NNMF for inds = {}: {:.4g}%'.format(cum_inds, 100 * nrmse))
 
         # Fill in an extra channel if needed
@@ -268,10 +283,11 @@ def main():
 
         # Right: NNMF components
         for k in inds:
-            ax_plot.plot(hsnt_spectra[k])
+            ax_plot.plot(raman_shifts, hsnt_spectra[k])
 
         ax_plot.set_title(f"NNMF components {inds}")
-        ax_plot.set_xlabel("Index")
+        ax_plot.set_ylim([hsnt_spectra.min(), hsnt_spectra.max()])
+        ax_plot.set_xlabel("Raman shift")
         ax_plot.set_ylabel("Amplitude")
 
         plt.tight_layout()
