@@ -107,7 +107,7 @@ if __name__ == "__main__":
     This is a script to investigate the Fourier response of the forward and prior models, with and without masking.
     """
     # Set the subsampling and whether the subset is random or a grid
-    m = 4  # Subsampling factor in each direction
+    m = 6  # Subsampling factor in each direction
     g = 1 / (1.0 * m ** 2)
     grid = True
 
@@ -164,12 +164,12 @@ if __name__ == "__main__":
     bp = bp.reshape(recon_shape)
     bp_norm = np.linalg.norm(bp, axis=(0, 1))
     scale = np.amax(bp)
-    title = 'AtA PSF in space: output scaled by 1 / {:.1f}'.format(scale)
-    title += '\nLeft: single point in space, Right: AtA of that point, m={}'.format(m)
-    mj.slice_viewer(deltas, bp / scale, title=title, cmap='viridis')
+    # title = 'AtA PSF in space: output scaled by 1 / {:.1f}'.format(scale)
+    # title += '\nLeft: single point in space, Right: AtA of that point, m={}'.format(m)
+    # mj.slice_viewer(deltas[:, :, :num_entries], bp[:, :, :num_entries] / scale, title=title, cmap='viridis')
     title = 'AtA PSF in space: output in log10'.format(scale)
     title += '\nLeft: single point in space, Right: AtA of that point, m={}'.format(m)
-    mj.slice_viewer(deltas, np.log10(np.clip(bp / scale, clip_min, 1))[:, :, :num_entries], title=title, cmap='viridis')
+    mj.slice_viewer(deltas[:, :, :num_entries]-1, np.log10(np.clip(bp[:, :, :num_entries] / scale, clip_min, 1)), title=title, cmap='viridis')
 
     ######################
     # Get psf in frequency
@@ -177,7 +177,7 @@ if __name__ == "__main__":
     space_images = np.fft.ifft2(deltas_shift, axes=(0, 1))
     title = 'fftshift Fourier frequency and corresponding real(IFFT)'
     title += '\nLeft: single point in frequency, Right: real(IFFT) of that point, m={}, scaled to max=1'.format(m)
-    mj.slice_viewer(deltas, np.real(space_images)/np.real(space_images).max(), slice_axis=2, title=title, cmap='viridis')
+    mj.slice_viewer(deltas[:, :, :num_entries], np.real(space_images[:, :, :num_entries])/np.real(space_images).max(), slice_axis=2, title=title, cmap='viridis')
     ifft_images_phantom = space_images[:, :, :num_det_rows]
 
     # Generate sinogram data
@@ -201,7 +201,7 @@ if __name__ == "__main__":
 
     title = '|AtA frequency transfer function|: output in log10'
     title += '\nLeft: single point in frequency, Right: |FFT(AtA(IFFT))| of that point, m={} scaled to max=1'.format(m)
-    mj.slice_viewer(deltas, np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
+    mj.slice_viewer(deltas[:, :, :num_entries], np.log10(np.clip(np.abs(bp_fft[:, :, :num_entries]), clip_min, None)),
                          title=title, cmap='viridis')
 
     ######################################
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     #                      vmin=0, vmax=1, cmap='viridis')
     title = '|Prior step frequency transfer function|: output in log10 scaled to max=1'.format(p_scale)
     title += '\nLeft: single point in frequency, Right: log10|FFT(prior step(FFT))| of that point, m={}'.format(m)
-    mj.slice_viewer(deltas, np.log10(np.clip(np.abs(prior_fft), clip_min, None)),
+    mj.slice_viewer(deltas[:, :, :num_entries], np.log10(np.clip(np.abs(prior_fft[:, :, :num_entries]), clip_min, None)),
                          title=title, cmap='viridis')
 
     bp_fft_flat = bp_fft.reshape((-1, bp_fft.shape[2]))
@@ -233,23 +233,23 @@ if __name__ == "__main__":
     prior_fft_flat = prior_fft_flat[ordered_inds]
     prior_fft_flat_log10 = np.log10(np.clip(np.abs(prior_fft_flat), clip_min, None))
 
-    plt.plot(np.diag(bp_fft_flat_log10), '.')
-    plt.plot(np.diag(prior_fft_flat_log10), '.')
+    plt.plot(np.diag(bp_fft_flat_log10)[:num_entries], '.')
+    plt.plot(np.diag(prior_fft_flat_log10)[:num_entries], '.')
     plt.title('Diagonal elements of log10 of |freq transfer function|')
     plt.legend(['AtA', 'Prior'])
     title = 'log10 of |freq transfer function|\nLeft: AtA, Right: Prior'
     title += '\nEach row is one input frequency, each column one ouptut frequency'
-    mj.slice_viewer(bp_fft_flat_log10, prior_fft_flat_log10, cmap='viridis',title=title)
+    mj.slice_viewer(bp_fft_flat_log10[:num_entries, :num_entries], prior_fft_flat_log10[:num_entries, :num_entries], cmap='viridis',title=title)
 
 
-    gammas = np.linspace(0, 2, 20)
+    gammas = np.linspace(0, 1, 10)
     weighted_sum = bp_fft_flat[:, :, None] + prior_fft_flat[:, :, None] * gammas[None, None, :]
     joint_transfer_log10 = np.log10(np.clip(np.abs(weighted_sum), clip_min, None))
     title = 'log10 of |freq trans func| of AtA + gamma * prior'
     title += '\nAdjust the slider to change gamma'
-    mj.slice_viewer(joint_transfer_log10, title=title, slice_label='10 * gamma =', cmap='viridis')
+    mj.slice_viewer(joint_transfer_log10[:num_entries, :num_entries], title=title, slice_label='10 * gamma =', cmap='viridis', vmax=-1.5)
 
-    mj.slice_viewer(np.log10(np.clip(np.abs(bp_fft), clip_min, None)),
-                         np.log10(np.clip(np.abs(prior_fft), clip_min, None)), cmap='viridis',
-                         title='Forward (left) and prior (right) PSF in frequency with output in log10')
+    mj.slice_viewer(np.log10(np.clip(np.abs(bp_fft[:, :, :num_entries]), clip_min, None)),
+                         np.log10(np.clip(np.abs(prior_fft[:, :, :num_entries]), clip_min, None)), cmap='viridis',
+                         title='Forward (left) and prior (right) PSF in frequency with output in log10', vmax=-1.2)
     a = 0
