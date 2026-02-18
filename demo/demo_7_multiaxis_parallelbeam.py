@@ -107,6 +107,6 @@ max_diff_recon_tilt = jnp.max(jnp.abs(recon_pb - recon_ma_tilt))
 print(f"Max Reconstruction Difference vs Standard (Elevation 0): {max_diff_recon_zero:.2e}")
 print(f"Max Reconstruction Difference vs Standard (Elevation 20°): {max_diff_recon_tilt:.2e}")
 
-# Display MAP Reconstructions
-mj.slice_viewer(recon_pb, recon_ma_zero, title='MAP Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=0', slice_axis=2, slice_label='Slice')
-mj.slice_viewer(recon_pb, recon_ma_tilt, title='MAP Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=20', slice_axis=2, slice_label='Slice')
+# Display MBIR Reconstructions
+mj.slice_viewer(recon_pb, recon_ma_zero, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=0', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_tilt, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelBeamModel with elevation=20', slice_axis=2, slice_label='Slice')
