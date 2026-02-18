@@ -150,11 +150,6 @@ def main():
     # View synthetic sinogram
     mj.slice_viewer(sino, slice_axis=0, title='Synthetic sinogram', slice_label='View')
 
-    # Save the ground truth recon
-    os.makedirs(output_path, exist_ok=True)
-    gt_phantom_path = os.path.join(output_path, 'TCT_simulated_phantom.npy')
-    np.save(gt_phantom_path, gt_phantom)
-
     # Store the parameters for reconstruction
     translation_params = dict()
     translation_params['sinogram_shape'] = sino_shape
@@ -169,9 +164,10 @@ def main():
     optional_params['alu_unit'] = ALU_unit
     optional_params['alu_value'] = ALU_value
 
-    # Save the synthetic sinogram and reconstruction parameters together
-    sino_config_path = os.path.join(output_path, 'TCT_synthetic_sino_and_config.npz')
-    np.savez(sino_config_path, sino=sino, translation_params=translation_params, optional_params=optional_params)
+    # Save the simulated phantom, synthetic sinogram and reconstruction parameters together
+    os.makedirs(output_path, exist_ok=True)
+    simulated_data_path = os.path.join(output_path, 'TCT_simulated_data.npz')
+    np.savez(simulated_data_path, phantom=gt_phantom, sino=sino, translation_params=translation_params, optional_params=optional_params)
 
 if __name__ == '__main__':
     main()
