@@ -106,6 +106,12 @@ if __name__ == "__main__":
     # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
     # Each column is A^T A applied to a basis vector e_j in the restricted index set.
     restricted_indices = np.asarray(partitions[0][0]).flatten()
+    inds_2d = np.unravel_index(restricted_indices, recon_shape[:2])
+    mid = (recon_shape[0] / 2, recon_shape[1] / 2)
+    d_l1 = [np.abs(ind[0] - mid[0]) + np.abs(ind[1] - mid[0]) for ind in zip(*inds_2d)]
+    sorted = np.argsort(d_l1)
+    new_indices = [restricted_indices[k] for k in sorted]
+    restricted_indices = np.array(new_indices, dtype=int)
     num_restricted = restricted_indices.size
     num_pixels = int(np.prod(recon_shape))
     at_a_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
