@@ -12,6 +12,8 @@ experiments/split_sino_recon/output/*
 experiments/zeiss/output
 experiments/zeiss/output/*
 
+experiments/translation/output/*
+
 tests_data_dependent/data/*
 
 # ignore jupyter notebook files
@@ -40,6 +42,7 @@ tests_data_dependent/data/*
 .xlsx
 .pptx
 .ppt
+.npz
 
 
 # Byte-compiled / optimized / DLL files

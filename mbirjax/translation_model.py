@@ -11,14 +11,12 @@ import mbirjax as mj
 
 class TranslationModel(mj.TomographyModel):
     """
-    Implements a tomography model using translation-based cone-beam projections.
+    This class implements the translation tomography geometry in which each view is a cone beam projection of a translated object.
+    This geometry is useful for 3D imaging of thin objects.
 
-    This class inherits from `mbirjax.TomographyModel` and specializes it for scenarios where the object undergoes
-    translations instead of rotations during image acquisition. The forward and backward projections are computed using
-    per-view translation vectors.
-
-    Note: This geometry reduces regularization along the row (y) direction by setting `qggmrf_nbr_wts=(0.5, 1, 1)`,
-    which helps compensates for anisotropy intrinsic to the translation geometry.
+    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
+    to suit the translation tomography geometrical requirements. See the documentation of the parent class for standard methods
+    like setting parameters and performing projections and reconstructions.
 
     Args:
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
@@ -30,11 +28,11 @@ class TranslationModel(mj.TomographyModel):
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
+    Note:
+        Additional parameter:
 
-    Usage Notes:
-        - Reconstruction parameters should typically be set using `set_params`.
-        - The row voxel thickness can be adjusted with `delta_recon_row`, while the voxel column and slice spacing
-          can be controlled via the base parameter `delta_voxel`.
+        **delta_recon_row** (float, default=0) -
+        This parameter controls the row spacing in ALU, while the base parameter `delta_voxel` controls the voxel column and slice spacing.
 
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
