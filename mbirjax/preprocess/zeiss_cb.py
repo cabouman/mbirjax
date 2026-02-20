@@ -14,7 +14,7 @@ pp = pprint.PrettyPrinter(indent=4)
 logger = logging.getLogger(__name__)
 
 
-def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, verbose=1, is_preprocessed=True):
+def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', verbose=1, is_preprocessed=True):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
@@ -39,6 +39,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         crop_pixels_sides (int, optional): Pixels to crop from each lateral side of the detector. Defaults to ``0``.
         crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to ``0``.
         crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to ``0``.
+        alu_unit (str, optional): The physical unit used to define 1 ALU (Arbitrary Length Unit). Defaults to 'mm'.
+            Supported units input: 'um', 'mm', 'cm', 'm'.
         verbose (int, optional): Verbosity level. Defaults to ``1``.
 
         is_preprocessed (bool, optional):
@@ -72,7 +74,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     cone_beam_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=downsample_factor,
                                                                           crop_pixels_sides=crop_pixels_sides,
                                                                           crop_pixels_top=crop_pixels_top,
-                                                                          crop_pixels_bottom=crop_pixels_bottom)
+                                                                          crop_pixels_bottom=crop_pixels_bottom,
+                                                                          alu_unit=alu_unit)
 
     if verbose > 0:
         print("\n\n########## Cropping and downsampling scans")
@@ -264,7 +267,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0):
+def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit = 'mm'):
     """
     NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
 
@@ -280,6 +283,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
         crop_pixels_sides (int, optional): The number of pixels to crop from each side of the sinogram. Defaults to 0.
         crop_pixels_top (int, optional): The number of pixels to crop from top of the sinogram. Defaults to 0.
         crop_pixels_bottom (int, optional): The number of pixels to crop from bottom of the sinogram. Defaults to 0.
+        alu_unit (str, optional): The physical unit used to define 1 ALU (Arbitrary Length Unit). Defaults to 'mm'.
+            Supported units input: 'um', 'mm', 'cm', 'm'.
 
     Returns:
         cone_beam_params (dict): Required parameters for the ConeBeamModel constructor.
@@ -314,22 +319,22 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     # Unit conversion table (relative to um)
     # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
     #   For now, I assume that only um and mm appear in the txrm file
-    unit_conversion = {'um': 1.0, 'mm': 1000.0}
+    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
 
-    # Set 1 ALU = 1 delta_det_channel_unit
-    ALU_unit = delta_det_channel_unit
+    # Define 1 ALU as 1 unit of alu_unit
     ALU_value = 1
 
     # Convert physical units to ALU
-    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
-    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[ALU_unit]
+    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
+    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
 
     if angle_unit == 'deg':
         angles = np.deg2rad(angles)
     else:
         pass
 
-    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[ALU_unit]
+    delta_det_channel = delta_det_channel * unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
+    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
 
     # ToDo: Need to check the units of detector offset
     #  For now, we assume that the det_channel_offset have units of pixels.
@@ -349,7 +354,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
-    optional_params['alu_unit'] = ALU_unit
+    optional_params['alu_unit'] = alu_unit
     optional_params['alu_value'] = ALU_value
 
     return cone_beam_params, optional_params
