@@ -103,18 +103,22 @@ if __name__ == "__main__":
     # Plot the set of partitions
     debug_plot_partitions(partitions=partitions, recon_shape=recon_shape, grid=grid)
 
-    # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
-    # Each column is A^T A applied to a basis vector e_j in the restricted index set.
+    # Order the pixels from center out (in Fourier, low-freq to high-freq)
     restricted_indices = np.asarray(partitions[0][0]).flatten()
     inds_2d = np.unravel_index(restricted_indices, recon_shape[:2])
     mid = (recon_shape[0] / 2, recon_shape[1] / 2)
-    d_l1 = [np.abs(ind[0] - mid[0]) + np.abs(ind[1] - mid[0]) for ind in zip(*inds_2d)]
+    d_l1 = [np.abs(ind[0] - mid[0]) + np.abs(ind[1] - mid[1]) for ind in zip(*inds_2d)]
     sorted = np.argsort(d_l1)
     new_indices = [restricted_indices[k] for k in sorted]
     restricted_indices = np.array(new_indices, dtype=int)
+    
+    # Build restricted dense matrix M = (A^T A)[I, I], where I = partitions[0][0].
+    # Each column is A^T A applied to a basis vector e_j in the restricted index set.
     num_restricted = restricted_indices.size
     num_pixels = int(np.prod(recon_shape))
-    at_a_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
+    ata_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
+    # Also build the Fourier version
+    fourier_ata_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
 
     basis_vector = np.zeros(num_pixels, dtype=np.float32)
     for col, pixel_index in tqdm(
@@ -127,15 +131,23 @@ if __name__ == "__main__":
         sinogram = ct_model.forward_project(basis_image)
         back_projection = ct_model.back_project(sinogram)
         back_projection_flat = np.asarray(back_projection).reshape(-1)
-        at_a_restricted[:, col] = back_projection_flat[restricted_indices]
+        ata_restricted[:, col] = back_projection_flat[restricted_indices]
+        # Now in Fourier space
+        ifft_basis_image = np.fft.ifft2(np.fft.ifftshift(basis_image))
+        fp_ifft = ct_model.forward_project(ifft_basis_image)
+        bp_ifft = ct_model.back_project(fp_ifft)
+        fourier_bp = np.fft.fftshift(np.fft.fft2(bp_ifft))
+        fourier_bp_flat = np.asarray(fourier_bp).reshape(-1)
+        fourier_ata_restricted[:, col] = fourier_bp_flat[restricted_indices]
+        # Reset to 0 for next round
         basis_vector[pixel_index] = 0.0
 
-    log_abs_at_a_restricted = np.log10(np.clip(np.abs(at_a_restricted), vmin, None))
-    log_vmax = log_abs_at_a_restricted.max()
+    log_abs_ata_restricted = np.log10(np.clip(np.abs(ata_restricted), vmin, None))
+    log_vmax = log_abs_ata_restricted.max()
 
     # Plot A^T A for each of the subsets
     # For each partition, we'll map the first-subset indices into row/col positions of restricted_indices.
-    # First get the dict from restricted indices into rows/cols of at_a_restricted
+    # First get the dict from restricted indices into rows/cols of ata_restricted
     restricted_position_map = {int(idx): pos for pos, idx in enumerate(restricted_indices)}
     for i, partition in enumerate(partitions):
         cur_subset_indices = np.asarray(partition[0]).flatten()
@@ -143,7 +155,7 @@ if __name__ == "__main__":
             [restricted_position_map[int(idx)] for idx in cur_subset_indices if int(idx) in restricted_position_map],
             dtype=int,
         )
-        cur_at_a = log_abs_at_a_restricted[np.ix_(keep_positions, keep_positions)]
+        cur_at_a = log_abs_ata_restricted[np.ix_(keep_positions, keep_positions)]
         print(
             f"Partition {i}: subset size={cur_subset_indices.size}, "
             f"kept size={keep_positions.size}, block shape={cur_at_a.shape}"
