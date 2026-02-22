@@ -23,11 +23,12 @@ class ExperimentConfig:
 
     recon_shape: tuple[int, int, int] = (64, 64, 1)
     granularity: tuple[int, ...] = (1, 4, 16, 64, 128)
-    use_grid_subsets: bool = True
+    use_grid_subsets: bool = False
     use_ror_mask: bool = True
-    min_num_indices: int = 32
+    min_num_indices: int = 80
     font_size: int = 20
     vmin: float = 0.1
+    vmax: float = 0.5
     grid_axes_pad: tuple[float, float] = (0.02, 0.5)
     grid_cbar_pad: float = 0.10
     grid_cbar_size: str = "2.5%"
@@ -262,10 +263,9 @@ def format_matrix_size(n):
     return f"{display_rows}K x {display_rows}K"
 
 
-def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices, ncols, cfg):
+def plot_restricted_blocks(grid, partitions, abs_matrix, restricted_indices, ncols, cfg):
     """Plot full and zoomed restricted blocks for each partition."""
-    log_vmin = np.log10(cfg.vmin)
-    log_vmax = float(log_abs_matrix.max())
+    norm = mpl.colors.LogNorm(vmin=cfg.vmin, vmax=cfg.vmax)
 
     restricted_position_map = {int(idx): pos for pos, idx in enumerate(restricted_indices)}
     for i, partition in enumerate(partitions):
@@ -274,11 +274,8 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
             [restricted_position_map[int(idx)] for idx in cur_subset_indices if int(idx) in restricted_position_map],
             dtype=int,
         )
-        cur_block = log_abs_matrix[np.ix_(keep_positions, keep_positions)]
-        # num_inds = len(restricted_indices)
-        # full_matrix = - np.ones((num_inds, num_inds), dtype=cur_block.dtype)
-        # full_matrix[np.ix_(keep_positions, keep_positions)] = cur_block
-        # cur_block = full_matrix
+        cur_block = abs_matrix[np.ix_(keep_positions, keep_positions)]
+
         print(
             f"Partition {i}: subset size={cur_subset_indices.size}, "
             f"kept size={keep_positions.size}, block shape={cur_block.shape}"
@@ -289,8 +286,7 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
             cur_block,
             cmap="viridis",
             aspect="equal",
-            vmin=log_vmin,
-            vmax=log_vmax,
+            norm=norm,
             extent=(0.0, 1.0, 0.0, 1.0),
             origin="upper",
             interpolation="nearest",
@@ -298,43 +294,39 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
         top_ax.set_title(r"$A^T A$: " + format_matrix_size(cur_block.shape[0]))
         top_ax.axis("off")
 
-        zoom_log_block = cur_block[: cfg.min_num_indices, : cfg.min_num_indices]
+        zoom_block = cur_block[: cfg.min_num_indices, : cfg.min_num_indices]
         bottom_ax = grid[2 * ncols + i]
         bottom_ax.imshow(
-            zoom_log_block,
+            zoom_block,
             cmap="viridis",
             aspect="equal",
-            vmin=log_vmin,
-            vmax=log_vmax,
+            norm=norm,
             extent=(0.0, 1.0, 0.0, 1.0),
             origin="upper",
             interpolation="nearest",
         )
-        bottom_ax.set_title(f"{zoom_log_block.shape[0]} x {zoom_log_block.shape[0]} corner")
+        bottom_ax.set_title(f"{zoom_block.shape[0]} x {zoom_block.shape[0]} corner")
         bottom_ax.axis("off")
 
-    norm = mpl.colors.Normalize(vmin=log_vmin, vmax=log_vmax)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
     sm.set_array([])
     cbar = grid.cbar_axes[0].colorbar(sm)
-    cbar_label = r"$\log_{10}|(D^{-1})A^T A|$" if cfg.use_preconditioner else r"$\log_{10}|A^T A|$"
+    cbar_label = r"$|(D^{-1})A^T A|$ (log scale)" if cfg.use_preconditioner else r"$|A^T A|$ (log scale)"
     cbar.ax.set_ylabel(cbar_label)
 
 
-def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cbar_label, start_row=1):
-    """Plot full and zoomed response matrices (already log-scaled)."""
-    log_vmin = np.log10(cfg.vmin)
-    log_vmax = max(float(log_abs_matrix.max()) for log_abs_matrix in log_abs_matrices)
+def plot_full_response_blocks(grid, partitions, abs_matrices, ncols, cfg, cbar_label, start_row=1):
+    """Plot full and zoomed response matrices with log-scaled colormap."""
+    norm = mpl.colors.LogNorm(vmin=cfg.vmin, vmax=cfg.vmax)
 
-    for i, (partition, log_abs_matrix) in enumerate(zip(partitions, log_abs_matrices)):
+    for i, (partition, abs_matrix) in enumerate(zip(partitions, abs_matrices)):
         m = np.round(np.sqrt(partition.shape[0])).astype(int)
         top_ax = grid[start_row * ncols + i]
         top_ax.imshow(
-            log_abs_matrix,
+            abs_matrix,
             cmap="viridis",
             aspect="equal",
-            vmin=log_vmin,
-            vmax=log_vmax,
+            norm=norm,
             extent=(0.0, 1.0, 0.0, 1.0),
             origin="upper",
             interpolation="nearest",
@@ -342,22 +334,20 @@ def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cb
         top_ax.set_title(f"{m} x {m} stride")
         top_ax.axis("off")
 
-        zoom_log_block = log_abs_matrix[: cfg.min_num_indices, : cfg.min_num_indices]
+        zoom_block = abs_matrix[: cfg.min_num_indices, : cfg.min_num_indices]
         bottom_ax = grid[(start_row + 1) * ncols + i]
         bottom_ax.imshow(
-            zoom_log_block,
+            zoom_block,
             cmap="viridis",
             aspect="equal",
-            vmin=log_vmin,
-            vmax=log_vmax,
+            norm=norm,
             extent=(0.0, 1.0, 0.0, 1.0),
             origin="upper",
             interpolation="nearest",
         )
-        bottom_ax.set_title(f"{zoom_log_block.shape[0]} x {zoom_log_block.shape[0]} corner")
+        bottom_ax.set_title(f"{zoom_block.shape[0]} x {zoom_block.shape[0]} corner")
         bottom_ax.axis("off")
 
-    norm = mpl.colors.Normalize(vmin=log_vmin, vmax=log_vmax)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
     sm.set_array([])
     cbar = grid.cbar_axes[0].colorbar(sm)
@@ -398,7 +388,7 @@ def main():
     # Reference index set I is the first subset from the 1-subset partition.
     if cfg.plot_fourier_conjugated:
         frequency_indices = order_frequency_indices_radial(cfg.recon_shape)
-        log_abs_matrices = []
+        abs_matrices = []
         for partition in partitions:
             subset_indices = np.asarray(partition[0]).flatten()
             response_abs = build_fourier_response_abs_matrix(
@@ -411,17 +401,17 @@ def main():
             )
             # Normalize each response to a common peak so subset-size trends are shape-based, not scale-based.
             response_abs = response_abs / jnp.maximum(jnp.max(response_abs), jnp.finfo(jnp.float32).eps)
-            log_abs_matrices.append(np.asarray(jnp.log10(jnp.clip(response_abs, cfg.vmin, None))))
+            abs_matrices.append(np.asarray(jnp.clip(response_abs, cfg.vmin, None)))
         plot_full_response_blocks(
             grid=grid,
             partitions=partitions,
-            log_abs_matrices=log_abs_matrices,
+            abs_matrices=abs_matrices,
             ncols=ncols,
             cfg=cfg,
             cbar_label=(
-                r"$\log_{10}|F P (D^{-1}) A^T A P F^{-1}|$"
+                r"$|F P (D^{-1}) A^T A P F^{-1}|$ (log scale)"
                 if cfg.use_preconditioner
-                else r"$\log_{10}|F P A^T A P F^{-1}|$"
+                else r"$|F P A^T A P F^{-1}|$ (log scale)"
             ),
             start_row=0,
         )
@@ -434,11 +424,11 @@ def main():
             use_preconditioner=cfg.use_preconditioner,
             batch_size=cfg.batch_size,
         )
-        log_abs_matrix = np.log10(np.clip(np.abs(ata_restricted), cfg.vmin, None))
+        abs_matrix = np.clip(np.abs(ata_restricted), cfg.vmin, None)
         plot_restricted_blocks(
             grid=grid,
             partitions=partitions,
-            log_abs_matrix=log_abs_matrix,
+            abs_matrix=abs_matrix,
             restricted_indices=restricted_indices,
             ncols=ncols,
             cfg=cfg,
