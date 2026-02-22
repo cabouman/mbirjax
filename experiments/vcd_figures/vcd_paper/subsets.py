@@ -23,6 +23,7 @@ class ExperimentConfig:
     recon_shape: tuple[int, int, int] = (32, 32, 1)
     granularity: tuple[int, ...] = (1, 4, 16, 64, 128)
     use_grid_subsets: bool = True
+    use_ror_mask: bool = True
     min_num_indices: int = 32
     font_size: int = 20
     vmin: float = 0.1
@@ -79,11 +80,11 @@ def make_parallel_beam_model(recon_shape):
     return mj.ParallelBeamModel(sinogram_shape, angles)
 
 
-def generate_partitions(recon_shape, granularity, use_grid_subsets):
+def generate_partitions(recon_shape, granularity, use_grid_subsets, use_ror_mask):
     """Generate one partition per requested subset count."""
     gen_partition = mj.gen_pixel_partition_grid if use_grid_subsets else mj.gen_pixel_partition
     return [
-        gen_partition(recon_shape, num_subsets, use_ror_mask=True)
+        gen_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
         for num_subsets in granularity
     ]
 
@@ -103,6 +104,18 @@ def order_indices_center_out(indices, recon_shape):
     return np.asarray(indices[sort_order], dtype=int)
 
 
+def order_frequency_indices_radial(recon_shape):
+    """Order 2D shifted-FFT frequencies by radial distance from DC."""
+    num_rows, num_cols = recon_shape[:2]
+    row_coords, col_coords = np.indices((num_rows, num_cols))
+    row_center = num_rows / 2.0
+    col_center = num_cols / 2.0
+    radial_dist = np.sqrt((row_coords - row_center) ** 2 + (col_coords - col_center) ** 2).reshape(-1)
+    flat_indices = np.arange(num_rows * num_cols, dtype=int)
+    sort_order = np.lexsort((flat_indices, radial_dist))
+    return flat_indices[sort_order]
+
+
 def build_restricted_matrices(ct_model, recon_shape, restricted_indices):
     """
     Build restricted normal-operator matrices over index set I.
@@ -111,13 +124,10 @@ def build_restricted_matrices(ct_model, recon_shape, restricted_indices):
     -------
     ata_restricted : ndarray
         Real-space restricted matrix (A^T A)[I, I].
-    fourier_ata_restricted : ndarray
-        Fourier-conjugated restricted matrix over the same index set.
     """
     num_restricted = restricted_indices.size
     num_pixels = int(np.prod(recon_shape))
     ata_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
-    fourier_ata_restricted = np.zeros((num_restricted, num_restricted, 2), dtype=np.float32)
 
     basis_vector = np.zeros(num_pixels, dtype=np.float32)
     for col, pixel_index in tqdm(
@@ -133,25 +143,69 @@ def build_restricted_matrices(ct_model, recon_shape, restricted_indices):
         back_projection_flat = np.asarray(back_projection).reshape(-1)
         ata_restricted[:, col] = back_projection_flat[restricted_indices]
 
-        ifft_basis_image = np.fft.ifft2(np.fft.ifftshift(basis_image))
-        real_ifft_basis = np.real(ifft_basis_image)
-        imag_ifft_basis = np.imag(ifft_basis_image)
-
-        real_fp_ifft = ct_model.forward_project(real_ifft_basis)
-        imag_fp_ifft = ct_model.forward_project(imag_ifft_basis)
-
-        real_bp_ifft = ct_model.back_project(real_fp_ifft)
-        imag_bp_ifft = ct_model.back_project(imag_fp_ifft)
-        bp_ifft = real_bp_ifft + 1j * imag_bp_ifft
-
-        fourier_bp = np.fft.fftshift(np.fft.fft2(bp_ifft))
-        fourier_bp_flat = np.asarray(fourier_bp).reshape(-1)
-        fourier_bp_flat = fourier_bp_flat[restricted_indices]
-        fourier_ata_restricted[:, col] = np.array([np.real(fourier_bp_flat), np.imag(fourier_bp_flat)]).T
-
         basis_vector[pixel_index] = 0.0
 
-    return ata_restricted, fourier_ata_restricted
+    return ata_restricted
+
+
+def build_fourier_response_abs_matrix(ct_model, recon_shape, subset_indices, frequency_indices):
+    """
+    Build |F P A^T A P F^{-1}| over full-frequency rows/cols using one spatial subset.
+
+    Parameters
+    ----------
+    subset_indices : ndarray
+        Flat spatial indices defining subset projector P.
+    frequency_indices : ndarray
+        Flat shifted-FFT indices defining row/column ordering.
+    """
+    num_rows, num_cols = recon_shape[:2]
+    num_freq = num_rows * num_cols
+    subset_indices = np.asarray(subset_indices, dtype=int).reshape(-1)
+    frequency_indices = np.asarray(frequency_indices, dtype=int).reshape(-1)
+    if subset_indices.size == 0:
+        raise ValueError("subset_indices must be non-empty.")
+
+    fourier_response_abs = np.zeros((num_freq, num_freq), dtype=np.float32)
+    freq_basis_flat = np.zeros(num_freq, dtype=np.complex64)
+
+    for col, freq_index in tqdm(
+        enumerate(frequency_indices),
+        total=num_freq,
+        desc="Building |F P A^T A P F^{-1}|",
+    ):
+        freq_basis_flat[freq_index] = 1.0 + 0.0j
+        freq_basis_2d = freq_basis_flat.reshape((num_rows, num_cols))
+        spatial_basis_2d = np.fft.ifft2(
+            np.fft.ifftshift(freq_basis_2d, axes=(0, 1)),
+            axes=(0, 1),
+            norm="ortho",
+        )
+
+        real_spatial_subset = np.real(spatial_basis_2d).reshape(-1)[subset_indices][:, None]
+        imag_spatial_subset = np.imag(spatial_basis_2d).reshape(-1)[subset_indices][:, None]
+
+        real_sinogram = ct_model.sparse_forward_project(real_spatial_subset, subset_indices)
+        imag_sinogram = ct_model.sparse_forward_project(imag_spatial_subset, subset_indices)
+
+        real_back_subset = np.asarray(ct_model.sparse_back_project(real_sinogram, subset_indices))
+        imag_back_subset = np.asarray(ct_model.sparse_back_project(imag_sinogram, subset_indices))
+        complex_back_subset = real_back_subset + 1j * imag_back_subset
+
+        back_projection_flat = np.zeros(num_freq, dtype=np.complex64)
+        back_projection_flat[subset_indices] = complex_back_subset[:, 0]
+        back_projection_2d = back_projection_flat.reshape((num_rows, num_cols))
+
+        fourier_response_2d = np.fft.fftshift(
+            np.fft.fft2(back_projection_2d, axes=(0, 1), norm="ortho"),
+            axes=(0, 1),
+        )
+        fourier_response_col = fourier_response_2d.reshape(-1)[frequency_indices]
+        fourier_response_abs[:, col] = np.abs(fourier_response_col).astype(np.float32)
+
+        freq_basis_flat[freq_index] = 0.0 + 0.0j
+
+    return fourier_response_abs
 
 
 def format_matrix_size(n):
@@ -223,6 +277,49 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
     cbar.ax.set_ylabel(r"$\log_{10}|A^T A|$")
 
 
+def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cbar_label):
+    """Plot full and zoomed response matrices (already log-scaled)."""
+    log_vmin = np.log10(cfg.vmin)
+    log_vmax = max(float(log_abs_matrix.max()) for log_abs_matrix in log_abs_matrices)
+
+    for i, (partition, log_abs_matrix) in enumerate(zip(partitions, log_abs_matrices)):
+        cur_subset_size = np.asarray(partition[0]).size
+        top_ax = grid[ncols + i]
+        top_ax.imshow(
+            log_abs_matrix,
+            cmap="viridis",
+            aspect="equal",
+            vmin=log_vmin,
+            vmax=log_vmax,
+            extent=(0.0, 1.0, 0.0, 1.0),
+            origin="upper",
+            interpolation="nearest",
+        )
+        top_ax.set_title(f"subset size {cur_subset_size}")
+        top_ax.axis("off")
+
+        zoom_log_block = log_abs_matrix[: cfg.min_num_indices, : cfg.min_num_indices]
+        bottom_ax = grid[2 * ncols + i]
+        bottom_ax.imshow(
+            zoom_log_block,
+            cmap="viridis",
+            aspect="equal",
+            vmin=log_vmin,
+            vmax=log_vmax,
+            extent=(0.0, 1.0, 0.0, 1.0),
+            origin="upper",
+            interpolation="nearest",
+        )
+        bottom_ax.set_title(f"{zoom_log_block.shape[0]} x {zoom_log_block.shape[0]} corner")
+        bottom_ax.axis("off")
+
+    norm = mpl.colors.Normalize(vmin=log_vmin, vmax=log_vmax)
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
+    sm.set_array([])
+    cbar = grid.cbar_axes[0].colorbar(sm)
+    cbar.ax.set_ylabel(cbar_label)
+
+
 def main():
     """Run the subset-structure and restricted-operator experiment."""
     cfg = ExperimentConfig()
@@ -230,7 +327,7 @@ def main():
     plt.rcParams.update({"font.size": cfg.font_size})
     fig = plt.figure(figsize=(4 * len(cfg.granularity), 15))
     ct_model = make_parallel_beam_model(cfg.recon_shape)
-    partitions = generate_partitions(cfg.recon_shape, cfg.granularity, cfg.use_grid_subsets)
+    partitions = generate_partitions(cfg.recon_shape, cfg.granularity, cfg.use_grid_subsets, cfg.use_ror_mask)
     ncols = len(partitions)
 
     grid = ImageGrid(
@@ -249,25 +346,40 @@ def main():
     plot_partitions(partitions=partitions, recon_shape=cfg.recon_shape, grid=grid)
 
     # Reference index set I is the first subset from the 1-subset partition.
-    restricted_indices = order_indices_center_out(partitions[0][0], cfg.recon_shape)
-    ata_restricted, fourier_ata_restricted = build_restricted_matrices(
-        ct_model, cfg.recon_shape, restricted_indices
-    )
-    matrix_to_plot = None
     if cfg.plot_fourier_conjugated:
-        matrix_to_plot = fourier_ata_restricted[:, :, 0] ** 2 + fourier_ata_restricted[:, :, 1] ** 2
-        matrix_to_plot = np.sqrt(matrix_to_plot)
+        frequency_indices = order_frequency_indices_radial(cfg.recon_shape)
+        log_abs_matrices = []
+        for partition in partitions:
+            subset_indices = np.asarray(partition[0]).flatten()
+            response_abs = build_fourier_response_abs_matrix(
+                ct_model=ct_model,
+                recon_shape=cfg.recon_shape,
+                subset_indices=subset_indices,
+                frequency_indices=frequency_indices,
+            )
+            # Normalize each response to a common peak so subset-size trends are shape-based, not scale-based.
+            response_abs = response_abs / np.maximum(float(response_abs.max()), np.finfo(np.float32).eps)
+            log_abs_matrices.append(np.log10(np.clip(response_abs, cfg.vmin, None)))
+        plot_full_response_blocks(
+            grid=grid,
+            partitions=partitions,
+            log_abs_matrices=log_abs_matrices,
+            ncols=ncols,
+            cfg=cfg,
+            cbar_label=r"$\log_{10}|F P A^T A P F^{-1}|$",
+        )
     else:
-        matrix_to_plot = ata_restricted
-    log_abs_matrix = np.log10(np.clip(np.abs(matrix_to_plot), cfg.vmin, None))
-    plot_restricted_blocks(
-        grid=grid,
-        partitions=partitions,
-        log_abs_matrix=log_abs_matrix,
-        restricted_indices=restricted_indices,
-        ncols=ncols,
-        cfg=cfg,
-    )
+        restricted_indices = order_indices_center_out(partitions[0][0], cfg.recon_shape)
+        ata_restricted = build_restricted_matrices(ct_model, cfg.recon_shape, restricted_indices)
+        log_abs_matrix = np.log10(np.clip(np.abs(ata_restricted), cfg.vmin, None))
+        plot_restricted_blocks(
+            grid=grid,
+            partitions=partitions,
+            log_abs_matrix=log_abs_matrix,
+            restricted_indices=restricted_indices,
+            ncols=ncols,
+            cfg=cfg,
+        )
     plt.show()
 
 
