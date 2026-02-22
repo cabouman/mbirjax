@@ -31,6 +31,7 @@ class ExperimentConfig:
     grid_cbar_pad: float = 0.10
     grid_cbar_size: str = "2.5%"
     plot_fourier_conjugated: bool = True
+    use_preconditioner: bool = True
 
 
 def plot_partitions(partitions, recon_shape, grid):
@@ -116,14 +117,23 @@ def order_frequency_indices_radial(recon_shape):
     return flat_indices[sort_order]
 
 
-def build_restricted_matrices(ct_model, recon_shape, restricted_indices):
+def compute_inverse_hessian_diagonal(ct_model):
+    """Compute a numerically safe inverse Hessian diagonal over the full recon grid."""
+    hessian_diagonal = np.asarray(ct_model.compute_hessian_diagonal()).reshape(-1).astype(np.float32)
+    safe_hessian = np.maximum(hessian_diagonal, np.finfo(np.float32).eps)
+    return 1.0 / safe_hessian
+
+
+def build_restricted_matrices(
+    ct_model, recon_shape, restricted_indices, inverse_hessian_diagonal=None, use_preconditioner=True
+):
     """
     Build restricted normal-operator matrices over index set I.
 
     Returns
     -------
     ata_restricted : ndarray
-        Real-space restricted matrix (A^T A)[I, I].
+        Real-space restricted matrix ((D^{-1}) A^T A)[I, I] if enabled; otherwise (A^T A)[I, I].
     """
     num_restricted = restricted_indices.size
     num_pixels = int(np.prod(recon_shape))
@@ -141,16 +151,28 @@ def build_restricted_matrices(ct_model, recon_shape, restricted_indices):
         sinogram = ct_model.forward_project(basis_image)
         back_projection = ct_model.back_project(sinogram)
         back_projection_flat = np.asarray(back_projection).reshape(-1)
-        ata_restricted[:, col] = back_projection_flat[restricted_indices]
+        ata_col = back_projection_flat[restricted_indices]
+        if use_preconditioner:
+            if inverse_hessian_diagonal is None:
+                raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
+            ata_col = ata_col * inverse_hessian_diagonal[restricted_indices]
+        ata_restricted[:, col] = ata_col
 
         basis_vector[pixel_index] = 0.0
 
     return ata_restricted
 
 
-def build_fourier_response_abs_matrix(ct_model, recon_shape, subset_indices, frequency_indices):
+def build_fourier_response_abs_matrix(
+    ct_model,
+    recon_shape,
+    subset_indices,
+    frequency_indices,
+    inverse_hessian_diagonal=None,
+    use_preconditioner=True,
+):
     """
-    Build |F P A^T A P F^{-1}| over full-frequency rows/cols using one spatial subset.
+    Build |F P (D^{-1}) A^T A P F^{-1}| over full-frequency rows/cols using one spatial subset.
 
     Parameters
     ----------
@@ -191,6 +213,10 @@ def build_fourier_response_abs_matrix(ct_model, recon_shape, subset_indices, fre
         real_back_subset = np.asarray(ct_model.sparse_back_project(real_sinogram, subset_indices))
         imag_back_subset = np.asarray(ct_model.sparse_back_project(imag_sinogram, subset_indices))
         complex_back_subset = real_back_subset + 1j * imag_back_subset
+        if use_preconditioner:
+            if inverse_hessian_diagonal is None:
+                raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
+            complex_back_subset = complex_back_subset * inverse_hessian_diagonal[subset_indices][:, None]
 
         back_projection_flat = np.zeros(num_freq, dtype=np.complex64)
         back_projection_flat[subset_indices] = complex_back_subset[:, 0]
@@ -274,7 +300,8 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
     sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
     sm.set_array([])
     cbar = grid.cbar_axes[0].colorbar(sm)
-    cbar.ax.set_ylabel(r"$\log_{10}|A^T A|$")
+    cbar_label = r"$\log_{10}|(D^{-1})A^T A|$" if cfg.use_preconditioner else r"$\log_{10}|A^T A|$"
+    cbar.ax.set_ylabel(cbar_label)
 
 
 def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cbar_label):
@@ -283,7 +310,7 @@ def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cb
     log_vmax = max(float(log_abs_matrix.max()) for log_abs_matrix in log_abs_matrices)
 
     for i, (partition, log_abs_matrix) in enumerate(zip(partitions, log_abs_matrices)):
-        cur_subset_size = np.asarray(partition[0]).size
+        m = np.round(np.sqrt(partition.shape[0])).astype(int)
         top_ax = grid[ncols + i]
         top_ax.imshow(
             log_abs_matrix,
@@ -295,7 +322,7 @@ def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cb
             origin="upper",
             interpolation="nearest",
         )
-        top_ax.set_title(f"subset size {cur_subset_size}")
+        top_ax.set_title(f"{m} x {m} stride")
         top_ax.axis("off")
 
         zoom_log_block = log_abs_matrix[: cfg.min_num_indices, : cfg.min_num_indices]
@@ -327,6 +354,9 @@ def main():
     plt.rcParams.update({"font.size": cfg.font_size})
     fig = plt.figure(figsize=(4 * len(cfg.granularity), 15))
     ct_model = make_parallel_beam_model(cfg.recon_shape)
+    inverse_hessian_diagonal = None
+    if cfg.use_preconditioner:
+        inverse_hessian_diagonal = compute_inverse_hessian_diagonal(ct_model)
     partitions = generate_partitions(cfg.recon_shape, cfg.granularity, cfg.use_grid_subsets, cfg.use_ror_mask)
     ncols = len(partitions)
 
@@ -356,6 +386,8 @@ def main():
                 recon_shape=cfg.recon_shape,
                 subset_indices=subset_indices,
                 frequency_indices=frequency_indices,
+                inverse_hessian_diagonal=inverse_hessian_diagonal,
+                use_preconditioner=cfg.use_preconditioner,
             )
             # Normalize each response to a common peak so subset-size trends are shape-based, not scale-based.
             response_abs = response_abs / np.maximum(float(response_abs.max()), np.finfo(np.float32).eps)
@@ -366,11 +398,21 @@ def main():
             log_abs_matrices=log_abs_matrices,
             ncols=ncols,
             cfg=cfg,
-            cbar_label=r"$\log_{10}|F P A^T A P F^{-1}|$",
+            cbar_label=(
+                r"$\log_{10}|F P (D^{-1}) A^T A P F^{-1}|$"
+                if cfg.use_preconditioner
+                else r"$\log_{10}|F P A^T A P F^{-1}|$"
+            ),
         )
     else:
         restricted_indices = order_indices_center_out(partitions[0][0], cfg.recon_shape)
-        ata_restricted = build_restricted_matrices(ct_model, cfg.recon_shape, restricted_indices)
+        ata_restricted = build_restricted_matrices(
+            ct_model,
+            cfg.recon_shape,
+            restricted_indices,
+            inverse_hessian_diagonal=inverse_hessian_diagonal,
+            use_preconditioner=cfg.use_preconditioner,
+        )
         log_abs_matrix = np.log10(np.clip(np.abs(ata_restricted), cfg.vmin, None))
         plot_restricted_blocks(
             grid=grid,
