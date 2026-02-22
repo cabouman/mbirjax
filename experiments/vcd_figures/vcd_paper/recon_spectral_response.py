@@ -22,12 +22,19 @@ try:
 except ImportError:
     from subsets import make_parallel_beam_model
 
+num_iterations = 4
+granularity_list = (1, 4, 16, 64, 128)
+gd_seq, gd_label = [num_iterations * [0], f'1 subset, {num_iterations} iterations']
+icd_seq, icd_label = [num_iterations * [4], f'128 subsets, {num_iterations} iterations']
+vcd_seq, vcd_label = (0, 1, 2, 3), 'VCD'
+
 
 @dataclass(frozen=True)
 class SweepConfig:
     recon_shape: tuple[int, int, int] = (1000, 1000, 1)
-    max_iterations: int = 1
-    granularity: tuple[int, ...] = (1, 4, 16, 64, 128)
+    granularity: tuple[int, ...] = granularity_list
+    experiment_sequences: tuple[tuple[int, ...], ...] | None = (gd_seq, icd_seq, vcd_seq)
+    experiment_labels: tuple[str, ...] | None = (gd_label, icd_label, vcd_label)
     random_phase_seed: int = 0
     partition_seed: int = 0
     map_vmin: float = 1e-2
@@ -108,9 +115,10 @@ def compute_radial_profile(image_2d, full_circle_only=True):
     return radius_values, profile.astype(np.float32)
 
 
-def run_sweeps_for_partition(model, sinogram, partition_index, max_iterations=1):
-    """Run exactly one sweep using the partition at `partition_index` in model granularity."""
-    model.set_params(partition_sequence=[partition_index])
+def run_recon_for_sequence(model, sinogram, partition_sequence):
+    """Run reconstruction for a specified partition-index sequence."""
+    model.set_params(partition_sequence=list(partition_sequence))
+    max_iterations = len(partition_sequence)
     recon, recon_dict = model.recon(
         sinogram,
         init_recon=0,
@@ -152,20 +160,58 @@ def plot_summary(freq_maps, radial_profiles, radii, labels, cfg):
     sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cax)
-    cbar.ax.set_ylabel(r"$|\mathcal{F} x^{(1)}|$")
+    cbar.ax.set_ylabel(r"$|\mathcal{F} x|$")
 
     ax_curve = fig.add_subplot(grid[1, :])
     for profile, label in zip(radial_profiles, labels):
         ax_curve.semilogy(radii, np.clip(profile, cfg.radial_vmin, None), linewidth=2, label=label)
     ax_curve.set_xlabel("Normalized radial frequency")
-    ax_curve.set_ylabel(r"Radial mean of $|\mathcal{F} x^{(1)}|$")
+    ax_curve.set_ylabel(r"Radial mean of $|\mathcal{F} x|$")
     title_suffix = " (full-circle support)" if cfg.radial_full_circle_only else ""
-    ax_curve.set_title(f"{cfg.max_iterations}-Sweep Radial Spectral Gain{title_suffix}")
+    ax_curve.set_title(f"Post-Sequence Radial Spectral Gain{title_suffix}")
     ax_curve.grid(True, which="both", alpha=0.3)
     ax_curve.legend(loc="best")
 
     # fig.tight_layout(rect=[0.0, 0.0, 0.9, 1.0])
     plt.show()
+
+
+def resolve_experiments(cfg):
+    """
+    Resolve experiment sequences/labels from config.
+
+    If cfg.experiment_sequences is None, default to one-sweep runs for each partition.
+    """
+    if cfg.experiment_sequences is None:
+        sequences = tuple((idx,) for idx in range(len(cfg.granularity)))
+        labels = tuple(f"{cfg.granularity[idx]} subsets (1 sweep)" for idx in range(len(cfg.granularity)))
+        return sequences, labels
+
+    sequences = tuple(tuple(int(val) for val in seq) for seq in cfg.experiment_sequences)
+    if len(sequences) == 0:
+        raise ValueError("experiment_sequences must contain at least one sequence.")
+
+    max_index = len(cfg.granularity) - 1
+    for seq in sequences:
+        if len(seq) == 0:
+            raise ValueError("Each experiment sequence must contain at least one partition index.")
+        for idx in seq:
+            if idx < 0 or idx > max_index:
+                raise ValueError(
+                    f"Invalid partition index {idx} in experiment_sequences; expected 0..{max_index}."
+                )
+
+    if cfg.experiment_labels is None:
+        labels = tuple(
+            f"seq={list(seq)} ({len(seq)} sweeps, last={cfg.granularity[seq[-1]]} subsets)"
+            for seq in sequences
+        )
+    else:
+        if len(cfg.experiment_labels) != len(sequences):
+            raise ValueError("experiment_labels length must match experiment_sequences length.")
+        labels = tuple(cfg.experiment_labels)
+
+    return sequences, labels
 
 
 def main():
@@ -181,6 +227,8 @@ def main():
     print(f"use_ror_mask={ct_model.use_ror_mask}, radial_full_circle_only={cfg.radial_full_circle_only}")
 
     sinogram = np.asarray(ct_model.forward_project(target))
+    experiment_sequences, experiment_labels = resolve_experiments(cfg)
+    print(f"num_experiments={len(experiment_sequences)}")
 
     # ==================== CHECKPOINT BLOCK: TARGET/SINOGRAM ====================
     maybe_show_checkpoint(
@@ -228,10 +276,12 @@ def main():
     labels = []
     shared_radii = None
 
-    # Use identical random partitions across runs for fair partition-size comparison.
-    for partition_index, num_subsets in enumerate(cfg.granularity):
+    # Use identical random partitions across experiments for fair comparison.
+    for experiment_index, (partition_sequence, experiment_label) in enumerate(
+        zip(experiment_sequences, experiment_labels)
+    ):
         np.random.seed(cfg.partition_seed)
-        recon, recon_dict = run_sweeps_for_partition(ct_model, sinogram, partition_index, cfg.max_iterations)
+        recon, recon_dict = run_recon_for_sequence(ct_model, sinogram, partition_sequence)
         recon_2d = recon[..., 0]
         freq_mag = compute_shifted_fft_magnitude(recon_2d)
 
@@ -244,19 +294,19 @@ def main():
         )
         shared_radii = radii
         radial_profiles.append(radial_profile)
-        labels.append(f"{num_subsets} subsets")
+        labels.append(experiment_label)
 
         recon_params = recon_dict["recon_params"]
         alpha_value = recon_params["alpha_values"][-1] if len(recon_params["alpha_values"]) > 0 else np.nan
         fm_rmse = recon_params["fm_rmse"][-1] if len(recon_params["fm_rmse"]) > 0 else np.nan
         print(
-            f"Partition {partition_index} ({num_subsets} subsets): "
+            f"Experiment {experiment_index}: sequence={list(partition_sequence)}, "
             f"alpha={alpha_value:.4f}, fm_rmse={fm_rmse:.4f}, "
             f"fft_peak={float(freq_mag.max()):.4f}"
         )
 
         # ==================== CHECKPOINT BLOCK: FIRST RECON ====================
-        if partition_index == 0:
+        if experiment_index == 0:
             maybe_show_checkpoint(
                 cfg,
                 cfg.checkpoint_show_first_recon,
