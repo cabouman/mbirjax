@@ -31,7 +31,7 @@ class ExperimentConfig:
     grid_axes_pad: tuple[float, float] = (0.02, 0.5)
     grid_cbar_pad: float = 0.10
     grid_cbar_size: str = "2.5%"
-    plot_fourier_conjugated: bool = True
+    plot_fourier_conjugated: bool = False
     use_preconditioner: bool = True
 
 
@@ -78,7 +78,7 @@ def make_parallel_beam_model(recon_shape):
     """Create the parallel-beam model used by this experiment."""
     num_angles = recon_shape[0] // 2
     angles = np.linspace(0, np.pi, num=num_angles, endpoint=False)
-    sinogram_shape = (len(angles), 1, recon_shape[0])
+    sinogram_shape = (len(angles), recon_shape[2], recon_shape[0])
     return mj.ParallelBeamModel(sinogram_shape, angles)
 
 
@@ -125,43 +125,35 @@ def compute_inverse_hessian_diagonal(ct_model):
     return 1.0 / safe_hessian
 
 
-def build_restricted_matrices(
-    ct_model, recon_shape, restricted_indices, inverse_hessian_diagonal=None, use_preconditioner=True
-):
+def build_restricted_matrices(recon_shape, restricted_indices, inverse_hessian_diagonal=None, use_preconditioner=True):
     """
-    Build restricted normal-operator matrices over index set I.
+    Build restricted matrices in one stacked projection/backprojection call.
 
-    Returns
-    -------
-    ata_restricted : ndarray
-        Real-space restricted matrix ((D^{-1}) A^T A)[I, I] if enabled; otherwise (A^T A)[I, I].
+    Each restricted basis vector is placed in a separate reconstruction slice, so
+    one forward/back projection computes all columns at once.
     """
+    num_rows, num_cols = recon_shape[:2]
+    restricted_indices = np.asarray(restricted_indices, dtype=int).reshape(-1)
     num_restricted = restricted_indices.size
-    num_pixels = int(np.prod(recon_shape))
-    ata_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
 
-    basis_vector = np.zeros(num_pixels, dtype=np.float32)
-    for col, pixel_index in tqdm(
-        enumerate(restricted_indices),
-        total=num_restricted,
-        desc="Building (A^T A)[I, I]",
-    ):
-        basis_vector[pixel_index] = 1.0
-        basis_image = basis_vector.reshape(recon_shape)
+    stacked_recon_shape = (num_rows, num_cols, num_restricted)
+    stacked_model = make_parallel_beam_model(stacked_recon_shape)
 
-        sinogram = ct_model.forward_project(basis_image)
-        back_projection = ct_model.back_project(sinogram)
-        back_projection_flat = np.asarray(back_projection).reshape(-1)
-        ata_col = back_projection_flat[restricted_indices]
-        if use_preconditioner:
-            if inverse_hessian_diagonal is None:
-                raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
-            ata_col = ata_col * inverse_hessian_diagonal[restricted_indices]
-        ata_restricted[:, col] = ata_col
+    basis_stack = np.zeros(stacked_recon_shape, dtype=np.float32)
+    row_inds, col_inds = np.unravel_index(restricted_indices, (num_rows, num_cols))
+    basis_stack[row_inds, col_inds, np.arange(num_restricted)] = 1.0
 
-        basis_vector[pixel_index] = 0.0
+    sinogram = stacked_model.forward_project(basis_stack)
+    back_projection = stacked_model.back_project(sinogram)
+    back_projection_flat = np.asarray(back_projection).reshape(num_rows * num_cols, num_restricted)
+    ata_restricted = back_projection_flat[restricted_indices, :]
 
-    return ata_restricted
+    if use_preconditioner:
+        if inverse_hessian_diagonal is None:
+            raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
+        ata_restricted = ata_restricted * inverse_hessian_diagonal[restricted_indices][:, None]
+
+    return np.asarray(ata_restricted, dtype=np.float32)
 
 
 def build_fourier_response_abs_matrix(
@@ -426,7 +418,6 @@ def main():
     else:
         restricted_indices = order_indices_center_out(partitions[0][0], cfg.recon_shape)
         ata_restricted = build_restricted_matrices(
-            ct_model,
             cfg.recon_shape,
             restricted_indices,
             inverse_hessian_diagonal=inverse_hessian_diagonal,
