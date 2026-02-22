@@ -21,7 +21,7 @@ from tqdm import tqdm
 class ExperimentConfig:
     """Configuration for the subset and restricted-operator visualization."""
 
-    recon_shape: tuple[int, int, int] = (32, 32, 1)
+    recon_shape: tuple[int, int, int] = (64, 64, 1)
     granularity: tuple[int, ...] = (1, 4, 16, 64, 128)
     use_grid_subsets: bool = True
     use_ror_mask: bool = True
@@ -31,8 +31,9 @@ class ExperimentConfig:
     grid_axes_pad: tuple[float, float] = (0.02, 0.5)
     grid_cbar_pad: float = 0.10
     grid_cbar_size: str = "2.5%"
-    plot_fourier_conjugated: bool = False
+    plot_fourier_conjugated: bool = True
     use_preconditioner: bool = True
+    batch_size: int = 2048
 
 
 def plot_partitions(partitions, recon_shape, grid):
@@ -125,28 +126,44 @@ def compute_inverse_hessian_diagonal(ct_model):
     return 1.0 / safe_hessian
 
 
-def build_restricted_matrices(recon_shape, restricted_indices, inverse_hessian_diagonal=None, use_preconditioner=True):
+def build_restricted_matrices(
+    recon_shape,
+    restricted_indices,
+    inverse_hessian_diagonal=None,
+    use_preconditioner=True,
+    batch_size=2048,
+):
     """
     Build restricted matrices in one stacked projection/backprojection call.
 
-    Each restricted basis vector is placed in a separate reconstruction slice, so
-    one forward/back projection computes all columns at once.
+    Each restricted basis vector is placed in a reconstruction slice. Slices are
+    processed in batches to control memory.
     """
     num_rows, num_cols = recon_shape[:2]
     restricted_indices = np.asarray(restricted_indices, dtype=int).reshape(-1)
     num_restricted = restricted_indices.size
 
-    stacked_recon_shape = (num_rows, num_cols, num_restricted)
-    stacked_model = make_parallel_beam_model(stacked_recon_shape)
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
 
-    basis_stack = np.zeros(stacked_recon_shape, dtype=np.float32)
-    row_inds, col_inds = np.unravel_index(restricted_indices, (num_rows, num_cols))
-    basis_stack[row_inds, col_inds, np.arange(num_restricted)] = 1.0
+    ata_restricted = np.zeros((num_restricted, num_restricted), dtype=np.float32)
+    row_inds_all, col_inds_all = np.unravel_index(restricted_indices, (num_rows, num_cols))
 
-    sinogram = stacked_model.forward_project(basis_stack)
-    back_projection = stacked_model.back_project(sinogram)
-    back_projection_flat = np.asarray(back_projection).reshape(num_rows * num_cols, num_restricted)
-    ata_restricted = back_projection_flat[restricted_indices, :]
+    for start in tqdm(range(0, num_restricted, batch_size), desc="Building (A^T A)[I, I] batched"):
+        end = min(start + batch_size, num_restricted)
+        cur_batch_size = end - start
+        cur_indices = restricted_indices[start:end]
+
+        stacked_recon_shape = (num_rows, num_cols, cur_batch_size)
+        stacked_model = make_parallel_beam_model(stacked_recon_shape)
+
+        basis_stack = np.zeros(stacked_recon_shape, dtype=np.float32)
+        basis_stack[row_inds_all[start:end], col_inds_all[start:end], np.arange(cur_batch_size)] = 1.0
+
+        sinogram = stacked_model.forward_project(basis_stack)
+        back_projection = stacked_model.back_project(sinogram)
+        back_projection_flat = np.asarray(back_projection).reshape(num_rows * num_cols, cur_batch_size)
+        ata_restricted[:, start:end] = back_projection_flat[restricted_indices, :]
 
     if use_preconditioner:
         if inverse_hessian_diagonal is None:
@@ -157,22 +174,17 @@ def build_restricted_matrices(recon_shape, restricted_indices, inverse_hessian_d
 
 
 def build_fourier_response_abs_matrix(
-    ct_model,
     recon_shape,
     subset_indices,
     frequency_indices,
     inverse_hessian_diagonal=None,
     use_preconditioner=True,
+    batch_size=2048,
 ):
     """
-    Build |F P (D^{-1}) A^T A P F^{-1}| over full-frequency rows/cols using one spatial subset.
+    Build |F P (D^{-1}) A^T A P F^{-1}| by stacking frequency inputs as slices.
 
-    Parameters
-    ----------
-    subset_indices : ndarray
-        Flat spatial indices defining subset projector P.
-    frequency_indices : ndarray
-        Flat shifted-FFT indices defining row/column ordering.
+    Frequency columns are processed in batches to control memory.
     """
     num_rows, num_cols = recon_shape[:2]
     num_freq = num_rows * num_cols
@@ -180,65 +192,63 @@ def build_fourier_response_abs_matrix(
     frequency_indices = np.asarray(frequency_indices, dtype=int).reshape(-1)
     if subset_indices.size == 0:
         raise ValueError("subset_indices must be non-empty.")
+    if frequency_indices.size != num_freq:
+        raise ValueError("frequency_indices must include all frequencies.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
 
-    subset_indices_jnp = jnp.asarray(subset_indices)
-    frequency_indices_jnp = jnp.asarray(frequency_indices)
-    inverse_hessian_subset = None
+    subset_mask = jnp.zeros((num_rows * num_cols,), dtype=jnp.float32).at[subset_indices].set(1.0)
+    subset_mask_2d = subset_mask.reshape((num_rows, num_cols))
+    freq_order_jnp = jnp.asarray(frequency_indices)
+    inverse_hessian_2d = None
     if use_preconditioner:
-        inverse_hessian_subset = jnp.asarray(inverse_hessian_diagonal[subset_indices])[:, None]
+        if inverse_hessian_diagonal is None:
+            raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
+        inverse_hessian_2d = jnp.asarray(inverse_hessian_diagonal.reshape((num_rows, num_cols)))
 
-    fourier_response_abs = jnp.zeros((num_freq, num_freq), dtype=jnp.float32)
-    freq_basis_flat = jnp.zeros(num_freq, dtype=jnp.complex64)
+    response_abs = jnp.zeros((num_freq, num_freq), dtype=jnp.float32)
+    for start in tqdm(range(0, num_freq, batch_size), desc="Building Fourier response batched"):
+        end = min(start + batch_size, num_freq)
+        cur_batch_size = end - start
+        cur_freq_indices = frequency_indices[start:end]
 
-    for col, freq_index in tqdm(
-        enumerate(frequency_indices),
-        total=num_freq,
-        desc="Building |F P A^T A P F^{-1}|",
-    ):
-        freq_basis_flat = freq_basis_flat.at[freq_index].set(1.0 + 0.0j)
-        freq_basis_2d = freq_basis_flat.reshape((num_rows, num_cols))
-        spatial_basis_2d = jnp.fft.ifft2(
-            jnp.fft.ifftshift(freq_basis_2d, axes=(0, 1)),
+        stacked_recon_shape = (num_rows, num_cols, cur_batch_size)
+        stacked_model = make_parallel_beam_model(stacked_recon_shape)
+
+        freq_basis_stack = jnp.zeros(stacked_recon_shape, dtype=jnp.complex64)
+        freq_rows, freq_cols = np.unravel_index(cur_freq_indices, (num_rows, num_cols))
+        freq_basis_stack = freq_basis_stack.at[freq_rows, freq_cols, jnp.arange(cur_batch_size)].set(1.0 + 0.0j)
+
+        spatial_basis_stack = jnp.fft.ifft2(
+            jnp.fft.ifftshift(freq_basis_stack, axes=(0, 1)),
             axes=(0, 1),
             norm="ortho",
         )
 
-        real_spatial_subset = jnp.take(jnp.real(spatial_basis_2d).reshape(-1), subset_indices_jnp)[:, None]
-        imag_spatial_subset = jnp.take(jnp.imag(spatial_basis_2d).reshape(-1), subset_indices_jnp)[:, None]
+        real_spatial_stack = jnp.real(spatial_basis_stack) * subset_mask_2d[..., None]
+        imag_spatial_stack = jnp.imag(spatial_basis_stack) * subset_mask_2d[..., None]
 
-        real_sinogram = ct_model.sparse_forward_project(
-            real_spatial_subset, subset_indices_jnp, output_device=ct_model.sinogram_device
-        )
-        imag_sinogram = ct_model.sparse_forward_project(
-            imag_spatial_subset, subset_indices_jnp, output_device=ct_model.sinogram_device
-        )
+        real_sinogram = stacked_model.forward_project(real_spatial_stack)
+        imag_sinogram = stacked_model.forward_project(imag_spatial_stack)
+        real_back_stack = stacked_model.back_project(real_sinogram)
+        imag_back_stack = stacked_model.back_project(imag_sinogram)
+        complex_back_stack = real_back_stack + 1j * imag_back_stack
 
-        real_back_subset = ct_model.sparse_back_project(
-            real_sinogram, subset_indices_jnp, output_device=ct_model.main_device
-        )
-        imag_back_subset = ct_model.sparse_back_project(
-            imag_sinogram, subset_indices_jnp, output_device=ct_model.main_device
-        )
-        complex_back_subset = real_back_subset + 1j * imag_back_subset
         if use_preconditioner:
-            if inverse_hessian_diagonal is None:
-                raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
-            complex_back_subset = complex_back_subset * inverse_hessian_subset
+            complex_back_stack = complex_back_stack * inverse_hessian_2d[..., None]
 
-        back_projection_flat = jnp.zeros(num_freq, dtype=jnp.complex64)
-        back_projection_flat = back_projection_flat.at[subset_indices_jnp].set(complex_back_subset[:, 0])
-        back_projection_2d = back_projection_flat.reshape((num_rows, num_cols))
+        complex_back_stack = complex_back_stack * subset_mask_2d[..., None]
 
-        fourier_response_2d = jnp.fft.fftshift(
-            jnp.fft.fft2(back_projection_2d, axes=(0, 1), norm="ortho"),
+        fourier_response_stack = jnp.fft.fftshift(
+            jnp.fft.fft2(complex_back_stack, axes=(0, 1), norm="ortho"),
             axes=(0, 1),
         )
-        fourier_response_col = jnp.take(fourier_response_2d.reshape(-1), frequency_indices_jnp)
-        fourier_response_abs = fourier_response_abs.at[:, col].set(jnp.abs(fourier_response_col).astype(jnp.float32))
 
-        freq_basis_flat = freq_basis_flat.at[freq_index].set(0.0 + 0.0j)
+        fourier_response_flat = fourier_response_stack.reshape((num_freq, cur_batch_size))
+        ordered_rows = jnp.take(fourier_response_flat, freq_order_jnp, axis=0)
+        response_abs = response_abs.at[:, start:end].set(jnp.abs(ordered_rows).astype(jnp.float32))
 
-    return fourier_response_abs
+    return response_abs
 
 
 def format_matrix_size(n):
@@ -392,12 +402,12 @@ def main():
         for partition in partitions:
             subset_indices = np.asarray(partition[0]).flatten()
             response_abs = build_fourier_response_abs_matrix(
-                ct_model=ct_model,
                 recon_shape=cfg.recon_shape,
                 subset_indices=subset_indices,
                 frequency_indices=frequency_indices,
                 inverse_hessian_diagonal=inverse_hessian_diagonal,
                 use_preconditioner=cfg.use_preconditioner,
+                batch_size=cfg.batch_size,
             )
             # Normalize each response to a common peak so subset-size trends are shape-based, not scale-based.
             response_abs = response_abs / jnp.maximum(jnp.max(response_abs), jnp.finfo(jnp.float32).eps)
@@ -422,6 +432,7 @@ def main():
             restricted_indices,
             inverse_hessian_diagonal=inverse_hessian_diagonal,
             use_preconditioner=cfg.use_preconditioner,
+            batch_size=cfg.batch_size,
         )
         log_abs_matrix = np.log10(np.clip(np.abs(ata_restricted), cfg.vmin, None))
         plot_restricted_blocks(
