@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-import mbirjax
+import mbirjax as mj
 
 param_dict = {    # Set parameters
     'num_views' : 128,
