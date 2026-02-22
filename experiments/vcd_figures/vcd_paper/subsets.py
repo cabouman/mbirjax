@@ -8,6 +8,7 @@ It also computes a Fourier-conjugated version of the same restricted operator.
 
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import mbirjax as mj
@@ -188,48 +189,62 @@ def build_fourier_response_abs_matrix(
     if subset_indices.size == 0:
         raise ValueError("subset_indices must be non-empty.")
 
-    fourier_response_abs = np.zeros((num_freq, num_freq), dtype=np.float32)
-    freq_basis_flat = np.zeros(num_freq, dtype=np.complex64)
+    subset_indices_jnp = jnp.asarray(subset_indices)
+    frequency_indices_jnp = jnp.asarray(frequency_indices)
+    inverse_hessian_subset = None
+    if use_preconditioner:
+        inverse_hessian_subset = jnp.asarray(inverse_hessian_diagonal[subset_indices])[:, None]
+
+    fourier_response_abs = jnp.zeros((num_freq, num_freq), dtype=jnp.float32)
+    freq_basis_flat = jnp.zeros(num_freq, dtype=jnp.complex64)
 
     for col, freq_index in tqdm(
         enumerate(frequency_indices),
         total=num_freq,
         desc="Building |F P A^T A P F^{-1}|",
     ):
-        freq_basis_flat[freq_index] = 1.0 + 0.0j
+        freq_basis_flat = freq_basis_flat.at[freq_index].set(1.0 + 0.0j)
         freq_basis_2d = freq_basis_flat.reshape((num_rows, num_cols))
-        spatial_basis_2d = np.fft.ifft2(
-            np.fft.ifftshift(freq_basis_2d, axes=(0, 1)),
+        spatial_basis_2d = jnp.fft.ifft2(
+            jnp.fft.ifftshift(freq_basis_2d, axes=(0, 1)),
             axes=(0, 1),
             norm="ortho",
         )
 
-        real_spatial_subset = np.real(spatial_basis_2d).reshape(-1)[subset_indices][:, None]
-        imag_spatial_subset = np.imag(spatial_basis_2d).reshape(-1)[subset_indices][:, None]
+        real_spatial_subset = jnp.take(jnp.real(spatial_basis_2d).reshape(-1), subset_indices_jnp)[:, None]
+        imag_spatial_subset = jnp.take(jnp.imag(spatial_basis_2d).reshape(-1), subset_indices_jnp)[:, None]
 
-        real_sinogram = ct_model.sparse_forward_project(real_spatial_subset, subset_indices)
-        imag_sinogram = ct_model.sparse_forward_project(imag_spatial_subset, subset_indices)
+        real_sinogram = ct_model.sparse_forward_project(
+            real_spatial_subset, subset_indices_jnp, output_device=ct_model.sinogram_device
+        )
+        imag_sinogram = ct_model.sparse_forward_project(
+            imag_spatial_subset, subset_indices_jnp, output_device=ct_model.sinogram_device
+        )
 
-        real_back_subset = np.asarray(ct_model.sparse_back_project(real_sinogram, subset_indices))
-        imag_back_subset = np.asarray(ct_model.sparse_back_project(imag_sinogram, subset_indices))
+        real_back_subset = ct_model.sparse_back_project(
+            real_sinogram, subset_indices_jnp, output_device=ct_model.main_device
+        )
+        imag_back_subset = ct_model.sparse_back_project(
+            imag_sinogram, subset_indices_jnp, output_device=ct_model.main_device
+        )
         complex_back_subset = real_back_subset + 1j * imag_back_subset
         if use_preconditioner:
             if inverse_hessian_diagonal is None:
                 raise ValueError("inverse_hessian_diagonal is required when use_preconditioner=True.")
-            complex_back_subset = complex_back_subset * inverse_hessian_diagonal[subset_indices][:, None]
+            complex_back_subset = complex_back_subset * inverse_hessian_subset
 
-        back_projection_flat = np.zeros(num_freq, dtype=np.complex64)
-        back_projection_flat[subset_indices] = complex_back_subset[:, 0]
+        back_projection_flat = jnp.zeros(num_freq, dtype=jnp.complex64)
+        back_projection_flat = back_projection_flat.at[subset_indices_jnp].set(complex_back_subset[:, 0])
         back_projection_2d = back_projection_flat.reshape((num_rows, num_cols))
 
-        fourier_response_2d = np.fft.fftshift(
-            np.fft.fft2(back_projection_2d, axes=(0, 1), norm="ortho"),
+        fourier_response_2d = jnp.fft.fftshift(
+            jnp.fft.fft2(back_projection_2d, axes=(0, 1), norm="ortho"),
             axes=(0, 1),
         )
-        fourier_response_col = fourier_response_2d.reshape(-1)[frequency_indices]
-        fourier_response_abs[:, col] = np.abs(fourier_response_col).astype(np.float32)
+        fourier_response_col = jnp.take(fourier_response_2d.reshape(-1), frequency_indices_jnp)
+        fourier_response_abs = fourier_response_abs.at[:, col].set(jnp.abs(fourier_response_col).astype(jnp.float32))
 
-        freq_basis_flat[freq_index] = 0.0 + 0.0j
+        freq_basis_flat = freq_basis_flat.at[freq_index].set(0.0 + 0.0j)
 
     return fourier_response_abs
 
@@ -393,8 +408,8 @@ def main():
                 use_preconditioner=cfg.use_preconditioner,
             )
             # Normalize each response to a common peak so subset-size trends are shape-based, not scale-based.
-            response_abs = response_abs / np.maximum(float(response_abs.max()), np.finfo(np.float32).eps)
-            log_abs_matrices.append(np.log10(np.clip(response_abs, cfg.vmin, None)))
+            response_abs = response_abs / jnp.maximum(jnp.max(response_abs), jnp.finfo(jnp.float32).eps)
+            log_abs_matrices.append(np.asarray(jnp.log10(jnp.clip(response_abs, cfg.vmin, None))))
         plot_full_response_blocks(
             grid=grid,
             partitions=partitions,
