@@ -304,14 +304,14 @@ def plot_restricted_blocks(grid, partitions, log_abs_matrix, restricted_indices,
     cbar.ax.set_ylabel(cbar_label)
 
 
-def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cbar_label):
+def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cbar_label, start_row=1):
     """Plot full and zoomed response matrices (already log-scaled)."""
     log_vmin = np.log10(cfg.vmin)
     log_vmax = max(float(log_abs_matrix.max()) for log_abs_matrix in log_abs_matrices)
 
     for i, (partition, log_abs_matrix) in enumerate(zip(partitions, log_abs_matrices)):
         m = np.round(np.sqrt(partition.shape[0])).astype(int)
-        top_ax = grid[ncols + i]
+        top_ax = grid[start_row * ncols + i]
         top_ax.imshow(
             log_abs_matrix,
             cmap="viridis",
@@ -326,7 +326,7 @@ def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cb
         top_ax.axis("off")
 
         zoom_log_block = log_abs_matrix[: cfg.min_num_indices, : cfg.min_num_indices]
-        bottom_ax = grid[2 * ncols + i]
+        bottom_ax = grid[(start_row + 1) * ncols + i]
         bottom_ax.imshow(
             zoom_log_block,
             cmap="viridis",
@@ -350,9 +350,11 @@ def plot_full_response_blocks(grid, partitions, log_abs_matrices, ncols, cfg, cb
 def main():
     """Run the subset-structure and restricted-operator experiment."""
     cfg = ExperimentConfig()
+    is_fourier_mode = cfg.plot_fourier_conjugated
 
     plt.rcParams.update({"font.size": cfg.font_size})
-    fig = plt.figure(figsize=(4 * len(cfg.granularity), 15))
+    fig_height = 10 if is_fourier_mode else 15
+    fig = plt.figure(figsize=(4 * len(cfg.granularity), fig_height))
     ct_model = make_parallel_beam_model(cfg.recon_shape)
     inverse_hessian_diagonal = None
     if cfg.use_preconditioner:
@@ -363,7 +365,7 @@ def main():
     grid = ImageGrid(
         fig,
         111,
-        nrows_ncols=(3, ncols),
+        nrows_ncols=(2 if is_fourier_mode else 3, ncols),
         axes_pad=cfg.grid_axes_pad,
         share_all=False,
         aspect=False,
@@ -373,7 +375,8 @@ def main():
         cbar_size=cfg.grid_cbar_size,
     )
 
-    plot_partitions(partitions=partitions, recon_shape=cfg.recon_shape, grid=grid)
+    if not is_fourier_mode:
+        plot_partitions(partitions=partitions, recon_shape=cfg.recon_shape, grid=grid)
 
     # Reference index set I is the first subset from the 1-subset partition.
     if cfg.plot_fourier_conjugated:
@@ -403,6 +406,7 @@ def main():
                 if cfg.use_preconditioner
                 else r"$\log_{10}|F P A^T A P F^{-1}|$"
             ),
+            start_row=0,
         )
     else:
         restricted_indices = order_indices_center_out(partitions[0][0], cfg.recon_shape)
