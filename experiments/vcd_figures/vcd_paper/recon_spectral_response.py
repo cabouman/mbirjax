@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import warnings
 
 try:
     from .subsets import make_parallel_beam_model
@@ -40,7 +41,11 @@ class SweepConfig:
     map_vmin: float = 1e-2
     map_vmax: float = 1.0
     radial_vmin: float = 1e-3
+    radial_bin_width: int = 4
+    radial_skip_bins: int = 2
+    gt_support_threshold_fraction: float = 1e-2
     normalize_maps_by_peak: bool = True
+    use_loaded_image: bool = True
     use_ror_mask: bool = False
     radial_full_circle_only: bool = True
     font_size: int = 16
@@ -82,7 +87,7 @@ def compute_shifted_fft_magnitude(image_2d):
     return np.abs(fft_2d)
 
 
-def compute_radial_profile(image_2d, full_circle_only=True):
+def compute_radial_profile(image_2d, full_circle_only=True, bin_width=1, skip_bins=0, valid_mask=None):
     """Compute radial mean profile of a 2D image centered at DC (shifted FFT layout)."""
     num_rows, num_cols = image_2d.shape
     row_coords, col_coords = np.indices((num_rows, num_cols))
@@ -100,18 +105,32 @@ def compute_radial_profile(image_2d, full_circle_only=True):
         )
         max_bin = int(max_full_radius)
         valid = bin_indices <= max_bin
-        binned_vals = bin_indices[valid].ravel()
-        img_vals = image_2d[valid].ravel()
     else:
         max_bin = int(bin_indices.max())
-        binned_vals = bin_indices.ravel()
-        img_vals = image_2d.ravel()
+        valid = np.ones_like(bin_indices, dtype=bool)
 
-    sums = np.bincount(binned_vals, weights=img_vals, minlength=max_bin + 1)
-    counts = np.bincount(binned_vals, minlength=max_bin + 1)
+    if valid_mask is not None:
+        valid = valid & valid_mask.astype(bool)
+
+    if bin_width <= 0:
+        raise ValueError("bin_width must be >= 1.")
+    if skip_bins < 0:
+        raise ValueError("skip_bins must be >= 0.")
+
+    binned_vals = (bin_indices[valid] // bin_width).ravel()
+    img_vals = image_2d[valid].ravel()
+
+    max_coarse_bin = int(max_bin // bin_width)
+    sums = np.bincount(binned_vals, weights=img_vals, minlength=max_coarse_bin + 1)
+    counts = np.bincount(binned_vals, minlength=max_coarse_bin + 1)
     profile = sums / np.maximum(counts, 1)
-    radius_values = np.arange(max_bin + 1, dtype=np.float32)
+    radius_values = (np.arange(max_coarse_bin + 1, dtype=np.float32) + 0.5) * float(bin_width)
     radius_values /= max(float(max_bin), 1.0)
+    if skip_bins > 0:
+        if skip_bins >= profile.size:
+            raise ValueError("skip_bins is too large for the computed number of radial bins.")
+        profile = profile[skip_bins:]
+        radius_values = radius_values[skip_bins:]
     return radius_values, profile.astype(np.float32)
 
 
@@ -137,15 +156,38 @@ def maybe_show_checkpoint(cfg, condition, plot_fn):
         plot_fn()
 
 
-def plot_summary(freq_maps, radial_profiles, radii, labels, cfg):
-    """Plot one-sweep Fourier maps (top) and radial curves (bottom)."""
-    ncols = len(freq_maps)
-    fig = plt.figure(figsize=(4 * ncols, 8))
-    grid = fig.add_gridspec(2, ncols, height_ratios=[1.0, 0.9])
+def plot_summary(gt_image, recon_images, gt_freq_map, freq_maps, radial_profiles, radii, labels, cfg):
+    """Plot spatial images, Fourier maps, and radial curves."""
+    n_experiments = len(freq_maps)
+    ncols = n_experiments + 1  # Extra left column for ground truth.
+    fig = plt.figure(figsize=(4 * ncols, 11))
+    grid = fig.add_gridspec(3, ncols, height_ratios=[1.0, 1.0, 0.9])
     norm = mpl.colors.LogNorm(vmin=cfg.map_vmin, vmax=cfg.map_vmax)
 
-    for i, (freq_map, label) in enumerate(zip(freq_maps, labels)):
+    # Top row: spatial images.
+    ax = fig.add_subplot(grid[0, 0])
+    ax.imshow(gt_image, cmap="gray", origin="upper", interpolation="nearest")
+    ax.set_title("GT image")
+    ax.axis("off")
+    for i, (recon_image, label) in enumerate(zip(recon_images, labels), start=1):
         ax = fig.add_subplot(grid[0, i])
+        ax.imshow(recon_image, cmap="gray", origin="upper", interpolation="nearest")
+        ax.set_title(label)
+        ax.axis("off")
+
+    # Middle row: Fourier magnitude maps.
+    ax = fig.add_subplot(grid[1, 0])
+    ax.imshow(
+        np.clip(gt_freq_map, cfg.map_vmin, None),
+        cmap="viridis",
+        norm=norm,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_title("GT |F image|")
+    ax.axis("off")
+    for i, (freq_map, label) in enumerate(zip(freq_maps, labels), start=1):
+        ax = fig.add_subplot(grid[1, i])
         ax.imshow(
             np.clip(freq_map, cfg.map_vmin, None),
             cmap="viridis",
@@ -156,19 +198,24 @@ def plot_summary(freq_maps, radial_profiles, radii, labels, cfg):
         ax.set_title(label)
         ax.axis("off")
 
-    cax = fig.add_axes([0.92, 0.54, 0.015, 0.34])
+    cax = fig.add_axes([0.92, 0.34, 0.015, 0.46])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap="viridis")
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cax)
     cbar.ax.set_ylabel(r"$|\mathcal{F} x|$")
 
-    ax_curve = fig.add_subplot(grid[1, :])
+    # Bottom row: radial curves.
+    ax_curve = fig.add_subplot(grid[2, :])
     for profile, label in zip(radial_profiles, labels):
         ax_curve.semilogy(radii, np.clip(profile, cfg.radial_vmin, None), linewidth=2, label=label)
     ax_curve.set_xlabel("Normalized radial frequency")
-    ax_curve.set_ylabel(r"Radial mean of $|\mathcal{F} x|$")
+    ax_curve.set_ylabel(r"Radial mean of $|\mathcal{F}(x-x_{gt})|$ on GT support")
     title_suffix = " (full-circle support)" if cfg.radial_full_circle_only else ""
-    ax_curve.set_title(f"Post-Sequence Radial Spectral Gain{title_suffix}")
+    ax_curve.set_title(
+        f"Post-Sequence Radial Error Spectrum on GT Support{title_suffix} "
+        f"[bin_width={cfg.radial_bin_width}, skip_bins={cfg.radial_skip_bins}, "
+        f"support>={cfg.gt_support_threshold_fraction:.1e}*max]"
+    )
     ax_curve.grid(True, which="both", alpha=0.3)
     ax_curve.legend(loc="best")
 
@@ -218,10 +265,22 @@ def main():
     cfg = SweepConfig()
     plt.rcParams.update({"font.size": cfg.font_size})
 
-    target, target_fft = generate_flat_magnitude_target(cfg.recon_shape, cfg.random_phase_seed)
-    target_2d = target[..., 0]
+    if cfg.use_loaded_image:
+        target_2d = load_image().astype(np.float32)
+        recon_shape = (target_2d.shape[0], target_2d.shape[1], 1)
+        if recon_shape != cfg.recon_shape:
+            warnings.warn(
+                f"use_loaded_image=True: overriding recon_shape from {cfg.recon_shape} to {recon_shape}.",
+                stacklevel=2,
+            )
+        target = target_2d[..., None]
+        target_fft = np.fft.fftshift(np.fft.fft2(target_2d, norm="ortho"))
+    else:
+        recon_shape = cfg.recon_shape
+        target, target_fft = generate_flat_magnitude_target(recon_shape, cfg.random_phase_seed)
+        target_2d = target[..., 0]
 
-    ct_model = make_parallel_beam_model(cfg.recon_shape)
+    ct_model = make_parallel_beam_model(recon_shape)
     ct_model.use_ror_mask = cfg.use_ror_mask
     ct_model.set_params(granularity=cfg.granularity)
     print(f"use_ror_mask={ct_model.use_ror_mask}, radial_full_circle_only={cfg.radial_full_circle_only}")
@@ -271,10 +330,19 @@ def main():
     )
     # ========================================================================
 
+    recon_images = []
     freq_maps = []
     radial_profiles = []
     labels = []
     shared_radii = None
+    gt_freq_raw = compute_shifted_fft_magnitude(target_2d)
+    support_threshold = cfg.gt_support_threshold_fraction * max(float(gt_freq_raw.max()), np.finfo(np.float32).eps)
+    gt_support_mask = gt_freq_raw >= support_threshold
+    support_fraction = float(np.mean(gt_support_mask))
+    print(
+        f"GT support threshold={support_threshold:.3e} "
+        f"({cfg.gt_support_threshold_fraction:.1e} * max), support_fraction={support_fraction:.3f}"
+    )
 
     # Use identical random partitions across experiments for fair comparison.
     for experiment_index, (partition_sequence, experiment_label) in enumerate(
@@ -283,14 +351,21 @@ def main():
         np.random.seed(cfg.partition_seed)
         recon, recon_dict = run_recon_for_sequence(ct_model, sinogram, partition_sequence)
         recon_2d = recon[..., 0]
-        freq_mag = compute_shifted_fft_magnitude(recon_2d)
+        freq_mag_raw = compute_shifted_fft_magnitude(recon_2d)
+        error_freq_mag = compute_shifted_fft_magnitude(recon_2d - target_2d)
 
+        recon_images.append(recon_2d.astype(np.float32))
+        freq_mag = freq_mag_raw
         if cfg.normalize_maps_by_peak:
             freq_mag = freq_mag / max(float(freq_mag.max()), np.finfo(np.float32).eps)
 
         freq_maps.append(freq_mag.astype(np.float32))
         radii, radial_profile = compute_radial_profile(
-            freq_maps[-1], full_circle_only=cfg.radial_full_circle_only
+            error_freq_mag,
+            full_circle_only=cfg.radial_full_circle_only,
+            bin_width=cfg.radial_bin_width,
+            skip_bins=cfg.radial_skip_bins,
+            valid_mask=gt_support_mask,
         )
         shared_radii = radii
         radial_profiles.append(radial_profile)
@@ -299,10 +374,12 @@ def main():
         recon_params = recon_dict["recon_params"]
         alpha_value = recon_params["alpha_values"][-1] if len(recon_params["alpha_values"]) > 0 else np.nan
         fm_rmse = recon_params["fm_rmse"][-1] if len(recon_params["fm_rmse"]) > 0 else np.nan
+        mean_intensity_error = float(np.mean(recon_2d - target_2d))
         print(
             f"Experiment {experiment_index}: sequence={list(partition_sequence)}, "
             f"alpha={alpha_value:.4f}, fm_rmse={fm_rmse:.4f}, "
-            f"fft_peak={float(freq_mag.max()):.4f}"
+            f"mean_intensity_error={mean_intensity_error:.4e}, "
+            f"fft_peak={float(freq_mag.max()):.4f}, fft_error_peak={float(error_freq_mag.max()):.4f}"
         )
 
         # ==================== CHECKPOINT BLOCK: FIRST RECON ====================
@@ -337,7 +414,37 @@ def main():
     if shared_radii is None:
         raise RuntimeError("No reconstructions were generated; check granularity configuration.")
 
-    plot_summary(freq_maps, radial_profiles, shared_radii, labels, cfg)
+    gt_freq_map = compute_shifted_fft_magnitude(target_2d)
+    if cfg.normalize_maps_by_peak:
+        gt_freq_map = gt_freq_map / max(float(gt_freq_map.max()), np.finfo(np.float32).eps)
+
+    plot_summary(
+        gt_image=target_2d,
+        recon_images=recon_images,
+        gt_freq_map=gt_freq_map,
+        freq_maps=freq_maps,
+        radial_profiles=radial_profiles,
+        radii=shared_radii,
+        labels=labels,
+        cfg=cfg,
+    )
+
+
+def load_image():
+    """
+    Load an image for use as a baseline phantom
+    Returns: 2D numpy array
+    """
+    import mbirjax as mj
+    phantom = mj.load_data_hdf5('./data/recon.h5')[0]
+    phantom = phantom.transpose((1, 2, 0))
+    phantom = mj.preprocess.apply_cylindrical_mask(phantom, radial_margin=70)
+    image = np.array(phantom[100:, 100:, 1])
+    image = np.clip(image, 0, 0.05)
+    image = image / 0.05
+    plt.imshow(image, cmap="gray")
+    plt.show()
+    return image
 
 
 if __name__ == "__main__":
