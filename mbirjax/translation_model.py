@@ -788,3 +788,75 @@ class TranslationModel(mj.TomographyModel):
 
         return recon
 
+    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
+        """
+        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
+        sigma_x in MBIR reconstruction.
+        This version accounts for anisotropic row pitch in translation geometry
+
+        Args:
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+        """
+        # Get parameters
+        delta_det_channel = self.get_params('delta_det_channel')
+        delta_voxel = self.get_params('delta_voxel')
+        delta_recon_row = self.get_params('delta_recon_row')
+        recon_shape = self.get_params('recon_shape')
+        magnification = self.get_magnification()
+        num_det_channels = sinogram.shape[-1]
+
+        # Compute the typical magnitude of a sinogram value
+        typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
+
+        # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
+        # Compute a typical projection path length based on the soft minimum of the recon width and height
+        # Use delta_recon_row when computing recon height
+        recon_height = recon_shape[0] * delta_recon_row
+        recon_width = recon_shape[1] * delta_voxel
+        typical_path_length_space = (2 * recon_height * recon_width) / (recon_height + recon_width)
+
+        # Compute a typical projection path length based on the detector column width
+        typical_path_length_sino = num_det_channels * delta_det_channel / magnification
+
+        # Compute a typical projection path as the minimum of the two estimates
+        typical_path_length = np.minimum(typical_path_length_space, typical_path_length_sino)
+
+        # Compute a typical recon value by dividing average sinogram value by a typical projection path length
+        recon_std = typical_sinogram_value / typical_path_length
+
+        return recon_std
+
+    def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
+        """
+        Sets the value of the parameter sigma_y used for use in MBIR reconstruction.
+        This version accounts for anisotropic row pitch in translation geometry
+
+        Args:
+            sinogram (jax array or ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (jax array or ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
+        """
+
+        # Get parameters
+        snr_db = self.get_params('snr_db')
+        magnification = self.get_magnification()
+        delta_voxel, delta_recon_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_recon_row', 'delta_det_channel'])
+
+        # Compute RMS value of sinogram excluding empty space
+        signal_rms = float(np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5)
+
+        # Convert snr to relative noise standard deviation
+        rel_noise_std = 10 ** (-snr_db / 20)
+        # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
+        default_pixel_pitch = delta_det_channel / magnification
+
+        # Compute the recon pixel pitch relative to the default.
+        # Use voxel area to account for anisotropic row pitch
+        voxel_area = float(delta_voxel * delta_recon_row)
+        default_pixel_area = float(default_pixel_pitch * default_pixel_pitch)
+        pixel_pitch_relative_to_default = voxel_area / default_pixel_area
+
+        # Compute sigma_y and scale by relative pixel pitch
+        sigma_y = np.float32(rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5))
+        self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
