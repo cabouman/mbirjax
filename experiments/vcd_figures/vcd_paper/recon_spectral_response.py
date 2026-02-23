@@ -436,12 +436,26 @@ def load_image():
     Returns: 2D numpy array
     """
     import mbirjax as mj
-    phantom = mj.load_data_hdf5('./data/recon.h5')[0]
-    phantom = phantom.transpose((1, 2, 0))
-    phantom = mj.preprocess.apply_cylindrical_mask(phantom, radial_margin=70)
-    image = np.array(phantom[100:, 100:, 1])
-    image = np.clip(image, 0, 0.05)
-    image = image / 0.05
+    # phantom = mj.load_data_hdf5('./data/recon.h5')[0]
+    # phantom = phantom.transpose((1, 2, 0))
+    # phantom = mj.preprocess.apply_cylindrical_mask(phantom, radial_margin=70)
+    # image = np.array(phantom[100:, 100:, 1])
+    # image = np.clip(image, 0, 0.05)
+    # image = image / 0.05
+
+    num_views = 600
+    num_det_rows = 200
+    num_det_channels = 1000
+
+    # Generate simulated data
+    # In a real application you would not have the phantom, but we include it here for later display purposes
+    phantom, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
+                                                      num_views=num_views, num_det_rows=num_det_rows,
+                                                      num_det_channels=num_det_channels)
+    image = phantom[:, :, num_det_rows // 2]
+    image = np.array(image)
+    image = image / np.max(image)
+
     plt.imshow(image, cmap="gray")
     plt.show()
     return image
