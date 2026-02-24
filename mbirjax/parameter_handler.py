@@ -256,13 +256,14 @@ class ParameterHandler:
     def compare_flat_iterables(v1, v2, atol=1e-6):
         """
         Verify that 2 iterables (tuples or lists, etc) have the same length and entries, up to atol.
+
         Args:
             v1 (Sized Iterable):  First iterable
             v2 (Sized Iterable):  Second iterable
             atol (float, optional): Absolute floating point tolerance for equality.  Defaults to 1e-6.
 
         Returns:
-
+            bool: True when both iterables have matching lengths and element values within tolerance.
         """
         if len(v1) != len(v2):
             return False

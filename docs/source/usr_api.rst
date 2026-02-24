@@ -13,6 +13,7 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
 * :ref:`ParallelBeamModelDocs`
 * :ref:`ConeBeamModelDocs`
 * :ref:`TranslationModelDocs`
+* :ref:`MultiAxisParallelBeamModelDocs`
 * :ref:`DenoisingDocs`
 * :ref:`PreprocessDocs`
 * :ref:`Utilities`
@@ -36,6 +37,7 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
    usr_parallel_beam_model
    usr_cone_beam_model
    usr_translation_model
+   usr_multiaxis_parallel_beam_model
    usr_denoising
    usr_preprocess
    usr_utilities

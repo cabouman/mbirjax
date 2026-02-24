@@ -36,10 +36,10 @@ class ConeBeamModel(TomographyModel):
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
 
     Note:
-        One additional parameter for ConeBeamModel that can be set using set_params() is
+        Additional parameter:
 
         **recon_slice_offset** (float, default=0) -
-        Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
+        This parameter controls the vertical offset of the reconstruction in ALU. If recon_slice_offset is positive, the region below iso is reconstructed.
 
     See Also
     --------

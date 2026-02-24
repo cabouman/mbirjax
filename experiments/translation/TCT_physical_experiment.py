@@ -34,7 +34,7 @@ def main():
     tct_model.set_params(positivity_flag=True)
     tct_model.set_params(recon_shape=(40,)+recon_shape[1:])
     #tct_model.set_params(delta_recon_row=10 * delta_det_channel)
-    tct_model.set_params(partition_sequence=50*[0,] + 100*[2,] + [3,])
+    tct_model.set_params(partition_sequence=5*[0,] + 100*[1, 3,])
     tct_model.set_params(qggmrf_nbr_wts=[0.1, 1, 1])
 
     # Print model parameters and display translation array
@@ -55,7 +55,7 @@ def main():
 
     # Perform MBIR reconstruction
     direct_recon, direct_dict = tct_model.recon(sino, weights=weights, max_iterations=0)
-    mbir_recon, mbir_dict = tct_model.recon(sino, weights=weights, max_iterations=200)
+    mbir_recon, mbir_dict = tct_model.recon(sino, weights=weights, max_iterations=200, stop_threshold_change_pct=0.1)
 
     # Save reconstruction results
     output_path = './output/'  # path to store output recon
@@ -68,7 +68,7 @@ def main():
 
     # Display Results
     mj.slice_viewer(direct_recon.transpose(0, 2, 1), mbir_recon.transpose(0, 2, 1), data_dicts=[direct_dict, mbir_dict],
-                    title='Direct recon (left) and MBIR recon (right)', slice_axis=0, vmin=-0.002, vmax=0.02)
+                    title='Direct recon (left) and MBIR recon (right)', slice_axis=0)
 
 
 
