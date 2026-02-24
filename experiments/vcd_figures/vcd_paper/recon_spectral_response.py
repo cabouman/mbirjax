@@ -41,13 +41,12 @@ class SweepConfig:
     random_phase_seed: int = 0
     partition_seed: int = 0
     map_vmin: float = 1e-5
-    map_vmax: float = 1.0
+    map_vmax: float = 10.0
     radial_vmin: float = 1e-3
-    radial_bin_width: int = 4
-    radial_skip_bins: int = 2
+    radial_bin_width: int = 2
+    radial_skip_bins: int = 0
     gt_support_threshold_fraction: float = 1e-5
-    normalize_maps_by_peak: bool = True
-    use_loaded_image: bool = True
+    normalize_maps_by_peak: bool = False
     use_ror_mask: bool = False
     radial_full_circle_only: bool = True
     font_size: int = 16
@@ -58,8 +57,6 @@ class SweepConfig:
     checkpoint_show_target_image: bool = False
     checkpoint_show_target_fft_mag: bool = False
     checkpoint_show_sinogram: bool = False
-    checkpoint_show_first_recon: bool = False
-    checkpoint_show_first_recon_fft: bool = False
     # ============================================================
 
 
@@ -123,7 +120,7 @@ def compute_radial_profile(image_2d, full_circle_only=True, bin_width=1, skip_bi
     img_vals = image_2d[valid].ravel()
 
     max_coarse_bin = int(max_bin // bin_width)
-    sums = np.bincount(binned_vals, weights=img_vals, minlength=max_coarse_bin + 1)
+    sums = np.bincount(binned_vals, weights=img_vals ** 2, minlength=max_coarse_bin + 1)
     counts = np.bincount(binned_vals, minlength=max_coarse_bin + 1)
     profile = sums / np.maximum(counts, 1)
     radius_values = (np.arange(max_coarse_bin + 1, dtype=np.float32) + 0.5) * float(bin_width)
@@ -180,7 +177,7 @@ def plot_summary(gt_image, recon_images, gt_freq_map, freq_maps, radial_profiles
     # Middle row: Fourier magnitude maps.
     ax = fig.add_subplot(grid[1, 0])
     ax.imshow(
-        np.clip(gt_freq_map, cfg.map_vmin, None),
+        np.clip(gt_freq_map, cfg.map_vmin, cfg.map_vmax),
         cmap="viridis",
         norm=norm,
         origin="upper",
@@ -271,20 +268,15 @@ def main():
     cfg = SweepConfig()
     plt.rcParams.update({"font.size": cfg.font_size})
 
-    if cfg.use_loaded_image:
-        target_2d = load_image(cfg).astype(np.float32)
-        recon_shape = (target_2d.shape[0], target_2d.shape[1], 1)
-        if recon_shape != cfg.recon_shape:
-            warnings.warn(
-                f"use_loaded_image=True: overriding recon_shape from {cfg.recon_shape} to {recon_shape}.",
-                stacklevel=2,
-            )
-        target = target_2d[..., None]
-        target_fft = np.fft.fftshift(np.fft.fft2(target_2d, norm="ortho"))
-    else:
-        recon_shape = cfg.recon_shape
-        target, target_fft = generate_flat_magnitude_target(recon_shape, cfg.random_phase_seed)
-        target_2d = target[..., 0]
+    target_2d = get_image(cfg).astype(np.float32)
+    recon_shape = (target_2d.shape[0], target_2d.shape[1], 1)
+    if recon_shape != cfg.recon_shape:
+        warnings.warn(
+            f"use_loaded_image=True: overriding recon_shape from {cfg.recon_shape} to {recon_shape}.",
+            stacklevel=2,
+        )
+    target = target_2d[..., None]
+    target_fft = np.fft.fftshift(np.fft.fft2(target_2d, norm="ortho"))
 
     ct_model = make_parallel_beam_model(recon_shape)
     ct_model.use_ror_mask = cfg.use_ror_mask
@@ -360,8 +352,6 @@ def main():
         freq_mag_raw = compute_shifted_fft_magnitude(recon_2d)
         error_freq_mag = compute_shifted_fft_magnitude(recon_2d - target_2d)
 
-        error_freq_mag = blur(error_freq_mag)
-
         recon_images.append(recon_2d.astype(np.float32))
         freq_mag = freq_mag_raw
         if cfg.normalize_maps_by_peak:
@@ -390,35 +380,6 @@ def main():
             f"fft_peak={float(freq_mag.max()):.4f}, fft_error_peak={float(error_freq_mag.max()):.4f}"
         )
 
-        # ==================== CHECKPOINT BLOCK: FIRST RECON ====================
-        if experiment_index == 0:
-            maybe_show_checkpoint(
-                cfg,
-                cfg.checkpoint_show_first_recon,
-                lambda: (
-                    plt.figure(figsize=(5, 4)),
-                    plt.imshow(recon_2d, cmap="gray"),
-                    plt.title("Checkpoint: Recon After One Sweep (First Partition)"),
-                    plt.colorbar(),
-                    plt.tight_layout(),
-                    plt.show(),
-                ),
-            )
-            maybe_show_checkpoint(
-                cfg,
-                cfg.checkpoint_show_first_recon_fft,
-                lambda: (
-                    plt.figure(figsize=(5, 4)),
-                    plt.imshow(np.clip(freq_mag, cfg.map_vmin, None), cmap="viridis",
-                               norm=mpl.colors.LogNorm(vmin=cfg.map_vmin, vmax=cfg.map_vmax)),
-                    plt.title("Checkpoint: |FFT(One-Sweep Recon)| (First Partition)"),
-                    plt.colorbar(),
-                    plt.tight_layout(),
-                    plt.show(),
-                ),
-            )
-        # ====================================================================
-
     if shared_radii is None:
         raise RuntimeError("No reconstructions were generated; check granularity configuration.")
 
@@ -429,6 +390,7 @@ def main():
     gt_freq_map = blur(gt_freq_map)
     for i in range(len(freq_maps)):
         freq_maps[i] = blur(freq_maps[i])
+        freq_maps[i] = np.abs(freq_maps[i] - gt_freq_map) / np.clip(gt_freq_map, 1e-6, None)
 
     plot_summary(
         gt_image=target_2d,
@@ -442,9 +404,9 @@ def main():
     )
 
 
-def load_image(cfg):
+def get_image(cfg):
     """
-    Load an image for use as a baseline phantom
+    Load or create an image for use as a baseline phantom
     Returns: 2D numpy array
     """
     import mbirjax as mj
@@ -468,8 +430,7 @@ def load_image(cfg):
         image = np.array(image)
 
     image = image / np.max(image)
-    plt.imshow(image, cmap="gray")
-    plt.show()
+
     return image
 
 
