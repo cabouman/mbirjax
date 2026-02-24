@@ -816,36 +816,3 @@ class TranslationModel(mj.TomographyModel):
 
         return recon_std
 
-    def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
-        """
-        Sets the value of the parameter sigma_y used for use in MBIR reconstruction.
-        This version accounts for anisotropic row pitch in translation geometry
-
-        Args:
-            sinogram (jax array or ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-            sino_indicator (jax array or ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
-        """
-
-        # Get parameters
-        snr_db = self.get_params('snr_db')
-        magnification = self.get_magnification()
-        delta_voxel, delta_recon_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_recon_row', 'delta_det_channel'])
-
-        # Compute RMS value of sinogram excluding empty space
-        signal_rms = float(np.average(weights * sinogram ** 2, None, sino_indicator) ** 0.5)
-
-        # Convert snr to relative noise standard deviation
-        rel_noise_std = 10 ** (-snr_db / 20)
-        # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
-        default_pixel_pitch = delta_det_channel / magnification
-
-        # Compute the recon pixel pitch relative to the default.
-        # Use voxel area to account for anisotropic row pitch
-        voxel_area = float(delta_voxel * delta_recon_row)
-        default_pixel_area = float(default_pixel_pitch * default_pixel_pitch)
-        pixel_pitch_relative_to_default = voxel_area / default_pixel_area
-
-        # Compute sigma_y and scale by relative pixel pitch
-        sigma_y = np.float32(rel_noise_std * signal_rms * (pixel_pitch_relative_to_default ** 0.5))
-        self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
