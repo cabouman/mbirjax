@@ -13,6 +13,7 @@ terms and step-size logic match the production reconstruction path.
 
 from dataclasses import dataclass
 
+import cv2
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,25 +26,26 @@ except ImportError:
 
 num_iterations = 4
 granularity_list = (1, 4, 16, 64, 128)
-gd_seq, gd_label = [num_iterations * [0], f'1 subset, {num_iterations} iterations']
-icd_seq, icd_label = [num_iterations * [4], f'128 subsets, {num_iterations} iterations']
+gd_seq, gd_label = [num_iterations * [0], f'1 subset']
+icd_seq, icd_label = [num_iterations * [4], f'128 subsets']
 vcd_seq, vcd_label = (0, 1, 2, 3), 'VCD'
 
 
 @dataclass(frozen=True)
 class SweepConfig:
     recon_shape: tuple[int, int, int] = (1000, 1000, 1)
+    load_image: bool = False
     granularity: tuple[int, ...] = granularity_list
     experiment_sequences: tuple[tuple[int, ...], ...] | None = (gd_seq, icd_seq, vcd_seq)
     experiment_labels: tuple[str, ...] | None = (gd_label, icd_label, vcd_label)
     random_phase_seed: int = 0
     partition_seed: int = 0
-    map_vmin: float = 1e-2
+    map_vmin: float = 1e-5
     map_vmax: float = 1.0
     radial_vmin: float = 1e-3
     radial_bin_width: int = 4
     radial_skip_bins: int = 2
-    gt_support_threshold_fraction: float = 1e-2
+    gt_support_threshold_fraction: float = 1e-5
     normalize_maps_by_peak: bool = True
     use_loaded_image: bool = True
     use_ror_mask: bool = False
@@ -171,7 +173,7 @@ def plot_summary(gt_image, recon_images, gt_freq_map, freq_maps, radial_profiles
     ax.axis("off")
     for i, (recon_image, label) in enumerate(zip(recon_images, labels), start=1):
         ax = fig.add_subplot(grid[0, i])
-        ax.imshow(recon_image, cmap="gray", origin="upper", interpolation="nearest")
+        ax.imshow(np.clip(recon_image, 0, 1), cmap="gray", origin="upper", interpolation="nearest")
         ax.set_title(label)
         ax.axis("off")
 
@@ -189,7 +191,7 @@ def plot_summary(gt_image, recon_images, gt_freq_map, freq_maps, radial_profiles
     for i, (freq_map, label) in enumerate(zip(freq_maps, labels), start=1):
         ax = fig.add_subplot(grid[1, i])
         ax.imshow(
-            np.clip(freq_map, cfg.map_vmin, None),
+            np.clip(np.abs(freq_map - gt_freq_map), cfg.map_vmin, None),
             cmap="viridis",
             norm=norm,
             origin="upper",
@@ -261,12 +263,16 @@ def resolve_experiments(cfg):
     return sequences, labels
 
 
+def blur(freq_map):
+    return cv2.GaussianBlur(freq_map, (5, 5), 0, borderType=cv2.BORDER_REFLECT)
+
+
 def main():
     cfg = SweepConfig()
     plt.rcParams.update({"font.size": cfg.font_size})
 
     if cfg.use_loaded_image:
-        target_2d = load_image().astype(np.float32)
+        target_2d = load_image(cfg).astype(np.float32)
         recon_shape = (target_2d.shape[0], target_2d.shape[1], 1)
         if recon_shape != cfg.recon_shape:
             warnings.warn(
@@ -354,6 +360,8 @@ def main():
         freq_mag_raw = compute_shifted_fft_magnitude(recon_2d)
         error_freq_mag = compute_shifted_fft_magnitude(recon_2d - target_2d)
 
+        error_freq_mag = blur(error_freq_mag)
+
         recon_images.append(recon_2d.astype(np.float32))
         freq_mag = freq_mag_raw
         if cfg.normalize_maps_by_peak:
@@ -418,6 +426,10 @@ def main():
     if cfg.normalize_maps_by_peak:
         gt_freq_map = gt_freq_map / max(float(gt_freq_map.max()), np.finfo(np.float32).eps)
 
+    gt_freq_map = blur(gt_freq_map)
+    for i in range(len(freq_maps)):
+        freq_maps[i] = blur(freq_maps[i])
+
     plot_summary(
         gt_image=target_2d,
         recon_images=recon_images,
@@ -430,32 +442,32 @@ def main():
     )
 
 
-def load_image():
+def load_image(cfg):
     """
     Load an image for use as a baseline phantom
     Returns: 2D numpy array
     """
     import mbirjax as mj
-    # phantom = mj.load_data_hdf5('./data/recon.h5')[0]
-    # phantom = phantom.transpose((1, 2, 0))
-    # phantom = mj.preprocess.apply_cylindrical_mask(phantom, radial_margin=70)
-    # image = np.array(phantom[100:, 100:, 1])
-    # image = np.clip(image, 0, 0.05)
-    # image = image / 0.05
+    if cfg.load_image:
+        phantom = mj.load_data_hdf5('./data/recon.h5')[0]
+        phantom = phantom.transpose((1, 2, 0))
+        phantom = mj.preprocess.apply_cylindrical_mask(phantom, radial_margin=70)
+        image = np.array(phantom[100:, 100:, 1])
+        image = np.clip(image, 0, 0.05)
+    else:
+        num_views = 128
+        num_det_rows = 40
+        num_det_channels = 256
 
-    num_views = 600
-    num_det_rows = 200
-    num_det_channels = 1000
+        # Generate simulated data
+        # In a real application you would not have the phantom, but we include it here for later display purposes
+        phantom, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
+                                                          num_views=num_views, num_det_rows=num_det_rows,
+                                                          num_det_channels=num_det_channels)
+        image = phantom[:, :, num_det_rows // 2]
+        image = np.array(image)
 
-    # Generate simulated data
-    # In a real application you would not have the phantom, but we include it here for later display purposes
-    phantom, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='parallel',
-                                                      num_views=num_views, num_det_rows=num_det_rows,
-                                                      num_det_channels=num_det_channels)
-    image = phantom[:, :, num_det_rows // 2]
-    image = np.array(image)
     image = image / np.max(image)
-
     plt.imshow(image, cmap="gray")
     plt.show()
     return image

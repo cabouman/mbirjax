@@ -9,9 +9,9 @@ param_dict = {    # Set parameters
     'num_det_channels' : 256,
     'start_angle' : 0,
     'end_angle' : np.pi,
-    'granularity': [1, 8, 48, 128, 256, 256, 256, 256, 256, ],
-    'partition_sequence' : [0, 1, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4,],
-    'max_iterations' : 10
+    'granularity': [1, 4, 16, 64, 128, 256, 256, 256, 256, 256, ],
+    'partition_sequence' : [0, 1, 2, 3,],
+    'max_iterations' : 4
 }
 
 
