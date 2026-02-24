@@ -211,7 +211,8 @@ def main():
     # Choose dataset
     # 'Nilotinib-P, 50X, 785, 1200_01.csv', 'Nilotinib-P, 50X, 785, 1200_01(1).csv'
     # 'Nilotinib-AS, 50X, 785, 1200_01.csv', 'Nilotinib-AS, 50X, 785, 1200_01(1).csv'
-    dataset_name = 'Nilotinib-AS, 20X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
+    # dataset_name = 'Nilotinib-AS, 20X, 785, 1200_01.csv'  # 'Nilotinib-AS, 50X, 785, 1200_01.csv'
+    dataset_name = 'Map4 Nilotinib-AS , 20X, 785, 1200_01.csv'  # 'Nilotinib-AS , 20X, 785, 1200_01.csv'
     input_path = './raman_data/'  # path to import input noisy data
     output_path = './raman_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
