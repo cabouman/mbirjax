@@ -799,28 +799,17 @@ class TranslationModel(mj.TomographyModel):
             sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
         """
         # Get parameters
-        delta_det_channel = self.get_params('delta_det_channel')
-        delta_voxel = self.get_params('delta_voxel')
         delta_recon_row = self.get_params('delta_recon_row')
         recon_shape = self.get_params('recon_shape')
-        magnification = self.get_magnification()
-        num_det_channels = sinogram.shape[-1]
 
         # Compute the typical magnitude of a sinogram value
         typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
 
-        # TODO: Can we replace this with some type of approximate operator norm of A? That would make it universal.
-        # Compute a typical projection path length based on the soft minimum of the recon width and height
-        # Use delta_recon_row when computing recon height
-        recon_height = recon_shape[0] * delta_recon_row
-        recon_width = recon_shape[1] * delta_voxel
-        typical_path_length_space = (2 * recon_height * recon_width) / (recon_height + recon_width)
-
-        # Compute a typical projection path length based on the detector column width
-        typical_path_length_sino = num_det_channels * delta_det_channel / magnification
-
-        # Compute a typical projection path as the minimum of the two estimates
-        typical_path_length = np.minimum(typical_path_length_space, typical_path_length_sino)
+        # Compute a typical projection path length
+        # For TCT, we will assume that the projections are along the row direction,
+        # and we will assume that the object fills approximately half the distance along the rows.
+        fraction_of_fill = 0.5
+        typical_path_length = fraction_of_fill * recon_shape[0] * delta_recon_row
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         recon_std = typical_sinogram_value / typical_path_length
