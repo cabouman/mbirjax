@@ -800,9 +800,14 @@ class TomographyModel(ParameterHandler):
 
         # Convert snr to relative noise standard deviation
         rel_noise_std = 10 ** (-snr_db / 20)
+
+        # This section adjusts the regularization when the reconstruction resolution is greater or less than normal.
+        # For normal resolution reconstructions pixel_pitch_relative_to_default=1.0
+        # For low resolution reconstructions pixel_pitch_relative_to_default>>1.0
+        # And for high resolution reconstructions pixel_pitch_relative_to_default<<1.0
+        #
         # compute the default_pixel_pitch = the detector pixel pitch in the recon plane given the magnification
         default_pixel_pitch = delta_det_channel / magnification
-
         # Compute the recon pixel pitch relative to the default.
         pixel_pitch_relative_to_default = delta_voxel / default_pixel_pitch
 
