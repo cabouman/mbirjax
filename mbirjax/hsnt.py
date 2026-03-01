@@ -13,7 +13,7 @@ from sklearn.utils.extmath import randomized_svd
 
 
 def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-                  batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+                  batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-10, verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration.
 
@@ -37,7 +37,7 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
         batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2**24.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
-        tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-6.
+        tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -76,7 +76,7 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
 
 
 def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-              batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-6, verbose=1):
+              batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-10, verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
 
@@ -96,7 +96,7 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
         batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2**24.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
-        tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-6.
+        tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -119,7 +119,7 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
             IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
             2025. doi:10.1109/TCI.2025.3567854
     """
-    epsilon = 1e-8  # Define epsilon
+    epsilon = 1e-3  # Define epsilon
 
     # --------------- Dataset type validation --------------
     if dataset_type not in ('attenuation', 'transmission'):
@@ -132,6 +132,16 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
     data = data.reshape(num_points, num_bands).astype(np.float64)  # Reshape to 2D and cast to float64 for stability
 
     if dataset_type == 'transmission':
+        # Initial cleanup in the transmission domain to get rid of defective measurements
+        data = hyper_denoise(data,
+                             dataset_type='attenuation',
+                             subspace_dimension=(subspace_dimension * 3 if subspace_dimension is not None else None),
+                             safety_factor=safety_factor * 3,
+                             batch_size=batch_size,
+                             beta_loss=beta_loss,
+                             max_iter=max_iter,
+                             tolerance=tolerance,
+                             verbose=0)
         data[data < epsilon] = epsilon
         data = - np.log(data)  # Convert to attenuation
 
@@ -177,8 +187,8 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
                 subspace_data_init = None
             else:
                 nmf_init = 'custom'  # Initialize NMF based on subspace basis from the previous batch
-                subspace_basis_init = gaussian_filter1d(subspace_basis_batch[batch-1], sigma=10, axis=1)
-                subspace_data_init = abs(batch_data @ np.linalg.pinv(subspace_basis_init))
+                subspace_basis_init = gaussian_filter1d(subspace_basis_batch[batch-1], sigma=10, axis=1) + epsilon
+                subspace_data_init = abs(batch_data @ np.linalg.pinv(subspace_basis_init)) + epsilon
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
