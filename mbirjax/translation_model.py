@@ -816,3 +816,29 @@ class TranslationModel(mj.TomographyModel):
 
         return recon_std
 
+    @staticmethod
+    def _get_sino_indicator(sinogram):
+        """
+        Compute a binary mask that indicates the region of sinogram support.
+
+        Args:
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+
+        Returns:
+            (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
+        """
+        # Compute the histogram of sinogram and find the peak
+        hist, edges = np.histogram(np.abs(sinogram).ravel(), bins=200)
+        peak = np.argmax(hist)
+
+        # find first local minimum after the peak
+        valley = peak + 1
+        for i in range(peak + 1, len(hist) - 1):
+            if hist[i - 1] > hist[i] and hist[i] < hist[i + 1]:
+                valley = i
+                break
+
+        # Form indicator
+        indicator = np.int8((np.abs(sinogram) > edges[valley]))
+
+        return indicator
