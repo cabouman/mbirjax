@@ -827,18 +827,12 @@ class TranslationModel(mj.TomographyModel):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
-        # Compute the histogram of sinogram and find the peak
-        hist, edges = np.histogram(np.abs(sinogram).ravel(), bins=200)
-        peak = np.argmax(hist)
 
-        # find first local minimum after the peak
-        valley = peak + 1
-        for i in range(peak + 1, len(hist) - 1):
-            if hist[i - 1] > hist[i] and hist[i] < hist[i + 1]:
-                valley = i
-                break
-
-        # Form indicator
-        indicator = np.int8((np.abs(sinogram) > edges[valley]))
+        noise_floor_percent = 100
+        threshold1 = (0.01 * noise_floor_percent) * np.mean(np.fabs(sinogram))
+        mask1 = (sinogram > threshold1)
+        object_level_percent = 60
+        threshold2 = (0.01 * object_level_percent) * np.median(sinogram[mask1])
+        indicator = np.int8(sinogram > threshold2)
 
         return indicator
