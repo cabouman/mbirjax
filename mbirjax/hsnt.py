@@ -12,8 +12,8 @@ from sklearn.utils.extmath import randomized_svd
 # -----------------------------------------------------------------------
 
 
-def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-                  batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-10, verbose=1):
+def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
+                  max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration.
 
@@ -28,16 +28,15 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
     Args:
         data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        subspace_dimension: Desired dimension of the subspace :math:`N_s`. If None, the dimension is either set from the
-            provided subspace basis matrix or estimated automatically from the data. Defaults to None.
-        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
-            estimated directly from the data. Defaults to None.
-        safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
-            safer final choice. Defaults to 2.
-        batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2**24.
+        num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
+            the data. Defaults to None.
+safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`. Defaults to 2.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
+        batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2^27.
+        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
+            estimated directly from the data. Defaults to None.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -60,13 +59,13 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
     # --------------------- Dehydrate ----------------------
     dehydrated_data = dehydrate(data,
                                 dataset_type=dataset_type,
-                                subspace_dimension=subspace_dimension,
-                                subspace_basis=subspace_basis,
+                                num_materials=num_materials,
                                 safety_factor=safety_factor,
-                                batch_size=batch_size,
                                 beta_loss=beta_loss,
                                 max_iter=max_iter,
                                 tolerance=tolerance,
+                                batch_size=batch_size,
+                                subspace_basis=subspace_basis,
                                 verbose=verbose)
 
     # --------------------- Rehydrate ----------------------
@@ -75,8 +74,8 @@ def hyper_denoise(data, dataset_type='attenuation', subspace_dimension=None, sub
     return denoised_data
 
 
-def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspace_basis=None, safety_factor=2,
-              batch_size=2 ** 27, beta_loss='frobenius', max_iter=300, tolerance=1e-10, verbose=1):
+def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
+              max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
 
@@ -87,16 +86,15 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
     Args:
         data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        subspace_dimension: Desired dimension of the subspace :math:`N_s`. If None, the dimension is either set from the
-            provided subspace basis matrix or estimated automatically from the data. Defaults to None.
-        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
-            estimated directly from the data. Defaults to None.
-        safety_factor: Multiplicative factor ≥ 1 used to scale the initial estimate of subspace dimension and ensure
-            safer final choice. Defaults to 2.
-        batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2**24.
+        num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
+            the data. Defaults to None.
+        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`. Defaults to 2.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
+        batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2^27.
+        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
+            estimated directly from the data. Defaults to None.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -135,12 +133,12 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
         # Initial cleanup in the transmission domain to get rid of defective measurements
         data = hyper_denoise(data,
                              dataset_type='attenuation',
-                             subspace_dimension=(subspace_dimension * 3 if subspace_dimension is not None else None),
+                             num_materials=num_materials,
                              safety_factor=safety_factor * 3,
-                             batch_size=batch_size,
                              beta_loss=beta_loss,
                              max_iter=max_iter,
                              tolerance=tolerance,
+                             batch_size=batch_size,
                              verbose=0)
         data[data < epsilon] = epsilon
         data = - np.log(data)  # Convert to attenuation
@@ -165,10 +163,12 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
         solver = 'cd'
 
     # ------------- Subspace dimension setup -----------------
-    if subspace_dimension is None and subspace_basis is None:
-        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor, verbose=verbose)
-    elif subspace_dimension is None and subspace_basis is not None:
+    if subspace_basis is not None:
         subspace_dimension = subspace_basis.shape[0]
+    elif num_materials is not None:
+        subspace_dimension = int(np.ceil(safety_factor * num_materials))
+    else:
+        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor, verbose=verbose)
 
     # ------- Subspace basis estimation for multi-batch ------
     if subspace_basis is None and num_batches > 1:
@@ -250,7 +250,7 @@ def dehydrate(data, dataset_type='attenuation', subspace_dimension=None, subspac
         print("dehydrate(): ")
         print("   -Number of data batches: ", num_batches)
         print("   -Original spectral dimension: ", data.shape[-1])
-        print("   -Estimated/given subspace dimension: ", subspace_data.shape[-1])
+        print("   -Subspace dimension: ", subspace_data.shape[-1])
 
     return dehydrated_data
 
@@ -363,20 +363,20 @@ def _estimate_subspace_dimension(data, safety_factor=2, noise_fit_window=[25.0, 
 
     # Consider singular values > the corresponding tau values to be associated with signals
     signal_flag = s > tau
-    subspace_dimension = int(np.sum(signal_flag[:start_idx]))
+    num_materials = int(np.sum(signal_flag[:start_idx]))
 
     if verbose > 1:
         plt.figure()
         plt.semilogy(s, label='s: actual singular values from data (signal + noise)')
         plt.semilogy(s_pred, label='s_pred: predicted singular values from noise model')
         plt.semilogy(tau, label='tau: noise and signal discriminator (threshold x s_pred)')
-        plt.title("Modeling noise singular values for subspace dimension estimation")
+        plt.title("Modeling noise singular values for number of material estimation")
         plt.xlabel("singular value index")
         plt.ylabel("singular value")
         plt.legend()
 
     # Multiply by safety factor
-    subspace_dimension = int(np.ceil(safety_factor * subspace_dimension))
+    subspace_dimension = int(np.ceil(safety_factor * num_materials))
 
     return max(1, subspace_dimension)
 
