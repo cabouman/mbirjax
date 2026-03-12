@@ -1337,3 +1337,52 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
     return recon_shape, delta_voxel, delta_recon_row
+
+
+def compute_background_cluster_width(sinogram):
+    """
+    Estimate background cluster width from the sinogram histogram.
+
+    This function is used for computing sinogram indicator.
+
+    Args:
+        sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+
+    Returns:
+        background_cluster_width (float): width of the background cluster
+    """
+    # Compute histogram of sinogram values
+    hist, edges = np.histogram(sinogram.ravel(), bins=400)
+
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    # Find all local peaks in the histogram
+    peak_indices = []
+    for i in range(1, len(hist) - 1):
+        if hist[i] >= hist[i - 1] and hist[i] > hist[i + 1]:
+            peak_indices.append(i)
+
+    # Choose the peak closest to intensity 0 (background peak)
+    peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
+
+    # Define background width cutoff level (10% of peak height)
+    peak_height = hist[peak_idx]
+    cutoff = 0.1 * peak_height
+
+    # Find left boundary of background cluster
+    left_boundary_idx = peak_idx
+    while left_boundary_idx > 0 and hist[left_boundary_idx] > cutoff:
+        left_boundary_idx -= 1
+
+    # Find right boundary of background cluster
+    right_boundary_idx = peak_idx
+    while right_boundary_idx < len(hist) - 1 and hist[right_boundary_idx] > cutoff:
+        right_boundary_idx += 1
+
+    # Compute background cluster width = right_boundary - left_boundary
+    left_boundary = centers[left_boundary_idx]
+    right_boundary = centers[right_boundary_idx]
+
+    background_cluster_width = right_boundary - left_boundary
+
+    return background_cluster_width
