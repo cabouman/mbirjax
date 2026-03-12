@@ -30,7 +30,8 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
         num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
             the data. Defaults to None.
-safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`. Defaults to 2.
+        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`.
+            Defaults to 2.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
@@ -43,7 +44,7 @@ safety_factor: A multiplier (≥ 1) applied to the number of materials to set th
         Denoised hyperspectral data with the same shape as the input data.
 
     Example:
-        >>> denoised_data = hyper_denoise(data, num_materials=10)
+        >>> denoised_data = hyper_denoise(data, num_materials=5, safety_factor=2)
         >>> data.shape, denoised_data.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., N_k))
 
@@ -88,7 +89,8 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
         num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
             the data. Defaults to None.
-        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`. Defaults to 2.
+        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`.
+            Defaults to 2.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
@@ -104,7 +106,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
             - dataset_type: Can be 'attenuation' or 'transmission' where attenuation = -log(transmission).
 
     Example:
-        >>> [subspace_data, subspace_basis, dataset_type] = dehydrate(data, num_materials=10)
+        >>> [subspace_data, subspace_basis, dataset_type] = dehydrate(data, num_materials=5, safety_factor=2)
         >>> data.shape, subspace_data.shape, subspace_basis.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., 10), (10, N_k))
 
