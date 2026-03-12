@@ -788,3 +788,31 @@ class TranslationModel(mj.TomographyModel):
 
         return recon
 
+    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
+        """
+        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
+        sigma_x in MBIR reconstruction.
+        This version accounts for anisotropic row pitch in translation geometry
+
+        Args:
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+        """
+        # Get parameters
+        delta_recon_row = self.get_params('delta_recon_row')
+        recon_shape = self.get_params('recon_shape')
+
+        # Compute the typical magnitude of a sinogram value
+        typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
+
+        # Compute a typical projection path length
+        # For TCT, we will assume that the projections are along the row direction,
+        # and we will assume that the object fills approximately half the distance along the rows.
+        fraction_of_fill = 0.5
+        typical_path_length = fraction_of_fill * recon_shape[0] * delta_recon_row
+
+        # Compute a typical recon value by dividing average sinogram value by a typical projection path length
+        recon_std = typical_sinogram_value / typical_path_length
+
+        return recon_std
+
