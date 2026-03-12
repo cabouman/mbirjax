@@ -815,24 +815,3 @@ class TranslationModel(mj.TomographyModel):
         recon_std = typical_sinogram_value / typical_path_length
 
         return recon_std
-
-    @staticmethod
-    def _get_sino_indicator(sinogram):
-        """
-        Compute a binary mask that indicates the region of sinogram support.
-
-        Args:
-            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-
-        Returns:
-            (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
-        """
-
-        noise_floor_percent = 100
-        threshold1 = (0.01 * noise_floor_percent) * np.mean(np.fabs(sinogram))
-        mask1 = (sinogram > threshold1)
-        object_level_percent = 60
-        threshold2 = (0.01 * object_level_percent) * np.median(sinogram[mask1])
-        indicator = np.int8(sinogram > threshold2)
-
-        return indicator
