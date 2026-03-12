@@ -26,7 +26,7 @@ def main():
     dataset_type = 'attenuation'  # Choose between 'attenuation' or 'transmission'
 
     # Denoiser parameters
-    subspace_dimension = None  # Subspace dimension
+    num_materials = None  # Number of materials
     verbose = 2  # Verbosity level
 
     # Display parameters
@@ -56,7 +56,7 @@ def main():
     # Perform hyperspectral denoising (dehydrate + rehydrate)
     denoised_hyper_projection = hyper_denoise(noisy_hyper_projection,
                                               dataset_type=dataset_type,
-                                              subspace_dimension=subspace_dimension,
+                                              num_materials=num_materials,
                                               verbose=verbose)
 
     # Plot hyperspectral projections and spectra
