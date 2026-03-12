@@ -21,7 +21,10 @@ class TestHSNT(unittest.TestCase):
         self.detector_rows = 16
         self.detector_columns = 16
         self.wavelengths = 10  # N_k
-        self.subspace_dim = 2  # N_s
+        self.num_materials = 2  # N_m
+        self.safety_factor = 1
+        self.subspace_dim = self.num_materials * self.safety_factor  # N_s
+        
 
         # Subspace data for low-rank simulation
         self.subspace_data = np.abs(np.random.randn(self.detector_rows, self.detector_columns, self.subspace_dim)).astype(np.float32)
@@ -59,7 +62,7 @@ class TestHSNT(unittest.TestCase):
 
     def test_dehydrate_with_fixed_subspace_dimension(self):
         """Dehydrate with fixed subspace dimension should produce outputs with expected shapes."""
-        dehydrated = hsnt.dehydrate(self.clean, subspace_dimension=self.subspace_dim, verbose=0)
+        dehydrated = hsnt.dehydrate(self.clean, num_materials=self.num_materials, safety_factor=self.safety_factor, verbose=0)
         self.assertIsInstance(dehydrated, list)
         subspace_data, subspace_basis, dataset_type = dehydrated
         self.assertEqual(subspace_data.shape[-1], self.subspace_dim)
@@ -72,7 +75,7 @@ class TestHSNT(unittest.TestCase):
     def test_hyper_denoise_reduces_noise(self):
         """hyper_denoise should reduce noise relative to noisy input."""
         before_std = np.std(self.noisy - self.clean)
-        denoised = hsnt.hyper_denoise(self.noisy, subspace_dimension=self.subspace_dim, verbose=0)
+        denoised = hsnt.hyper_denoise(self.noisy, num_materials=self.num_materials, safety_factor=self.safety_factor, verbose=0)
         self.assertEqual(denoised.shape, self.noisy.shape)
         after_std = np.std(denoised - self.clean)
         self.assertLess(after_std, before_std, f"Denoising did not reduce noise (before={before_std}, after={after_std})")
@@ -81,7 +84,7 @@ class TestHSNT(unittest.TestCase):
         """Estimate subspace dimension on the setup data."""
         # reshape to 2D (pixels x wavelengths)
         X = self.clean.reshape(-1, self.wavelengths)
-        est = hsnt._estimate_subspace_dimension(X, safety_factor=1, verbose=0)
+        est = hsnt._estimate_subspace_dimension(X, safety_factor=self.safety_factor, verbose=0)
         self.assertIsInstance(est, int)
         self.assertGreaterEqual(est, 1)
         self.assertLessEqual(est, self.wavelengths)  # can't exceed wavelengths
