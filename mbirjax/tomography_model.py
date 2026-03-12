@@ -880,9 +880,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
-        noise_floor = 1.5
-        background_cluster_width = mj.utilities.compute_background_cluster_width(sinogram)
-        threshold1 = noise_floor * background_cluster_width
+        threshold1 = mj.utilities.compute_background_cluster_width(sinogram)
 
         object_level = 0.25
         object_median = np.median(sinogram[sinogram > threshold1])

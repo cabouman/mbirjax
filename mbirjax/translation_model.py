@@ -815,3 +815,4 @@ class TranslationModel(mj.TomographyModel):
         recon_std = typical_sinogram_value / typical_path_length
 
         return recon_std
+

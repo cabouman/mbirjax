@@ -1339,7 +1339,7 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     return recon_shape, delta_voxel, delta_recon_row
 
 
-def compute_background_cluster_width(sinogram):
+def compute_background_cluster_width(sinogram, safety_factor=1.5):
     """
     Estimate background cluster width from the sinogram histogram.
 
@@ -1347,6 +1347,7 @@ def compute_background_cluster_width(sinogram):
 
     Args:
         sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+        safety_factor (float): Multiplier applied to the estimated background cluster width.
 
     Returns:
         background_cluster_width (float): width of the background cluster
@@ -1383,6 +1384,6 @@ def compute_background_cluster_width(sinogram):
     left_boundary = centers[left_boundary_idx]
     right_boundary = centers[right_boundary_idx]
 
-    background_cluster_width = right_boundary - left_boundary
+    background_cluster_width = safety_factor*(right_boundary - left_boundary)
 
     return background_cluster_width
