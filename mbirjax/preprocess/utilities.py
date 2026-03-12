@@ -5,7 +5,7 @@ import os
 import jax.numpy as jnp
 import jax
 import cv2
-
+import mbirjax as mj
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
@@ -626,12 +626,7 @@ def est_crop_width(sino, safety_buffer=20):
         crop_right (int): Number of detector channels to crop from the right.
 
     """
-    noise_floor_percent = 25
-    threshold1 = (0.01 * noise_floor_percent) * np.mean(np.fabs(sino))
-    mask1 = (sino > threshold1)
-    object_level_percent = 25
-    threshold2 = (0.01 * object_level_percent) * np.median(sino[mask1])
-    sino_indicator_mask = np.int8(sino > threshold2)
+    sino_indicator_mask = mj.TomographyModel._get_sino_indicator(sino)
 
     union_mask = np.any(sino_indicator_mask, axis=0)
 
