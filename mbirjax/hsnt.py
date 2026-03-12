@@ -43,7 +43,7 @@ safety_factor: A multiplier (≥ 1) applied to the number of materials to set th
         Denoised hyperspectral data with the same shape as the input data.
 
     Example:
-        >>> denoised_data = hyper_denoise(data, subspace_dimension=10)
+        >>> denoised_data = hyper_denoise(data, num_materials=10)
         >>> data.shape, denoised_data.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., N_k))
 
@@ -104,7 +104,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
             - dataset_type: Can be 'attenuation' or 'transmission' where attenuation = -log(transmission).
 
     Example:
-        >>> [subspace_data, subspace_basis, dataset_type] = dehydrate(data, subspace_dimension=10)
+        >>> [subspace_data, subspace_basis, dataset_type] = dehydrate(data, num_materials=10)
         >>> data.shape, subspace_data.shape, subspace_basis.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., 10), (10, N_k))
 
