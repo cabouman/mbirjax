@@ -880,9 +880,16 @@ class TomographyModel(ParameterHandler):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
-        percent_noise_floor = 5.0
-        # Form indicator by thresholding sinogram
-        indicator = np.int8(sinogram > (0.01 * percent_noise_floor) * np.mean(np.fabs(sinogram)))
+        noise_floor = 1.5
+        background_cluster_width = mj.utilities.compute_background_cluster_width(sinogram)
+        threshold1 = noise_floor * background_cluster_width
+
+        object_level = 0.25
+        object_median = np.median(sinogram[sinogram > threshold1])
+        threshold2 = object_level * object_median
+
+        indicator = np.int8(sinogram > threshold2)
+
         return indicator
 
     def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
