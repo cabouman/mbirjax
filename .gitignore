@@ -12,6 +12,9 @@ experiments/split_sino_recon/output/*
 experiments/zeiss/output
 experiments/zeiss/output/*
 
+experiments/hsnt/input_data/
+experiments/hsnt/input_data/*
+
 experiments/translation/output/*
 
 tests_data_dependent/data/*
