@@ -4,7 +4,8 @@ import glob
 import os
 import jax.numpy as jnp
 import jax
-
+import cv2
+import mbirjax as mj
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
@@ -156,7 +157,7 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
 
 
 
-def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offset=0.0, batch_size=30):
+def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
     Weights are not modified.
@@ -164,7 +165,6 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     Args:
         sino (numpy.ndarray): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
         det_rotation (optional, float): tilt angle between the rotation axis and the detector columns in radians.
-        background_offset (optional, float): background offset subtracted from sinogram data before correction.
         batch_size (int): Number of views to process in each batch to avoid memory overload.
 
     Returns:
@@ -181,7 +181,7 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     for i in tqdm.tqdm(range(0, num_views, batch_size)):
 
         # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)]) - background_offset
+        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)])
 
         # Apply the rotation on this batch
         sino_batch = sino_batch.transpose(1, 2, 0)
@@ -196,32 +196,59 @@ def correct_det_rotation_and_background(sino, det_rotation=0.0, background_offse
     return sino_rotated
 
 
-def estimate_background_offset(sino, edge_width=9):
+def correct_background_offset(sino, edge_width=9, option='global'):
     """
-    Estimate background offset of a sinogram using JAX for GPU acceleration.
+    Correct background offset in a sinogram.
 
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
         edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
+        option (str): "global" or "per_view". Defaults to 'global'.
 
     Returns:
-        offset (float): Background offset value.
+        sino_corrected (numpy.ndarray)
     """
 
     if edge_width < 1:
         edge_width = 1
         warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
 
-    _, _, num_det_channels = sino.shape
+    if option == "global":
+        _, _, num_det_channels = sino.shape
 
-    # Extract edge regions from the sinogram (top, left, right)
-    sino_edge_left = sino[:, :, :edge_width].flatten()
-    sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
-    sino_edge_top = sino[:, :edge_width, :].flatten()
-    offset = np.median(np.concatenate((sino_edge_left, sino_edge_right, sino_edge_top)))
+        # Extract edge regions from the sinogram (top, left, right)
+        sino_edge_left  = sino[:, :, :edge_width].flatten()
+        sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
+        sino_edge_top   = sino[:, :edge_width, :].flatten()
 
-    return offset
+        med_left = np.median(sino_edge_left)
+        med_right = np.median(sino_edge_right)
+        med_top = np.median(sino_edge_top)
 
+        offset = np.median([med_left, med_right, med_top])
+
+        sino_corrected = sino - offset
+
+    elif option == "per_view":
+        num_views, _, num_det_channels = sino.shape
+
+        sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
+        sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
+        sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
+
+        med_left  = np.median(sino_edge_left, axis=1)
+        med_right = np.median(sino_edge_right, axis=1)
+        med_top   = np.median(sino_edge_top, axis=1)
+
+        edge_medians = np.stack([med_left, med_right, med_top], axis=1)
+        offset = np.median(edge_medians, axis=1)   # (num_views,)
+
+        sino_corrected = sino - offset[:, None, None]
+
+    else:
+        raise ValueError("option must be 'global' or 'per_view'")
+
+    return sino_corrected
 
 
 # ####### subroutines for image cropping and down-sampling
@@ -540,6 +567,9 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
+    Note:
+        This function may need to be converted to batch over slices for very large recons.
+
     Args:
         recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
@@ -571,11 +601,228 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     # Apply cylindrical mask to all slices
     recon = recon * circular_mask[:, :, None]
 
-    # Zero out top and bottom slices along Z
+    # Apply a mask to the top and bottom margins
+    slice_mask = jnp.ones((num_slices, ))
     if top_margin > 0:
-        recon = recon.at[:, :, :top_margin].set(0)
+        slice_mask = slice_mask.at[:top_margin].set(0)
     if bottom_margin > 0:
-        recon = recon.at[:, :, -bottom_margin:].set(0)
+        slice_mask = slice_mask.at[-bottom_margin:].set(0)
+    recon = recon * slice_mask[None, None, :]
 
     return recon
 
+def est_crop_width(sino, safety_buffer=20):
+    """Estimate crop widths for removing blank margins in a 3D sinogram.
+
+    Args:
+        sino (np.ndarray): Input sinogram array .
+        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
+            detected object region on each boundary. Defaults to 20.
+
+    Returns:
+        crop_top (int): Number of detector rows to crop from the top.
+        crop_bottom (int): Number of detector rows to crop from the bottom.
+        crop_left (int): Number of detector channels to crop from the left.
+        crop_right (int): Number of detector channels to crop from the right.
+
+    """
+    sino_indicator_mask = mj.TomographyModel._get_sino_indicator(sino)
+
+    union_mask = np.any(sino_indicator_mask, axis=0)
+
+    rows = np.any(union_mask, axis=1)
+    cols = np.any(union_mask, axis=0)
+
+    # argmax of the binary returns the first 1's index
+    top_width = np.argmax(rows)
+    bottom_width = np.argmax(rows[::-1])
+    left_width = np.argmax(cols)
+    right_width = np.argmax(cols[::-1])
+
+    # Include a margin to save some empty region on each boundary
+    crop_pixels_top = max(top_width - safety_buffer, 0)
+    crop_pixels_bottom = max(bottom_width - safety_buffer, 0)
+    crop_pixels_left = max(left_width - safety_buffer, 0)
+    crop_pixels_right = max(right_width - safety_buffer, 0)
+
+    return crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right
+
+
+def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buffer=20):
+    """
+    Automatically crop unused sinogram margins and update cone-beam geometry parameters.
+
+    This reduces the reconstruction volume by removing blank detector margins in the sinogram and
+    updating the corresponding geometry offsets so the physical coordinate system remains consistent.
+
+    Args:
+        sino (np.ndarray): Input sinogram array with shape (num_views, num_det_rows, num_det_channels).
+        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
+        optional_params (dict): Optional geometry parameters set after the model is constructed.
+        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the detected object region.
+            Defaults to 20.
+
+    Returns:
+        tuple:
+            A 3-tuple ``(sino, cone_beam_params, optional_params)`` where:
+
+            * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
+            * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
+            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``,
+              ``'det_channel_offset'``, and ``'recon_slice_offset'``.
+    """
+    crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
+
+    Nr_lo = crop_pixels_top
+    Nr_hi = sino.shape[1] - crop_pixels_bottom
+
+    Nc_lo = crop_pixels_left
+    Nc_hi = sino.shape[2] - crop_pixels_right
+
+    sino = sino[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
+
+    # Correct geometry parameters det_row_offset and det_channel_offset after cropping
+    cone_beam_params['sinogram_shape'] = sino.shape
+    delta_det_row, delta_det_channel = optional_params['delta_det_row'], optional_params['delta_det_channel']
+    optional_params['det_row_offset'] += (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row
+    optional_params['det_channel_offset'] += (crop_pixels_right - crop_pixels_left)/2 * delta_det_channel
+
+    # Correct geometry parameter recon_slice_offset
+    recon_slice_offset = optional_params['recon_slice_offset']
+    source_detector_dist = cone_beam_params["source_detector_dist"]
+    source_iso_dist = cone_beam_params["source_iso_dist"]
+    magnification = source_detector_dist / source_iso_dist
+
+    # Sign convention: positive recon_slice_offset reconstructs below the iso, vice versa
+    recon_slice_offset -= (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row / magnification
+    optional_params['recon_slice_offset'] = recon_slice_offset
+
+    return sino, cone_beam_params, optional_params
+
+
+def estimate_sino_view_offset(ct_model, sino, direct_recon):
+    """
+    Estimate per-view 2D shifts for a sinogram.
+
+    This function estimate the shifts in three steps:
+    1. Forward project the preliminary reconstruction using the CT model.
+    2. Apply high-pass filtering to both the sinogram and the
+        forward projection of the preliminary reconstruction.
+    3. For each view, estimate a 2D shift that aligns the sinogram view
+        to the corresponding forward-projected view using an image alignment method from OpenCV
+
+    Args:
+        ct_model (mj.TomographyModel): A CT model object that defined the CT geometry.
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        direct_recon (numpy array or jax array): A preliminary 3D reconstruction of the sinogram.
+
+    Returns:
+        estimated_shifts (numpy.array or jax array): A (num_views, 2) array of per-view shift (y, x) in pixels.
+            Each shift specified how much the corresponding sinogram slice should be shifted to match forward projection.
+            Positive x shifts the view right. Positive y shifts the view down.
+    """
+    # Verify the input recon shape
+    recon_shape = ct_model.get_params('recon_shape')
+    if direct_recon.shape != recon_shape:
+        raise ValueError("Input recon shape does not match ct_model's recon shape.")
+
+    # Forward project the reconstruction
+    sino_from_recon = ct_model.forward_project(direct_recon)
+
+    # Apply a high-pass filter to sinogram and forward projection of the reconstruction
+    filtered_sino = sino_high_pass_filtering(sino)
+    filtered_sino_from_recon = sino_high_pass_filtering(sino_from_recon)
+
+    # Estimate the shift between original sinogram and forward projected recon
+    num_slices, num_rows, num_channels = sino.shape
+    estimated_shifts = np.zeros((num_slices, 2))
+
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
+    for slice_index in range(num_slices):
+        sino_from_recon_view = np.asarray(filtered_sino_from_recon[slice_index, :, :], dtype=sino_from_recon.dtype)
+        sino_view = np.asarray(filtered_sino[slice_index, :, :], dtype=sino.dtype)
+        cc, warp_matrix = cv2.findTransformECC(sino_from_recon_view, sino_view, warp_matrix,
+                                               cv2.MOTION_TRANSLATION)
+        estimated_shifts[slice_index, 0] = -warp_matrix[1, 2]
+        estimated_shifts[slice_index, 1] = -warp_matrix[0, 2]
+
+    return estimated_shifts
+
+
+def sino_high_pass_filtering(sino, sigma_row=3.0, sigma_col=15.0, subtract_view_mean=True):
+    """
+    High-pass filter for 3D cone-beam sinogram.
+
+    Args:
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        sigma_row (float, optional): Gaussian sigma along detector rows (vertical). Use smaller value than sigma_col.
+        Defaults to 3.0.
+        sigma_col (float, optional): Gaussian sigma along detector channels (horizontal). Defaults to 15.0.
+        subtract_view_mean (bool, optional): If True, subtract per-view mean (DC offset removal). Defaults to True.
+
+    Returns:
+        filtered_sino (numpy array): High-pass filtered sinogram, same shape as input.
+    """
+    sino_np = np.asarray(sino)
+    if sino_np.ndim != 3:
+        raise ValueError(f"Expected shape (num_views, num_det_rows, num_det_channels), got {sino_np.shape}")
+
+    num_views, num_det_rows, num_det_channels = sino_np.shape
+    filtered_sino = np.empty_like(sino_np)
+
+    for view in range(num_views):
+        single_view = sino_np[view]
+
+        # Subtract per-view mean
+        if subtract_view_mean:
+            single_view = single_view - single_view.mean()
+
+        # Estimate low frequency component for each view
+        loss_pass_estimate = cv2.GaussianBlur(
+            single_view,
+            ksize=(0, 0),
+            sigmaX=sigma_col,
+            sigmaY=sigma_row,
+            borderType=cv2.BORDER_REFLECT,
+        )
+
+        filtered_sino[view] = single_view - loss_pass_estimate
+
+    return filtered_sino
+
+
+def align_sino_views(ct_model, sino, direct_recon):
+    """
+    Align each sinogram view using estimated per-view shifts.
+
+    This function performs sinogram alignment in two steps:
+    1. Estimate a 2D shift for each sinogram view.
+    2. Align each sinogram view using the estimated shift with the forward projected reconstruction.
+
+    The alignment helps correct small per-view misalignments between the
+    measured sinogram and the forward projection of a preliminary reconstruction.
+
+    Args:
+        ct_model (mj.TomographyModel): A CT model object that defined the CT geometry.
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        direct_recon (numpy array or jax array): A preliminary 3D reconstruction of the sinogram.
+
+    Returns:
+        jax array: Aligned sinogram with the same shape as the input sinogram (num_views, num_det_rows, num_det_channels).
+    """
+    # Estimate per-view shift of the sinogram
+    estimated_shifts = estimate_sino_view_offset(ct_model, sino, direct_recon)
+
+    # Align each view of the sinogram using estimated shifts
+    def shift_view(sino_view, shift):
+        dy, dx = shift
+        shifted_view = jax.image.scale_and_translate(sino_view,
+                                                      shape=sino_view.shape,
+                                                      spatial_dims=(0, 1),
+                                                      scale=jnp.array([1.0, 1.0]),
+                                                      translation=jnp.array([dy, dx]),
+                                                      method="linear",
+                                                      antialias=False)
+        return shifted_view
+
+    return jax.vmap(shift_view, in_axes=(0, 0))(sino, estimated_shifts)

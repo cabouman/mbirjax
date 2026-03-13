@@ -114,7 +114,7 @@ the ``none`` mode and emits a warning that not all tests could run.
    class ProjectionBase:
        ...
        HAS_GPU = any(d.platform == "gpu" for d in jax.devices())
-       USE_GPU_OPTS = ["automatic", "full", "sinograms", "projections", "none"] if HAS_GPU else ["none"]
+       USE_GPU_OPTS = ["automatic", "full", "sinograms", "none"] if HAS_GPU else ["none"]
        ...
 
 

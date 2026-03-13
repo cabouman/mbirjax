@@ -13,11 +13,11 @@ from ruamel.yaml import YAML
 from mbirjax._utils import Param
 import mbirjax as mj
 
-
+# NOTE:  additions/deletions here should also be made to _utils.py
 ParamNames = Literal[
     'geometry_type', 'file_format', 'sinogram_shape', 'delta_det_channel',
     'delta_det_row', 'det_row_offset', 'det_channel_offset', 'sigma_y',
-    'recon_shape', 'delta_voxel', 'sigma_x', 'sigma_prox',
+    'alu_unit', 'alu_value', 'recon_shape', 'delta_voxel', 'sigma_x', 'sigma_prox',
     'p', 'q', 'T', 'qggmrf_nbr_wts',
     'auto_regularize_flag', 'positivity_flag', 'snr_db', 'sharpness',
     'granularity', 'partition_sequence', 'verbose', 'use_gpu',
@@ -256,13 +256,14 @@ class ParameterHandler:
     def compare_flat_iterables(v1, v2, atol=1e-6):
         """
         Verify that 2 iterables (tuples or lists, etc) have the same length and entries, up to atol.
+
         Args:
             v1 (Sized Iterable):  First iterable
             v2 (Sized Iterable):  Second iterable
             atol (float, optional): Absolute floating point tolerance for equality.  Defaults to 1e-6.
 
         Returns:
-
+            bool: True when both iterables have matching lengths and element values within tolerance.
         """
         if len(v1) != len(v2):
             return False

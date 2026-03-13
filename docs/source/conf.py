@@ -13,8 +13,8 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath('../../mbirjax'))  # Adjust the path as necessary
-sys.path.insert(0, os.path.abspath('..'))  # Adjust the path as necessary
+# Ensure autodoc imports the local package from this checkout.
+sys.path.insert(0, os.path.abspath('../..'))
 
 # -- Project information -----------------------------------------------------
 
@@ -133,5 +133,4 @@ html_css_files = [
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = project + 'doc'
-
 

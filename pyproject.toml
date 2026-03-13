@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.13"
+version = "0.6.14"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -38,6 +38,7 @@ dependencies = [
     "olefile",
     "scikit-learn",
     "osqp",
+    "opencv-python",
 ]
 
 [project.optional-dependencies]

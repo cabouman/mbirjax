@@ -11,14 +11,12 @@ import mbirjax as mj
 
 class TranslationModel(mj.TomographyModel):
     """
-    Implements a tomography model using translation-based cone-beam projections.
+    This class implements the translation tomography geometry in which each view is a cone beam projection of a translated object.
+    This geometry is useful for 3D imaging of thin objects.
 
-    This class inherits from `mbirjax.TomographyModel` and specializes it for scenarios where the object undergoes
-    translations instead of rotations during image acquisition. The forward and backward projections are computed using
-    per-view translation vectors.
-
-    Note: This geometry reduces regularization along the row (y) direction by setting `qggmrf_nbr_wts=(0.5, 1, 1)`,
-    which helps compensates for anisotropy intrinsic to the translation geometry.
+    This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
+    to suit the translation tomography geometrical requirements. See the documentation of the parent class for standard methods
+    like setting parameters and performing projections and reconstructions.
 
     Args:
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_rows, num_channels),
@@ -30,11 +28,11 @@ class TranslationModel(mj.TomographyModel):
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
+    Note:
+        Additional parameter:
 
-    Usage Notes:
-        - Reconstruction parameters should typically be set using `set_params`.
-        - The row voxel thickness can be adjusted with `delta_recon_row`, while the voxel column and slice spacing
-          can be controlled via the base parameter `delta_voxel`.
+        **delta_recon_row** (float, default=0) -
+        This parameter controls the row spacing in ALU, while the base parameter `delta_voxel` controls the voxel column and slice spacing.
 
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
@@ -67,6 +65,8 @@ class TranslationModel(mj.TomographyModel):
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
                          source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
+
+        self.max_over_relaxation = 1.3  # We override this value due to observed instabilities with larger values
 
     def get_magnification(self):
         """
@@ -250,7 +250,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = L_p_c_n / cos_theta_p
+            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -418,7 +418,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = L_p_c_n / cos_theta_p
+            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -755,7 +755,7 @@ class TranslationModel(mj.TomographyModel):
         num_views = sinogram.shape[0]
         filtered_sino_list = []
         for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
@@ -787,4 +787,32 @@ class TranslationModel(mj.TomographyModel):
         recon = self.back_project(filtered_sinogram)
 
         return recon
+
+    def _get_estimate_of_recon_std(self, sinogram, sino_indicator):
+        """
+        Estimate the standard deviation of the reconstruction from the sinogram.  This is used to scale sigma_prox and
+        sigma_x in MBIR reconstruction.
+        This version accounts for anisotropic row pitch in translation geometry
+
+        Args:
+            sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
+        """
+        # Get parameters
+        delta_recon_row = self.get_params('delta_recon_row')
+        recon_shape = self.get_params('recon_shape')
+
+        # Compute the typical magnitude of a sinogram value
+        typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
+
+        # Compute a typical projection path length
+        # For TCT, we will assume that the projections are along the row direction,
+        # and we will assume that the object fills approximately half the distance along the rows.
+        fraction_of_fill = 0.5
+        typical_path_length = fraction_of_fill * recon_shape[0] * delta_recon_row
+
+        # Compute a typical recon value by dividing average sinogram value by a typical projection path length
+        recon_std = typical_sinogram_value / typical_path_length
+
+        return recon_std
 

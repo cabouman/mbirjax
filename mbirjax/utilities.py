@@ -554,9 +554,10 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function transposes the input volume to right-hand coordinates (slice, row, col),
-    optionally applies a cylindrical mask to remove peripheral and top/bottom slices (referred to as `flash`),
-    and writes the volume and optional metadata to an HDF5 file.
+    This function processes the input recon volume in batches to avoid GPU memory issues, transposes it
+    to right-hand coordinates (slice, col, row), optionally applies a cylindrical mask to remove
+    peripheral and top/bottom slices (referred to as `flash`), and writes the volume and optional
+    metadata to an HDF5 file.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -574,19 +575,15 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    @jax.jit
-    def process_recon(local_recon):
 
-        if remove_flash:
-            local_recon = mj.preprocess.apply_cylindrical_mask(local_recon, radial_margin, top_margin, bottom_margin)
-
-        # Convert to right-handed coordinate system
-        local_recon = jnp.transpose(local_recon, (2, 1, 0))
-        local_recon = jax.device_get(local_recon)
-        return local_recon
-
+    # Move recon to CPU
     recon = jax.device_get(recon)
-    recon = process_recon(recon)
+
+    if remove_flash:
+        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+
+    recon = jnp.transpose(recon, (2, 1, 0))
+
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
 
@@ -615,7 +612,7 @@ def import_recon_hdf5(file_path):
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
     recon = recon[::-1, :, :]
-    recon = np.transpose(recon, axes=(1, 2, 0))
+    recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
 
@@ -1340,3 +1337,53 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
     return recon_shape, delta_voxel, delta_recon_row
+
+
+def compute_background_cluster_width(sinogram, safety_factor=1.5):
+    """
+    Estimate background cluster width from the sinogram histogram.
+
+    This function is used for computing sinogram indicator.
+
+    Args:
+        sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+        safety_factor (float): Multiplier applied to the estimated background cluster width.
+
+    Returns:
+        background_cluster_width (float): width of the background cluster
+    """
+    # Compute histogram of sinogram values
+    hist, edges = np.histogram(sinogram.ravel(), bins=400)
+
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    # Find all local peaks in the histogram
+    peak_indices = []
+    for i in range(1, len(hist) - 1):
+        if hist[i] >= hist[i - 1] and hist[i] > hist[i + 1]:
+            peak_indices.append(i)
+
+    # Choose the peak closest to intensity 0 (background peak)
+    peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
+
+    # Define background width cutoff level (10% of peak height)
+    peak_height = hist[peak_idx]
+    cutoff = 0.1 * peak_height
+
+    # Find left boundary of background cluster
+    left_boundary_idx = peak_idx
+    while left_boundary_idx > 0 and hist[left_boundary_idx] > cutoff:
+        left_boundary_idx -= 1
+
+    # Find right boundary of background cluster
+    right_boundary_idx = peak_idx
+    while right_boundary_idx < len(hist) - 1 and hist[right_boundary_idx] > cutoff:
+        right_boundary_idx += 1
+
+    # Compute background cluster width = right_boundary - left_boundary
+    left_boundary = centers[left_boundary_idx]
+    right_boundary = centers[right_boundary_idx]
+
+    background_cluster_width = safety_factor*(right_boundary - left_boundary)
+
+    return background_cluster_width

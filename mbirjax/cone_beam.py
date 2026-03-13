@@ -36,10 +36,10 @@ class ConeBeamModel(TomographyModel):
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
 
     Note:
-        One additional parameter for ConeBeamModel that can be set using set_params() is
+        Additional parameter:
 
         **recon_slice_offset** (float, default=0) -
-        Vertical offset of the image in ALU. If recon_slice_offset is positive, we reconstruct the region below iso.
+        This parameter controls the vertical offset of the reconstruction in ALU. If recon_slice_offset is positive, the region below iso is reconstructed.
 
     See Also
     --------
@@ -839,7 +839,7 @@ class ConeBeamModel(TomographyModel):
         num_views = sinogram.shape[0]
         filtered_sino_list = []
         for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.worker)
+            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
             filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
