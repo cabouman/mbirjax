@@ -1359,6 +1359,10 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
 
     # Find all local peaks in the histogram
     peak_indices = []
+
+    if len(hist) > 1 and hist[0] > hist[1]:
+        peak_indices.append(0)
+
     for i in range(1, len(hist) - 1):
         if hist[i] >= hist[i - 1] and hist[i] > hist[i + 1]:
             peak_indices.append(i)
