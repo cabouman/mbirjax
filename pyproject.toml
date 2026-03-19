@@ -39,6 +39,7 @@ dependencies = [
     "scikit-learn",
     "osqp",
     "opencv-python",
+    "trimesh"
 ]
 
 [project.optional-dependencies]
