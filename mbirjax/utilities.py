@@ -21,8 +21,6 @@ import h5py
 import re
 import warnings
 import subprocess
-import trimesh
-from scipy.ndimage import zoom
 
 
 def load_data_hdf5(file_path):
@@ -1393,33 +1391,3 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
     background_cluster_width = safety_factor*(right_boundary - left_boundary)
 
     return background_cluster_width
-
-
-def gen_cad_phantom(cad_path, delta_voxel, delta_recon_row, recon_shape):
-    """
-    Create a 3D simulated phantom from a CAD (.stl) file.
-
-    Args:
-        cad_path (str): Path to the STL file.
-        delta_voxel (float): Voxel pitch of phantom in (column, slice) plane.
-        delta_recon_row (float): Voxel pitch of phantom in row direction
-        recon_shape (tuple): Shape of the reconstruction as (num_recon_rows, num_recon_cols, num_recon_slices)
-
-    Returns:
-        np.ndarray: 3D simulated phantom from CAD file.
-    """
-    # Load the CAD file and turn it into a 3D phantom (object=1, background=0)
-    gt_phantom = trimesh.load(cad_path).voxelized(pitch=0.2).matrix.astype(np.uint8)
-
-    # Resize the phantom to match desired resolution
-    gt_phantom = zoom(gt_phantom, zoom=(0.2/delta_voxel, 0.2/delta_voxel, 0.2/delta_recon_row), order=0)
-    gt_phantom = gt_phantom.transpose(2, 1, 0)
-
-    # Define target shape for simulated phantom
-    target_shape = (int(2.0 * gt_phantom.shape[0]), recon_shape[1], recon_shape[2])
-
-    # Reshape simulated phantom to target shape
-    pad_total = np.array(target_shape) - np.array(gt_phantom.shape)
-    pads = [(pad_total[i] // 2, pad_total[i] - pad_total[i] // 2) for i in range(3)]
-
-    return np.pad(gt_phantom, pads, mode='constant')
