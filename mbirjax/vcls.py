@@ -248,7 +248,7 @@ def compute_vcl(sub_R, sub_gamma):
         float: The scalar VCL value for the selected subset of views.
     """
     loss_value = 1 - sub_gamma.T @ np.linalg.solve(sub_R, sub_gamma)
-    return loss_value
+    return loss_value.item()
 
 
 def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, max_iterations = 100, seed=None):
