@@ -1368,7 +1368,10 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
             peak_indices.append(i)
 
     # Choose the peak closest to intensity 0 (background peak)
-    peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
+    if len(peak_indices) == 0:
+        peak_idx = int(np.argmin(np.abs(centers - 0.0)))
+    else:
+        peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
 
     # Define background width cutoff level (10% of peak height)
     peak_height = hist[peak_idx]
