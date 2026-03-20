@@ -8,12 +8,9 @@ See :ref:`UserAPIOverviewDocs` for a high-level introduction to the main feature
 individual pages for more detail. See :ref:`DemosFAQs` for examples.
 
 * :ref:`UserAPIOverviewDocs`
-* :ref:`TomographyModelDocs`
 * :ref:`ParametersDocs`
-* :ref:`ParallelBeamModelDocs`
-* :ref:`ConeBeamModelDocs`
-* :ref:`TranslationModelDocs`
-* :ref:`MultiAxisParallelBeamModelDocs`
+* :ref:`TomographyModelDocs`
+* :ref:`GeometryModelsDocs`
 * :ref:`DenoisingDocs`
 * :ref:`PreprocessDocs`
 * :ref:`Utilities`
@@ -32,12 +29,9 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
    :caption: Classes
 
    usr_api_overview
-   usr_tomography_model
    usr_parameters
-   usr_parallel_beam_model
-   usr_cone_beam_model
-   usr_translation_model
-   usr_multiaxis_parallel_beam_model
+   usr_tomography_model
+   usr_geometry_models
    usr_denoising
    usr_preprocess
    usr_utilities
