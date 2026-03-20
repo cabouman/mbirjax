@@ -36,5 +36,6 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
    usr_denoising
    usr_preprocess
    usr_utilities
+   usr_vcls
    usr_hsnt
 
