@@ -14,6 +14,7 @@ individual pages for more detail. See :ref:`DemosFAQs` for examples.
 * :ref:`DenoisingDocs`
 * :ref:`PreprocessDocs`
 * :ref:`Utilities`
+* :ref:`VCLSDocs`
 * :ref:`HSNTDocs`
 
 
