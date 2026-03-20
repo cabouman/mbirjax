@@ -46,7 +46,7 @@ def max_abs_neighbor_diff(arr):
 
 
 
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_angles=np.array([]), verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_angles=np.array([]), priority_order=False, verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper:
@@ -61,6 +61,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.001).
         r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.01).
         prev_selected_angles (ndarray, optional): 1D array of previously selected view angles in radians. Defaults to an empty NumPy array.
+        priority_order (bool, optional): If True, reorders the selected view indices from most to least important. Defaults to False.
         verbose (int, optional): Verbosity level. If > 0, visualizations of the covariance matrix and gamma vector will be shown.
         seed (int, optional): Random seed for deterministic behavior. If set, results will be reproducible.
 
@@ -119,6 +120,10 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
 
     # Compute optimal view angles
     optimal_angle_inds, vcl_value = compute_opt_angle_subset(R, gamma, angle_candidates, num_selected_views, r_2, prev_angle_inds, seed=seed)
+
+    # Reorder optimal_angle_inds by importance if requested
+    if priority_order:
+        optimal_angle_inds = reorder_by_priority(optimal_angle_inds, prev_angle_inds, R, gamma)
 
     return optimal_angle_inds, vcl_value
 
@@ -481,3 +486,38 @@ def show_image_with_projection_rays(
     plt.title(title or "Image with Overlaid Angles")
     plt.axis('off')
     plt.show()
+
+
+def reorder_by_priority(optimal_angle_inds, prev_angle_inds, R, gamma):
+    """
+    Reorders the optimal angle indices by importance using iterative removal.
+    
+    Args:
+        optimal_angle_inds (np.ndarray): The array of newly selected optimal angle indices to be reordered.
+        prev_angle_inds (np.ndarray): The array of fixed, previously selected angle indices.
+        R (np.ndarray): The full covariance matrix.
+        gamma (np.ndarray): The full gamma vector.
+        
+    Returns:
+        np.ndarray: The reordered array of angle indices.
+    """
+    drop_inds_list = []
+    while len(optimal_angle_inds) > 1:
+        vcl_list = []
+        for i in range(len(optimal_angle_inds)):
+            # Create a temporary array of angles with the i-th element removed.
+            temp_inds = np.delete(optimal_angle_inds, i)
+            combined_selected_inds = np.concatenate((prev_angle_inds, temp_inds))
+            R_temp, gamma_temp = subsample_R_gamma(R, gamma, combined_selected_inds)
+            vcl_temp = compute_vcl(R_temp, gamma_temp)
+            vcl_list.append(vcl_temp)
+
+        idx_to_drop = np.argmin(vcl_list)
+        drop_inds_list.append(optimal_angle_inds[idx_to_drop])
+        optimal_angle_inds = np.delete(optimal_angle_inds, idx_to_drop)
+
+    drop_inds_list.append(optimal_angle_inds[0])
+    # Reverse the list to rank elements from most to least important
+    optimal_angle_inds = np.array(drop_inds_list)[::-1]
+
+    return optimal_angle_inds
