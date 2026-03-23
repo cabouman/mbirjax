@@ -85,14 +85,18 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
     recon_shape = ct_model.get_params('recon_shape')
     if recon_shape != reference_object.shape:
         raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))
-    
+
+    # Relate prev_selected_angles to the angle_candidates
     if prev_selected_angles.size > 0:
+        # The following np.isclose compares each prev_selected_angles with each angle_candidates and returns a rectangular boolean matrix with prev_selected_angles in axis=0 and angle_candidates in axis=1
         is_close_matrix = np.isclose(prev_selected_angles[:, np.newaxis], angle_candidates, atol=1e-5)
+        # Reduce over the angle_candidates dimension to get boolean for each prev_selected_angles.  These are all True for a subset.
         is_subset = np.all(np.any(is_close_matrix, axis=1))
 
         if not is_subset:
             raise ValueError("Every angle in prev_selected_angles must also be present in the angle_candidates pool.")
         else:
+            # Since is_close_matrix is boolean, the argmax returns all the elements that are in angle_candidates
             prev_angle_inds = np.argmax(is_close_matrix, axis=1)
     else:
         prev_angle_inds = np.array([], dtype=int)
