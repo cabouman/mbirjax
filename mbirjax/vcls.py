@@ -46,7 +46,7 @@ def max_abs_neighbor_diff(arr):
 
 
 
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_view_inds=np.array([]), priority_order=False, verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_view_inds=np.array([], dtype=int), priority_order=False, verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper:
@@ -263,7 +263,7 @@ def compute_vcl(sub_R, sub_gamma):
     return loss_value.item()
 
 
-def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, prev_selected_view_inds=np.array([]), search_min=30, max_iterations = 100, seed=None):
+def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, prev_selected_view_inds, search_min=30, max_iterations = 100, seed=None):
     """
     Select a subset of view angles that minimize the View Correlation Loss (VCL) using stochastic greedy optimization.
 
