@@ -206,7 +206,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     #   Since I can only decoded one single float from the directory I found in the file,
     #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
     detector_offset = Zeiss_params["center_shift"]
-    det_channel_offset = detector_offset
+    det_channel_offset = -detector_offset
     det_row_offset = 0.0
 
     # Unit of parameters
