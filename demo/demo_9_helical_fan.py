@@ -58,7 +58,6 @@ phantom, sinogram_fan, params = mj.generate_demo_data(
     helical_z_range=helical_z_range,
     helical_z_center=helical_z_center,
 )
-save_gif(np.moveaxis(phantom, source=2, destination=0), "phantom_data.gif", fps=15)
 
 angles = params["angles"]
 helical_z_shifts = params.get("helical_z_shifts", None)
