@@ -35,6 +35,7 @@ class TestProjectors(unittest.TestCase):
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.helical_z_shifts = None
         self.translation_vector = None
 
     def tearDown(self):
@@ -44,6 +45,7 @@ class TestProjectors(unittest.TestCase):
     def set_angles(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            self.helical_z_shifts = jnp.arange(self.num_views)
         else:
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
@@ -62,7 +64,7 @@ class TestProjectors(unittest.TestCase):
 
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
-            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
