@@ -68,7 +68,6 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
-        self.max_over_relaxation = 1.5  # This is used in vcd_subset_updater() to limit the maximum step size
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -1353,6 +1352,7 @@ class TomographyModel(ParameterHandler):
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')
+        max_alpha = self.get_params('max_overrelaxation')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
         try:
@@ -1493,7 +1493,6 @@ class TomographyModel(ParameterHandler):
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
-            max_alpha = self.max_over_relaxation
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
             # alpha = alpha.block_until_ready()
             # times[time_index] += time.time() - time_start
