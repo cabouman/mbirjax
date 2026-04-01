@@ -1300,16 +1300,34 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         An instance of ConeBeamModel or ParallelBeam model
     """
     required_param_names = ct_model.get_required_param_names()
-    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                           required_param_names=required_param_names,
-                                                                           values_only=True)
 
     #  Get the shape of the old sinogram
     new_shape = list(ct_model.get_params('sinogram_shape'))
-    try:
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        # Get the names used to save the view parameters and to set the view parameters in the __init__
+        view_params_name = ct_model.get_params('view_params_name')  # This is the name saved in the parameter list
+        view_params_component_names = ct_model.get_params('view_params_component_names')  # These are the names used in __init__
+        if view_params_component_names[0] != 'angles' or view_params_component_names[1] != 'helical_z_shifts':
+            raise ValueError('Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
+        for name in view_params_component_names:
+            required_param_names.remove(name)
+
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
+        view_params = ct_model.get_params(view_params_name)
+        old_angles = view_params[:, 0]
+        required_params['helical_z_shifts'] = view_params[:, 1]
+
+    elif str(type(ct_model)).find('ParallelBeamModel') > 0:
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
         old_angles = ct_model.get_params('angles')
-    except NameError as e:
-        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    else:
+        raise TypeError('copy_ct_model() is restricted to ConeBeam and ParallelBeam Models')
+
+
     if new_angles is None:
         new_angles = old_angles
     new_shape[0] = len(new_angles)

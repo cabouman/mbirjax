@@ -29,9 +29,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # parallel_model = mj.ParallelBeamModel.from_file('params_parallel.yaml')
     parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
-    # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')

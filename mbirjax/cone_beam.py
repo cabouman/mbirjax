@@ -69,40 +69,18 @@ class ConeBeamModel(TomographyModel):
                              "same length.")
         
         view_params_name = 'view_params_array'
+        view_params_component_names = ['angles', 'helical_z_shifts']
 
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
-                         view_params_name=view_params_name, recon_slice_offset=0.0)
+                         view_params_name=view_params_name, view_params_component_names=view_params_component_names,
+                         recon_slice_offset=0.0)
 
     @overload
     def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
 
     def get_params(self, parameter_names) -> Any:
         return super().get_params(parameter_names)
-    
-    @classmethod
-    def from_file(cls, filename):
-        """
-        Construct a ConeBeamModel from parameters saved using save_params()
- 
-        Args:
-            filename (str): Name of the file containing parameters to load.
- 
-        Returns:
-            ConeBeamModel with the specified parameters.
-        """
-        # Load the parameters and convert view-dependent parameters to use the geometry-specific keywords.
-        required_param_names = ['sinogram_shape', 'source_detector_dist', 'source_iso_dist']
-        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
- 
-        view_params_array = params['view_params_array']
-        required_params['angles'] = view_params_array[:, 0]
-        required_params['helical_z_shifts'] = view_params_array[:, 1]
-        del params['view_params_array']
- 
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
-        return new_model
     
     def get_magnification(self):
         """
