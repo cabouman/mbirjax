@@ -10,14 +10,14 @@ import numpy as np
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils, ParameterHandler
 
-ConeBeamParamNames = mj.ParamNames | Literal[
+FanBeamParamNames = mj.ParamNames | Literal[
     'view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
 
-class ConeBeamModel(TomographyModel):
+class FanBeamModel(TomographyModel):
     """
-    A class designed for handling forward and backward projections in a cone beam geometry, extending the
-    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for cone beam setups.
+    A class designed for handling forward and backward projections in a fan beam geometry, extending the
+    :ref:`TomographyModelDocs`. This class offers specialized methods and parameters tailored for fan beam setups.
 
     This class inherits all methods and properties from the :ref:`TomographyModelDocs` and may override some
     to suit parallel beam geometrical requirements. See the documentation of the parent class for standard methods
@@ -78,7 +78,7 @@ class ConeBeamModel(TomographyModel):
                          view_params_name=view_params_name, recon_slice_offset=0.0)
 
     @overload
-    def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any:
+    def get_params(self, parameter_names: Union[FanBeamParamNames, list[FanBeamParamNames]]) -> Any:
         ...
 
     def get_params(self, parameter_names) -> Any:
@@ -87,13 +87,13 @@ class ConeBeamModel(TomographyModel):
     @classmethod
     def from_file(cls, filename):
         """
-        Construct a ConeBeamModel from parameters saved using save_params()
+        Construct a FanBeamModel from parameters saved using save_params()
 
         Args:
             filename (str): Name of the file containing parameters to load.
 
         Returns:
-            ConeBeamModel with the specified parameters.
+            FanBeamModel with the specified parameters.
         """
         # Load the parameters and convert view-dependent parameters to use the geometry-specific keywords.
         required_param_names = ['sinogram_shape', 'source_detector_dist', 'source_iso_dist']
@@ -110,7 +110,7 @@ class ConeBeamModel(TomographyModel):
 
     def get_magnification(self):
         """
-        Returns the magnification for the cone beam geometry.
+        Returns the magnification for the fan beam geometry.
 
         Returns:
             magnification = source_detector_dist / source_iso_dist
@@ -132,7 +132,7 @@ class ConeBeamModel(TomographyModel):
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
         if view_params_array is None:
-            raise ValueError("view_params_array was not set. This should be created in ConeBeamModel.__init__.")
+            raise ValueError("view_params_array was not set. This should be created in FanBeamModel.__init__.")
 
         if view_params_array.shape != (sinogram_shape[0], 2):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
@@ -140,12 +140,12 @@ class ConeBeamModel(TomographyModel):
             error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
             raise ValueError(error_message)
 
-        # Check for cone angle > 45 degrees
+        # Check for fan angle > 45 degrees
         source_detector_dist, delta_det_row, det_row_offset = \
             self.get_params(['source_detector_dist', 'delta_det_row', 'det_row_offset'])
         half_detector_height = delta_det_row * sinogram_shape[1] / 2 + jnp.abs(det_row_offset)
         if half_detector_height > source_detector_dist:
-            warnings.warn('Cone angle is more than 45 degrees.  This will likely produce recon artifacts.')
+            warnings.warn('Fan angle is more than 45 degrees.  This will likely produce recon artifacts.')
 
         # TODO:  Check for recon volume extending into the source
         # # Check for a potential division by zero or very small denominator
@@ -154,7 +154,7 @@ class ConeBeamModel(TomographyModel):
 
     def get_geometry_parameters(self):
         """
-        Function to get a list of the primary geometry parameters for cone beam projection.
+        Function to get a list of the primary geometry parameters for fan beam projection.
 
         Returns:
             namedtuple of required geometry parameters.
@@ -182,7 +182,7 @@ class ConeBeamModel(TomographyModel):
 
     def get_psf_radius(self):
         """
-        Compute the integer radius of the PSF kernel for cone beam projection.
+        Compute the integer radius of the PSF kernel for fan beam projection.
         """
         delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
             ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
@@ -219,7 +219,7 @@ class ConeBeamModel(TomographyModel):
         return psf_radius
 
     def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
-        """ Compute the automatic recon shape cone beam reconstruction.
+        """ Compute the automatic recon shape fan beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
 
@@ -275,8 +275,8 @@ class ConeBeamModel(TomographyModel):
                 voxel_values.shape[1] != num_recon_slices:
             raise ValueError('voxel_values must have shape[0:2] = (num_indices, num_slices)')
 
-        vertical_fan_projector = ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view
-        horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
+        vertical_fan_projector = FanBeamModel.forward_vertical_fan_pixel_batch_to_one_view
+        horizontal_fan_projector = FanBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
         sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
@@ -302,7 +302,7 @@ class ConeBeamModel(TomographyModel):
         Returns:
             jax array of shape (num_pixels, num_det_rows)
         """
-        pixel_map = jax.vmap(ConeBeamModel.forward_vertical_fan_one_pixel_to_one_view,
+        pixel_map = jax.vmap(FanBeamModel.forward_vertical_fan_one_pixel_to_one_view,
                              in_axes=(0, 0, None, None))
         new_pixels = pixel_map(voxel_values, pixel_indices, single_view_params, projector_params)
 
@@ -333,7 +333,7 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices,
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = FanBeamModel.compute_horizontal_data(pixel_indices,
                                                                                        single_view_params,
                                                                                        projector_params)
         L_max = jnp.minimum(1, W_p_c)
@@ -370,7 +370,7 @@ class ConeBeamModel(TomographyModel):
             jax array of shape (num_det_rows,)
 
         Note:
-            This is a helper function used in vmap in :meth:`ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view`
+            This is a helper function used in vmap in :meth:`FanBeamModel.forward_vertical_fan_pixel_batch_to_one_view`
         This method has the same signature and output as that method, except single int pixel_index is used
         in place of the 1D pixel_indices, and likewise only a single voxel cylinder is returned.
         """
@@ -385,7 +385,7 @@ class ConeBeamModel(TomographyModel):
         num_slices = voxel_cylinder.shape[0]
 
         # From pixel index, compute y and pixel_mag
-        y, pixel_mag = ConeBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
+        y, pixel_mag = FanBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
 
         # The code above depends only on the pixel - a single point.  z is a potentially large vector
         # Here we compute cos_phi_p:  1 / cos_phi_p determines the projection length through a voxel
@@ -395,7 +395,7 @@ class ConeBeamModel(TomographyModel):
         z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + (
                     gp.recon_slice_offset - helical_z_shift)  # recon_ijk_to_xyz
         v = pixel_mag * z  # geometry_xyz_to_uv_mag
-        # Compute vertical cone angle of voxels
+        # Compute vertical fan angle of voxels
         phi_p = jnp.arctan2(v, gp.source_detector_dist)  # compute_vertical_data_single_pixel
         cos_phi_p = jnp.cos(phi_p)  # We assume the vertical angle |phi_p| < 45 degrees so cos_alpha_p_z = cos_phi_p
         scaled_voxel_values = voxel_cylinder / cos_phi_p
@@ -472,8 +472,8 @@ class ConeBeamModel(TomographyModel):
             the input sinogram view.
         """
 
-        vertical_fan_projector = ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch
-        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
+        vertical_fan_projector = FanBeamModel.back_vertical_fan_one_view_to_pixel_batch
+        horizontal_fan_projector = FanBeamModel.back_horizontal_fan_one_view_to_pixel_batch
 
         det_voxel_cylinder = horizontal_fan_projector(sinogram_view, pixel_indices, single_view_params,
                                                       projector_params, coeff_power=coeff_power)
@@ -508,7 +508,7 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices,
+        n_p, n_p_center, W_p_c, cos_alpha_p_xy = FanBeamModel.compute_horizontal_data(pixel_indices,
                                                                                        single_view_params,
                                                                                        projector_params)
         L_max = jnp.minimum(1, W_p_c)
@@ -549,7 +549,7 @@ class ConeBeamModel(TomographyModel):
         Returns:
             2D jax array of shape (num_pixels, num_recon_slices) of voxel values.
         """
-        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_one_view_to_one_pixel,
+        pixel_map = jax.vmap(FanBeamModel.back_vertical_fan_one_view_to_one_pixel,
                              in_axes=(0, 0, None, None, None))
         new_pixels = pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params, coeff_power)
 
@@ -597,7 +597,7 @@ class ConeBeamModel(TomographyModel):
             new_cylinder = jnp.zeros(slices_per_batch)
             # Get the data needed for vertical projection
             cur_slice_indices = start_index + jnp.arange(slices_per_batch)
-            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index,
+            m_p, m_p_center, W_p_r, cos_alpha_p_z = FanBeamModel.compute_vertical_data_single_pixel(pixel_index,
                                                                                                      cur_slice_indices,
                                                                                                      single_view_params,
                                                                                                      projector_params)
@@ -649,19 +649,19 @@ class ConeBeamModel(TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         # slice_indices = jnp.arange(num_recon_slices)
 
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel,
+        x_p, y_p, z_p = FanBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel,
                                                        recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
-        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist,
+        u_p, v_p, pixel_mag = FanBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist,
                                                                    gp.magnification)
         # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
-        m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, gp.delta_det_channel, gp.delta_det_row,
+        m_p, _ = FanBeamModel.detector_uv_to_mn(u_p, v_p, gp.delta_det_channel, gp.delta_det_row,
                                                  gp.det_channel_offset,
                                                  gp.det_row_offset, num_det_rows, num_det_channels)
         m_p_center = jnp.round(m_p).astype(int)
 
-        # Compute vertical cone angle of pixel
+        # Compute vertical fan angle of pixel
         phi_p = jnp.arctan2(v_p, gp.source_detector_dist)
 
         # Compute cos alpha for row and columns
@@ -703,29 +703,29 @@ class ConeBeamModel(TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
         slice_index = jnp.arange(1)
 
-        x_p, y_p, _ = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
+        x_p, y_p, z_p = FanBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
                                                      recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
-        pixel_mag = 1 / (1 / gp.magnification - y_p / gp.source_detector_dist)
-        # Compute the physical position that this voxel projects onto the detector
-        u_p = pixel_mag * x_p
+        u_p, v_p, pixel_mag = FanBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist,
+                                                                  gp.magnification)
+
+        # Compute horizontal and vertical fan angle of pixel
+        theta_p = u_p / gp.source_detector_dist
+
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
         n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
         n_p_center = jnp.round(n_p).astype(int)
 
-        # Compute horizontal and vertical cone angle of pixel
-        theta_p = jnp.arctan2(u_p, gp.source_detector_dist)
-
         # Compute cos alpha for row and columns
         cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
                                      jnp.abs(jnp.sin(angle - theta_p)))
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
 
         horizontal_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
 
@@ -760,10 +760,12 @@ class ConeBeamModel(TomographyModel):
         """
         # Compute the magnification at this specific voxel
         # The following expression is valid even when source_detector_dist = jnp.Inf
+        source_iso_dist = source_detector_dist / magnification
         pixel_mag = 1 / (1 / magnification - y / source_detector_dist)
 
         # Compute the physical position that this voxel projects onto the detector
-        u = pixel_mag * x
+        angle = jnp.arctan2(x, (source_iso_dist - y))
+        u = source_detector_dist * angle
         v = pixel_mag * z
 
         return u, v, pixel_mag
@@ -963,7 +965,7 @@ class ConeBeamModel(TomographyModel):
                          stop_threshold_change_pct=0.2,
                          first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
         """
-        This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
+        This function reduces memory usage for fan beam MBIR reconstruction by approximately a factor of 2
         by splitting the detector rows into two overlapping halves, reconstructing each half separately,
         and stitching the reconstructions together.
 
@@ -996,7 +998,7 @@ class ConeBeamModel(TomographyModel):
             >>> import jax.numpy as jnp
             >>> import mbirjax as mj
             >>> sino = jnp.ones((180, 64, 64))  # (views, rows, cols)
-            >>> model = mj.ConeBeamModel(sinogram_shape=sino.shape,
+            >>> model = mj.FanBeamModel(sinogram_shape=sino.shape,
             ...                          angles=jnp.linspace(0, jnp.pi, 180),
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
@@ -1122,8 +1124,8 @@ class ConeBeamModel(TomographyModel):
 
         # -------- Compute and set the shapes of top and bottom recons --------
         top_recon_shape = (full_recon_shape[0], full_recon_shape[1], top_num_slices + half_overlap_recon)
-        bot_recon_shape = (
-        full_recon_shape[0], full_recon_shape[1], (full_recon_shape[2] - top_num_slices) + half_overlap_recon)
+        bot_recon_shape = (full_recon_shape[0], full_recon_shape[1],
+                           (full_recon_shape[2] - top_num_slices) + half_overlap_recon)
 
         ct_model_top_half.set_params(recon_shape=top_recon_shape)
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
