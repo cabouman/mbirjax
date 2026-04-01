@@ -62,7 +62,7 @@ class ConeBeamModel(TomographyModel):
 
         view_dependent_vecs = [vec.flatten() for vec in [angles, helical_z_shifts]]
         try:
-            view_params_array = jnp.stack(view_dependent_vecs, axis=0)
+            view_params_array = jnp.stack(view_dependent_vecs, axis=1)
         except ValueError as e:
             print(e)
             raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
@@ -96,8 +96,8 @@ class ConeBeamModel(TomographyModel):
         required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
  
         view_params_array = params['view_params_array']
-        required_params['angles'] = view_params_array[0]
-        required_params['helical_z_shifts'] = view_params_array[1]
+        required_params['angles'] = view_params_array[:, 0]
+        required_params['helical_z_shifts'] = view_params_array[:, 1]
         del params['view_params_array']
  
         new_model = cls(**required_params)
@@ -131,7 +131,7 @@ class ConeBeamModel(TomographyModel):
         if view_params_array is None:
             raise ValueError("view_params_array was not set. This should be created in ConeBeamModel.__init__.")
 
-        if view_params_array.shape != (2, num_views):
+        if view_params_array.shape != (num_views, 2):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[1], num_views)
@@ -228,7 +228,7 @@ class ConeBeamModel(TomographyModel):
         num_recon_cols = num_recon_rows
         
         # z coverage for helical
-        z_shifts = self.get_params('view_params_array')[1]
+        z_shifts = self.get_params('view_params_array')[:,1]
         z_min = jnp.min(z_shifts)
         z_max = jnp.max(z_shifts)
         z_travel = z_max - z_min
