@@ -25,7 +25,7 @@ num_det_channels = 128
 
 # Helical controls 
 use_helical = True        # set False for circular reconstruction
-helical_pitch = 1.0       # dimensionless. helical_pitch = (table travel per rotation) / (collimation at iso).
+helical_pitch = 1.0       # dimensionless. helical_pitch = (table travel per rotation) / (det height at iso).
 helical_z_range = 80.0    # ALU total travel
 helical_z_center = 40.0   # ALU
 

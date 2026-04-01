@@ -999,7 +999,7 @@ def generate_demo_data(
             supplying per-view z_shifts to ConeBeamModel. Defaults to False.
         helical_pitch (float, optional):
             Helical pitch (dimensionless) for helical mode.
-            pitch = (table travel per rotation) / (collimation at iso).
+            pitch = (table travel per rotation) / (det height at iso).  This is the fraction of the detector height at iso traveled per rotation.
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
 
@@ -1045,11 +1045,11 @@ def generate_demo_data(
             else:
                 magnification = source_detector_dist / source_iso_dist
 
-            # Collimation (detector height) mapped to iso, in ALU
-            collimation_iso = float(num_det_rows) * (delta_det_row / magnification)
+            # detector height mapped to iso, in ALU
+            det_height_iso = float(num_det_rows) * (delta_det_row / magnification)
 
             # Travel per rotation (ALU) and derived rotations/views-per-rotation
-            z_per_rot = float(helical_pitch) * collimation_iso
+            z_per_rot = float(helical_pitch) * det_height_iso
             if z_per_rot <= 0:
                 raise ValueError(f"helical_pitch must be > 0 (got {helical_pitch}).")
             if float(helical_z_range) < 0:

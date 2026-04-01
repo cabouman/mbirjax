@@ -59,15 +59,14 @@ class ConeBeamModel(TomographyModel):
             # If helical_z_shifts is not provided or None,
             # then circular scan is helical with all-zero z shifts
             helical_z_shifts = jnp.zeros_like(angles)
-            view_dependent_vecs = [vec.flatten() for vec in [angles, helical_z_shifts]]
-            view_params_array = jnp.stack(view_dependent_vecs, axis=1)
-        else:
-            view_dependent_vecs = [vec.flatten() for vec in [angles, helical_z_shifts]]
-            try:
-                view_params_array = jnp.stack(view_dependent_vecs, axis=1)
-            except ValueError as e:
-                raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
-                                 "same length.")
+
+        view_dependent_vecs = [vec.flatten() for vec in [angles, helical_z_shifts]]
+        try:
+            view_params_array = jnp.stack(view_dependent_vecs, axis=0)
+        except ValueError as e:
+            print(e)
+            raise ValueError("Incompatible view dependent vector lengths:  all view-dependent vectors must have the "
+                             "same length.")
         
         view_params_name = 'view_params_array'
 
@@ -97,8 +96,8 @@ class ConeBeamModel(TomographyModel):
         required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
  
         view_params_array = params['view_params_array']
-        required_params['angles'] = view_params_array[:, 0]
-        required_params['helical_z_shifts'] = view_params_array[:, 1]
+        required_params['angles'] = view_params_array[0]
+        required_params['helical_z_shifts'] = view_params_array[1]
         del params['view_params_array']
  
         new_model = cls(**required_params)
@@ -128,19 +127,20 @@ class ConeBeamModel(TomographyModel):
         """
         super().verify_valid_params()
         sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
+        num_views, num_det_rows = sinogram_shape[:2]
         if view_params_array is None:
             raise ValueError("view_params_array was not set. This should be created in ConeBeamModel.__init__.")
 
-        if view_params_array.shape != (sinogram_shape[0], 2):
+        if view_params_array.shape != (2, num_views):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
-            error_message += "{} for number of views.".format(view_params_array.shape[0], sinogram_shape[0])
+            error_message += "{} for number of views.".format(view_params_array.shape[1], num_views)
             raise ValueError(error_message)
 
         # Check for cone angle > 45 degrees
         source_detector_dist, delta_det_row, det_row_offset = \
             self.get_params(['source_detector_dist', 'delta_det_row', 'det_row_offset'])
-        half_detector_height = delta_det_row * sinogram_shape[1] / 2 + jnp.abs(det_row_offset)
+        half_detector_height = delta_det_row * num_det_rows / 2 + jnp.abs(det_row_offset)
         if half_detector_height > source_detector_dist:
             warnings.warn('Cone angle is more than 45 degrees.  This will likely produce recon artifacts.')
 
@@ -228,7 +228,7 @@ class ConeBeamModel(TomographyModel):
         num_recon_cols = num_recon_rows
         
         # z coverage for helical
-        z_shifts = self.get_params('view_params_array')[:,1]
+        z_shifts = self.get_params('view_params_array')[1]
         z_min = jnp.min(z_shifts)
         z_max = jnp.max(z_shifts)
         z_travel = z_max - z_min
@@ -236,7 +236,7 @@ class ConeBeamModel(TomographyModel):
         # Detector height mapped to iso
         H_iso = num_det_rows * (delta_det_row / magnification)
     
-        # Total axial coverage
+        # Total axial coverage - we'll include all slices that are projected onto at least one view
         num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel))
         num_recon_slices = max(1, num_recon_slices)
     
@@ -257,7 +257,7 @@ class ConeBeamModel(TomographyModel):
             voxel_values (jax array):  2D array of shape (num_indices, num_slices) of voxel values, where
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being forward projected.
+            single_view_params: These are the angle and helical_z_shift for the view being forward projected.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -290,7 +290,7 @@ class ConeBeamModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being forward projected.
+            single_view_params: These are the angle and helical_z_shift for the view being forward projected.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -314,7 +314,7 @@ class ConeBeamModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being forward projected.
+            single_view_params: These are the angle and helical_z_shift for the view being forward projected.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -354,7 +354,7 @@ class ConeBeamModel(TomographyModel):
             voxel_cylinder (jax array):  1D array of shape (num_recon_slices, ) of voxel values, where
                 voxel_cylinder[j] is the value of the voxel in slice j at the location determined by pixel_index.
             pixel_index (int):  Index into the flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being forward projected.
+            single_view_params: These are the angle and helical_z_shift for the view being forward projected.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -480,7 +480,7 @@ class ConeBeamModel(TomographyModel):
             sinogram_view (2D jax array): one view of the sinogram to be back projected.
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being back projected.
+            single_view_params: These are the angle and helical_z_shift for the view being back projected.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -551,7 +551,7 @@ class ConeBeamModel(TomographyModel):
             detector_column_values (1D jax array): 1D array of shape (num_det_rows,) of voxel values, where
                 detector_column_values[i, j] is the value of the voxel in row j at the location determined by indices[i].
             pixel_index (int):  Index into flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being back projected.
+            single_view_params: These are the angle and helical_z_shift for the view being back projected.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -610,7 +610,7 @@ class ConeBeamModel(TomographyModel):
         Args:
             pixel_index (int):  Index into flattened array of size num_rows x num_cols.
             slice_indices (array of int): Indices into the recon slices.
-            single_view_params: These are the view dependent parameters for the view being back projected.
+            single_view_params: These are the angle and helical_z_shift for the view being back projected.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
@@ -662,7 +662,7 @@ class ConeBeamModel(TomographyModel):
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being back projected.
+            single_view_params: These are the angle and helical_z_shift for the view being back projected.
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
