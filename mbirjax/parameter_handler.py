@@ -14,14 +14,7 @@ from mbirjax._utils import Param
 import mbirjax as mj
 
 # NOTE:  additions/deletions here should also be made to _utils.py
-ParamNames = Literal[
-    'geometry_type', 'file_format', 'sinogram_shape', 'delta_det_channel',
-    'delta_det_row', 'det_row_offset', 'det_channel_offset', 'sigma_y',
-    'alu_unit', 'alu_value', 'recon_shape', 'delta_voxel', 'sigma_x', 'sigma_prox',
-    'p', 'q', 'T', 'qggmrf_nbr_wts',
-    'auto_regularize_flag', 'positivity_flag', 'snr_db', 'sharpness',
-    'granularity', 'partition_sequence', 'verbose', 'use_gpu',
-]
+ParamNames=Literal['geometry_type','file_format','sinogram_shape','delta_det_channel','delta_det_row','det_row_offset','det_channel_offset','sigma_y','alu_unit','alu_value','recon_shape','delta_voxel','sigma_x','sigma_prox','p','q','T','qggmrf_nbr_wts','auto_regularize_flag','positivity_flag','snr_db','sharpness','granularity','partition_sequence','verbose','use_gpu','max_overrelaxation',]
 
 
 class ParameterHandler:

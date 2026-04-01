@@ -58,6 +58,7 @@ _reconstruction_defaults_dict = {
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
+    'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
 }
 
 # These headings should match the dictionaries
