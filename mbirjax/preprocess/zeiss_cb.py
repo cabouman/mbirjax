@@ -160,7 +160,8 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     else:
         if Zeiss_params.get("reference") is not None:
             blank_scan = Zeiss_params["reference"]
-            blank_scan = blank_scan[None, :, :]
+            if blank_scan.ndim == 2:
+                blank_scan = blank_scan[None, :, :]
         else:
             raise ValueError("Missing blank scan; unable to compute sinogram for reconstruction.")
 
@@ -184,6 +185,9 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
+
+    # Iso pixel pitch
+    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
 
     # Optical Magnification
     opt_mag = Zeiss_params["opt_mag"]
@@ -246,6 +250,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'iso_pixel_pitch': iso_pixel_pitch,
         'opt_mag': opt_mag,
         'num_views': num_views,
         'num_det_channels': num_det_channels,
@@ -288,16 +293,23 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     # Get zeiss parameters and convert them
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
+    iso_pixel_pitch = itemgetter('iso_pixel_pitch')(zeiss_params)
     opt_mag = itemgetter('opt_mag')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    source_detector_dist = source_iso_dist + iso_det_dist
+    # source_detector_dist = source_iso_dist + iso_det_dist
+
+    recon_voxel_fact = source_iso_dist / (source_iso_dist + iso_det_dist)
+    source_detector_dist = opt_mag * source_iso_dist / recon_voxel_fact
 
     if opt_mag is not None:
-        delta_det_channel /= opt_mag
-        delta_det_row /= opt_mag
+        # delta_det_channel /= opt_mag
+        # delta_det_row /= opt_mag
+
+        delta_det_channel = opt_mag * iso_pixel_pitch / recon_voxel_fact
+        delta_det_row = opt_mag * iso_pixel_pitch / recon_voxel_fact
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -577,13 +589,17 @@ def read_metadata(ole):
     """
 
     number_of_images = _read_ole_value(ole, "ImageInfo/NoOfImages", "<I")
+    number_of_reference = _read_ole_reference(
+        ole, ["ReferenceData/ImageInfo/NoOfImages", "MultiReferenceData/ImageInfo/NoOfImages"], "<I")
 
     metadata = {
         'num_det_channels': _read_ole_value(ole, 'ImageInfo/ImageWidth', '<I'),
         'num_det_rows': _read_ole_value(ole, 'ImageInfo/ImageHeight', '<I'),
         'data_type': _read_ole_value(ole, 'ImageInfo/DataType', '<1I'),
-        'reference_data_type': _read_ole_value(ole, 'referencedata/DataType', '<1I'),
+        'reference_data_type': _read_ole_reference(
+            ole, ['referencedata/DataType', 'MultiReferenceData/DataType'], '<1I'),
         'num_views': number_of_images,
+        'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
         'iso_det_dist': _read_ole_arr(
@@ -609,17 +625,31 @@ def read_metadata(ole):
         'ExpTimes': _read_ole_value(
             ole, "ImageInfo/ExpTimes", "<{0}f".format(number_of_images)),
         'center_shift': _read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
-        'opt_mag': _read_ole_value(ole, 'ReferenceData/ImageInfo/OpticalMagnification', '<f'),
-        'fan_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/FanAngle', '<f'),
-        'cone_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/ConeAngle', '<f'),
+        'opt_mag': _read_ole_reference(
+            ole, ['ReferenceData/ImageInfo/OpticalMagnification', 'MultiReferenceData/ImageInfo/OpticalMagnification'], '<f'),
+        'fan_angle': _read_ole_reference(
+            ole, ['ReferenceData/ImageInfo/FanAngle', 'MultiReferenceData/ImageInfo/FanAngle'], '<{0}f'.format(number_of_reference)),
+        'cone_angle': _read_ole_reference(
+            ole,['ReferenceData/ImageInfo/ConeAngle', 'MultiReferenceData/ImageInfo/ConeAngle'], '<{0}f'.format(number_of_reference)),
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
+    reference = None
     if ole.exists('referencedata/image'):
         reference = _read_ole_image(ole, 'referencedata/image', metadata, metadata['reference_data_type'])
     else:
-        reference = None
+        array_of_reference = []
+        for idx in range(metadata['num_reference']):
+            img_string = f"MultiReferenceData/Image{idx + 1}"
+            if ole.exists(img_string):
+                array_of_reference.append(
+                    _read_ole_image(ole, img_string, metadata, metadata['reference_data_type'])
+                )
+
+        if len(array_of_reference) > 0:
+            reference = np.stack(array_of_reference, axis=0)
+
     metadata['reference'] = reference
 
     return metadata
@@ -775,6 +805,33 @@ def _read_ole_str(ole, label):
         data = stream.read()
         str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
     return str
+
+
+def _read_ole_reference(ole, labels, struct_fmt):
+    """
+    Reads the reference-related value from any matching label in an ole file
+
+    First tries to unpack the data as a scalar value. If that does not work,
+    it attempts to unpack it as a NumPy array.
+
+    Args:
+        ole (OleFileIO): An ole file to read from.
+        labels (list of str): List of possible labels associated with the reference data parameters.
+        struct_fmt (str): Format of the OLE file.
+
+    Returns:
+        int, float, or ndarray: The unpacked value from a matching label. Return None if no matching label exists.
+    """
+    for label in labels:
+        if ole.exists(label):
+            try:
+                return _read_ole_value(ole, label, struct_fmt)
+            except Exception:
+                try:
+                    return _read_ole_arr(ole, label, struct_fmt)
+                except Exception:
+                    pass
+    return None
 
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
