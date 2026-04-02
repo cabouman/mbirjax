@@ -15,28 +15,24 @@ from sklearn.utils.extmath import randomized_svd
 def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
                   max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
-    Denoise a hyperspectral dataset using dehydration and rehydration.
+    Denoise a hyperspectral dataset using dehydration and rehydration as described in:
 
-    Dehydration:
-        Learns (or accepts) a set of :math:`N_s` basis spectra and then projects the full dataset onto that subspace. Typically,
-        :math:`N_s << N_k`, where :math:`N_k` is the number of spectral bins. Significant spectral noise is removed while fitting the data
-        into lower dimensional subspace.
+    M. S. N. Chowdhury, D. Yang, S. Tang, S. V. Venkatakrishnan, H. Z. Bilheux, G. T. Buzzard, and C. A. Bouman, "Fast Hyperspectral Neutron Tomography," IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677, 2025. doi:10.1109/TCI.2025.3567854
 
-    Rehydration:
-        Projects the subspace domain data back to the hyperspectral domain and retrieves original dimensions.
+    The function works for any rank array. However, the spectral axis must be the last axis.
 
     Args:
-        data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
+        data: Hyperspectral data array with arbitrary axes and a spectral axis in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
+        num_materials: Number of materials in the sample. If None, the number is estimated automatically from
             the data. Defaults to None.
-        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`.
+        safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension.
             Defaults to 2.
         beta_loss: Beta divergence minimized in NMF. Can be 'frobenius' or 'kullback-leibler'. Defaults to 'frobenius'.
         max_iter: Maximum iterations for the NMF solver. Defaults to 300.
         tolerance: Convergence tolerance for the NMF solver. Defaults to 1e-10.
         batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2^27.
-        subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
+        subspace_basis: Pre-computed subspace basis spectra of shape. If None, the basis spectra are
             estimated directly from the data. Defaults to None.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
@@ -48,14 +44,6 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
         >>> data.shape, denoised_data.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., N_k))
 
-    Notes:
-        The function works with hyperspectral data in either sinogram or space
-        domain. The algorithm follows [1].
-
-    References:
-        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
-            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
-            2025. doi:10.1109/TCI.2025.3567854
     """
     # --------------------- Dehydrate ----------------------
     dehydrated_data = dehydrate(data,
@@ -78,11 +66,11 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
 def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
               max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
-    Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace.
+    Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace as described in:
 
-    The function learns (or accepts) a set of :math:`N_s` basis spectra, projects the full dataset onto that subspace, and
-    returns the low-dimensional subspace data along with the basis spectra. Typically, :math:`N_s << N_k`, where :math:`N_k` is
-    the number of spectral bins.
+    M. S. N. Chowdhury, D. Yang, S. Tang, S. V. Venkatakrishnan, H. Z. Bilheux, G. T. Buzzard, and C. A. Bouman, "Fast Hyperspectral Neutron Tomography," IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677, 2025. doi:10.1109/TCI.2025.3567854
+
+    The function works for any rank array. However, the spectral axis must be the last axis.
 
     Args:
         data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
@@ -109,15 +97,6 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
         >>> [subspace_data, subspace_basis, dataset_type] = dehydrate(data, num_materials=5, safety_factor=2)
         >>> data.shape, subspace_data.shape, subspace_basis.shape
         ((N_x, N_y, N_z, ..., N_k), (N_x, N_y, N_z, ..., 10), (10, N_k))
-
-    Note:
-        The function works with hyperspectral data in either sinogram or space
-        domain. The algorithm follows [1].
-
-    References:
-        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
-            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
-            2025. doi:10.1109/TCI.2025.3567854
     """
     epsilon = 1e-3  # Define epsilon
 
@@ -259,7 +238,9 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
 
 def rehydrate(dehydrated_data, hyperspectral_idx=None):
     """
-    Rehydrate/decompress selected spectral bins from dehydrated hyperspectral data.
+    Rehydrate/decompress selected spectral bins from dehydrated hyperspectral data as described in:
+
+    M. S. N. Chowdhury, D. Yang, S. Tang, S. V. Venkatakrishnan, H. Z. Bilheux, G. T. Buzzard, and C. A. Bouman, "Fast Hyperspectral Neutron Tomography," IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677, 2025. doi:10.1109/TCI.2025.3567854
 
     Args:
         dehydrated_data: Dehydrated hyperspectral data in the form [subspace_data, subspace_basis, dataset_type]:
@@ -278,15 +259,6 @@ def rehydrate(dehydrated_data, hyperspectral_idx=None):
         >>> hyper_data = rehydrate([subspace_data, subspace_basis, dataset_type], hyperspectral_idx=[5, 10, 15])
         >>> subspace_data.shape, subspace_basis.shape, hyper_data.shape
         ((N_x, N_y, N_z, ..., N_s), (N_s, N_k), (N_x, N_y, N_z, ..., 3))
-
-    Note:
-        The function works with hyperspectral data in either sinogram or space
-        domain. The algorithm follows [1].
-
-    References:
-        [1] M. S. N. Chowdhury et al., "Fast Hyperspectral Neutron Tomography,"
-            IEEE Transactions on Computational Imaging, vol. 11, pp. 663–677,
-            2025. doi:10.1109/TCI.2025.3567854
     """
     [subspace_data, subspace_basis, dataset_type] = dehydrated_data  # Unpack data
 
