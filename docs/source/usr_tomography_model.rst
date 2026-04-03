@@ -56,10 +56,6 @@ Recon Shape and Voxel Spacing
 Saving and Loading
 ------------------
 
-.. automethod:: mbirjax.TomographyModel.to_file
-
-.. automethod:: mbirjax.TomographyModel.from_file
-
 .. automethod:: mbirjax.TomographyModel.save_recon_hdf5
 
 .. automethod:: mbirjax.TomographyModel.load_recon_hdf5
