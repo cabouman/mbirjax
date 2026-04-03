@@ -51,18 +51,18 @@ def main():
     direct_recon = ct_model.direct_recon(sinogram)
 
     # Perform sinogram per-view alignment
-    print("\n********** Perform sinogram alignment **************")
-    sinogram = mjp.align_sino_views(ct_model, sinogram, direct_recon)
+    # print("\n********** Perform sinogram alignment **************")
+    # sinogram = mjp.align_sino_views(ct_model, sinogram, direct_recon)
 
     # Weights
     weights = mj.gen_weights(sinogram, weight_type='transmission_root')
 
     # Perform FDK reconstruction
-    print("\n********** Perform FDK reconstruction after alignment **************")
-    direct_recon = ct_model.direct_recon(sinogram)
+    # print("\n********** Perform FDK reconstruction after alignment **************")
+    # direct_recon = ct_model.direct_recon(sinogram)
 
     # Perform MBIR reconstruction
-    print("\n********** Perform MBIR reconstruction after alignment **************")
+    print("\n********** Perform MBIR reconstruction **************")
     mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     # Save recon to hdf5

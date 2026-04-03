@@ -49,8 +49,7 @@ def load_data_hdf5(file_path):
         (64, 256, 256)
     """
     with h5py.File(file_path, "r") as f:
-        array_names = [key for key in
-                       f.keys()]  # If this h5 file was created with save_data_hdf5, then there will be only one key
+        array_names = [key for key in f.keys()] # If this h5 file was created with save_data_hdf5, then there will be only one key
         if len(array_names) > 1:
             raise ValueError('More than one array found in {}. Unable to load.'.format(file_path))
         data_name = array_names[0]
@@ -175,7 +174,6 @@ def display_translation_vectors(translation_vectors, recon_shape):
     plt.axis('equal')
     plt.legend(loc='upper right')
     plt.show()
-
 
 def debug_plot_partitions(partitions, recon_shape):
     """
@@ -513,8 +511,7 @@ def download_and_extract_tar(download_url, save_dir):
 
     This function exists for backward compatibility and will be removed in a future release.
     """
-    warnings.warn(
-        "'download_and_extract_tar' is deprecated and will be removed in a future release. Please use 'download_and_extract' instead.")
+    warnings.warn("'download_and_extract_tar' is deprecated and will be removed in a future release. Please use 'download_and_extract' instead.")
     return download_and_extract(download_url, save_dir)
 
 
@@ -552,8 +549,8 @@ def get_top_level_tar_dir(tar_path, max_entries=1):
     return dir_name
 
 
-def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10,
-                      bottom_margin=10):
+
+def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, radial_margin=10, top_margin=10, bottom_margin=10):
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
@@ -577,6 +574,7 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> recon = jnp.ones((128, 128, 64))  # (row, col, slice) order
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
+
 
     # Move recon to CPU
     recon = jax.device_get(recon)
@@ -660,10 +658,10 @@ def generate_3d_shepp_logan_reference(phantom_shape):
 
     for el_paras in sl3d_paras:
         image += _gen_ellipsoid(x_grid=x_grid, y_grid=y_grid, z_grid=z_grid, x0=el_paras['x0'], y0=el_paras['y0'],
-                                z0=el_paras['z0'],
-                                a=el_paras['a'], b=el_paras['b'], c=el_paras['c'],
-                                gamma=el_paras['gamma'] / 180.0 * np.pi,
-                                gray_level=el_paras['gray_level'])
+                               z0=el_paras['z0'],
+                               a=el_paras['a'], b=el_paras['b'], c=el_paras['c'],
+                               gamma=el_paras['gamma'] / 180.0 * np.pi,
+                               gray_level=el_paras['gray_level'])
 
     return image.transpose((1, 0, 2))
 
@@ -708,8 +706,7 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None,
-                            horizontal_offset=0, vertical_offset=0):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
@@ -937,10 +934,10 @@ def add_ellipsoid(current_volume, grids, z_locations, x0, y0, z0, a, b, c, angle
     Yr = -sin_angle * (x_grid - x0) + cos_angle * (y_grid - y0)
 
     # Determine which xy locations will be updated for this ellipsoid
-    xy_norm = Xr ** 2 / a ** 2 + Yr ** 2 / b ** 2
+    xy_norm = Xr**2 / a**2 + Yr**2 / b**2
 
     def add_slice_vmap(volume_slice, z):
-        return volume_slice + intensity * ((xy_norm + (z - z0) ** 2 / c ** 2) <= 1).astype(float)
+        return volume_slice + intensity * ((xy_norm + (z - z0)**2 / c**2) <= 1).astype(float)
 
     volume_map = jax.vmap(add_slice_vmap, in_axes=(2, 0), out_axes=2)
     current_volume = volume_map(current_volume, z_locations)
@@ -961,21 +958,21 @@ class ModelType(str, Enum):
 
 
 def generate_demo_data(
-        object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
-        model_type: Union[ModelType, str] = ModelType.CONE,
-        num_views: int = 64,
-        num_det_rows: int = 96,
-        delta_det_row: float = 1,
-        num_det_channels: int = 128,
-        delta_det_channel: float = 1,
-        num_x_translations: int = 7,
-        num_z_translations: int = 7,
-        x_spacing: float = 22,
-        z_spacing: float = 22,
-        use_helical: bool = False,
-        helical_pitch: float | None = None,
-        helical_z_range: float | None = None,
-        helical_z_center: float = 0.0
+    object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
+    model_type: Union[ModelType, str] = ModelType.CONE,
+    num_views: int = 64,
+    num_det_rows: int = 96,
+    delta_det_row: float = 1,
+    num_det_channels: int = 128,
+    delta_det_channel: float = 1,
+    num_x_translations: int = 7,
+    num_z_translations: int = 7,
+    x_spacing: float = 22,
+    z_spacing: float = 22,
+    use_helical: bool = False,
+    helical_pitch: float | None = None,
+    helical_z_range: float | None = None,
+    helical_z_center: float = 0.0
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1003,7 +1000,7 @@ def generate_demo_data(
             supplying per-view z_shifts to ConeBeamModel. Defaults to False.
         helical_pitch (float, optional):
             Helical pitch (dimensionless) for helical mode.
-            pitch = (table travel per rotation) / (collimation at iso).
+            pitch = (table travel per rotation) / (det height at iso).  This is the fraction of the detector height at iso traveled per rotation.
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
 
@@ -1035,11 +1032,9 @@ def generate_demo_data(
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
-            ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles,
-                                                       source_detector_dist=source_detector_dist,
+            ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                                        source_iso_dist=source_iso_dist)
-            params = {'angles': angles, 'source_detector_dist': source_detector_dist,
-                      'source_iso_dist': source_iso_dist}
+            params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist}
         else:
             # Require both helical_pitch and helical_z_range
             if helical_pitch is None or helical_z_range is None:
@@ -1051,18 +1046,18 @@ def generate_demo_data(
             else:
                 magnification = source_detector_dist / source_iso_dist
 
-            # Collimation (detector height) mapped to iso, in ALU
-            collimation_iso = float(num_det_rows) * (delta_det_row / magnification)
+            # detector height mapped to iso, in ALU
+            det_height_iso = float(num_det_rows) * (delta_det_row / magnification)
 
             # Travel per rotation (ALU) and derived rotations/views-per-rotation
-            z_per_rot = float(helical_pitch) * collimation_iso
+            z_per_rot = float(helical_pitch) * det_height_iso
             if z_per_rot <= 0:
                 raise ValueError(f"helical_pitch must be > 0 (got {helical_pitch}).")
             if float(helical_z_range) < 0:
                 raise ValueError(f"helical_z_range must be >= 0 (got {helical_z_range}).")
 
             # Derived number of rotations and views per rotation
-            if float(helical_z_range) == 0.0:  # circular reconstruction
+            if float(helical_z_range) == 0.0: # circular reconstruction
                 num_rotations = 1.0
                 views_per_rotation = float(num_views)
             else:
@@ -1118,11 +1113,11 @@ def generate_demo_data(
             else:
                 magnification = source_detector_dist / source_iso_dist
 
-            # Collimation (detector height) mapped to iso, in ALU
-            collimation_iso = float(num_det_rows) * (delta_det_row / magnification)
+            # detector height mapped to iso, in ALU
+            det_height_iso = float(num_det_rows) * (delta_det_row / magnification)
 
             # Travel per rotation (ALU) and derived rotations/views-per-rotation
-            z_per_rot = float(helical_pitch) * collimation_iso
+            z_per_rot = float(helical_pitch) * det_height_iso
             if z_per_rot <= 0:
                 raise ValueError(f"helical_pitch must be > 0 (got {helical_pitch}).")
             if float(helical_z_range) < 0:
@@ -1167,8 +1162,7 @@ def generate_demo_data(
         translation_vectors = gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
         num_views = translation_vectors.shape[0]
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
-        ct_model_for_generation = mj.TranslationModel(sinogram_shape, translation_vectors,
-                                                      source_detector_dist=source_detector_dist,
+        ct_model_for_generation = mj.TranslationModel(sinogram_shape, translation_vectors, source_detector_dist=source_detector_dist,
                                                       source_iso_dist=source_iso_dist)
         params = {'translation_vectors': translation_vectors}
     else:
@@ -1294,8 +1288,7 @@ def stitch_arrays(array_list, overlap, axis=2):
         lengths = [array.shape[dim] for array in array_list]
         if dim != axis:
             if np.amax(lengths) != np.amin(lengths):
-                raise ValueError(
-                    'The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
+                raise ValueError('The shapes of the arrays in array_list must be the same except in the dimension specified by axis.')
         if dim == axis:
             if np.amin(lengths) < overlap:
                 raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
@@ -1330,8 +1323,7 @@ def stitch_arrays(array_list, overlap, axis=2):
     return jnp.swapaxes(stitched, 0, axis)
 
 
-def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None,
-                 helical_z_shifts=None):
+def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None, helical_z_shifts=None):
     """
     Create an instance of TomographyModel with the given parameters
 
@@ -1356,9 +1348,7 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
                                 source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
     elif geometry_type == 'parallel':
         if helical_z_shifts is not None:
-            warnings.warn(
-                "Helical mode (helical_z_shifts) is only supported for geometry_type='cone'; ignoring z_shifts.",
-                UserWarning)
+            warnings.warn("Helical mode (helical_z_shifts) is only supported for geometry_type='cone'; ignoring z_shifts.", UserWarning)
         model = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
@@ -1381,16 +1371,34 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         An instance of ConeBeamModel or ParallelBeam model
     """
     required_param_names = ct_model.get_required_param_names()
-    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                           required_param_names=required_param_names,
-                                                                           values_only=True)
 
     #  Get the shape of the old sinogram
     new_shape = list(ct_model.get_params('sinogram_shape'))
-    try:
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        # Get the names used to save the view parameters and to set the view parameters in the __init__
+        view_params_name = ct_model.get_params('view_params_name')  # This is the name saved in the parameter list
+        view_params_component_names = ct_model.get_params('view_params_component_names')  # These are the names used in __init__
+        if view_params_component_names[0] != 'angles' or view_params_component_names[1] != 'helical_z_shifts':
+            raise ValueError('Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
+        for name in view_params_component_names:
+            required_param_names.remove(name)
+
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
+        view_params = ct_model.get_params(view_params_name)
+        old_angles = view_params[:, 0]
+        required_params['helical_z_shifts'] = view_params[:, 1]
+
+    elif str(type(ct_model)).find('ParallelBeamModel') > 0:
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
         old_angles = ct_model.get_params('angles')
-    except NameError as e:
-        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    else:
+        raise TypeError('copy_ct_model() is restricted to ConeBeam and ParallelBeam Models')
+
+
     if new_angles is None:
         new_angles = old_angles
     new_shape[0] = len(new_angles)
@@ -1413,8 +1421,7 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
     return new_model
 
 
-def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape,
-                          translation_vectors):
+def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
     """
     Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
 
@@ -1460,8 +1467,7 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
     nominal_row_pitch = 4.0 * det_pixel_pitch_iso_vec / avg_view_slope
     nominal_row_pitch = jnp.max(nominal_row_pitch)  # Take the maximum of the nominal pitches along x and z
-    delta_recon_row = jnp.maximum(nominal_row_pitch,
-                                  det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
+    delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
     delta_recon_row = float(delta_recon_row)
 
     # Compute cube = (width, depth, height) of the scanned region in ALU
@@ -1478,13 +1484,12 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     num_pixels_per_view = ((recon_box[0] + num_det_rows) * (recon_box[1] + num_det_channels)) / num_views
     num_measurements_per_view = num_det_channels * num_det_rows
     # Select the number of rows so that (number of unknowns) = 2*(the number of measurements)
-    num_recon_rows = 2 * jnp.ceil(num_measurements_per_view / num_pixels_per_view)
+    num_recon_rows = 2*jnp.ceil(num_measurements_per_view / num_pixels_per_view)
 
     # Make sure the object extends no further than halfway to the source
     max_recon_rows = jnp.floor((source_iso_dist - cube[1]) / delta_recon_row)
     if max_recon_rows < 1:
-        print(
-            f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
+        print(f"[Error] Computed max_recon_rows = {max_recon_rows} < 1. This suggests the object extends beyond the source.")
     num_recon_rows = jnp.minimum(num_recon_rows, max_recon_rows)
 
     # Set the parameters to their computed values
@@ -1517,12 +1522,19 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
 
     # Find all local peaks in the histogram
     peak_indices = []
+
+    if len(hist) > 1 and hist[0] > hist[1]:
+        peak_indices.append(0)
+
     for i in range(1, len(hist) - 1):
         if hist[i] >= hist[i - 1] and hist[i] > hist[i + 1]:
             peak_indices.append(i)
 
     # Choose the peak closest to intensity 0 (background peak)
-    peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
+    if len(peak_indices) == 0:
+        peak_idx = int(np.argmin(np.abs(centers - 0.0)))
+    else:
+        peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
 
     # Define background width cutoff level (10% of peak height)
     peak_height = hist[peak_idx]
@@ -1542,6 +1554,6 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
     left_boundary = centers[left_boundary_idx]
     right_boundary = centers[right_boundary_idx]
 
-    background_cluster_width = safety_factor * (right_boundary - left_boundary)
+    background_cluster_width = safety_factor*(right_boundary - left_boundary)
 
     return background_cluster_width

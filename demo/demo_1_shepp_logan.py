@@ -114,10 +114,9 @@ ct_model.save_recon_hdf5(filepath, recon, recon_dict)
 
 # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
 #  the model if desired. The load function can be used even without an existing instance of a ct model.
-new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
+new_recon, new_recon_dict = mj.TomographyModel.load_recon_hdf5(filepath)
 
 print('recon and recon_dict loaded from {}'.format(filepath))
-print('New model created: {}'.format(new_model.get_params('geometry_type')))
 
 # From this you could view again, restart the recon from the previous iteration, etc.
 

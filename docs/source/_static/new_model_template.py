@@ -45,32 +45,6 @@ class TemplateModel(TomographyModel):
 
         super().__init__(sinogram_shape, param1=param1, param2=param2, view_params_array=view_params_array)
 
-    @classmethod
-    def from_file(cls, filename):
-        """
-        Construct a ConeBeamModel from parameters saved using save_params()
-
-        Args:
-            filename (str): Name of the file containing parameters to load.
-
-        Returns:
-            ConeBeamModel with the specified parameters.
-        """
-        # Load the parameters and convert view-dependent parameters to use the geometry-specific keywords.
-        # TODO: Adjust these to match the signature of __init__
-        required_param_names = ['sinogram_shape', 'param1', 'param2']
-        required_params, params = ParameterHandler.load_param_dict(filename, required_param_names, values_only=True)
-
-        # TODO: Adjust these to match the signature of __init__
-        view_params_array = params['view_params_array']
-        required_params['view_dependent_vec1'] = view_params_array[:, 0]
-        required_params['view_dependent_vec2'] = view_params_array[:, 1]
-        del params['view_params_array']
-
-        new_model = cls(**required_params)
-        new_model.set_params(**params)
-        return new_model
-
     def get_magnification(self):
         """
         Compute the scale factor from a voxel at iso (at the origin on the center of rotation) to
