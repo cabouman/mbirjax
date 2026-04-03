@@ -173,11 +173,11 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         print("Scans loaded.")
 
     # source to iso distance
-    source_iso_dist = Zeiss_params["source_iso_dist"][0]
+    source_iso_dist = Zeiss_params["source_iso_dist"]
     source_iso_dist = float(np.abs(source_iso_dist))
 
     # iso to detector distance
-    iso_det_dist = Zeiss_params["iso_det_dist"][0]
+    iso_det_dist = Zeiss_params["iso_det_dist"]
     iso_det_dist = float(np.abs(iso_det_dist))
 
     # Physical detector pixel pitch
@@ -186,7 +186,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
-    # Iso pixel pitch
+    # Pixel pitch at iso
     iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
 
     # Optical Magnification
@@ -217,6 +217,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     iso_det_dist_unit = None
     delta_det_row_unit = None
     delta_det_channel_unit = None
+    iso_pixel_pitch_unit = None
     angle_unit = None
 
     if axis_names is not None and axis_units is not None:
@@ -229,6 +230,9 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
             elif "CCD" in name and "X" in name:
                 delta_det_row_unit = unit
                 delta_det_channel_unit = unit
+
+            elif "Sample X" in name:
+                iso_pixel_pitch_unit = unit
 
             elif "Sample Theta" in name:
                 angle_unit = unit
@@ -262,6 +266,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'iso_det_dist_unit': iso_det_dist_unit,
         'delta_det_row_unit': delta_det_row_unit,
         'delta_det_channel_unit': delta_det_channel_unit,
+        'iso_pixel_pitch_unit': iso_pixel_pitch_unit,
         'angle_unit': angle_unit,
     }
 
@@ -293,23 +298,18 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     # Get zeiss parameters and convert them
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
-    iso_pixel_pitch = itemgetter('iso_pixel_pitch')(zeiss_params)
+    iso_pixel_pitch, iso_pixel_pitch_unit = itemgetter('iso_pixel_pitch', 'iso_pixel_pitch_unit')(zeiss_params)
     opt_mag = itemgetter('opt_mag')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    # source_detector_dist = source_iso_dist + iso_det_dist
-
-    recon_voxel_fact = source_iso_dist / (source_iso_dist + iso_det_dist)
-    source_detector_dist = opt_mag * source_iso_dist / recon_voxel_fact
-
     if opt_mag is not None:
-        # delta_det_channel /= opt_mag
-        # delta_det_row /= opt_mag
+        scaling_factor = source_iso_dist / (source_iso_dist + iso_det_dist)
+        source_detector_dist = opt_mag * source_iso_dist / scaling_factor
 
-        delta_det_channel = opt_mag * iso_pixel_pitch / recon_voxel_fact
-        delta_det_row = opt_mag * iso_pixel_pitch / recon_voxel_fact
+        delta_det_channel = opt_mag * iso_pixel_pitch / scaling_factor
+        delta_det_row = opt_mag * iso_pixel_pitch / scaling_factor
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -321,6 +321,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
 
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
+
+    iso_pixel_pitch *= downsample_factor[0]
 
     # Unit conversion table (relative to um)
     # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
@@ -342,6 +344,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel = delta_det_channel * unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
     delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
 
+    iso_pixel_pitch = iso_pixel_pitch * unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
+
     # ToDo: Need to check the units of detector offset
     #  For now, we assume that the det_channel_offset have units of pixels.
     det_channel_offset *= delta_det_channel  # pixels to ALU
@@ -357,7 +361,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params = dict()
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
-    optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
+    optional_params['delta_voxel'] = iso_pixel_pitch
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
     optional_params['alu_unit'] = alu_unit
@@ -602,10 +606,10 @@ def read_metadata(ole):
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        'iso_det_dist': _read_ole_arr(
-            ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
-        'source_iso_dist': _read_ole_arr(
-            ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
+        'iso_det_dist': _read_ole_reference(
+            ole, ['ReferenceData/RefD2RADistance', 'MultiReferenceData/RefD2RADistance'], '<f'),
+        'source_iso_dist': _read_ole_reference(
+            ole, ['ReferenceData/RefS2RADistance', 'MultiReferenceData/RefS2RADistance'], '<f'),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
