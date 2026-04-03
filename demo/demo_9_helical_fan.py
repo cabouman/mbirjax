@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-**MBIRJAX: Helical Fan Beam Demo**
+**MBIRJAX: Helical Fan Beam Demo** (currently compares Fan to Cone+curved detector)
 
 See the [MBIRJAX documentation](https://mbirjax.readthedocs.io/en/latest/) for an overview and details.
 
@@ -74,7 +74,7 @@ print(f"  SDD={source_detector_dist}, SID={source_iso_dist}")
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-mj.slice_viewer(sinogram_fan, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+# mj.slice_viewer(sinogram_fan, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 # -------------------------
 # Create model for recon
@@ -123,15 +123,100 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
-mj.slice_viewer(phantom, recon_fan, data_dicts=[None, recon_dict], title=title)
+# mj.slice_viewer(phantom, recon_fan, data_dicts=[None, recon_dict], title=title)
 
-# # recon and recon_dict can be saved from the viewer or directly in code
-# filepath = './output/demo9_recon.h5'
-# ct_model.save_recon_hdf5(filepath, recon, recon_dict)
-#
-# # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
-# #  the model if desired. The load function can be used even without an existing instance of a ct model.
-# new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
-#
-# print('recon and recon_dict loaded from {}'.format(filepath))
-# print('New model created: {}'.format(new_model.get_params('geometry_type')))
+################# CONE with curved detector #########################
+model_type = "cone"
+
+# Detector Type
+det_type = 'curved'
+
+# Generate weights array - for an initial reconstruction, use weights = None, then modify if needed to reduce the effect of possibly noisy sinogram entries.
+weights = None
+
+# -------------------------
+# Generate simulated data
+# -------------------------
+print("Generating demo data...")
+phantom, sinogram_cone, params = mj.generate_demo_data(
+    object_type=object_type,
+    model_type=model_type,
+    num_views=num_views,
+    num_det_rows=num_det_rows,
+    num_det_channels=num_det_channels,
+    use_helical=use_helical,
+    helical_pitch=helical_pitch,
+    helical_z_range=helical_z_range,
+    helical_z_center=helical_z_center,
+    detector_type=det_type
+)
+
+angles = params["angles"]
+helical_z_shifts = params.get("helical_z_shifts", None)
+source_detector_dist = params.get("source_detector_dist", None)
+source_iso_dist = params.get("source_iso_dist", None)
+
+print("\nDemo params summary:")
+print(f"  sinogram shape: {sinogram_cone.shape}")
+print(f"  angles shape:   {np.asarray(angles).shape}")
+if helical_z_shifts is not None:
+    z_np = np.asarray(helical_z_shifts)
+    print(f"  helical_z_shifts shape: {z_np.shape}  (min={z_np.min():.3f}, max={z_np.max():.3f})")
+print(f"  SDD={source_detector_dist}, SID={source_iso_dist}")
+
+# View the sinogram
+title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
+# mj.slice_viewer(sinogram_cone, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+
+# -------------------------
+# Create model for recon
+# -------------------------
+ct_model = mj.ConeBeamModel(
+    sinogram_cone.shape,
+    angles,
+    source_detector_dist=source_detector_dist,
+    source_iso_dist=source_iso_dist,
+    helical_z_shifts=helical_z_shifts,
+    detector_type=det_type
+)
+
+ct_model.set_params(sharpness=sharpness)
+
+print("\nModel parameters:")
+ct_model.print_params()
+
+# -------------------------
+# Reconstruct
+# -------------------------
+print("\nStarting recon...")
+t0 = time.time()
+
+recon_cone, recon_dict = ct_model.recon(
+    sinogram_cone,
+    weights=weights,
+    max_iterations=15,
+    # init_recon=0,  # uncomment to bypass direct_recon
+)
+
+max_diff = np.amax(np.abs(phantom - recon_cone))
+nrmse = np.linalg.norm(recon_cone - phantom) / np.linalg.norm(phantom)
+pct_95 = np.percentile(np.abs(recon_cone - phantom), 95)
+
+elapsed = time.time() - t0
+print(f"\nElapsed time for recon: {elapsed:.3f} s")
+
+# ##########################
+# Add some notes to include for display and saving
+recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
+recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
+recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
+
+mj.get_memory_stats()
+print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
+
+# Display results
+title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'
+# mj.slice_viewer(phantom, recon_cone, data_dicts=[None, recon_dict], title=title)
+
+mj.slice_viewer(sinogram_fan, sinogram_cone, title='Fan (New class) vs Cone (Using curved flag)')
+mj.slice_viewer(recon_fan, recon_cone, title='Fan (New class) vs Cone (Using curved flag)')
