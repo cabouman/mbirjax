@@ -16,7 +16,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 # ── Default file (leave empty string "" to always start with the file picker) ─
-FILE_PATH = "../data/Zeiss/SiC-SiC_CompositeFFOV_tomo-A_Drift.txrm"
+FILE_PATH = "/depot/bouman/data/ORNL/versa/SiC-SiC_CompositeFFOV_tomo-A_Drift.txrm"
 # ──────────────────────────────────────────────────────────────────────────────
 
 ARRAY_THRESHOLD = 256  # streams larger than this are treated as blobs
