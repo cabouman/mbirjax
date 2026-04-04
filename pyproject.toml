@@ -43,6 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]"]
+cuda13 = ["jax[cuda13]"]
 test = ["pytest"]
 docs = [
      "sphinx",
