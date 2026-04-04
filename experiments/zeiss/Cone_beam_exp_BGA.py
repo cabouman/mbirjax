@@ -19,6 +19,7 @@ def main():
     snr_db = 35.0
     downsample_factor = 2
     subsample_view_factor = 2
+    max_iterations = 20
 
     # Path to the dataset
     if dataset == "BGA_HART":
@@ -71,7 +72,7 @@ def main():
 
     # Perform MBIR reconstruction
     print("\n********** Perform MBIR reconstruction **************")
-    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+    mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=max_iterations)
 
     # Save recon to hdf5
     print("\n*********** save mbir and fdk recon in h5 format *************")
