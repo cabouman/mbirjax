@@ -454,7 +454,7 @@ class NSIBrowser(ScanBrowser):
         self._match_label_var.set("")
 
         self.status.set(f"Loading {dataset_dir.name}\u2026")
-        self.root.update_idletasks()
+        self.root.update()
 
         self._populate_tree()
 

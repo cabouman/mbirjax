@@ -332,7 +332,7 @@ class OLEBrowser(ScanBrowser):
         self._search_idx  = -1
         self._match_label_var.set("")
         self.status.set(f"Loading {path.name}\u2026")
-        self.root.update_idletasks()
+        self.root.update()
         _populate_tree(self.tree, self.ole, self.metadata)
 
         n_streams = len(self.ole.listdir(streams=True, storages=False))
