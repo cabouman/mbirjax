@@ -3,7 +3,6 @@ browse_ole.py — Interactive tkinter tree browser for .xrm / .txrm OLE files.
 
 All top-level storage nodes start collapsed; click the arrow to expand.
 Double-click an image stream to display it with mbirjax.slice_viewer.
-Use the toolbar to load a different file or export the tree to YAML.
 
 Usage: edit FILE_PATH below (optional), then run:
     python zeiss/browse_ole.py
@@ -20,7 +19,6 @@ from tkinter import ttk, filedialog, messagebox
 import numpy as np
 import olefile
 from pathlib import Path
-from ruamel.yaml import YAML
 
 # ── Default file (leave empty string "" to always start with the file picker) ─
 FILE_PATH = "../data/Zeiss/SiC-SiC_CompositeFFOV_tomo-A_Drift.txrm"
@@ -279,7 +277,7 @@ def _launch_slice_viewer(volume, title):
     return subprocess.Popen([sys.executable, "-c", script])
 
 
-# ── Tree / YAML builders ──────────────────────────────────────────────────────
+# ── Tree builder ─────────────────────────────────────────────────────────────
 
 def _populate_tree(tree, ole, metadata=None):
     """Insert all OLE streams into the Treeview as a nested hierarchy."""
@@ -308,25 +306,6 @@ def _populate_tree(tree, ole, metadata=None):
             values=(size, hint),
             tags=("stream",),
         )
-
-
-def _yaml_insert(node, path_components, value):
-    for key in path_components[:-1]:
-        node = node.setdefault(key, {})
-    leaf_key = path_components[-1]
-    if leaf_key in node and isinstance(node[leaf_key], dict):
-        node[leaf_key]["_stream_info"] = value
-    else:
-        node[leaf_key] = value
-
-
-def _build_yaml_tree(ole, metadata=None):
-    root = {}
-    for path_components in ole.listdir(streams=True, storages=False):
-        size = ole.get_size(path_components)
-        hint = _peek_hint(ole, path_components, size, metadata)
-        _yaml_insert(root, path_components, {"size_bytes": size, "hint": hint})
-    return root
 
 
 # ── Browser UI ───────────────────────────────────────────────────────────────
@@ -361,8 +340,7 @@ class OLEBrowser:
 
         toolbar = ttk.Frame(self.root, padding=4)
         toolbar.pack(side="top", fill="x")
-        ttk.Button(toolbar, text="Load File…",   command=self._pick_file).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text="Export YAML…", command=self._export_yaml).pack(side="left", padx=(0, 4))
+        ttk.Button(toolbar, text="Load File…",  command=self._pick_file).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="Collapse All", command=self._collapse_all).pack(side="left")
 
         searchbar = ttk.Frame(self.root, padding=(4, 2))
@@ -458,34 +436,6 @@ class OLEBrowser:
         dim_info = f"  |  {n} \u00d7 {w}\u00d7{h} {dt}" if all((w, h, n)) else ""
         self.root.title(f"OLE Browser — {path.name}")
         self.status.set(f"{path.name}  —  {n_streams} streams{dim_info}")
-
-    def _export_yaml(self):
-        if not self.ole:
-            messagebox.showinfo("No file loaded", "Load a file before exporting.")
-            return
-
-        initialdir   = self.current_path.parent if self.current_path else Path.cwd()
-        default_name = self.current_path.name + ".yaml" if self.current_path else "output.yaml"
-        out_path = filedialog.asksaveasfilename(
-            title="Save YAML",
-            defaultextension=".yaml",
-            filetypes=[("YAML files", "*.yaml"), ("All files", "*.*")],
-            initialdir=initialdir,
-            initialfile=default_name,
-        )
-        if not out_path:
-            return
-
-        try:
-            data = _build_yaml_tree(self.ole, self.metadata)
-            yaml = YAML()
-            yaml.default_flow_style = False
-            yaml.width = 120
-            with open(out_path, "w", encoding="utf-8") as f:
-                yaml.dump(data, f)
-            self.status.set(f"YAML written to {out_path}")
-        except Exception as exc:
-            messagebox.showerror("Export error", f"Could not write YAML:\n{exc}")
 
     def _item_path(self, item):
         """Return the full OLE path as a list of strings for a treeview item."""
