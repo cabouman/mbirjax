@@ -331,6 +331,8 @@ class OLEBrowser(ScanBrowser):
         self._search_hits = []
         self._search_idx  = -1
         self._match_label_var.set("")
+        self.status.set(f"Loading {path.name}\u2026")
+        self.root.update_idletasks()
         _populate_tree(self.tree, self.ole, self.metadata)
 
         n_streams = len(self.ole.listdir(streams=True, storages=False))
@@ -339,7 +341,7 @@ class OLEBrowser(ScanBrowser):
         n  = self.metadata.get("n_images")
         dt = self.metadata.get("dtype_name", "")
         dim_info = f"  |  {n} \u00d7 {w}\u00d7{h} {dt}" if all((w, h, n)) else ""
-        self.root.title(f"OLE Browser — {path.name}")
+        self.root.title(f"XRM Browser — {path.name}")
         self.status.set(f"{path.name}  —  {n_streams} streams{dim_info}")
 
     def _on_double_click(self, _event):

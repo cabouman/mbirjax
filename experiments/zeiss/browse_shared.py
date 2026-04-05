@@ -97,9 +97,9 @@ class ScanBrowser:
         self._search_entry.bind("<Shift-Return>", lambda _e: self._search_prev())
         self._search_entry.bind("<Escape>",       lambda _e: self._search_clear())
         self._search_var.trace_add("write", lambda *_: self._search_run())
-        ttk.Button(searchbar, text="✕", width=2, command=self._search_clear).pack(side="left", padx=(2, 0))
-        ttk.Button(searchbar, text="◀", width=2, command=self._search_prev).pack(side="left", padx=(4, 0))
-        ttk.Button(searchbar, text="▶", width=2, command=self._search_next).pack(side="left", padx=(2, 4))
+        ttk.Button(searchbar, text="X",    width=2, command=self._search_clear).pack(side="left", padx=(2, 0))
+        ttk.Button(searchbar, text="Prev", width=4, command=self._search_prev).pack(side="left", padx=(4, 0))
+        ttk.Button(searchbar, text="Next", width=4, command=self._search_next).pack(side="left", padx=(2, 4))
         tk.Label(searchbar, textvariable=self._match_label_var, anchor="w").pack(side="left")
 
         frame = ttk.Frame(self.root)

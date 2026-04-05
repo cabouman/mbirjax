@@ -453,6 +453,9 @@ class NSIBrowser(ScanBrowser):
         self._search_idx  = -1
         self._match_label_var.set("")
 
+        self.status.set(f"Loading {dataset_dir.name}\u2026")
+        self.root.update_idletasks()
+
         self._populate_tree()
 
         self.root.title(f"NSI Dataset Browser \u2014 {dataset_dir.name}")
