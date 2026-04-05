@@ -122,8 +122,8 @@ class ScanBrowser:
         self.tree.heading("size", text="Bytes",          anchor="e")
         self.tree.heading("hint", text="Hint",           anchor="w")
         self.tree.column("#0", width=320, stretch=False)
-        self.tree.column("size", width=75, anchor="e", stretch=False)
-        self.tree.column("hint", width=680, stretch=True)
+        self.tree.column("size", width=75,   anchor="e", stretch=False)
+        self.tree.column("hint", width=1500, stretch=False)  # wide + h-scroll
 
         self.tree.tag_configure("storage",    font=("TkDefaultFont", 10, "bold"))
         self.tree.tag_configure("search_hit", background="#c8c8c8")

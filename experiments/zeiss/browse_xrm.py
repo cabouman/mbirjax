@@ -1,11 +1,11 @@
 """
-browse_ole.py — Interactive tkinter tree browser for .xrm / .txrm OLE files.
+browse_xrm.py — Interactive tkinter tree browser for .xrm / .txrm OLE files.
 
 All top-level storage nodes start collapsed; click the arrow to expand.
 Double-click an image stream to display it with mbirjax.slice_viewer.
 
 Usage: edit FILE_PATH below (optional), then run:
-    python zeiss/browse_ole.py
+    python zeiss/browse_xrm.py
 """
 
 import math
@@ -306,7 +306,7 @@ class OLEBrowser(ScanBrowser):
     def _pick_file(self):
         initialdir = self.current_path.parent if self.current_path else Path.cwd()
         path = filedialog.askopenfilename(
-            title="Open OLE file",
+            title="Open xrm/txrm file",
             initialdir=initialdir,
             filetypes=[("Zeiss XRM/TXRM files", "*.xrm *.txrm"), ("All files", "*.*")],
         )
