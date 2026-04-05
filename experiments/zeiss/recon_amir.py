@@ -1,11 +1,16 @@
 # ── pyMBIR availability check and auto-install ────────────────────────────────
-import importlib, subprocess, sys
+import importlib, os, subprocess, sys
 
 def _conda_install(pkg, channel=None):
-    """Install a package into the current conda environment via shell."""
-    channel_flag = f"-c {channel} " if channel else ""
-    cmd = f"conda install -y {channel_flag}{pkg}"
-    subprocess.check_call(cmd, shell=True)
+    """Install a package into the current conda environment via the conda executable."""
+    # CONDA_EXE is set by conda's activation scripts to the full path of the
+    # conda binary, so it works even when 'conda' is not on the shell PATH.
+    conda_exe = os.environ.get("CONDA_EXE", "conda")
+    cmd = [conda_exe, "install", "-y"]
+    if channel:
+        cmd += ["-c", channel]
+    cmd.append(pkg)
+    subprocess.check_call(cmd)
 
 
 def _ensure_pymbir():
