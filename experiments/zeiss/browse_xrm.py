@@ -366,12 +366,15 @@ class OLEBrowser(ScanBrowser):
                 title = f"{self.current_path.name} — ref image"
             else:
                 all_ref = _all_ref_image_paths(self.ole)
-                load_all = messagebox.askyesno(
+                load_all = messagebox.askyesnocancel(
                     "Load reference images",
                     f"This file contains {n_ref} reference images.\n\n"
-                    f"Load all {n_ref}?  (may take a moment)\n\n"
-                    f"Yes = all     No = selected only",
+                    f"Yes = all {n_ref} images\n"
+                    f"No = selected image only\n"
+                    f"Cancel = do nothing",
                 )
+                if load_all is None:
+                    return
                 paths_to_load = all_ref if load_all else [path_list]
                 title = (f"{self.current_path.name} — all {n_ref} ref images"
                          if load_all else "/".join(path_list))
@@ -383,12 +386,15 @@ class OLEBrowser(ScanBrowser):
                 paths_to_load = all_paths or [path_list]
                 title = "/".join(path_list)
             else:
-                load_all = messagebox.askyesno(
+                load_all = messagebox.askyesnocancel(
                     "Load images",
                     f"This file contains {n_total} projection images.\n\n"
-                    f"Load all {n_total}?  (may take a moment)\n\n"
-                    f"Yes = all images     No = selected image only",
+                    f"Yes = all {n_total} images\n"
+                    f"No = selected image only\n"
+                    f"Cancel = do nothing",
                 )
+                if load_all is None:
+                    return
                 if load_all:
                     paths_to_load = all_paths
                     title = f"{self.current_path.name} — all {n_total} images"

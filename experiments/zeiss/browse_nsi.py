@@ -38,7 +38,7 @@ _SKIP_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 def _should_skip(name):
     """Return True for system/lock files that should never appear in the tree."""
     nl = name.lower()
-    return nl in _SKIP_NAMES or nl.startswith("~$")
+    return nl in _SKIP_NAMES or name.startswith("~$") or name.startswith("._")
 
 # Folder name patterns (case-insensitive prefix)
 _CORRECTIONS_RE   = re.compile(r"^corrections$",        re.IGNORECASE)
@@ -832,12 +832,15 @@ class NSIBrowser(ScanBrowser):
             paths_to_load = [path]
             title = path.name
         else:
-            load_all = messagebox.askyesno(
+            load_all = messagebox.askyesnocancel(
                 "Load images",
                 f"This folder contains {n_total} projection images.\n\n"
-                f"Load all {n_total}?  (may take a moment)\n\n"
-                f"Yes = all images     No = selected image only",
+                f"Yes = all {n_total} images\n"
+                f"No = selected image only\n"
+                f"Cancel = do nothing",
             )
+            if load_all is None:
+                return
             if load_all:
                 paths_to_load = all_tifs
                 title = f"{parent_dir.name} \u2014 all {n_total} images"
