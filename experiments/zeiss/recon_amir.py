@@ -58,7 +58,7 @@ def _ensure_pymbir():
 _ensure_pymbir()
 # ─────────────────────────────────────────────────────────────────────────────
 
-from scipy.ndimage.interpolation import shift
+from scipy.ndimage import shift
 import numpy as np
 import concurrent.futures as cf
 # import dxchange
