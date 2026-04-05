@@ -29,8 +29,10 @@ def calc_XrayDet_distances(data_path):
     ole = olefile.OleFileIO(data_path)
     ole.listdir('ImageInfo')
 
-    RefD2RADistance = _read_ole_value(ole, 'ReferenceData/RefD2RADistance', '<f')
-    RefS2RADistance = _read_ole_value(ole, 'ReferenceData/RefS2RADistance', '<f')
+    ref_dir, _ = _get_ole_reference_directory(ole)
+
+    RefD2RADistance = _read_ole_value(ole, f'{ref_dir}/RefD2RADistance', '<f')
+    RefS2RADistance = _read_ole_value(ole, f'{ref_dir}/RefS2RADistance', '<f')
     RefS2RADistance = -RefS2RADistance
 
     return RefD2RADistance, RefS2RADistance
@@ -68,6 +70,29 @@ def _read_ole_image(ole, label, metadata, datatype=None):
     )
     return image
 
+def _get_ole_reference_directory(ole):
+    """
+    Returns the ole directory name for reference image(s) and the number of images
+    Args:
+        ole:
+
+    Returns:
+        ole directory name
+        number of images
+    """
+    if ole.exists('referencedata'):
+        ref_dir_name = 'referencedata'
+        num_ref_images = 1
+    elif ole.exists('multireferencedata'):
+        ref_dir_name = 'multireferencedata'
+        num_ref_images = _read_ole_value(ole, 'multireferencedata/totalrefimages', '<i')
+    else:
+        print("No reference directory found among")
+        print(ole.listdir())
+        raise Exception("No reference directory found")
+
+    return ref_dir_name, num_ref_images
+
 
 def read_ole_metadata(ole):
     """
@@ -94,6 +119,9 @@ def read_ole_metadata(ole):
     # labels = ole.listdir()
     #center_shift = _read_ole_value(ole, "SampleInfo/center_shift", '<f')
     #['ReferenceData', 'ImageInfo', 'FanAngle']#_read_ole_value(ole, 'ReferenceData/ImageInfo/FanAngle','<f')
+
+    ref_dir, num_ref_images = _get_ole_reference_directory(ole)
+
     metadata = {
         'facility': _read_ole_value(ole, 'SampleInfo/Facility', '<50s'),
         'image_width': _read_ole_value(ole, 'ImageInfo/ImageWidth', '<I'),
@@ -102,7 +130,7 @@ def read_ole_metadata(ole):
         'number_of_images': number_of_images,
         'pixel_size': _read_ole_value(ole, 'ImageInfo/pixelsize', '<f'),
         'reference_filename': _read_ole_value(ole, 'ImageInfo/referencefile', '<260s'),
-        'reference_data_type': _read_ole_value(ole, 'referencedata/DataType', '<1I'),
+        'reference_data_type': _read_ole_value(ole, f'{ref_dir}/DataType', '<1I'),
         # NOTE: converting theta to radians from degrees
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)) * np.pi / 180.,
@@ -123,8 +151,8 @@ def read_ole_metadata(ole):
         'ExpTimes':_read_ole_value(
             ole, "ImageInfo/ExpTimes", "<{0}f".format(number_of_images)),
         'center_shift':_read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
-        'opt_mag': _read_ole_value(ole, 'ReferenceData/ImageInfo/OpticalMagnification', '<f'),
-        'fan_angle':_read_ole_value(ole, 'ReferenceData/ImageInfo/FanAngle','<f'),
+        'opt_mag': _read_ole_value(ole, f'{ref_dir}/ImageInfo/OpticalMagnification', '<f'),
+        'fan_angle':_read_ole_value(ole, f'{ref_dir}/ImageInfo/FanAngle', f'<{num_ref_images}f'),
     }
     # special case to remove trailing null characters
     reference_filename = _read_ole_value(ole, 'ImageInfo/referencefile', '<260s')
@@ -135,10 +163,15 @@ def read_ole_metadata(ole):
                 reference_filename = reference_filename[:i]
                 break
     metadata['reference_filename'] = reference_filename
-    if ole.exists('referencedata/image'):
-        reference = _read_ole_image(ole, 'referencedata/image', metadata, metadata['reference_data_type'])
+    if num_ref_images == 1 and ole.exists(f'{ref_dir}/image'):
+        reference = _read_ole_image(ole, f'{ref_dir}/image', metadata, metadata['reference_data_type'])
+    elif num_ref_images > 1 and ole.exists(f'{ref_dir}/image1'):
+        reference = 0
+        for ind in np.arange(1, num_ref_images + 1):
+            reference += _read_ole_image(ole, f'{ref_dir}/image{ind}', metadata, metadata['reference_data_type'])
+        reference = reference / num_ref_images
     else:
-        reference = None
+        raise FileNotFoundError('Reference image not found')
     metadata['reference'] = reference
     return metadata
 

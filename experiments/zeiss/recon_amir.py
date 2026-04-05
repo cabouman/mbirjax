@@ -6,9 +6,10 @@ import psutil
 # import pyqtgraph as pg
 from pyMBIR.reconEngine import *
 import os
-from pyMBIR.readOle_xtrm_distances import *
+from readOle_xtrm_distances import *
 import tifffile
-from skimage.filters import threshold_otsu
+import mbirjax as mj
+# from skimage.filters import threshold_otsu
 from tqdm import tqdm
 
 
@@ -54,8 +55,8 @@ def apply_cylind_mask(im_size_o, num_slice_o, disc_height, center1, disc_rad1, r
     return rec_fdk_f
 
 
-data_folder = "Data path"
-filenames = ['filename.txrm']
+data_folder = '/depot/bouman/data/ORNL/versa'
+filenames = ['ParAM-Round-1_Z62.txrm']
 
 sigma = 1  # 4#100#2#1
 SHORTSCAN = False
@@ -64,7 +65,7 @@ filtsize = 5
 for file_name in filenames:
     data_path = os.path.join(data_folder, file_name)
     write_op = False
-    gpu_index = [0, 5, 6, 7]
+    gpu_index = [0]
     NUM_ITER = 120
 
     orig_det, src_orig = calc_XrayDet_distances(data_path)  # 32.24  # 97.5594 #mm
@@ -185,3 +186,4 @@ for file_name in filenames:
     A = generateAmatrix(proj_params, miscalib, vol_params, gpu_index)
 
     rec_fdk_2_s = analytic(proj_data, proj_params, miscalib, vol_params, rec_params)
+    mj.slice_viewer(rec_fdk_2_s)
