@@ -1,3 +1,65 @@
+# ── pyMBIR availability check and auto-install ────────────────────────────────
+import importlib, subprocess, sys
+from pathlib import Path
+
+def _conda_install(pkg, channel=None):
+    """Install a package into the current conda environment."""
+    # Locate the conda executable relative to the running Python
+    conda = Path(sys.executable).parent.parent / "bin" / "conda"
+    if not conda.exists():
+        conda = "conda"   # fall back to PATH
+    cmd = [str(conda), "install", "-y", "--prefix", str(Path(sys.executable).parent.parent)]
+    if channel:
+        cmd += ["-c", channel]
+    cmd.append(pkg)
+    subprocess.check_call(cmd)
+
+
+def _ensure_pymbir():
+    """
+    Check whether pyMBIR is importable.  If not:
+      1. conda-install astra-toolbox (conda-only, not on PyPI)
+      2. pip-install the remaining dependencies from environment.yml
+      3. pip-install pyMBIR from GitHub
+    """
+    if importlib.util.find_spec("pyMBIR") is not None:
+        return   # already installed
+
+    print("pyMBIR not found — installing dependencies and pyMBIR from GitHub...")
+
+    # astra-toolbox is only distributed via conda
+    if importlib.util.find_spec("astra") is None:
+        print("  conda install astra-toolbox (channel: astra-toolbox/label/dev)")
+        try:
+            _conda_install("astra-toolbox", channel="astra-toolbox/label/dev")
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not conda-install astra-toolbox.\n"
+                "Install it manually with:\n"
+                "    conda install -c astra-toolbox/label/dev astra-toolbox"
+            ) from exc
+
+    # pip-installable packages from environment.yml
+    for pkg in ["numpy", "scipy", "matplotlib", "psutil"]:
+        print(f"  pip install {pkg}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+    # Install pyMBIR from GitHub (uses setup.py, so needs --no-build-isolation)
+    pymbir_url = "https://github.com/svvenkatakrishnan/pyMBIR"
+    print(f"  pip install git+{pymbir_url}")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install",
+        "--no-build-isolation",
+        f"git+{pymbir_url}",
+    ])
+
+    if importlib.util.find_spec("pyMBIR") is None:
+        raise ImportError("pyMBIR installation appeared to succeed but is still not importable.")
+    print("pyMBIR installed successfully.")
+
+_ensure_pymbir()
+# ─────────────────────────────────────────────────────────────────────────────
+
 from scipy.ndimage.interpolation import shift
 import numpy as np
 import concurrent.futures as cf
