@@ -248,4 +248,4 @@ for file_name in filenames:
     A = generateAmatrix(proj_params, miscalib, vol_params, gpu_index)
 
     rec_fdk_2_s = analytic(proj_data, proj_params, miscalib, vol_params, rec_params)
-    mj.slice_viewer(rec_fdk_2_s)
+    mj.slice_viewer(rec_fdk_2_s, slice_axis=0)
