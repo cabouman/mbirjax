@@ -11,14 +11,13 @@ Usage: edit FILE_PATH below (optional), then run:
 import math
 import re
 import struct
-import subprocess
-import sys
-import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
 import olefile
 from pathlib import Path
+
+from browse_shared import ScanBrowser, _natural_key, _launch_slice_viewer
 
 # ── Default file (leave empty string "" to always start with the file picker) ─
 FILE_PATH = "../data/Zeiss/SiC-SiC_CompositeFFOV_tomo-A_Drift.txrm"
@@ -33,8 +32,8 @@ _ZEISS_DTYPES = {
 }
 
 # Patterns for image-bearing streams
-_RE_IMAGEDATA = re.compile(r"^imagedata\d+$",    re.IGNORECASE)
-_RE_IMAGE_NUM = re.compile(r"^image\d+$",         re.IGNORECASE)
+_RE_IMAGEDATA = re.compile(r"^imagedata\d+$",      re.IGNORECASE)
+_RE_IMAGE_NUM = re.compile(r"^image\d+$",           re.IGNORECASE)
 _RE_MULTIREF  = re.compile(r"^multireferencedata$", re.IGNORECASE)
 
 
@@ -45,16 +44,6 @@ def _is_ref_image(path_list):
     parent, name = path_list[-2], path_list[-1]
     return bool((parent.lower() == "referencedata" and name.lower() == "image") or
                 (_RE_MULTIREF.match(parent) and _RE_IMAGE_NUM.match(name)))
-
-
-# ── Natural sort ──────────────────────────────────────────────────────────────
-
-def _natural_key(path_components):
-    """Sort key that orders embedded integers numerically (Image2 before Image10)."""
-    def _tokenize(s):
-        return [int(tok) if tok.isdigit() else tok.lower()
-                for tok in re.split(r"(\d+)", s)]
-    return [_tokenize(c) for c in path_components]
 
 
 # ── Metadata reader ───────────────────────────────────────────────────────────
@@ -161,7 +150,6 @@ def _peek_hint(ole, path_list, size, metadata=None):
 
     # Small scalars: try to pick one unambiguous interpretation; fall back to all.
     if size <= 8:
-        # Decode every candidate that fits in the available bytes.
         cands = {}
         for fmt, label in [("<i", "i32"), ("<I", "u32"), ("<f", "f32"), ("<d", "f64")]:
             if size >= struct.calcsize(fmt):
@@ -176,12 +164,7 @@ def _peek_hint(ole, path_list, size, metadata=None):
 
         _f32_is_denormal = f32 is not None and 0 < abs(f32) < 1.2e-38
 
-        # Prefer integer when:
-        #   • i32 in [-8, 8] (small signed value; f32 of such bytes is always
-        #     a denormal, but we also want to catch negative values whose f32
-        #     is NaN/Inf and therefore never a useful interpretation), OR
-        #   • i32 > 8 and f32 IS a denormal — any positive integer < 2^24
-        #     produces a denormal f32, so the float reading is meaningless.
+        # Prefer integer when i32 is small, or when f32 would be a denormal.
         if i32 is not None and (-8 <= i32 <= 8 or (i32 > 8 and _f32_is_denormal)):
             return f"i32={i32}"
 
@@ -257,27 +240,7 @@ def _all_ref_image_paths(ole):
             if _is_ref_image(p)]
 
 
-def _launch_slice_viewer(volume, title):
-    """
-    Save *volume* (shape N×H×W) to a temp .npy file and open slice_viewer in a
-    subprocess so the browser window stays responsive.  The subprocess deletes
-    the temp file when the viewer closes.  Returns the Popen object so the
-    caller can track and terminate it later.
-    """
-    tmp = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
-    tmp.close()
-    np.save(tmp.name, volume)
-
-    script = (
-        "import numpy as np, mbirjax as mj, os; "
-        f"arr = np.load({repr(tmp.name)}); "
-        f"mj.slice_viewer(arr, title={repr(title)}, slice_axis=0); "
-        f"os.unlink({repr(tmp.name)})"
-    )
-    return subprocess.Popen([sys.executable, "-c", script])
-
-
-# ── Tree builder ─────────────────────────────────────────────────────────────
+# ── Tree builder ──────────────────────────────────────────────────────────────
 
 def _populate_tree(tree, ole, metadata=None):
     """Insert all OLE streams into the Treeview as a nested hierarchy."""
@@ -308,21 +271,27 @@ def _populate_tree(tree, ole, metadata=None):
         )
 
 
-# ── Browser UI ───────────────────────────────────────────────────────────────
+# ── Browser UI ────────────────────────────────────────────────────────────────
 
-class OLEBrowser:
-    def __init__(self, tk_root):
-        self.root     = tk_root
-        self.ole      = None
-        self.metadata = None
+class OLEBrowser(ScanBrowser):
+
+    _WINDOW_TITLE = "OLE Browser"
+    _COL0_HEADING = "Stream / Storage"
+
+    def __init__(self, root):
+        self.ole          = None
+        self.metadata     = None
         self.current_path = None
-        self._viewers = []   # Popen objects for open slice_viewer subprocesses
-        self._search_var       = tk.StringVar()
-        self._match_label_var  = tk.StringVar()
-        self._search_hits: list = []
-        self._search_idx: int   = -1
-        self._build_ui()
+        super().__init__(root)
 
+    # ── Toolbar ───────────────────────────────────────────────────────────────
+
+    def _add_toolbar_buttons(self, toolbar):
+        ttk.Button(toolbar, text="Load File…", command=self._pick_file).pack(side="left", padx=(0, 4))
+
+    # ── Default load ──────────────────────────────────────────────────────────
+
+    def _auto_load(self):
         p = Path(FILE_PATH) if FILE_PATH else None
         if p and p.exists():
             self._load(p)
@@ -331,70 +300,6 @@ class OLEBrowser:
                    if FILE_PATH else "No default file — opening file picker.")
             self.status.set(msg)
             self.root.after(100, self._pick_file)
-
-    # ── UI construction ───────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        self.root.title("OLE Browser")
-        self.root.geometry("1100x750")
-
-        toolbar = ttk.Frame(self.root, padding=4)
-        toolbar.pack(side="top", fill="x")
-        ttk.Button(toolbar, text="Load File…",  command=self._pick_file).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text="Collapse All", command=self._collapse_all).pack(side="left")
-
-        searchbar = ttk.Frame(self.root, padding=(4, 2))
-        searchbar.pack(side="top", fill="x")
-        tk.Label(searchbar, text="Search:").pack(side="left", padx=(0, 4))
-        self._search_entry = ttk.Entry(searchbar, textvariable=self._search_var, width=30)
-        self._search_entry.pack(side="left")
-        self._search_entry.bind("<Return>",       lambda _e: self._search_next())
-        self._search_entry.bind("<Shift-Return>", lambda _e: self._search_prev())
-        self._search_entry.bind("<Escape>",       lambda _e: self._search_clear())
-        self._search_var.trace_add("write", lambda *_: self._search_run())
-        ttk.Button(searchbar, text="✕", width=2, command=self._search_clear).pack(side="left", padx=(2, 0))
-        ttk.Button(searchbar, text="◀", width=2, command=self._search_prev).pack(side="left", padx=(4, 0))
-        ttk.Button(searchbar, text="▶", width=2, command=self._search_next).pack(side="left", padx=(2, 4))
-        tk.Label(searchbar, textvariable=self._match_label_var, anchor="w").pack(side="left")
-
-        frame = ttk.Frame(self.root)
-        frame.pack(fill="both", expand=True, padx=4, pady=4)
-
-        vsb = ttk.Scrollbar(frame, orient="vertical")
-        hsb = ttk.Scrollbar(frame, orient="horizontal")
-
-        self.tree = ttk.Treeview(
-            frame,
-            columns=("size", "hint"),
-            show="tree headings",
-            yscrollcommand=vsb.set,
-            xscrollcommand=hsb.set,
-        )
-        vsb.config(command=self.tree.yview)
-        hsb.config(command=self.tree.xview)
-
-        self.tree.heading("#0", text="Stream / Storage", anchor="w")
-        self.tree.heading("size", text="Bytes",          anchor="e")
-        self.tree.heading("hint", text="Hint",           anchor="w")
-        self.tree.column("#0", width=320, stretch=False)
-        self.tree.column("size", width=75, anchor="e", stretch=False)
-        self.tree.column("hint", width=680, stretch=True)
-
-        self.tree.tag_configure("storage",    font=("TkDefaultFont", 10, "bold"))
-        self.tree.tag_configure("search_hit", background="#c8c8c8")
-
-        vsb.pack(side="right", fill="y")
-        hsb.pack(side="bottom", fill="x")
-        self.tree.pack(fill="both", expand=True)
-
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>",         self._on_double_click)
-
-        self.status = tk.StringVar(value="Ready.")
-        tk.Label(self.root, textvariable=self.status, anchor="w", relief="sunken").pack(
-            fill="x", side="bottom", padx=2, pady=1
-        )
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -436,23 +341,6 @@ class OLEBrowser:
         dim_info = f"  |  {n} \u00d7 {w}\u00d7{h} {dt}" if all((w, h, n)) else ""
         self.root.title(f"OLE Browser — {path.name}")
         self.status.set(f"{path.name}  —  {n_streams} streams{dim_info}")
-
-    def _item_path(self, item):
-        """Return the full OLE path as a list of strings for a treeview item."""
-        parts, cur = [], item
-        while cur:
-            parts.insert(0, self.tree.item(cur, "text"))
-            cur = self.tree.parent(cur)
-        return parts
-
-    def _on_select(self, _event):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        item = sel[0]
-        vals = self.tree.item(item, "values")
-        path_str = "/".join(self._item_path(item))
-        self.status.set(path_str + (f"  —  {vals[1]}" if vals else ""))
 
     def _on_double_click(self, _event):
         sel = self.tree.selection()
@@ -521,84 +409,10 @@ class OLEBrowser:
         proc = _launch_slice_viewer(volume, title)
         self._viewers.append(proc)
 
-    # ── Search ────────────────────────────────────────────────────────────────
-
-    def _all_items(self, parent="") -> list:
-        result = []
-        for child in self.tree.get_children(parent):
-            result.append(child)
-            result.extend(self._all_items(child))
-        return result
-
-    def _search_run(self):
-        query = self._search_var.get().strip().lower()
-
-        # Clear previous highlights (re-tag with original tag only)
-        for item in self._search_hits:
-            current_tags = [t for t in self.tree.item(item, "tags") if t != "search_hit"]
-            self.tree.item(item, tags=current_tags)
-        self._search_hits = []
-        self._search_idx  = -1
-
-        if not query:
-            self._match_label_var.set("")
-            return
-
-        hits = []
-        for item in self._all_items():
-            text = self.tree.item(item, "text").lower()
-            if query in text:
-                hits.append(item)
-                current_tags = list(self.tree.item(item, "tags"))
-                if "search_hit" not in current_tags:
-                    current_tags.append("search_hit")
-                self.tree.item(item, tags=current_tags)
-
-        self._search_hits = hits
-        if hits:
-            self._search_idx = 0
-            self._scroll_to_hit(0)
-        else:
-            self._match_label_var.set("No matches")
-
-    def _scroll_to_hit(self, idx):
-        item = self._search_hits[idx]
-        # Expand all ancestor storages
-        parent = self.tree.parent(item)
-        while parent:
-            self.tree.item(parent, open=True)
-            parent = self.tree.parent(parent)
-        self.tree.selection_set(item)
-        self.tree.see(item)
-        self._match_label_var.set(f"{idx + 1} / {len(self._search_hits)}")
-
-    def _search_clear(self):
-        self._search_var.set("")
-        self._search_entry.focus_set()
-
-    def _search_next(self):
-        if not self._search_hits:
-            return
-        self._search_idx = (self._search_idx + 1) % len(self._search_hits)
-        self._scroll_to_hit(self._search_idx)
-
-    def _search_prev(self):
-        if not self._search_hits:
-            return
-        self._search_idx = (self._search_idx - 1) % len(self._search_hits)
-        self._scroll_to_hit(self._search_idx)
-
-    def _collapse_all(self):
-        for item in self.tree.get_children():
-            self.tree.item(item, open=False)
-
     def _on_close(self):
-        for proc in self._viewers:
-            if proc.poll() is None:   # still running
-                proc.terminate()
         if self.ole:
             self.ole.close()
-        self.root.destroy()
+        super()._on_close()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
