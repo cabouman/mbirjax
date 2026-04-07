@@ -83,7 +83,7 @@ class ConeBeamModel(TomographyModel):
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          view_params_name=view_params_name, view_params_component_names=view_params_component_names,
-                         recon_slice_offset=0.0)
+                         recon_slice_offset=0.0, detector_type=detector_type)
 
     @overload
     def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
