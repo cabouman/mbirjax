@@ -1348,9 +1348,6 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     if geometry_type == 'cone':
         model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                  source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
-    elif geometry_type == 'fan':
-        model = mj.FanBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
     elif geometry_type == 'parallel':
         if helical_z_shifts is not None:
             warnings.warn("Helical mode (helical_z_shifts) is only supported for geometry_type='cone'; ignoring z_shifts.", UserWarning)
