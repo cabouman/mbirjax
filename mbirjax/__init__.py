@@ -5,7 +5,6 @@ from .qggmrf import *
 from .parallel_beam import *
 from .cone_beam import *
 from .denoising import *
-from .fan_beam import *
 from .vcd_utils import *
 from .memory_stats import *
 from .utilities import *

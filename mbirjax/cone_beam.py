@@ -35,7 +35,7 @@ class ConeBeamModel(TomographyModel):
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
         helical_z_shifts (ndarray or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
-        detector_type (str, optional): Detector geometry type. Either 'flat' (default) or 'curved'.
+        detector_type (str, optional): Detector geometry type. Either 'flat' (default) or 'curved' implies each detector row has constant distance from source.
 
     Note:
         Additional parameter:
