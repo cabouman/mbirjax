@@ -953,6 +953,7 @@ class ObjectType(str, Enum):
 class ModelType(str, Enum):
     PARALLEL = 'parallel'
     CONE = 'cone'
+    FAN = 'fan'
     TRANSLATION = 'translation'
 
 
@@ -971,7 +972,8 @@ def generate_demo_data(
     use_helical: bool = False,
     helical_pitch: float | None = None,
     helical_z_range: float | None = None,
-    helical_z_center: float = 0.0
+    helical_z_center: float = 0.0,
+    detector_type: str = 'flat'
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -986,7 +988,7 @@ def generate_demo_data(
 
     Args:
         object_type (str, optional): One of 'shepp-logan' or 'cube'.  Defaults to 'shepp-logan'.
-        model_type (str, optional): One of 'parallel', 'cone', or 'translation'.  Defaults to 'cone'.
+        model_type (str, optional): One of 'parallel', 'cone', 'fan' or 'translation'.  Defaults to 'cone'.
         num_views (int, optional):  Number of views in the output sinogram.  Defaults to 64. Ignored when model_type is 'translation'
         num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 40.
         num_det_channels (int, optional): Number of channels (horizontal) in the output sinogram.  Defaults to 128.
@@ -1002,6 +1004,7 @@ def generate_demo_data(
             pitch = (table travel per rotation) / (det height at iso).  This is the fraction of the detector height at iso traveled per rotation.
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
+        detector_type (str, optional): (cone beam geometry parameter) 'flat' or 'curved'
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1032,13 +1035,14 @@ def generate_demo_data(
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
             ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                                       source_iso_dist=source_iso_dist)
-            params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist}
+                                                       source_iso_dist=source_iso_dist, detector_type=detector_type)
+            params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist,
+                      'detector_type': detector_type}
         else:
             # Require both helical_pitch and helical_z_range
             if helical_pitch is None or helical_z_range is None:
                 raise ValueError("Helical trajectory requires both helical_pitch and helical_z_range.")
-            
+
             # Compute magnification
             if jnp.isinf(source_detector_dist):
                 magnification = 1
@@ -1075,6 +1079,75 @@ def generate_demo_data(
             helical_z_shifts = jnp.linspace(z0, z1, num_views, endpoint=True)
 
             ct_model_for_generation = mj.ConeBeamModel(
+                sinogram_shape,
+                angles,
+                source_detector_dist=source_detector_dist,
+                source_iso_dist=source_iso_dist,
+                helical_z_shifts=helical_z_shifts,
+                detector_type=detector_type
+            )
+
+            params = {
+                'angles': angles,
+                'source_detector_dist': source_detector_dist,
+                'source_iso_dist': source_iso_dist,
+                'helical_z_shifts': helical_z_shifts,
+                'detector_type': detector_type,
+            }
+    elif model_type == ModelType.FAN:
+        # For fan beam geometry, we need to describe the distances source to detector and source to rotation axis.
+        # np.Inf is an allowable value, in which case this is essentially parallel beam
+        source_detector_dist = 4 * num_det_channels
+        source_iso_dist = source_detector_dist
+        sinogram_shape = (num_views, num_det_rows, num_det_channels)
+        if not use_helical:
+            angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+            ct_model_for_generation = mj.FanBeamModel(sinogram_shape, angles,
+                                                      source_detector_dist=source_detector_dist,
+                                                      source_iso_dist=source_iso_dist)
+            params = {'angles': angles, 'source_detector_dist': source_detector_dist,
+                      'source_iso_dist': source_iso_dist}
+        else:
+            # Require both helical_pitch and helical_z_range
+            if helical_pitch is None or helical_z_range is None:
+                raise ValueError("Helical trajectory requires both helical_pitch and helical_z_range.")
+
+            # Compute magnification
+            if jnp.isinf(source_detector_dist):
+                magnification = 1
+            else:
+                magnification = source_detector_dist / source_iso_dist
+
+            # detector height mapped to iso, in ALU
+            det_height_iso = float(num_det_rows) * (delta_det_row / magnification)
+
+            # Travel per rotation (ALU) and derived rotations/views-per-rotation
+            z_per_rot = float(helical_pitch) * det_height_iso
+            if z_per_rot <= 0:
+                raise ValueError(f"helical_pitch must be > 0 (got {helical_pitch}).")
+            if float(helical_z_range) < 0:
+                raise ValueError(f"helical_z_range must be >= 0 (got {helical_z_range}).")
+
+            # Derived number of rotations and views per rotation
+            if float(helical_z_range) == 0.0:  # circular reconstruction
+                num_rotations = 1.0
+                views_per_rotation = float(num_views)
+            else:
+                num_rotations = float(helical_z_range) / z_per_rot
+                if num_rotations <= 0:
+                    raise ValueError("Derived num_rotations <= 0; check pitch/z_range.")
+                views_per_rotation = float(num_views) / num_rotations
+
+            # Angles: advance by 2*pi/views_per_rotation each view
+            angle_step = (2.0 * np.pi) / views_per_rotation
+            angles = start_angle + angle_step * jnp.arange(num_views)
+
+            # z_shifts: span z_range across scan, centered at z_center
+            z0 = float(helical_z_center) - 0.5 * float(helical_z_range)
+            z1 = float(helical_z_center) + 0.5 * float(helical_z_range)
+            helical_z_shifts = jnp.linspace(z0, z1, num_views, endpoint=True)
+
+            ct_model_for_generation = mj.FanBeamModel(
                 sinogram_shape,
                 angles,
                 source_detector_dist=source_detector_dist,
@@ -1260,7 +1333,7 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     Create an instance of TomographyModel with the given parameters
 
     Args:
-        geometry_type (str): 'parallel' or 'cone'
+        geometry_type (str): 'parallel' or 'cone' or 'fan'
         sinogram_shape (tuple list of int): (num_views, num_rows, num_channels)
         angles (ndarray of float): 1D vector of projection angles in radians
         source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
@@ -1275,6 +1348,9 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     if geometry_type == 'cone':
         model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                  source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
+    elif geometry_type == 'fan':
+        model = mj.FanBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
     elif geometry_type == 'parallel':
         if helical_z_shifts is not None:
             warnings.warn("Helical mode (helical_z_shifts) is only supported for geometry_type='cone'; ignoring z_shifts.", UserWarning)
