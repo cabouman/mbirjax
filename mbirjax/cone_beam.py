@@ -35,6 +35,7 @@ class ConeBeamModel(TomographyModel):
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
         helical_z_shifts (ndarray or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
+        detector_type (str, optional): Detector geometry type. Either 'flat' (default) or 'curved' implies each detector row has constant distance from source.
 
     Note:
         Additional parameter:
@@ -49,16 +50,24 @@ class ConeBeamModel(TomographyModel):
 
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
-    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None):
+    def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None,
+                 detector_type='flat'):
 
         self.bp_psf_radius = 1
         self.entries_per_cylinder_batch = 128
         self.slice_range_length = 0
-        
+
         if helical_z_shifts is None:
             # If helical_z_shifts is not provided or None,
             # then circular scan is helical with all-zero z shifts
             helical_z_shifts = jnp.zeros_like(angles)
+
+        if detector_type == 'flat':
+            self.detector_type = 0
+        elif detector_type == 'curved':
+            self.detector_type = 1
+        else:
+            raise ValueError(f"detector_type must be 'flat' or 'curved', got '{detector_type}'.")
 
         view_dependent_vecs = [vec.flatten() for vec in [angles, helical_z_shifts]]
         try:
@@ -142,12 +151,13 @@ class ConeBeamModel(TomographyModel):
 
         # Then get additional parameters:
         geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
-                                 'entries_per_cylinder_batch', 'slice_range_length']
+                                 'entries_per_cylinder_batch', 'slice_range_length', 'detector_type']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
         geometry_param_values.append(self.bp_psf_radius)
         geometry_param_values.append(self.entries_per_cylinder_batch)
         geometry_param_values.append(self.slice_range_length)
+        geometry_param_values.append(self.detector_type)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
@@ -613,7 +623,8 @@ class ConeBeamModel(TomographyModel):
                                                        recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
-        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification)
+        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification,
+                                                                   gp.detector_type)
         # Convert from uv to index coordinates in detector and get the vector of center detector rows for this cylinder
         m_p, _ = ConeBeamModel.detector_uv_to_mn(u_p, v_p, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
                                                  gp.det_row_offset, num_det_rows, num_det_channels)
@@ -636,7 +647,14 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     def compute_horizontal_data(pixel_indices, single_view_params, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for horizontal projection.
+
+        Behavior differs by detector type:
+
+        - **Flat** (detector_type=0): Uses theta_p = arctan2(u_p, source_detector_dist) and
+          includes a 1/cos(theta_p) foreshortening correction in W_p_c.
+        - **Curved** (detector_type=1): Uses theta_p = u_p / source_detector_dist
+          (arc-length parameterisation) and omits the 1/cos(theta_p) term from W_p_c.
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
@@ -661,29 +679,35 @@ class ConeBeamModel(TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
         slice_index = jnp.arange(1)
 
-        x_p, y_p, _ = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
+        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
                                                      recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
-        pixel_mag = 1 / (1 / gp.magnification - y_p / gp.source_detector_dist)
-        # Compute the physical position that this voxel projects onto the detector
-        u_p = pixel_mag * x_p
+        u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification,
+                                                                   gp.detector_type)
+
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
         # Calculate indices on the detector grid
         n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
         n_p_center = jnp.round(n_p).astype(int)
 
-        # Compute horizontal and vertical cone angle of pixel
-        theta_p = jnp.arctan2(u_p, gp.source_detector_dist)
-
-        # Compute cos alpha for row and columns
-        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
-                                    jnp.abs(jnp.sin(angle - theta_p)))
-
-        # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        # theta_p and W_p_c computation differ between flat and curved detectors
+        if gp.detector_type == 0: # 'flat'
+            # Exact horizontal cone angle for flat detector
+            theta_p = jnp.arctan2(u_p, gp.source_detector_dist)
+            cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
+                                         jnp.abs(jnp.sin(angle - theta_p)))
+            # Foreshortening correction: voxel footprint widens at oblique angles on a flat detector
+            W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+        else:  # 'curved'
+            # u_p is arc-length, so effective angle is u_p / sdd
+            theta_p = u_p / gp.source_detector_dist
+            cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
+                                         jnp.abs(jnp.sin(angle - theta_p)))
+            # No cos(theta_p) denominator: arc parameterisation absorbs the foreshortening
+            W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
 
         horizontal_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
 
@@ -712,16 +736,28 @@ class ConeBeamModel(TomographyModel):
         return x, y, z
 
     @staticmethod
-    def geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification):
+    def geometry_xyz_to_uv_mag(x, y, z, source_detector_dist, magnification, detector_type=0):
         """
-        Convert (x, y, z) coordinates to to (u, v) detector coordinates plus the pixel-dependent magnification.
+        Convert (x, y, z) coordinates to (u, v) detector coordinates plus the pixel-dependent magnification.
+
+        Behavior differs by detector type:
+        - **Flat** (detector_type=0): u = pixel_mag * x (linear perspective projection).
+        - **Curved** (detector_type=1): u = source_detector_dist * arctan2(x, source_iso_dist - y)
+          (arc-length on a cylinder of radius source_detector_dist).
         """
         # Compute the magnification at this specific voxel
         # The following expression is valid even when source_detector_dist = jnp.Inf
         pixel_mag = 1 / (1 / magnification - y / source_detector_dist)
 
-        # Compute the physical position that this voxel projects onto the detector
-        u = pixel_mag * x
+        # u computation depends on detector_type
+        if detector_type == 0:  # 'flat'
+            # Standard flat-panel
+            u = pixel_mag * x
+        else:  # 'curved'
+            # u is arc-length on a cylinder of radius source_detector_dist
+            source_iso_dist = source_detector_dist / magnification
+            u = source_detector_dist * jnp.arctan2(x, (source_iso_dist - y))
+
         v = pixel_mag * z
 
         return u, v, pixel_mag
