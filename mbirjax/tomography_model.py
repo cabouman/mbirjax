@@ -1427,7 +1427,7 @@ class TomographyModel(ParameterHandler):
             # Estimated upper bound for hessian
             # time_names.append('pquad')
             # time_start = time.time()
-            prior_overrelaxation_factor = 2
+            prior_overrelaxation_factor = 1.0
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
             # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
