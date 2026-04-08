@@ -973,7 +973,7 @@ def generate_demo_data(
     helical_pitch: float | None = None,
     helical_z_range: float | None = None,
     helical_z_center: float = 0.0,
-    detector_type: str = 'flat'
+    use_curved_detector: bool = False
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1004,7 +1004,7 @@ def generate_demo_data(
             pitch = (table travel per rotation) / (det height at iso).  This is the fraction of the detector height at iso traveled per rotation.
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
-        detector_type (str, optional): (cone beam geometry parameter) 'flat' or 'curved'
+        use_curved_detector (bool, optional): (cone beam geometry parameter)
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1035,9 +1035,9 @@ def generate_demo_data(
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
             ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                                       source_iso_dist=source_iso_dist, detector_type=detector_type)
+                                                       source_iso_dist=source_iso_dist, use_curved_detector=use_curved_detector)
             params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist,
-                      'detector_type': detector_type}
+                      'use_curved_detector': use_curved_detector}
         else:
             # Require both helical_pitch and helical_z_range
             if helical_pitch is None or helical_z_range is None:
@@ -1084,7 +1084,7 @@ def generate_demo_data(
                 source_detector_dist=source_detector_dist,
                 source_iso_dist=source_iso_dist,
                 helical_z_shifts=helical_z_shifts,
-                detector_type=detector_type
+                use_curved_detector=use_curved_detector
             )
 
             params = {
@@ -1092,7 +1092,7 @@ def generate_demo_data(
                 'source_detector_dist': source_detector_dist,
                 'source_iso_dist': source_iso_dist,
                 'helical_z_shifts': helical_z_shifts,
-                'detector_type': detector_type,
+                'use_curved_detector': use_curved_detector,
             }
     elif model_type == ModelType.FAN:
         # For fan beam geometry, we need to describe the distances source to detector and source to rotation axis.
