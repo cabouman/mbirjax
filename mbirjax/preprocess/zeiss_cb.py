@@ -102,7 +102,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     sino = mjp.correct_background_offset(sino)
 
     # Correct sino offset
-    sino = correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor)
+    sino = correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor)
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
@@ -132,14 +132,14 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params)
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata)
 
             - obj_scan (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
             - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
             - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
                 If no dark scan is available, returns a zero array of the same shape.
             - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
-            - Zeiss_params (dict): Metadata stored in Zeiss `.txrm` files.
+            - zeiss_metadata (dict): Metadata stored in Zeiss `.txrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
@@ -149,7 +149,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
               f"    - txrm file: {data_dir}\n")
 
     # Read object scans and metadata
-    obj_scan, Zeiss_params = read_txrm(data_dir)
+    obj_scan, zeiss_metadata = read_txrm(data_dir)
 
     # Subsample the views
     obj_scan = obj_scan[::subsample_view_factor, :, :]
@@ -158,9 +158,10 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     if is_preprocessed:
         blank_scan = np.zeros(obj_scan.shape, dtype=obj_scan.dtype)
     else:
-        if Zeiss_params.get("reference") is not None:
-            blank_scan = Zeiss_params["reference"]
-            blank_scan = blank_scan[None, :, :]
+        if zeiss_metadata.get("reference") is not None:
+            blank_scan = zeiss_metadata["reference"]
+            if blank_scan.ndim == 2:
+                blank_scan = blank_scan[None, :, :]
         else:
             raise ValueError("Missing blank scan; unable to compute sinogram for reconstruction.")
 
@@ -172,47 +173,48 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         print("Scans loaded.")
 
     # source to iso distance
-    source_iso_dist = Zeiss_params["source_iso_dist"][0]
+    source_iso_dist = zeiss_metadata["source_iso_dist"]
     source_iso_dist = float(np.abs(source_iso_dist))
 
     # iso to detector distance
-    iso_det_dist = Zeiss_params["iso_det_dist"][0]
+    iso_det_dist = zeiss_metadata["iso_det_dist"]
     iso_det_dist = float(np.abs(iso_det_dist))
 
     # Physical detector pixel pitch
     # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
+    det_pixel_pitch = zeiss_metadata["det_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
+    # Pixel pitch at iso
+    iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
+
     # Optical Magnification
-    opt_mag = Zeiss_params["opt_mag"]
+    opt_mag = zeiss_metadata["opt_mag"]
 
     # dimensions of radiograph
-    num_views = Zeiss_params["num_views"]
-    num_det_channels = Zeiss_params["num_det_channels"]
-    num_det_rows = Zeiss_params["num_det_rows"]
+    num_views = zeiss_metadata["num_views"]
+    num_det_channels = zeiss_metadata["num_det_channels"]
+    num_det_rows = zeiss_metadata["num_det_rows"]
 
     # Rotation angles
-    angles = -np.array(Zeiss_params['thetas'], dtype=float).ravel()
+    angles = -np.array(zeiss_metadata['thetas'], dtype=float).ravel()
     angles = angles[::subsample_view_factor]
 
-    # Detector offset
-    # TODO: Need to check whether the detector offset parameter is correctly read from the file
-    #   Since I can only decoded one single float from the directory I found in the file,
-    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
-    detector_offset = Zeiss_params["center_shift"]
-    det_channel_offset = -detector_offset
-    det_row_offset = 0.0
+    # Detector offset parameters
+    # MBIRJAX has the reverse convention for the channel shift
+    det_channel_offset = -zeiss_metadata["center_shift"]
+    det_row_offset = 0.0    # There doesn't appear to be a Zeiss parameter for detector row offset
 
     # Unit of parameters
-    axis_names = Zeiss_params["axis_names"]
-    axis_units = Zeiss_params["axis_units"]
+    axis_names = zeiss_metadata["axis_names"]
+    axis_units = zeiss_metadata["axis_units"]
 
     source_iso_dist_unit = None
     iso_det_dist_unit = None
     delta_det_row_unit = None
     delta_det_channel_unit = None
+    iso_pixel_pitch_unit = None
     angle_unit = None
 
     if axis_names is not None and axis_units is not None:
@@ -226,6 +228,9 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
                 delta_det_row_unit = unit
                 delta_det_channel_unit = unit
 
+            elif "Sample X" in name:
+                iso_pixel_pitch_unit = unit
+
             elif "Sample Theta" in name:
                 angle_unit = unit
 
@@ -236,7 +241,10 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         print("############ Zeiss geometry parameters ############")
         print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
         print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f} [{delta_det_row_unit}], {det_pixel_pitch:.3f} [{delta_det_channel_unit}])")
+        print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
+        print(f"Source to iso distance: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
+        print(f"Optical magnification: {opt_mag}")
+        print(f"Number of views: {num_views}")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
         print("############ End Zeiss geometry parameters ############")
     ### END load Zeiss parameters from scan data
@@ -246,6 +254,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'iso_pixel_pitch': iso_pixel_pitch,
         'opt_mag': opt_mag,
         'num_views': num_views,
         'num_det_channels': num_det_channels,
@@ -257,13 +266,14 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'iso_det_dist_unit': iso_det_dist_unit,
         'delta_det_row_unit': delta_det_row_unit,
         'delta_det_channel_unit': delta_det_channel_unit,
+        'iso_pixel_pitch_unit': iso_pixel_pitch_unit,
         'angle_unit': angle_unit,
     }
 
-    return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params
+    return obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit = 'mm'):
+def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm'):
     """
     Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop.
 
@@ -285,19 +295,50 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
         optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
         metadata (dict): metadata stored in Zeiss txrm file.
     """
-    # Get zeiss parameters and convert them
+    # Get zeiss parameters
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
+    iso_pixel_pitch, iso_pixel_pitch_unit = itemgetter('iso_pixel_pitch', 'iso_pixel_pitch_unit')(zeiss_params)
     opt_mag = itemgetter('opt_mag')(zeiss_params)
     num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
+    # Create unit conversion table for all units used in the txrm files
+    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
+
+    # Define 1 ALU as 1 unit of alu_unit
+    alu_value = 1
+
+    # Convert physical units to ALU
+    source_iso_dist *= unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
+    iso_det_dist *= unit_conversion[iso_det_dist_unit] / unit_conversion[alu_unit]
+    delta_det_channel *= unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
+    delta_det_row *= unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
+    iso_pixel_pitch *= unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
+
+    # Compute default value of source to detector distance
     source_detector_dist = source_iso_dist + iso_det_dist
 
+    # Convert angles to radians
+    if angle_unit == 'deg':
+        angles = np.deg2rad(angles)
+    else:
+        pass
+
+    # Make conversions for optical magnification
+    # In this case, the "detector" is actually a scintillator
     if opt_mag is not None:
-        delta_det_channel /= opt_mag
-        delta_det_row /= opt_mag
+        # Compute total magnification = (optical magnification) * (magnification to scintillator)
+        scintillator_mag = source_detector_dist/source_iso_dist
+        magnification = opt_mag * scintillator_mag
+    else:
+        magnification = 1.0
+
+    # Compute source to equivalent quantities accounting for total magnification
+    source_detector_dist = magnification * source_iso_dist
+    delta_det_channel = magnification * iso_pixel_pitch
+    delta_det_row = magnification * iso_pixel_pitch
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -310,29 +351,11 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_row *= downsample_factor[0]
     delta_det_channel *= downsample_factor[1]
 
-    # Unit conversion table (relative to um)
-    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
-    #   For now, I assume that only um and mm appear in the txrm file
-    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
+    iso_pixel_pitch *= downsample_factor[0]
 
-    # Define 1 ALU as 1 unit of alu_unit
-    ALU_value = 1
-
-    # Convert physical units to ALU
-    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-
-    if angle_unit == 'deg':
-        angles = np.deg2rad(angles)
-    else:
-        pass
-
-    delta_det_channel = delta_det_channel * unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
-    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
-
-    # ToDo: Need to check the units of detector offset
-    #  For now, we assume that the det_channel_offset have units of pixels.
-    det_channel_offset *= delta_det_channel  # pixels to ALU
+    # Convert to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
+    det_channel_offset *= delta_det_channel
+    det_row_offset *= delta_det_row
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
@@ -345,11 +368,11 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params = dict()
     optional_params['delta_det_channel'] = delta_det_channel
     optional_params['delta_det_row'] = delta_det_row
-    optional_params['delta_voxel'] = delta_det_channel * (source_iso_dist / source_detector_dist)
+    optional_params['delta_voxel'] = iso_pixel_pitch
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
     optional_params['alu_unit'] = alu_unit
-    optional_params['alu_value'] = ALU_value
+    optional_params['alu_value'] = alu_value
 
     return cone_beam_params, optional_params
 
@@ -577,19 +600,23 @@ def read_metadata(ole):
     """
 
     number_of_images = _read_ole_value(ole, "ImageInfo/NoOfImages", "<I")
+    number_of_reference = _read_ole_reference(
+        ole, ["ReferenceData/ImageInfo/NoOfImages", "MultiReferenceData/ImageInfo/NoOfImages"], "<I")
 
     metadata = {
         'num_det_channels': _read_ole_value(ole, 'ImageInfo/ImageWidth', '<I'),
         'num_det_rows': _read_ole_value(ole, 'ImageInfo/ImageHeight', '<I'),
         'data_type': _read_ole_value(ole, 'ImageInfo/DataType', '<1I'),
-        'reference_data_type': _read_ole_value(ole, 'referencedata/DataType', '<1I'),
+        'reference_data_type': _read_ole_reference(
+            ole, ['referencedata/DataType', 'MultiReferenceData/DataType'], '<1I'),
         'num_views': number_of_images,
+        'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        'iso_det_dist': _read_ole_arr(
-            ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
-        'source_iso_dist': _read_ole_arr(
-            ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
+        'iso_det_dist': _read_ole_reference(
+            ole, ['ReferenceData/RefD2RADistance', 'MultiReferenceData/RefD2RADistance'], '<f'),
+        'source_iso_dist': _read_ole_reference(
+            ole, ['ReferenceData/RefS2RADistance', 'MultiReferenceData/RefS2RADistance'], '<f'),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
@@ -609,17 +636,31 @@ def read_metadata(ole):
         'ExpTimes': _read_ole_value(
             ole, "ImageInfo/ExpTimes", "<{0}f".format(number_of_images)),
         'center_shift': _read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
-        'opt_mag': _read_ole_value(ole, 'ReferenceData/ImageInfo/OpticalMagnification', '<f'),
-        'fan_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/FanAngle', '<f'),
-        'cone_angle': _read_ole_value(ole, 'ReferenceData/ImageInfo/ConeAngle', '<f'),
+        'opt_mag': _read_ole_reference(
+            ole, ['ReferenceData/ImageInfo/OpticalMagnification', 'MultiReferenceData/ImageInfo/OpticalMagnification'], '<f'),
+        'fan_angle': _read_ole_reference(
+            ole, ['ReferenceData/ImageInfo/FanAngle', 'MultiReferenceData/ImageInfo/FanAngle'], '<{0}f'.format(number_of_reference)),
+        'cone_angle': _read_ole_reference(
+            ole,['ReferenceData/ImageInfo/ConeAngle', 'MultiReferenceData/ImageInfo/ConeAngle'], '<{0}f'.format(number_of_reference)),
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
+    reference = None
     if ole.exists('referencedata/image'):
         reference = _read_ole_image(ole, 'referencedata/image', metadata, metadata['reference_data_type'])
     else:
-        reference = None
+        array_of_reference = []
+        for idx in range(metadata['num_reference']):
+            img_string = f"MultiReferenceData/Image{idx + 1}"
+            if ole.exists(img_string):
+                array_of_reference.append(
+                    _read_ole_image(ole, img_string, metadata, metadata['reference_data_type'])
+                )
+
+        if len(array_of_reference) > 0:
+            reference = np.stack(array_of_reference, axis=0)
+
     metadata['reference'] = reference
 
     return metadata
@@ -776,10 +817,37 @@ def _read_ole_str(ole, label):
         str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
     return str
 
+
+def _read_ole_reference(ole, labels, struct_fmt):
+    """
+    Reads the reference-related value from any matching label in an ole file
+
+    First tries to unpack the data as a scalar value. If that does not work,
+    it attempts to unpack it as a NumPy array.
+
+    Args:
+        ole (OleFileIO): An ole file to read from.
+        labels (list of str): List of possible labels associated with the reference data parameters.
+        struct_fmt (str): Format of the OLE file.
+
+    Returns:
+        int, float, or ndarray: The unpacked value from a matching label. Return None if no matching label exists.
+    """
+    for label in labels:
+        if ole.exists(label):
+            try:
+                return _read_ole_value(ole, label, struct_fmt)
+            except Exception:
+                try:
+                    return _read_ole_arr(ole, label, struct_fmt)
+                except Exception:
+                    pass
+    return None
+
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
-def correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor):
+def correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor):
     """
     Align each sinogram view based on the per-view projection offset.
 
