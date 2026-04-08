@@ -201,13 +201,10 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     angles = -np.array(zeiss_metadata['thetas'], dtype=float).ravel()
     angles = angles[::subsample_view_factor]
 
-    # Detector offset
-    # TODO: Need to check whether the detector offset parameter is correctly read from the file
-    #   Since I can only decoded one single float from the directory I found in the file,
-    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
-    detector_offset = zeiss_metadata["center_shift"]
-    det_channel_offset = -detector_offset
-    det_row_offset = 0.0
+    # Detector offset parameters
+    # MBIRJAX has the reverse convention for the channel shift
+    det_channel_offset = -zeiss_metadata["center_shift"]
+    det_row_offset = 0.0    # There doesn't appear to be a Zeiss parameter for detector row offset
 
     # Unit of parameters
     axis_names = zeiss_metadata["axis_names"]
@@ -331,12 +328,14 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     if opt_mag is not None:
         # Compute total magnification = (optical magnification) * (magnification to scintillator)
         scintillator_mag = source_detector_dist/source_iso_dist
-        total_magnification = opt_mag * scintillator_mag
+        magnification = opt_mag * scintillator_mag
+    else:
+        magnification = 1.0
 
-        # Compute source to equivalent quantities accounting for total magnification
-        source_detector_dist = total_magnification * source_iso_dist
-        delta_det_channel = total_magnification * iso_pixel_pitch
-        delta_det_row = total_magnification * iso_pixel_pitch
+    # Compute source to equivalent quantities accounting for total magnification
+    source_detector_dist = magnification * source_iso_dist
+    delta_det_channel = magnification * iso_pixel_pitch
+    delta_det_row = magnification * iso_pixel_pitch
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -351,8 +350,9 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
 
     iso_pixel_pitch *= downsample_factor[0]
 
-    # Convert to ALU: This assumes that the det_channel_offset has units of pixels.
+    # Convert to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
     det_channel_offset *= delta_det_channel
+    det_row_offset *= delta_det_row
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
