@@ -102,7 +102,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     sino = mjp.correct_background_offset(sino)
 
     # Correct sino offset
-    sino = correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor)
+    sino = correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor)
 
     if verbose > 0:
         print('obj_scan shape = ', scan_shapes[0])
@@ -844,7 +844,7 @@ def _read_ole_reference(ole, labels, struct_fmt):
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
-def correct_sino_offset(sino, metadata, downsample_factor, subsample_view_factor):
+def correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor):
     """
     Align each sinogram view based on the per-view projection offset.
 
