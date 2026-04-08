@@ -241,7 +241,10 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         print("############ Zeiss geometry parameters ############")
         print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
         print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f} [{delta_det_row_unit}], {det_pixel_pitch:.3f} [{delta_det_channel_unit}])")
+        print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
+        print(f"Source to iso distance: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
+        print(f"Optical magnification: {opt_mag}")
+        print(f"Number of views: {num_views}")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
         print("############ End Zeiss geometry parameters ############")
     ### END load Zeiss parameters from scan data
