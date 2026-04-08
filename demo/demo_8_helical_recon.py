@@ -18,7 +18,7 @@ import mbirjax as mj
 # -------------------------
 object_type = "shepp-logan"   # "shepp-logan" or "cube"
 model_type = "cone"
-det_type = 'curved'
+use_curved_detector = True
 
 num_views = 360   # total number of views in the sinogram
 num_det_rows = 40
@@ -55,7 +55,7 @@ phantom, sinogram, params = mj.generate_demo_data(
     helical_pitch=helical_pitch,
     helical_z_range=helical_z_range,
     helical_z_center=helical_z_center,
-    detector_type=det_type
+    use_curved_detector=use_curved_detector
 )
 
 angles = params["angles"]
@@ -84,7 +84,7 @@ ct_model = mj.ConeBeamModel(
     source_detector_dist=source_detector_dist,
     source_iso_dist=source_iso_dist,
     helical_z_shifts=helical_z_shifts,
-    detector_type=det_type
+    use_curved_detector=use_curved_detector
 )
 
 ct_model.set_params(sharpness=sharpness)
