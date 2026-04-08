@@ -273,7 +273,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     return obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata
 
 
-def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit = 'mm'):
+def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm'):
     """
     Convert geometry parameters from zeiss into mbirjax format, including modifications to reflect crop.
 
@@ -295,7 +295,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
         optional_params (dict): Additional ConeBeamModel parameters to be set using set_params()
         metadata (dict): metadata stored in Zeiss txrm file.
     """
-    # Get zeiss parameters and convert them
+    # Get zeiss parameters
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
     iso_pixel_pitch, iso_pixel_pitch_unit = itemgetter('iso_pixel_pitch', 'iso_pixel_pitch_unit')(zeiss_params)
@@ -304,12 +304,39 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    if opt_mag is not None:
-        scaling_factor = source_iso_dist / (source_iso_dist + iso_det_dist)
-        source_detector_dist = opt_mag * source_iso_dist / scaling_factor
+    # Create unit conversion table for all units used in the txrm files
+    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
 
-        delta_det_channel = opt_mag * iso_pixel_pitch / scaling_factor
-        delta_det_row = opt_mag * iso_pixel_pitch / scaling_factor
+    # Define 1 ALU as 1 unit of alu_unit
+    alu_value = 1
+
+    # Convert physical units to ALU
+    source_iso_dist *= unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
+    iso_det_dist *= unit_conversion[iso_det_dist_unit] / unit_conversion[alu_unit]
+    delta_det_channel *= unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
+    delta_det_row *= unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
+    iso_pixel_pitch *= unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
+
+    # Compute default value of source to detector distance
+    source_detector_dist = source_iso_dist + iso_det_dist
+
+    # Convert angles to radians
+    if angle_unit == 'deg':
+        angles = np.deg2rad(angles)
+    else:
+        pass
+
+    # Make conversions for optical magnification
+    # In this case, the "detector" is actually a scintillator
+    if opt_mag is not None:
+        # Compute total magnification = (optical magnification) * (magnification to scintillator)
+        scintillator_mag = source_detector_dist/source_iso_dist
+        total_magnification = opt_mag * scintillator_mag
+
+        # Compute source to equivalent quantities accounting for total magnification
+        source_detector_dist = total_magnification * source_iso_dist
+        delta_det_channel = total_magnification * iso_pixel_pitch
+        delta_det_row = total_magnification * iso_pixel_pitch
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
@@ -324,31 +351,8 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
 
     iso_pixel_pitch *= downsample_factor[0]
 
-    # Unit conversion table (relative to um)
-    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
-    #   For now, I assume that only um and mm appear in the txrm file
-    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
-
-    # Define 1 ALU as 1 unit of alu_unit
-    ALU_value = 1
-
-    # Convert physical units to ALU
-    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-
-    if angle_unit == 'deg':
-        angles = np.deg2rad(angles)
-    else:
-        pass
-
-    delta_det_channel = delta_det_channel * unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
-    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
-
-    iso_pixel_pitch = iso_pixel_pitch * unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
-
-    # ToDo: Need to check the units of detector offset
-    #  For now, we assume that the det_channel_offset have units of pixels.
-    det_channel_offset *= delta_det_channel  # pixels to ALU
+    # Convert to ALU: This assumes that the det_channel_offset has units of pixels.
+    det_channel_offset *= delta_det_channel
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
@@ -365,7 +369,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
     optional_params['alu_unit'] = alu_unit
-    optional_params['alu_value'] = ALU_value
+    optional_params['alu_value'] = alu_value
 
     return cone_beam_params, optional_params
 
