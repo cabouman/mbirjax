@@ -132,14 +132,14 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params)
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata)
 
             - obj_scan (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
             - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
             - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
                 If no dark scan is available, returns a zero array of the same shape.
             - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
-            - Zeiss_params (dict): Metadata stored in Zeiss `.txrm` files.
+            - zeiss_metadata (dict): Metadata stored in Zeiss `.txrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
@@ -149,7 +149,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
               f"    - txrm file: {data_dir}\n")
 
     # Read object scans and metadata
-    obj_scan, Zeiss_params = read_txrm(data_dir)
+    obj_scan, zeiss_metadata = read_txrm(data_dir)
 
     # Subsample the views
     obj_scan = obj_scan[::subsample_view_factor, :, :]
@@ -158,8 +158,8 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
     if is_preprocessed:
         blank_scan = np.zeros(obj_scan.shape, dtype=obj_scan.dtype)
     else:
-        if Zeiss_params.get("reference") is not None:
-            blank_scan = Zeiss_params["reference"]
+        if zeiss_metadata.get("reference") is not None:
+            blank_scan = zeiss_metadata["reference"]
             if blank_scan.ndim == 2:
                 blank_scan = blank_scan[None, :, :]
         else:
@@ -173,45 +173,45 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         print("Scans loaded.")
 
     # source to iso distance
-    source_iso_dist = Zeiss_params["source_iso_dist"]
+    source_iso_dist = zeiss_metadata["source_iso_dist"]
     source_iso_dist = float(np.abs(source_iso_dist))
 
     # iso to detector distance
-    iso_det_dist = Zeiss_params["iso_det_dist"]
+    iso_det_dist = zeiss_metadata["iso_det_dist"]
     iso_det_dist = float(np.abs(iso_det_dist))
 
     # Physical detector pixel pitch
     # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
+    det_pixel_pitch = zeiss_metadata["det_pixel_pitch"]
     delta_det_row = det_pixel_pitch
     delta_det_channel = det_pixel_pitch
 
     # Pixel pitch at iso
-    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
+    iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
 
     # Optical Magnification
-    opt_mag = Zeiss_params["opt_mag"]
+    opt_mag = zeiss_metadata["opt_mag"]
 
     # dimensions of radiograph
-    num_views = Zeiss_params["num_views"]
-    num_det_channels = Zeiss_params["num_det_channels"]
-    num_det_rows = Zeiss_params["num_det_rows"]
+    num_views = zeiss_metadata["num_views"]
+    num_det_channels = zeiss_metadata["num_det_channels"]
+    num_det_rows = zeiss_metadata["num_det_rows"]
 
     # Rotation angles
-    angles = -np.array(Zeiss_params['thetas'], dtype=float).ravel()
+    angles = -np.array(zeiss_metadata['thetas'], dtype=float).ravel()
     angles = angles[::subsample_view_factor]
 
     # Detector offset
     # TODO: Need to check whether the detector offset parameter is correctly read from the file
     #   Since I can only decoded one single float from the directory I found in the file,
     #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
-    detector_offset = Zeiss_params["center_shift"]
+    detector_offset = zeiss_metadata["center_shift"]
     det_channel_offset = -detector_offset
     det_row_offset = 0.0
 
     # Unit of parameters
-    axis_names = Zeiss_params["axis_names"]
-    axis_units = Zeiss_params["axis_units"]
+    axis_names = zeiss_metadata["axis_names"]
+    axis_units = zeiss_metadata["axis_units"]
 
     source_iso_dist_unit = None
     iso_det_dist_unit = None
@@ -270,7 +270,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, is_preprocessed, v
         'angle_unit': angle_unit,
     }
 
-    return obj_scan, blank_scan, dark_scan, zeiss_params, Zeiss_params
+    return obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata
 
 
 def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit = 'mm'):
