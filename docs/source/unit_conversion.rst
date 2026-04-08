@@ -33,7 +33,7 @@ In order to convert to units of :math:`\mbox{cm}^{-1}`, we use the following sca
 
 **Emission CT Example:** Once again, we assume that the channel spacing in the detector is 0.25 mm,
 and we again assume the default reconstruction parameters of ``delta_channel=1.0``.
-So we have that ``1 ALU = 5 mm``.
+So we have that ``1 ALU = 0.25 mm``.
 
 Using this convention, the 3D array, ``recon``, will be in units of photons/AU.
 However, the image can be converted to units of photons/mm using the following equation:
