@@ -144,8 +144,6 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
 
     # Read blank scans
     blank_scan = zeiss_metadata["reference"]
-    if blank_scan.ndim == 2:
-        blank_scan = blank_scan[None, :, :]
 
     # Read dark scans
     # TODO: Currently we assume that there is no dark scan for txrm file
@@ -620,10 +618,11 @@ def read_metadata(ole):
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
 
+
     reference = None
-    if ole.exists('referencedata/image'):
-        reference = _read_ole_image(ole, 'referencedata/image', metadata, metadata['reference_data_type'])
-    else:
+    if ole.exists('ReferenceData'):
+        reference = _read_ole_image(ole, 'ReferenceData/Image', metadata, metadata['reference_data_type'])
+    elif ole.exists('MultiReferenceData'):
         array_of_reference = []
         for idx in range(metadata['num_reference']):
             img_string = f"MultiReferenceData/Image{idx + 1}"
@@ -634,6 +633,12 @@ def read_metadata(ole):
 
         if len(array_of_reference) > 0:
             reference = np.stack(array_of_reference, axis=0)
+    else:
+        warnings.warn('No reference data available.  Using an array of all 1s.')
+        reference = np.ones((metadata['num_det_rows'], metadata['num_det_channels']))
+
+    if reference.ndim == 2:
+        reference = reference[None, :, :]
 
     metadata['reference'] = reference
 
