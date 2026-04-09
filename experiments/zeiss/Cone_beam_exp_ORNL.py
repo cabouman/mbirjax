@@ -14,11 +14,12 @@ def main():
     # Recon parameters
     sharpness = 1.5
     snr_db = 35.0
-    downsample_factor = 2
-    subsample_view_factor = 2
+    downsample_factor = 8
+    subsample_view_factor = 8
 
     # Path to the dataset
-    dataset_dir = '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm'
+    # dataset_dir = '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm'
+    dataset_dir = './data/ParAM-Round-1_Z62.txrm'  # './data/foam512R1N3000.txrm'  #
 
     # Output path
     output_path = './output/'  # path to store output recon images
@@ -26,8 +27,7 @@ def main():
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
     sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir, downsample_factor=(downsample_factor, downsample_factor),
-                                                                                                 subsample_view_factor=subsample_view_factor,
-                                                                                                 is_preprocessed=False)
+                                                                                                 subsample_view_factor=subsample_view_factor)
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
@@ -41,7 +41,7 @@ def main():
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db)
 
     # Display the sinogram
-    mj.slice_viewer(sinogram, slice_axis=0, title='Original sinogram')
+    # mj.slice_viewer(sinogram, slice_axis=0, title='Original sinogram')
 
     # Print out model parameters
     ct_model.print_params()
@@ -49,6 +49,7 @@ def main():
     # Perform FDK reconstruction
     print("\n********** Perform FDK reconstruction **************")
     direct_recon = ct_model.direct_recon(sinogram)
+    mj.slice_viewer(direct_recon, slice_axis=2, title='Direct reconstruction')
 
     # Perform sinogram per-view alignment
     # print("\n********** Perform sinogram alignment **************")

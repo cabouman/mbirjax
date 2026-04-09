@@ -27,8 +27,7 @@ def main():
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
     sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir,downsample_factor=(downsample_factor, downsample_factor),
-                                                                                                 subsample_view_factor=subsample_view_factor,
-                                                                                                 is_preprocessed=False)
+                                                                                                 subsample_view_factor=subsample_view_factor)
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
