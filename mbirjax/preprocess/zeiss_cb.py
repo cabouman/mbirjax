@@ -160,12 +160,12 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         # Get source to iso distance
         source_iso_dist = zeiss_metadata["source_iso_dist"]
         source_iso_dist = float(np.abs(source_iso_dist))
-        source_iso_dist_index = axis_names.index('Source Z')
-        source_iso_dist_unit = axis_units[source_iso_dist_index]
+        source_iso_dist_index = get_index_in_list(axis_names, 'Source Z')
+        source_iso_dist_unit = axis_units[source_iso_dist_index] if source_iso_dist_index > -1 else 'mm'
 
         # Get iso to detector distance
         iso_det_dist = zeiss_metadata["iso_det_dist"]
-        iso_det_dist = float(np.abs(iso_det_dist))
+        iso_det_dist = float(np.abs(iso_det_dist)) if iso_det_dist is not None else 0.0
         iso_det_dist_unit = source_iso_dist_unit
 
         # Get detector pixel pitch
@@ -175,18 +175,18 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         # Zeiss detector pixel has equal width and height
         delta_det_row = det_pixel_pitch
         delta_det_channel = det_pixel_pitch
-        delta_det_index = axis_names.index('CCD_X')
-        delta_det_row_unit = axis_units[delta_det_index]
+        delta_det_index = get_index_in_list(axis_names, 'CCD_X')
+        delta_det_row_unit = axis_units[delta_det_index] if delta_det_index > -1 else 'um'
         delta_det_channel_unit = delta_det_row_unit
 
         # Get pixel pitch at iso
         iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
         iso_pixel_pitch = float(np.abs(iso_pixel_pitch))
-        iso_pixel_pitch_index = axis_names.index('Sample Z')
-        iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index]
+        iso_pixel_pitch_index = get_index_in_list(axis_names, 'Sample X')
+        iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index] if iso_pixel_pitch_index > -1 else 'um'
 
-        angle_index = axis_names.index('Sample Theta')
-        angle_unit = axis_units[angle_index]
+        angle_index = get_index_in_list(axis_names, 'Sample Theta')
+        angle_unit = axis_units[angle_index] if angle_index > -1 else 'deg'
 
     except ValueError as e:
         print("Unable to determine units for geometry parameters; cannot safely convert to mbirjax format.")
@@ -194,6 +194,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
 
     # Get optical Magnification
     opt_mag = zeiss_metadata["opt_mag"]
+    opt_mag = 1 if opt_mag is None else opt_mag
 
     # Get dimensions of radiograph
     num_views = zeiss_metadata["num_views"]
@@ -580,15 +581,13 @@ def read_metadata(ole):
         'num_det_rows': _read_ole_value(ole, 'ImageInfo/ImageHeight', '<I'),
         'data_type': _read_ole_value(ole, 'ImageInfo/DataType', '<1I'),
         'reference_data_type': _read_ole_reference(
-            ole, ['referencedata/DataType', 'MultiReferenceData/DataType'], '<1I'),
+            ole, ['ReferenceData/DataType', 'MultiReferenceData/DataType'], '<1I'),
         'num_views': number_of_images,
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        'iso_det_dist': _read_ole_reference(
-            ole, ['ReferenceData/RefD2RADistance', 'MultiReferenceData/RefD2RADistance'], '<f'),
-        'source_iso_dist': _read_ole_reference(
-            ole, ['ReferenceData/RefS2RADistance', 'MultiReferenceData/RefS2RADistance'], '<f'),
+        'iso_det_dist': _read_ole_value(ole, 'ImageInfo/D2RADistance', '<f'),
+        'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
@@ -658,6 +657,19 @@ def _log_imported_data(fname, arr):
     """
     logger.debug('Data shape & type: %s %s', arr.shape, arr.dtype)
     logger.info('Data successfully imported: %s', fname)
+
+
+def get_index_in_list(input_list, target):
+    """
+    Find the index of target in the given list.
+    Return -1 if not present.
+    """
+    if target in input_list:
+        idx = input_list.index(target)
+    else:
+        idx = -1  # or None
+
+    return idx
 
 
 def _get_ole_data_type(metadata, datatype=None):
