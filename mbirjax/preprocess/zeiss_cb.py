@@ -143,12 +143,9 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
     obj_scan = obj_scan[::subsample_view_factor, :, :]
 
     # Read blank scans
-    if zeiss_metadata.get("reference") is not None:
-        blank_scan = zeiss_metadata["reference"]
-        if blank_scan.ndim == 2:
-            blank_scan = blank_scan[None, :, :]
-    else:
-        raise ValueError("Missing blank scan; unable to compute sinogram for reconstruction.")
+    blank_scan = zeiss_metadata["reference"]
+    if blank_scan.ndim == 2:
+        blank_scan = blank_scan[None, :, :]
 
     # Read dark scans
     # TODO: Currently we assume that there is no dark scan for txrm file
@@ -157,27 +154,50 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
     if verbose > 0:
         print("Scans loaded.")
 
-    # source to iso distance
-    source_iso_dist = zeiss_metadata["source_iso_dist"]
-    source_iso_dist = float(np.abs(source_iso_dist))
+    try:
+        # Get the list of measurement axis names and units
+        axis_names = zeiss_metadata.get("axis_names")  # This is a list of names: ['Sample X', 'Sample Y', ..., 'CCD_X', ...]
+        axis_units = zeiss_metadata.get("axis_units")  # This is a list of units: ['um', 'um', ..., ]
 
-    # iso to detector distance
-    iso_det_dist = zeiss_metadata["iso_det_dist"]
-    iso_det_dist = float(np.abs(iso_det_dist))
+        # Get source to iso distance
+        source_iso_dist = zeiss_metadata["source_iso_dist"]
+        source_iso_dist = float(np.abs(source_iso_dist))
+        source_iso_dist_index = axis_names.index('Source Z')
+        source_iso_dist_unit = axis_units[source_iso_dist_index]
 
-    # Physical detector pixel pitch
-    # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = zeiss_metadata["det_pixel_pitch"]
-    delta_det_row = det_pixel_pitch
-    delta_det_channel = det_pixel_pitch
+        # Get iso to detector distance
+        iso_det_dist = zeiss_metadata["iso_det_dist"]
+        iso_det_dist = float(np.abs(iso_det_dist))
+        iso_det_dist_unit = source_iso_dist_unit
 
-    # Pixel pitch at iso
-    iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
+        # Get detector pixel pitch
+        det_pixel_pitch = zeiss_metadata["det_pixel_pitch"]
+        det_pixel_pitch = float(np.abs(det_pixel_pitch))
 
-    # Optical Magnification
+        # Zeiss detector pixel has equal width and height
+        delta_det_row = det_pixel_pitch
+        delta_det_channel = det_pixel_pitch
+        delta_det_index = axis_names.index('CCD_X')
+        delta_det_row_unit = axis_units[delta_det_index]
+        delta_det_channel_unit = delta_det_row_unit
+
+        # Get pixel pitch at iso
+        iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
+        iso_pixel_pitch = float(np.abs(iso_pixel_pitch))
+        iso_pixel_pitch_index = axis_names.index('Sample Z')
+        iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index]
+
+        angle_index = axis_names.index('Sample Theta')
+        angle_unit = axis_units[angle_index]
+
+    except ValueError as e:
+        print("Unable to determine units for geometry parameters; cannot safely convert to mbirjax format.")
+        raise e
+
+    # Get optical Magnification
     opt_mag = zeiss_metadata["opt_mag"]
 
-    # dimensions of radiograph
+    # Get dimensions of radiograph
     num_views = zeiss_metadata["num_views"]
     num_det_channels = zeiss_metadata["num_det_channels"]
     num_det_rows = zeiss_metadata["num_det_rows"]
@@ -190,37 +210,6 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
     # MBIRJAX has the reverse convention for the channel shift
     det_channel_offset = -zeiss_metadata["center_shift"]
     det_row_offset = 0.0    # There doesn't appear to be a Zeiss parameter for detector row offset
-
-    # Unit of parameters
-    axis_names = zeiss_metadata["axis_names"]
-    axis_units = zeiss_metadata["axis_units"]
-
-    source_iso_dist_unit = None
-    iso_det_dist_unit = None
-    delta_det_row_unit = None
-    delta_det_channel_unit = None
-    iso_pixel_pitch_unit = None
-    angle_unit = None
-
-    if axis_names is not None and axis_units is not None:
-        for name, unit in zip(axis_names, axis_units):
-            # TODO: Need to verify whether the geometry parameter units actually match the specified axis names.
-            if "Source Z" in name:
-                source_iso_dist_unit = unit
-                iso_det_dist_unit = unit
-
-            elif "CCD" in name and "X" in name:
-                delta_det_row_unit = unit
-                delta_det_channel_unit = unit
-
-            elif "Sample X" in name:
-                iso_pixel_pitch_unit = unit
-
-            elif "Sample Theta" in name:
-                angle_unit = unit
-
-    else:
-        raise ValueError("Unknown units for geometry parameters; cannot safely convert to mbirjax format.")
 
     if verbose > 0:
         print("############ Zeiss geometry parameters ############")
