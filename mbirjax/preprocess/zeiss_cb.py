@@ -42,18 +42,18 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         verbose (int, optional): Verbosity level. Defaults to ``1``.
 
     Returns:
-        tuple: ``(sino, cone_beam_params, optional_params, metadata)``
+        tuple: ``(sino, cone_beam_params, optional_params, zeiss_params)``
 
             - ``sino`` (numpy.ndarray): Sinogram of shape ``(num_views, num_det_rows, num_channels)``.
             - ``cone_beam_params`` (dict): Parameters for initializing ``ConeBeamModel``.
             - ``optional_params`` (dict): Additional parameters to be set via ``ConeBeamModel.set_params``.
-            - ``metadata`` (dict): Zeiss metadata parsed from ``.txrm``.
+            - ``zeiss_params`` (dict): Zeiss metadata parsed from ``.txrm``.
 
     Example:
         .. code-block:: python
 
             from mbirjax.preprocess.zeiss_cb import compute_sino_and_params
-            sino, cone_beam_params, optional_params, metadata = compute_sino_and_params(
+            sino, cone_beam_params, optional_params, zeiss_params = compute_sino_and_params(
                 dataset_dir, verbose=1
             )
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
@@ -62,7 +62,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     """
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
-    obj_scan, blank_scan, dark_scan, zeiss_params, metadata = load_scans_and_params(dataset_dir, subsample_view_factor)
+    obj_scan, blank_scan, dark_scan, zeiss_params = load_scans_and_params(dataset_dir, subsample_view_factor)
 
     cone_beam_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=downsample_factor,
                                                                           crop_pixels_sides=crop_pixels_sides,
@@ -94,14 +94,14 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     sino = mjp.correct_background_offset(sino)
 
     # Correct sino offset
-    sino = correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor)
+    sino = correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_factor)
 
     if verbose > 0:
         print('obj_scan shape = ', obj_scan.shape)
         print('blank_scan shape = ', blank_scan.shape)
         print('dark_scan shape = ', dark_scan.shape)
 
-    return sino, cone_beam_params, optional_params, metadata
+    return sino, cone_beam_params, optional_params, zeiss_params
 
 
 def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
@@ -115,19 +115,19 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
     Args:
         dataset_dir (str): Path to a Zeiss scan directory (expect a `.txrm` file). Expected structure:
             - ``ImageData*/Image*`` (scan data)
-            - ``**/**`` (Zeiss metadata)
+            - ``**/**`` (Zeiss metadata/parameters)
         subsample_view_factor (int, optional): view subsample factor.
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata)
+        tuple: (obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_params)
 
             - obj_scan (numpy.ndarray): 3D object scan with shape ``(num_views, num_det_rows, num_channels)``.
             - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
             - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
                 If no dark scan is available, returns a zero array of the same shape.
             - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
-            - zeiss_metadata (dict): Metadata stored in Zeiss `.txrm` files.
+            - zeiss_params (dict): Metadata/parameters stored in Zeiss `.txrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
@@ -137,39 +137,62 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
               f"    - txrm file: {data_dir}\n")
 
     # Read object scans and metadata
-    obj_scan, zeiss_metadata = read_txrm(data_dir)
+    file_name = _check_read(data_dir)
+    try:
+        ole = olefile.OleFileIO(file_name)
+    except IOError as e:
+        print('No such file or directory: %s', file_name)
+        raise e
+
+    # Read metadata from txrm file
+    zeiss_params = read_metadata(ole)
+
+    # Create an empty array to store the scan data
+    obj_scan = np.empty(
+        (
+            zeiss_params["num_views"],
+            zeiss_params["num_det_rows"],
+            zeiss_params["num_det_channels"],
+        ),
+        dtype=_get_ole_data_type(zeiss_params)
+    )
+
+    # Read scan data from txrm file
+    for i, idx in enumerate(range(zeiss_params["num_views"])):
+        img_string = "ImageData{}/Image{}".format(
+            int(np.ceil((idx + 1) / 100.0)), int(idx + 1))
+        obj_scan[i] = _read_ole_image(ole, img_string, zeiss_params)
+
+    ole.close()
 
     # Subsample the views
     obj_scan = obj_scan[::subsample_view_factor, :, :]
 
     # Read blank scans
-    blank_scan = zeiss_metadata["reference"]
+    blank_scan = zeiss_params["reference"]
 
     # Read dark scans
     # TODO: Currently we assume that there is no dark scan for txrm file
     dark_scan = np.zeros(obj_scan.shape, dtype=obj_scan.dtype)
 
-    if verbose > 0:
-        print("Scans loaded.")
-
     try:
         # Get the list of measurement axis names and units
-        axis_names = zeiss_metadata.get("axis_names")  # This is a list of names: ['Sample X', 'Sample Y', ..., 'CCD_X', ...]
-        axis_units = zeiss_metadata.get("axis_units")  # This is a list of units: ['um', 'um', ..., ]
+        axis_names = zeiss_params.get("axis_names")  # This is a list of names: ['Sample X', 'Sample Y', ..., 'CCD_X', ...]
+        axis_units = zeiss_params.get("axis_units")  # This is a list of units: ['um', 'um', ..., ]
 
         # Get source to iso distance
-        source_iso_dist = zeiss_metadata["source_iso_dist"]
+        source_iso_dist = zeiss_params["source_iso_dist"]
         source_iso_dist = float(np.abs(source_iso_dist))
         source_iso_dist_index = get_index_in_list(axis_names, 'Source Z')
         source_iso_dist_unit = axis_units[source_iso_dist_index] if source_iso_dist_index > -1 else 'mm'
 
         # Get iso to detector distance
-        iso_det_dist = zeiss_metadata["iso_det_dist"]
+        iso_det_dist = zeiss_params["iso_det_dist"]
         iso_det_dist = float(np.abs(iso_det_dist)) if iso_det_dist is not None else 0.0
         iso_det_dist_unit = source_iso_dist_unit
 
         # Get detector pixel pitch
-        det_pixel_pitch = zeiss_metadata["det_pixel_pitch"]
+        det_pixel_pitch = zeiss_params["det_pixel_pitch"]
         det_pixel_pitch = float(np.abs(det_pixel_pitch))
 
         # Zeiss detector pixel has equal width and height
@@ -180,7 +203,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         delta_det_channel_unit = delta_det_row_unit
 
         # Get pixel pitch at iso
-        iso_pixel_pitch = zeiss_metadata["iso_pixel_pitch"]
+        iso_pixel_pitch = zeiss_params["iso_pixel_pitch"]
         iso_pixel_pitch = float(np.abs(iso_pixel_pitch))
         iso_pixel_pitch_index = get_index_in_list(axis_names, 'Sample X')
         iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index] if iso_pixel_pitch_index > -1 else 'um'
@@ -188,39 +211,30 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         angle_index = get_index_in_list(axis_names, 'Sample Theta')
         angle_unit = axis_units[angle_index] if angle_index > -1 else 'deg'
 
+        x_shifts = zeiss_params["x_shifts"]
+        y_shifts = zeiss_params["y_shifts"]
+
     except ValueError as e:
         print("Unable to determine units for geometry parameters; cannot safely convert to mbirjax format.")
         raise e
 
     # Get optical Magnification
-    opt_mag = zeiss_metadata["opt_mag"]
+    opt_mag = zeiss_params["opt_mag"]
     opt_mag = 1 if opt_mag is None else opt_mag
 
     # Get dimensions of radiograph
-    num_views = zeiss_metadata["num_views"]
-    num_det_channels = zeiss_metadata["num_det_channels"]
-    num_det_rows = zeiss_metadata["num_det_rows"]
+    num_views = zeiss_params["num_views"]
+    num_det_channels = zeiss_params["num_det_channels"]
+    num_det_rows = zeiss_params["num_det_rows"]
 
     # Rotation angles
-    angles = -np.array(zeiss_metadata['thetas'], dtype=float).ravel()
+    angles = -np.array(zeiss_params['thetas'], dtype=float).ravel()
     angles = angles[::subsample_view_factor]
 
     # Detector offset parameters
     # MBIRJAX has the reverse convention for the channel shift
-    det_channel_offset = -zeiss_metadata["center_shift"]
+    det_channel_offset = -zeiss_params["center_shift"]
     det_row_offset = 0.0    # There doesn't appear to be a Zeiss parameter for detector row offset
-
-    if verbose > 0:
-        print("############ Zeiss geometry parameters ############")
-        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
-        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
-        print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
-        print(f"Source to iso distance: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
-        print(f"Optical magnification: {opt_mag}")
-        print(f"Number of views: {num_views}")
-        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
-        print("############ End Zeiss geometry parameters ############")
-    ### END load Zeiss parameters from scan data
 
     zeiss_params = {
         'source_iso_dist': source_iso_dist,
@@ -241,9 +255,23 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         'delta_det_channel_unit': delta_det_channel_unit,
         'iso_pixel_pitch_unit': iso_pixel_pitch_unit,
         'angle_unit': angle_unit,
+        'x_shifts': x_shifts,
+        'y_shifts': y_shifts,
     }
 
-    return obj_scan, blank_scan, dark_scan, zeiss_params, zeiss_metadata
+    if verbose > 0:
+        print("############ Zeiss geometry parameters ############")
+        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
+        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
+        print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
+        print(f"Source to iso distance: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
+        print(f"Optical magnification: {opt_mag}")
+        print(f"Number of views: {num_views}")
+        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
+        print("############ End Zeiss geometry parameters ############")
+    ### END load Zeiss parameters from scan data
+
+    return obj_scan, blank_scan, dark_scan, zeiss_params
 
 
 def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm'):
@@ -508,56 +536,6 @@ def read_xrm_dir(dir_path):
 
     return arr, metadata
 
-
-
-def read_txrm(file_name):
-    """
-    Read data from a .txrm file, a compilation of .xrm files.
-
-    Thanks to Amir Koushyar Ziabari from Oak Ridge National Laboratory (ORNL) for providing the original code.
-
-    Args:
-        file_name (str): String defining the path of file or file name.
-
-    Returns:
-        np.ndarray: Output 3D image with shape (num_views, num_det_rows, num_det_channels).
-        dict: Output metadata
-    """
-    file_name = _check_read(file_name)
-    try:
-        ole = olefile.OleFileIO(file_name)
-    except IOError:
-        print('No such file or directory: %s', file_name)
-        return False
-
-    # Read metadata from txrm file
-    metadata = read_metadata(ole)
-
-    # Create an empty array to store the scan data
-    array_of_images = np.empty(
-        (
-            metadata["num_views"],
-            metadata["num_det_rows"],
-            metadata["num_det_channels"],
-        ),
-        dtype=_get_ole_data_type(metadata)
-    )
-
-    # Read scan data from txrm file
-    for i, idx in enumerate(range(metadata["num_views"])):
-        img_string = "ImageData{}/Image{}".format(
-            int(np.ceil((idx + 1) / 100.0)), int(idx + 1))
-        array_of_images[i] = _read_ole_image(ole, img_string, metadata)
-
-    _log_imported_data(file_name, array_of_images)
-
-    # Normalize the scan data
-    # array_of_images = mjp.utilities._normalize_to_float32(array_of_images)
-
-    ole.close()
-    return array_of_images, metadata
-
-
 def read_metadata(ole):
     """
     Read metadata from an xradia OLE file (.xrm, .txrm, .txm).
@@ -596,9 +574,9 @@ def read_metadata(ole):
             ole, 'ImageInfo/YPosition', "<{0}f".format(number_of_images)),
         'z_positions': _read_ole_arr(
             ole, 'ImageInfo/ZPosition', "<{0}f".format(number_of_images)),
-        'x-shifts':_read_ole_arr(
+        'x_shifts':_read_ole_arr(
             ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
-        'y-shifts': _read_ole_arr(
+        'y_shifts': _read_ole_arr(
             ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
         'current': _read_ole_value(
             ole, "ImageInfo/XrayCurrent", "<{0}f".format(number_of_images)),
@@ -838,7 +816,7 @@ def _read_ole_reference(ole, labels, struct_fmt):
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan
 
 
-def correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor):
+def correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_factor):
     """
     Align each sinogram view based on the per-view projection offset.
 
@@ -858,7 +836,7 @@ def correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor
 
     Args:
         sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        metadata (dict): metadata stored in Zeiss txrm file.
+        zeiss_params (dict): parameters stored in Zeiss txrm file.
         downsample_factor (Tuple[int, int], optional): Downsample factors for detector rows and channels. Defaults to (1, 1).
         subsample_view_factor (int, optional): Factor by which to subsample views. Defaults to 1.
 
@@ -868,8 +846,8 @@ def correct_sino_shifts(sino, metadata, downsample_factor, subsample_view_factor
     # Get sinogram view offset
     # TODO: Currrently I assume that the view offset has units of pixels
     #   I test it and think that this assumption is correct
-    sino_x_offset = metadata["x-shifts"][::subsample_view_factor]
-    sino_y_offset = metadata["y-shifts"][::subsample_view_factor]
+    sino_x_offset = zeiss_params["x_shifts"][::subsample_view_factor]
+    sino_y_offset = zeiss_params["y_shifts"][::subsample_view_factor]
 
     sino_x_offset /= downsample_factor[1]
     sino_y_offset /= downsample_factor[0]
