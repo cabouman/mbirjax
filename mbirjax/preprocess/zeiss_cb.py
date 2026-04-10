@@ -391,7 +391,7 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
         else:
             raise ValueError(f"Unsupported file type {dataset_dir}; only .txrm files are supported.")
     else:
-        raise ValueError("This function currently supports only direct paths to .txrm files; please specify the exact .txrm file path.")
+        raise FileNotFoundError(dataset_dir)
 
 
 def _check_read(fname):
