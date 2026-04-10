@@ -62,7 +62,6 @@ class TomographyModel(ParameterHandler):
         self.auto_set_recon_geometry(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
-        self.verify_valid_params()
 
         self.main_device, self.sinogram_device= None, None
         self.cpus = jax.devices('cpu')
@@ -1092,6 +1091,7 @@ class TomographyModel(ParameterHandler):
             To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
         """
         # Ensure that everything has the right shape and is on the main device
+        self.verify_valid_params()
         if weights is None:
             weights = 1
             constant_weights = True

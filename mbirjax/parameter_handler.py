@@ -477,10 +477,6 @@ class ParameterHandler:
             elif key in ["sharpness", "snr_db"]:
                 meta_parameter_change = True
 
-        # Check for valid parameters
-        if not no_warning:
-            self.verify_valid_params()
-
         # Handle case if any regularization parameter changed
         if regularization_parameter_change:
             if not no_warning:
