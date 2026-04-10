@@ -47,7 +47,6 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             - ``sino`` (numpy.ndarray): Sinogram of shape ``(num_views, num_det_rows, num_channels)``.
             - ``cone_beam_params`` (dict): Parameters for initializing ``ConeBeamModel``.
             - ``optional_params`` (dict): Additional parameters to be set via ``ConeBeamModel.set_params``.
-            - ``zeiss_params`` (dict): Zeiss metadata parsed from ``.txrm``.
 
     Example:
         .. code-block:: python
@@ -101,7 +100,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         print('blank_scan shape = ', blank_scan.shape)
         print('dark_scan shape = ', dark_scan.shape)
 
-    return sino, cone_beam_params, optional_params, zeiss_params
+    return sino, cone_beam_params, optional_params
 
 
 def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
@@ -126,8 +125,6 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
             - blank_scan (numpy.ndarray): 3D blank scan with shape ``(1, num_det_rows, num_channels)``.
             - dark_scan (numpy.ndarray): 3D dark scan with shape ``(1, num_det_rows, num_channels)``.
                 If no dark scan is available, returns a zero array of the same shape.
-            - zeiss_params (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
-            - zeiss_params (dict): Metadata/parameters stored in Zeiss `.txrm` files.
     """
     ### automatically parse the paths to Zeiss scans from dataset_dir
     data_dir = _parse_filenames_from_dataset_dir(dataset_dir)
@@ -157,16 +154,14 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         dtype=_get_ole_data_type(zeiss_params)
     )
 
-    # Read scan data from txrm file
-    for i, idx in enumerate(range(zeiss_params["num_views"])):
+    # Read the (subsampled) scan data from txrm file
+    view_indices = np.arange(zeiss_params["num_views"], step=subsample_view_factor)
+    obj_scan = np.zeros((len(view_indices), zeiss_params["num_det_rows"], zeiss_params["num_det_channels"]),
+                        dtype=_get_ole_data_type(zeiss_params))
+    for i, idx in enumerate(view_indices):
         img_string = "ImageData{}/Image{}".format(
             int(np.ceil((idx + 1) / 100.0)), int(idx + 1))
         obj_scan[i] = _read_ole_image(ole, img_string, zeiss_params)
-
-    ole.close()
-
-    # Subsample the views
-    obj_scan = obj_scan[::subsample_view_factor, :, :]
 
     # Read blank scans
     blank_scan = zeiss_params["reference"]
@@ -229,7 +224,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
 
     # Rotation angles
     angles = -np.array(zeiss_params['thetas'], dtype=float).ravel()
-    angles = angles[::subsample_view_factor]
+    angles = angles[view_indices]
 
     # Detector offset parameters
     # MBIRJAX has the reverse convention for the channel shift

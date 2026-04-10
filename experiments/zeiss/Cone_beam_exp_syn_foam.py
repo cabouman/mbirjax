@@ -22,8 +22,8 @@ def main():
     output_path = './output/'  # path to store output recon images
 
     # Load the sinogram and metadata
-    print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir)
+    print("\n********** Load sinogram and parameters from the data **************")
+    sinogram, cone_beam_params, optional_params = mjp.zeiss_cb.compute_sino_and_params(dataset_dir)
 
     # The stored det_pixel_pitch value is incorrect, so we are overriding it with the correct value.
     det_pixel_pitch = 2.0 # in um

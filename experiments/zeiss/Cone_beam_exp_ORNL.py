@@ -19,14 +19,14 @@ def main():
 
     # Path to the dataset
     # dataset_dir = '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm'
-    dataset_dir = './data/ParAM-Round-1_Z62.txrm'  # './data/foam512R1N3000.txrm'  #
+    dataset_dir =  './data/17U1-250TC-Normal_Tomo_No_HART.txrm'  # './data/ParAM-Round-1_Z62.txrm'  # './data/foam512R1N3000.txrm'  #
 
     # Output path
     output_path = './output/'  # path to store output recon images
 
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir, downsample_factor=(downsample_factor, downsample_factor),
+    sinogram, cone_beam_params, optional_params = mjp.zeiss_cb.compute_sino_and_params(dataset_dir, downsample_factor=(downsample_factor, downsample_factor),
                                                                                                  subsample_view_factor=subsample_view_factor)
 
     # Construct cone beam model
