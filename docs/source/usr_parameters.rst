@@ -53,6 +53,14 @@ This parameter determines if positivity is enforced in MBIR reconstruction.
 
 .. _param-verbose:
 
+max_overrelaxation
+""""""""""""""""""
+:Type: float (Defaults to 1.5)
+
+This parameter limits the step size of VCD updates.
+
+.. _param-max_overrelaxation:
+
 verbose
 """""""
 :Type: int (Defaults to 1)
@@ -126,6 +134,22 @@ delta_voxel
 Spacing between voxels in ALU.
 If None, then it is automatically set to `delta_voxel = delta_det_channel / magnification` where `magnification` is the
 magnification of a voxel at iso determined from the function :func:`TomographyModel.get_magnification()`.
+
+
+alu_unit
+""""""""
+:Type: string (Defaults to None)
+
+alu_value
+"""""""""
+:Type: float (Defaults to 1.0)
+
+These two parameters are used to store the unit and value of 1 ALU.
+So for example, if `alu_unit = "cm"` and `alu_value = 0.5`, then we know that `1 ALU = 0.5 cm`.
+With this information, quantities such as the detector channel spacing can be converted from ALU to physical units.
+These parameters are set by the preprocessing function for various devices,
+so they pass back information that can be used to compute quantitative reconstructions.
+
 
 Proximal Map Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^

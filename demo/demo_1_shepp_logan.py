@@ -25,7 +25,7 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-model_type = 'parallel'  # 'cone' or 'parallel'
+model_type = 'cone'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -39,6 +39,7 @@ num_det_channels = 128
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels)
+phantom = np.array(phantom)
 angles = params['angles']
 
 # View the sinogram
@@ -113,10 +114,9 @@ ct_model.save_recon_hdf5(filepath, recon, recon_dict)
 
 # The recon and recon_dict can be reloaded either here or in the viewer, and the recon_dict can be used to recreate
 #  the model if desired. The load function can be used even without an existing instance of a ct model.
-new_recon, new_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(filepath, recreate_model=True)
+new_recon, new_recon_dict = mj.TomographyModel.load_recon_hdf5(filepath)
 
 print('recon and recon_dict loaded from {}'.format(filepath))
-print('New model created: {}'.format(new_model.get_params('geometry_type')))
 
 # From this you could view again, restart the recon from the previous iteration, etc.
 

@@ -30,9 +30,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed_value)
 
     # Set up parallel beam model
-    # parallel_model = mj.ParallelBeamModel.from_file('params_parallel.yaml')
     parallel_model = mj.ParallelBeamModel(sinogram.shape, angles)
-    # parallel_model.to_file('params_parallel.yaml')
 
     # Generate phantom
     recon_shape = parallel_model.get_params('recon_shape')
@@ -47,8 +45,6 @@ if __name__ == "__main__":
 
     # Generate sinogram data
     voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
-
-    parallel_model.set_params(view_batch_size=view_batch_size, pixel_batch_size=pixel_batch_size)
 
     print('Starting forward projection')
     sinogram = parallel_model.sparse_forward_project(voxel_values[0], full_indices[0])

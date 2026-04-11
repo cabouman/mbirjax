@@ -21,7 +21,7 @@ Please use the following Bibtex citation when referencing this software.
 ::
 
     @Misc {mbirjax-2024,
-    author = {Charles A. Bouman and Gregery T. Buzzard},
+    author = {Charles A. Bouman, Gregery T. Buzzard, Mingqi Yang, Ziyun Li, Diyu Yang, M. Samin Chowdhury, Karl Weisenburger, Caden Cardell and Brendt Wohlberg},
     title =	{{MBIRJAX}: {H}igh-performance tomographic reconstruction},
     howpublished = {Software library available from \url{https://github.com/cabouman/mbirjax}},
     year = 2024

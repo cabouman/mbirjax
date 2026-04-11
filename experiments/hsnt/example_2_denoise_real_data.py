@@ -25,7 +25,7 @@ def main():
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
     # Denoiser parameters
-    subspace_dimension = None  # Subspace dimension
+    num_materials = None  # Number of materials
     verbose = 2  # Verbosity level
     test_denoise = False  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
 
@@ -52,11 +52,11 @@ def main():
     if test_denoise:
         if verbose >= 1:
             print("Running hyperspectral denoising (i.e., dehydrate + rehydrate)")
-        hsnt_denoised = hyper_denoise(hsnt_data, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
+        hsnt_denoised = hyper_denoise(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
     else:
         if verbose >= 1:
             print("Running hyperspectral dehydrate followed by rehydrate (i.e., denoising)")
-        hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, subspace_dimension=subspace_dimension, verbose=verbose)
+        hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
         hsnt_denoised = rehydrate(hsnt_dehydrated)
 
         # Write out dehydrated data

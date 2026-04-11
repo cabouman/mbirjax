@@ -1,13 +1,12 @@
 import os
 import random
 import tempfile
-
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
-
 import mbirjax as mj
 import jax.numpy as jnp
-import tqdm  # Included in mbirjax
+import tqdm
 
 
 def subsample_R_gamma(R, gamma, selected_indices):
@@ -47,7 +46,7 @@ def max_abs_neighbor_diff(arr):
 
 
 
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_view_inds=np.array([], dtype=int), priority_order=False, verbose=0, seed=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper:
@@ -61,7 +60,9 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         num_selected_views (int): Number of view angles to select.
         r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.001).
         r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.01).
-        verbose (int, optional): Verbosity level. If >= 2, visualizations of the covariance matrix and gamma vector will be shown.
+        prev_selected_view_inds (ndarray, optional): 1D array of previously selected view indices. Defaults to an empty NumPy array.
+        priority_order (bool, optional): If True, reorders the selected view indices from most to least important. Defaults to False.
+        verbose (int, optional): Verbosity level. If > 0, visualizations of the covariance matrix and gamma vector will be shown.
         seed (int, optional): Random seed for deterministic behavior. If set, results will be reproducible.
 
     Returns:
@@ -71,10 +72,11 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
 
     Example:
         >>> angles = np.linspace(0, np.pi, num=180, endpoint=False)
-        >>> sinogram_shape = (180, 128, 1)
+        >>> sinogram_shape = (180, 128, 100)
         >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
-        >>> ref_obj = np.random.rand(128, 128, 1)
-        >>> selected_angles = get_opt_views(ct_model, ref_obj, num_selected_views=10)
+        >>> ref_obj = np.random.rand(128, 128, 100)
+        >>> selected_angles_idx, vcl_value = get_opt_views(ct_model, ref_obj, num_selected_views=10)
+        >>> selected_angles = angles[selected_angles_idx]
         >>> print(selected_angles.shape)
         (10,)
     """
@@ -84,6 +86,13 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
     if recon_shape != reference_object.shape:
         raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))
 
+    if isinstance(prev_selected_view_inds, list):
+        prev_selected_view_inds = np.array(prev_selected_view_inds)
+    if prev_selected_view_inds.size > 0:
+        if not (np.issubdtype(prev_selected_view_inds.dtype, np.integer) and
+                np.all(prev_selected_view_inds >= 0) and np.all(prev_selected_view_inds < len(angle_candidates))):
+            raise ValueError("prev_selected_view_inds must contain integers in the range [0, {}).".format(num_views))
+
     with tempfile.TemporaryDirectory() as data_store_dir:
         # Compute recon bases
         gamma = compute_view_basis_functions(ct_model, reference_object, r_1=r_1, data_store_dir=data_store_dir, seed=seed)
@@ -91,8 +100,8 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         # Compute inner product between recon bases
         R = compute_cov_matrix(num_views, data_store_dir)
 
-    if verbose >= 2:
-        # plot the covariance matrix and gamma
+    if verbose > 0:
+        # plot the the covariance matrix and gamma
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
         axes[0].imshow(R)
@@ -106,7 +115,11 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         plt.show()
 
     # Compute optimal view angles
-    optimal_angle_inds, vcl_value = compute_opt_angle_subset(R, gamma, angle_candidates, num_selected_views, r_2, seed=seed)
+    optimal_angle_inds, vcl_value = compute_opt_angle_subset(R, gamma, angle_candidates, num_selected_views, r_2, prev_selected_view_inds, seed=seed)
+
+    # Reorder optimal_angle_inds by importance if requested
+    if priority_order:
+        optimal_angle_inds = reorder_by_priority(optimal_angle_inds, prev_selected_view_inds, R, gamma)
 
     return optimal_angle_inds, vcl_value
 
@@ -136,7 +149,6 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     # Forward project the reference object
     print('Creating sinogram for reference object of shape {}'.format(ref_object.shape))
     ref_sino = ct_model.forward_project(ref_object)
-    print('Done')
 
     # Create ROI mask and subsample the indices
     mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
@@ -248,10 +260,10 @@ def compute_vcl(sub_R, sub_gamma):
         float: The scalar VCL value for the selected subset of views.
     """
     loss_value = 1 - sub_gamma.T @ np.linalg.solve(sub_R, sub_gamma)
-    return loss_value
+    return loss_value.item()
 
 
-def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, max_iterations = 100, seed=None):
+def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, prev_selected_view_inds, search_min=30, max_iterations = 100, seed=None):
     """
     Select a subset of view angles that minimize the View Correlation Loss (VCL) using stochastic greedy optimization.
 
@@ -265,6 +277,7 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
         candidate_angles (ndarray): 1D array of view angles (shape (num_views,)) corresponding to R and gamma.
         K (int): Number of view angles to select.
         r_2 (float): Fraction of unchosen candidates to sample per view per iteration.
+        prev_selected_view_inds (ndarray): Indices of previously selected view angles in `candidate_angles`.
         search_min (int, optional): Minimum number of angles that are searched per iteration. Defaults to 30.
         max_iterations (int, optional): Maximum allowed number of iterations. Defaults to 100.
         seed (int, optional): Random seed for deterministic behavior. Default is None.
@@ -286,28 +299,33 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
         random.seed(seed)
         np.random.seed(seed)
 
+    # Determine available angle candidates
+    candidate_angles_inds = np.arange(len(candidate_angles))
+    avail_angle_inds = np.setdiff1d(candidate_angles_inds, prev_selected_view_inds, assume_unique=False)
+
     # Determine the number of candidate views for the stochastic search
-    num_candidate_angles = len(candidate_angles)
-    num_unselected_angles = num_candidate_angles - K
+    num_avail_angle_inds = len(avail_angle_inds)
+    num_unselected_angles = num_avail_angle_inds - K
 
     if K <= 0:
         raise ValueError("K must be positive. Received K={}".format(K))
 
     # If there are no available angles, just return the full set of angle candidates
     if num_unselected_angles <= 0:
-        import warnings
-        warnings.warn(f"Requested {K} views, but only {num_candidate_angles} available. Returning all candidates.")
-        sorted_angle_inds = np.arange(len(candidate_angles))
+        warnings.warn(f"Requested {K} views, but only {num_avail_angle_inds} available. Returning all candidates.")
+        sorted_angle_inds = avail_angle_inds
         return sorted_angle_inds, float(compute_vcl(*subsample_R_gamma(R, gamma, sorted_angle_inds)))
 
     # Compute the number of candidates to search
     num_search_candidates = np.minimum(np.maximum(int(r_2 * num_unselected_angles), search_min), num_unselected_angles)
 
     # Initialize with uniformly spaced angles across candidate list.
-    selected_angle_inds = np.linspace(0, num_candidate_angles, K, endpoint=False, dtype=int)
+    pos = np.linspace(0, len(avail_angle_inds), K, endpoint=False).astype(int)
+    selected_angle_inds = avail_angle_inds[pos].astype(int)
 
     # Subsample R and gamma to form smaller submatrix and subvector
-    R_chosen, gamma_chosen = subsample_R_gamma(R, gamma, selected_angle_inds)
+    combined_selected_angle_inds = np.concatenate((prev_selected_view_inds, selected_angle_inds))
+    R_chosen, gamma_chosen = subsample_R_gamma(R, gamma, combined_selected_angle_inds)
 
     # Compute the vcl loss
     vcl_current_best = compute_vcl(R_chosen, gamma_chosen)
@@ -315,14 +333,15 @@ def compute_opt_angle_subset(R, gamma, candidate_angles, K, r_2, search_min=30, 
     for i in range(max_iterations):
         prev_selected_angle_inds = np.copy(selected_angle_inds)
         for j in range(K):
-            candidate_indices = np.setdiff1d(np.arange(num_candidate_angles), selected_angle_inds, assume_unique=True).tolist()
+            candidate_indices = np.setdiff1d(avail_angle_inds, selected_angle_inds, assume_unique=True).tolist()
             random.shuffle(candidate_indices)
             candidate_indices = candidate_indices[:num_search_candidates]
 
             for k in candidate_indices:
                 selected_angle_inds_tmp = np.copy(selected_angle_inds)
                 selected_angle_inds_tmp[j] = k
-                R_temp, gamma_temp = subsample_R_gamma(R, gamma, selected_angle_inds_tmp)
+                combined_selected_angle_inds_tmp = np.concatenate((prev_selected_view_inds, selected_angle_inds_tmp))
+                R_temp, gamma_temp = subsample_R_gamma(R, gamma, combined_selected_angle_inds_tmp)
                 vcl_temp = compute_vcl(R_temp, gamma_temp)
 
                 if vcl_temp < vcl_current_best:
@@ -463,3 +482,38 @@ def show_image_with_projection_rays(
     plt.title(title or "Image with Overlaid Angles")
     plt.axis('off')
     plt.show()
+
+
+def reorder_by_priority(optimal_angle_inds, prev_selected_view_inds, R, gamma):
+    """
+    Reorders the optimal angle indices by importance using iterative removal.
+    
+    Args:
+        optimal_angle_inds (np.ndarray): The array of newly selected optimal angle indices to be reordered.
+        prev_selected_view_inds (np.ndarray): The array of fixed, previously selected angle indices.
+        R (np.ndarray): The full covariance matrix.
+        gamma (np.ndarray): The full gamma vector.
+        
+    Returns:
+        np.ndarray: The reordered array of angle indices.
+    """
+    drop_inds_list = []
+    while len(optimal_angle_inds) > 1:
+        vcl_list = []
+        for i in range(len(optimal_angle_inds)):
+            # Create a temporary array of angles with the i-th element removed.
+            temp_inds = np.delete(optimal_angle_inds, i)
+            combined_selected_inds = np.concatenate((prev_selected_view_inds, temp_inds))
+            R_temp, gamma_temp = subsample_R_gamma(R, gamma, combined_selected_inds)
+            vcl_temp = compute_vcl(R_temp, gamma_temp)
+            vcl_list.append(vcl_temp)
+
+        idx_to_drop = np.argmin(vcl_list)
+        drop_inds_list.append(optimal_angle_inds[idx_to_drop])
+        optimal_angle_inds = np.delete(optimal_angle_inds, idx_to_drop)
+
+    drop_inds_list.append(optimal_angle_inds[0])
+    # Reverse the list to rank elements from most to least important
+    optimal_angle_inds = np.array(drop_inds_list)[::-1]
+
+    return optimal_angle_inds

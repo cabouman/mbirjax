@@ -18,7 +18,7 @@ class TestVCD(unittest.TestCase):
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
         self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
-        self.cone_tolerances = {'nrmse': 0.13, 'max_diff': 0.5, 'pct_95': 0.04}
+        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04}
         self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
         self.all_tolerances = [self.parallel_tolerances, self.cone_tolerances, self.translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
@@ -38,6 +38,7 @@ class TestVCD(unittest.TestCase):
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.helical_z_shifts = None
         self.translation_vectors = None
 
     def tearDown(self):
@@ -52,6 +53,7 @@ class TestVCD(unittest.TestCase):
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        self.helical_z_shifts = jnp.arange(self.num_views) / self.num_views
 
         num_x_translations = 7
         num_z_translations = 7
@@ -66,7 +68,7 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'parallel':
             ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
         elif geometry_type == 'cone':
-            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'translation':
@@ -131,12 +133,10 @@ class TestVCD(unittest.TestCase):
         with tempfile.NamedTemporaryFile('w') as file:
             filepath = file.name
             ct_model.save_recon_hdf5(filepath, recon, recon_dict)
-            loaded_recon, loaded_recon_dict, new_model = mj.TomographyModel.load_recon_hdf5(str(filepath),
-                                                                                                 recreate_model=True)
+            loaded_recon, loaded_recon_dict = mj.TomographyModel.load_recon_hdf5(str(filepath))
             loaded_notes = loaded_recon_dict['notes']
 
             assert np.allclose(recon, loaded_recon)
-            assert np.allclose(ct_model.get_params('sigma_x'), new_model.get_params('sigma_x')) # just one representative parameter
             assert recon_dict['notes'] == loaded_notes
 
 

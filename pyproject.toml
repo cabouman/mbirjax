@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.14"
+version = "0.6.15"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -38,10 +38,12 @@ dependencies = [
     "olefile",
     "scikit-learn",
     "osqp",
+    "opencv-python",
 ]
 
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]"]
+cuda13 = ["jax[cuda13]"]
 test = ["pytest"]
 docs = [
      "sphinx",
