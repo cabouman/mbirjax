@@ -590,8 +590,6 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
     This function alternates between adaptive beam hardening correction (via `correct_sino_plastic_metal`)
     and reconstruction, refining the image over several iterations to suppress metal-induced artifacts.
 
-    This function uses recon_split_sino by default in the case that ct_model is a ConeBeamModel.
-
     Args:
         ct_model: MBIRJAX cone beam model instance with `direct_recon` and `recon` methods.
         sino (jnp.ndarray):  Input sinogram data to be corrected.
