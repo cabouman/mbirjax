@@ -19,7 +19,7 @@ def main():
 
     # Determine which dataset to use
     dataset_index = 0       # Index into one of the datasets below
-    use_local_data = True   # If True, then use local_data_directory/filename.  Otherwise, use the data_depot path.
+    use_local_data = False   # If True, then use local_data_directory/filename.  Otherwise, use the data_depot path.
     local_data_directory = './data'  # Directory for local testing - you should copy the files below into this directory
 
     # Path to the dataset
