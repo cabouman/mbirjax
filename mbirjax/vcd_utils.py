@@ -375,3 +375,36 @@ def gen_weights(sinogram, weight_type):
 
     weights = jnp.concatenate(weight_list, axis=0)
     return weights
+
+
+def gen_temporal_transmission_root_weights(sinogram, temporal_sigma=0.5):
+    """
+    Compute ``transmission_root`` sinogram weights modulated by a symmetric temporal weighting profile.
+
+    This is intended for dynamic or 4D CT workflows where views near the center of a time bin should be trusted more
+    than views near the bin boundaries. The temporal weighting is applied only along the view axis and is identical for
+    every detector row and channel.
+
+    Args:
+        sinogram (jax.Array): A 3D JAX array of shape ``(num_views, num_det_rows, num_det_channels)``.
+        temporal_sigma (float): Width of the Gaussian temporal profile, measured in normalized view coordinates where
+            the center view has distance 0 and the bin edge has distance 1. Smaller values produce stronger decay
+            toward the bin boundaries. Must be positive.
+
+    Returns:
+        jax.Array: A 3D array with the same shape as ``sinogram`` containing
+        ``exp(-sinogram / 2) * temporal_profile``.
+
+    """
+
+    num_views = sinogram.shape[0]
+    if num_views <= 1:
+        temporal_profile = jnp.ones((num_views, 1, 1))
+    else:
+        center_view = (num_views - 1) / 2.0
+        max_distance = max(center_view, 1.0)
+        normalized_distance = jnp.abs(jnp.arange(num_views, dtype=jnp.float32) - center_view) / max_distance
+        temporal_profile = jnp.exp(-0.5 * (normalized_distance / temporal_sigma) ** 2)
+        temporal_profile = temporal_profile.reshape((num_views, 1, 1))
+
+    return gen_weights(sinogram, weight_type='transmission_root') * temporal_profile
