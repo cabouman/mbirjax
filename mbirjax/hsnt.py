@@ -162,28 +162,17 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
             b_stop = min((batch + 1) * num_points_batch, num_points)
             batch_data = data[row_idx[b_start: b_stop]]
 
-            if batch == 0:
-                nmf_init = 'nndsvd'  # Initialize NMF using Non-Negative Double Singular Value Decomposition
-                subspace_basis_init = None
-                subspace_data_init = None
-            else:
-                nmf_init = 'custom'  # Initialize NMF based on subspace basis from the previous batch
-                subspace_basis_init = gaussian_filter1d(subspace_basis_batch[batch-1], sigma=10, axis=1) + epsilon
-                subspace_data_init = abs(batch_data @ np.linalg.pinv(subspace_basis_init)) + epsilon
-
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 _, subspace_basis_batch[batch], _ = nmf(batch_data,
                                                         n_components=subspace_dimension,
-                                                        init=nmf_init,
-                                                        W=subspace_data_init,
-                                                        H=subspace_basis_init,
+                                                        init='nndsvd',
                                                         beta_loss=beta_loss,
                                                         solver=solver,
                                                         tol=tolerance,
-                                                        max_iter=max(5, max_iter // num_batches),
+                                                        max_iter=max(50, max_iter // num_batches),
                                                         update_H=True)
-
+                
         # Estimate final subspace basis from batch estimations using NMF
         subspace_basis_batch = np.reshape(np.array(subspace_basis_batch), (-1, num_bands))
         with warnings.catch_warnings():
@@ -589,22 +578,24 @@ def export_hsnt_data_hdf5(filename, data, metadata):
 # -----------------------------------------------------------------------
 
 
-def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, dosage_rate=300, material_thickness=None,
-                        verbose=1):
+def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector_columns=64, dosage_rate=300, 
+                        material_density=None, verbose=1):
     """
     Simulate noisy hyperspectral neutron attenuation data for :math:`N_m=3` materials (Ni, Cu, Al) and :math:`N_k` wavelength bins.
 
     Args:
         material_basis: ndarray of shape :math:`(N_m, N_k)`, where rows are material linear attenuation coefficient spectra.
+        num_angles: Number of view angles :math:`(N_v)`. Defaults to 1.
         detector_rows: Number of rows in the detector :math:`(N_r)`. Defaults to 64.
         detector_columns: Number of columns in the detector :math:`(N_c)`. Defaults to 64.
         dosage_rate: Neutron dosage rate during hyperspectral data collection. Defaults to 300.
-        material_thickness: Material thicknesses (cm) for Ni, Cu, and Al. Defaults to {"Ni": 2.0, "Cu": 2.0, "Al": 10.0}.
+        material_density: Material density (vol. fraction) for Ni, Cu, and Al. Defaults to {"Ni": 0.2, "Cu": 0.2, "Al": 1.0}.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
         A list in the form [hsnt_data, gt_hyper_projection].
-            - hsnt_data: Simulated noisy hyperspectral data of shape :math:`(N_r, N_c, N_k)`.
+            - hsnt_data: Simulated noisy hyperspectral data of shape :math:`(N_v, N_r, N_c, N_k)`.
+            - angles: ndarray of view angles in radian
             - gt_hyper_projection: Ground truth noiseless hyperspectral data of same shape.
 
     """
@@ -618,13 +609,13 @@ def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, d
     if dosage_rate <= 0:
         raise ValueError("dosage_rate must be positive.")
 
-    # Handle default material_thickness and verify required keys
-    if material_thickness is None:
-        material_thickness = {"Ni": 2.0, "Cu": 2.0, "Al": 10.0}
+    # Handle default material_density and verify required keys
+    if material_density is None:
+        material_density = {"Ni": 0.2, "Cu": 0.2, "Al": 1.0}
     required = {"Ni", "Cu", "Al"}
-    missing = required - set(material_thickness)
+    missing = required - set(material_density)
     if missing:
-        raise KeyError(f"material_thickness missing keys: {sorted(missing)}")
+        raise KeyError(f"material_density missing keys: {sorted(missing)}")
 
     # Basic sanity on basis values
     if np.any(material_basis < 0):
@@ -634,14 +625,18 @@ def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, d
     epsilon = 1e-8
     number_of_materials = material_basis.shape[0]
     number_of_wavelengths = material_basis.shape[1]
+    
+    # Generate view angles
+    angles = np.linspace(0, np.pi, num_angles)
 
     # Generate simulated projection data for 3 materials (Ni, Cu, and Al)
     height = detector_rows // 3
     width = detector_columns // 2
-    material_projection = np.zeros((detector_rows, detector_columns, number_of_materials)).astype(np.float32)
-    material_projection[:height, width // 2:width + width // 2, 0] = material_thickness["Ni"]
-    material_projection[2 * height:, width // 2:width + width // 2, 1] = material_thickness["Cu"]
-    material_projection[height:2 * height, width // 2:width + width // 2, 2] = material_thickness["Al"]
+    thickness = 20 * np.sqrt((width//2)**2 - np.linspace(-width // 2, width // 2, width)**2)/ width
+    material_projection = np.zeros((num_angles, detector_rows, detector_columns, number_of_materials)).astype(np.float32)
+    material_projection[:, :height, width // 2:width + width // 2, 0] = material_density["Ni"] * thickness
+    material_projection[:, 2 * height:, width // 2:width + width // 2, 1] = material_density["Cu"] * thickness
+    material_projection[:, height:2 * height, width // 2:width + width // 2, 2] = material_density["Al"] * thickness
 
     # Generate noiseless hyperspectral projection data using rehydrate function
     gt_hyper_projection = rehydrate([material_projection, material_basis, 'attenuation'])
@@ -677,4 +672,4 @@ def generate_hyper_data(material_basis, detector_rows=64, detector_columns=64, d
         plt.title("Material basis functions (Ni, Cu, Al)")
         plt.legend(["Ni", "Cu", "Al"])
 
-    return [noisy_hyper_projection, gt_hyper_projection]
+    return [noisy_hyper_projection, angles, gt_hyper_projection]
