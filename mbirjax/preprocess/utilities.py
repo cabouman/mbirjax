@@ -826,3 +826,61 @@ def align_sino_views(ct_model, sino, direct_recon):
         return shifted_view
 
     return jax.vmap(shift_view, in_axes=(0, 0))(sino, estimated_shifts)
+
+def truncate_sino_into_time_bins(sino, cone_beam_params, optional_params, views_per_bin, stride):
+    """
+    Truncate a sinogram into fixed-size time bins along the view axis (axis=0).
+
+    Args:
+        sino (ndarray):
+            Input sinogram array with shape (num_views, ...).
+
+        cone_beam_params (dict):
+            Cone-beam geometry parameters returned by MBIRJAX preprocessing.
+            Must contain keys "angles" and "sinogram_shape".
+
+        optional_params (dict):
+            Optional MBIRJAX parameters associated with the dataset.
+
+        views_per_bin (int):
+            Number of views in each time bin.
+
+        stride (int):
+            Step size between consecutive bins along the view axis.
+
+    Returns:
+        list of tuples:
+            Each element is (sino_t, cone_beam_params_t, optional_params_t, sl),
+            where each `sino_t` has exactly `views_per_bin` views.
+            Any trailing views that cannot form a full bin are discarded.
+    """
+
+    angles = cone_beam_params["angles"]
+    num_views = sino.shape[0]
+
+    if views_per_bin <= 0:
+        raise ValueError("views_per_bin must be a positive integer.")
+    if stride <= 0:
+        raise ValueError("slide must be a positive integer.")
+    if views_per_bin > num_views:
+        raise ValueError("views_per_bin cannot exceed the total number of views.")
+
+    bins = []
+    for start in range(0, num_views - views_per_bin + 1, stride):
+        end = start + views_per_bin
+        sl = slice(start, end)
+        sino_t = sino[sl]
+
+        # Copy and update params
+        cone_t = dict(cone_beam_params)
+        cone_t["angles"] = angles[sl].copy()
+
+        shape = list(cone_t["sinogram_shape"])
+        shape[0] = views_per_bin
+        cone_t["sinogram_shape"] = tuple(shape)
+
+        opt_t = dict(optional_params)
+
+        bins.append((sino_t, cone_t, opt_t, sl))
+
+    return bins
