@@ -109,12 +109,12 @@ class TestHSNT(unittest.TestCase):
     def test_generate_hyper_data_basic(self):
         """generate_hyper_data returns correctly shaped and non-empty arrays."""
         material_basis = np.abs(np.random.randn(3, self.wavelengths)).astype(np.float32)
-        noisy_proj, gt_proj = hsnt.generate_hyper_data(material_basis,
-                                                       detector_rows=self.detector_rows,
-                                                       detector_columns=self.detector_columns,
-                                                       verbose=0)
-        self.assertEqual(noisy_proj.shape, (self.detector_rows, self.detector_columns, self.wavelengths))
-        self.assertEqual(gt_proj.shape, (self.detector_rows, self.detector_columns, self.wavelengths))
+        noisy_proj, _, gt_proj = hsnt.generate_hyper_data(material_basis,
+                                                          detector_rows=self.detector_rows,
+                                                          detector_columns=self.detector_columns,
+                                                          verbose=0)
+        self.assertEqual(noisy_proj.shape, (1, self.detector_rows, self.detector_columns, self.wavelengths))
+        self.assertEqual(gt_proj.shape, (1, self.detector_rows, self.detector_columns, self.wavelengths))
         self.assertTrue(np.isfinite(noisy_proj).all())
         self.assertTrue(np.isfinite(gt_proj).all())
 
