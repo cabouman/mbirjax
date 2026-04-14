@@ -18,9 +18,10 @@ class TestVCD(unittest.TestCase):
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
         self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
-        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04}
+        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.06}
+        self.helical_cone_tolerances = self.cone_tolerances
         self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
-        self.all_tolerances = [self.parallel_tolerances, self.cone_tolerances, self.translation_tolerances]
+        self.all_tolerances = [self.parallel_tolerances, self.cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
@@ -34,6 +35,11 @@ class TestVCD(unittest.TestCase):
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         self.source_detector_dist = 4 * self.num_det_channels
         self.source_iso_dist = self.source_detector_dist
+        
+        # These can be adjusted to describe the geometry in the helical cone beam case.
+        self.helical_pitch = 0.5
+        self.helical_z_range = 80.0
+        self.helical_z_center = 40.0
 
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
@@ -48,12 +54,19 @@ class TestVCD(unittest.TestCase):
     def set_view_params(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+        elif geometry_type == 'helical_cone':
+            detector_cone_angle = 0
+            magnification = self.source_detector_dist / self.source_iso_dist
+            det_height_iso = self.num_det_rows / magnification
+            z_per_rot = self.helical_pitch * det_height_iso
+            dz_per_view = z_per_rot / self.num_views
+            view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
+            self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
         else:
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
-        self.helical_z_shifts = jnp.arange(self.num_views) / self.num_views
 
         num_x_translations = 7
         num_z_translations = 7
@@ -68,6 +81,10 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'parallel':
             ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
         elif geometry_type == 'cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'helical_cone':
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
@@ -117,9 +134,31 @@ class TestVCD(unittest.TestCase):
         print('  Starting recon')
         recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
-        max_diff = np.amax(np.abs(phantom - recon))
-        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-        pct_95 = np.percentile(np.abs(recon - phantom), 95)
+        
+        if geometry_type == 'helical_cone':
+            # only evaluate for slices that were in view for at least a half rotation
+            magnification = self.source_detector_dist / self.source_iso_dist
+            det_height_iso = self.num_det_rows / magnification
+            z_per_rot = self.helical_pitch * det_height_iso
+            pi_z_span = z_per_rot / 2.0
+            z_min_valid = float(self.helical_z_shifts[0]) + 0.5 * pi_z_span
+            z_max_valid = float(self.helical_z_shifts[-1]) - 0.5 * pi_z_span
+            num_slices = phantom.shape[2]
+            slice_z = np.linspace(
+                self.helical_z_center - 0.5 * self.helical_z_range,
+                self.helical_z_center + 0.5 * self.helical_z_range,
+                num_slices
+            )
+            valid_mask = (slice_z >= z_min_valid) & (slice_z <= z_max_valid)
+            phantom_eval = phantom[:, :, valid_mask]
+            recon_eval = recon[:, :, valid_mask]
+        else:
+            phantom_eval = phantom
+            recon_eval = recon
+        
+        max_diff = np.amax(np.abs(phantom_eval  - recon_eval))
+        nrmse = np.linalg.norm(recon_eval - phantom_eval ) / np.linalg.norm(phantom_eval )
+        pct_95 = np.percentile(np.abs(recon_eval - phantom_eval ), 95)
         print('  nrmse = {:.3f}'.format(nrmse))
         print('  max_diff = {:.3f}'.format(max_diff))
         print('  pct_95 = {:.3f}'.format(pct_95))

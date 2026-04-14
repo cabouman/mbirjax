@@ -31,6 +31,11 @@ class TestProjectors(unittest.TestCase):
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         self.source_detector_dist = 4 * self.num_det_channels
         self.source_iso_dist = self.source_detector_dist
+        
+        # These can be adjusted to describe the geometry in the helical cone beam case.
+        self.helical_pitch = 1.0
+        self.helical_z_range = 80.0
+        self.helical_z_center = 40.0
 
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
@@ -45,7 +50,14 @@ class TestProjectors(unittest.TestCase):
     def set_angles(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-            self.helical_z_shifts = jnp.arange(self.num_views)
+        elif geometry_type == 'helical_cone':
+            detector_cone_angle = 0
+            magnification = self.source_detector_dist / self.source_iso_dist
+            det_height_iso = self.num_det_rows / magnification
+            z_per_rot = self.helical_pitch * det_height_iso
+            dz_per_view = z_per_rot / self.num_views
+            view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
+            self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
         else:
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
@@ -64,6 +76,10 @@ class TestProjectors(unittest.TestCase):
 
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'helical_cone':
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
