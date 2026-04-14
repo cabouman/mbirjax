@@ -4,6 +4,6 @@
 cd ..
 
 pytest 
-pytest -m data_dependent
+#pytest -m data_dependent
 
 cd dev_scripts

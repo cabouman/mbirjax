@@ -961,11 +961,18 @@ def generate_demo_data(
     model_type: Union[ModelType, str] = ModelType.CONE,
     num_views: int = 64,
     num_det_rows: int = 96,
+    delta_det_row: float = 1,
     num_det_channels: int = 128,
+    delta_det_channel: float = 1,
     num_x_translations: int = 7,
     num_z_translations: int = 7,
     x_spacing: float = 22,
-    z_spacing: float = 22
+    z_spacing: float = 22,
+    use_helical: bool = False,
+    helical_pitch: float | None = None,
+    helical_z_range: float | None = None,
+    helical_z_center: float = 0.0,
+    use_curved_detector: bool = False
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -988,6 +995,15 @@ def generate_demo_data(
         num_z_translations (int, optional): Number of vertical translations for translation mode.  Defaults to 7.
         x_spacing (float, optional): Horizontal spacing between translations in ALU.  Defaults to 22.
         z_spacing (float, optional): Vertical spacing between translations in ALU.  Defaults to 22.
+        use_helical (bool, optional):
+            If True and model_type == 'cone', generate a helical cone-beam trajectory by
+            supplying per-view z_shifts to ConeBeamModel. Defaults to False.
+        helical_pitch (float, optional):
+            Helical pitch (dimensionless) for helical mode.
+            pitch = (table travel per rotation) / (det height at iso).  This is the fraction of the detector height at iso traveled per rotation.
+        helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
+        helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
+        use_curved_detector (bool, optional): (cone beam geometry parameter)
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1015,10 +1031,68 @@ def generate_demo_data(
         source_detector_dist = 4 * num_det_channels
         source_iso_dist = source_detector_dist
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
-        angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
-        ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                                   source_iso_dist=source_iso_dist)
-        params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist}
+        if not use_helical:
+            angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
+            ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
+                                                       source_iso_dist=source_iso_dist, use_curved_detector=use_curved_detector)
+            params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist,
+                      'use_curved_detector': use_curved_detector}
+        else:
+            # Require both helical_pitch and helical_z_range
+            if helical_pitch is None or helical_z_range is None:
+                raise ValueError("Helical trajectory requires both helical_pitch and helical_z_range.")
+
+            # Compute magnification
+            if jnp.isinf(source_detector_dist):
+                magnification = 1
+            else:
+                magnification = source_detector_dist / source_iso_dist
+
+            # detector height mapped to iso, in ALU
+            det_height_iso = float(num_det_rows) * (delta_det_row / magnification)
+
+            # Travel per rotation (ALU) and derived rotations/views-per-rotation
+            z_per_rot = float(helical_pitch) * det_height_iso
+            if z_per_rot <= 0:
+                raise ValueError(f"helical_pitch must be > 0 (got {helical_pitch}).")
+            if float(helical_z_range) < 0:
+                raise ValueError(f"helical_z_range must be >= 0 (got {helical_z_range}).")
+
+            # Derived number of rotations and views per rotation
+            if float(helical_z_range) == 0.0: # circular reconstruction
+                num_rotations = 1.0
+                views_per_rotation = float(num_views)
+            else:
+                num_rotations = float(helical_z_range) / z_per_rot
+                if num_rotations <= 0:
+                    raise ValueError("Derived num_rotations <= 0; check pitch/z_range.")
+                views_per_rotation = float(num_views) / num_rotations
+
+            # Angles: advance by 2*pi/views_per_rotation each view
+            angle_step = (2.0 * np.pi) / views_per_rotation
+            angles = start_angle + angle_step * jnp.arange(num_views)
+
+            # z_shifts: span z_range across scan, centered at z_center
+            z0 = float(helical_z_center) - 0.5 * float(helical_z_range)
+            z1 = float(helical_z_center) + 0.5 * float(helical_z_range)
+            helical_z_shifts = jnp.linspace(z0, z1, num_views, endpoint=True)
+
+            ct_model_for_generation = mj.ConeBeamModel(
+                sinogram_shape,
+                angles,
+                source_detector_dist=source_detector_dist,
+                source_iso_dist=source_iso_dist,
+                helical_z_shifts=helical_z_shifts,
+                use_curved_detector=use_curved_detector
+            )
+
+            params = {
+                'angles': angles,
+                'source_detector_dist': source_detector_dist,
+                'source_iso_dist': source_iso_dist,
+                'helical_z_shifts': helical_z_shifts,
+                'use_curved_detector': use_curved_detector,
+            }
     elif model_type == ModelType.TRANSLATION:
         source_iso_dist = np.min(num_det_rows, num_det_channels) / 2
         source_detector_dist = source_iso_dist
@@ -1186,7 +1260,7 @@ def stitch_arrays(array_list, overlap, axis=2):
     return jnp.swapaxes(stitched, 0, axis)
 
 
-def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None):
+def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None, helical_z_shifts=None):
     """
     Create an instance of TomographyModel with the given parameters
 
@@ -1196,14 +1270,19 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
         angles (ndarray of float): 1D vector of projection angles in radians
         source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
         source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
+        helical_z_shifts (ndarray or jax array, optional):
+            Per-view axial shifts (ALU), same length as angles.
+            Required when use_helical=True.
 
     Returns:
         An instance of ConeBeamModel or ParallelBeam model
     """
     if geometry_type == 'cone':
         model = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
-                                 source_iso_dist=source_iso_dist)
+                                 source_iso_dist=source_iso_dist, helical_z_shifts=helical_z_shifts)
     elif geometry_type == 'parallel':
+        if helical_z_shifts is not None:
+            warnings.warn("Helical mode (helical_z_shifts) is only supported for geometry_type='cone'; ignoring z_shifts.", UserWarning)
         model = mj.ParallelBeamModel(sinogram_shape, angles)
     else:
         raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
@@ -1226,16 +1305,34 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         An instance of ConeBeamModel or ParallelBeam model
     """
     required_param_names = ct_model.get_required_param_names()
-    required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                           required_param_names=required_param_names,
-                                                                           values_only=True)
 
     #  Get the shape of the old sinogram
     new_shape = list(ct_model.get_params('sinogram_shape'))
-    try:
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        # Get the names used to save the view parameters and to set the view parameters in the __init__
+        view_params_name = ct_model.get_params('view_params_name')  # This is the name saved in the parameter list
+        view_params_component_names = ct_model.get_params('view_params_component_names')  # These are the names used in __init__
+        if view_params_component_names[0] != 'angles' or view_params_component_names[1] != 'helical_z_shifts':
+            raise ValueError('Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
+        for name in view_params_component_names:
+            required_param_names.remove(name)
+
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
+        view_params = ct_model.get_params(view_params_name)
+        old_angles = view_params[:, 0]
+        required_params['helical_z_shifts'] = view_params[:, 1]
+
+    elif str(type(ct_model)).find('ParallelBeamModel') > 0:
+        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
+                                                                               required_param_names=required_param_names,
+                                                                               values_only=True)
         old_angles = ct_model.get_params('angles')
-    except NameError as e:
-        raise 'copy_ct_model() is restricted to ConeBeam and ParallelBeam Models.'
+    else:
+        raise TypeError('copy_ct_model() is restricted to ConeBeam and ParallelBeam Models')
+
+
     if new_angles is None:
         new_angles = old_angles
     new_shape[0] = len(new_angles)
@@ -1359,12 +1456,19 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
 
     # Find all local peaks in the histogram
     peak_indices = []
+
+    if len(hist) > 1 and hist[0] > hist[1]:
+        peak_indices.append(0)
+
     for i in range(1, len(hist) - 1):
         if hist[i] >= hist[i - 1] and hist[i] > hist[i + 1]:
             peak_indices.append(i)
 
     # Choose the peak closest to intensity 0 (background peak)
-    peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
+    if len(peak_indices) == 0:
+        peak_idx = int(np.argmin(np.abs(centers - 0.0)))
+    else:
+        peak_idx = min(peak_indices, key=lambda i: abs(centers[i] - 0.0))
 
     # Define background width cutoff level (10% of peak height)
     peak_height = hist[peak_idx]

@@ -73,13 +73,10 @@ Users can set, get, and printout parameters using the following primary methods.
 Saving and Loading
 ------------------
 
-* Saving and loading of the parameters needed to define a model are implemented in :meth:`TomographyModel.to_file` and :meth:`TomographyModel.from_file`.
 * Saving and loading of the data and the dict of parameters/logs returned from :meth:`TomographyModel.recon` are implemented in :meth:`TomographyModel.save_recon_hdf5` and :meth:`TomographyModel.load_recon_hdf5`.
 
 .. autosummary::
 
-   TomographyModel.to_file
-   TomographyModel.from_file
    TomographyModel.save_recon_hdf5
    TomographyModel.load_recon_hdf5
 

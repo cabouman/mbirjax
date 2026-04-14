@@ -7,7 +7,7 @@ import copy
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
 # Update to include new geometries that should be included in the tests suite
-_geometry_types_for_tests = ['parallel', 'cone', 'translation']
+_geometry_types_for_tests = ['parallel', 'cone', 'helical_cone', 'translation']
 
 # The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
@@ -58,6 +58,7 @@ _reconstruction_defaults_dict = {
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
+    'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
 }
 
 # These headings should match the dictionaries

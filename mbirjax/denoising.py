@@ -385,7 +385,7 @@ def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
     prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
 
     # Estimated upper bound for hessian
-    prior_overrelaxation_factor = 1.1
+    prior_overrelaxation_factor = 1.0
     prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                               jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 

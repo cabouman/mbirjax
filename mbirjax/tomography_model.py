@@ -62,13 +62,11 @@ class TomographyModel(ParameterHandler):
         self.auto_set_recon_geometry(sinogram_shape, no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
-        self.verify_valid_params()
 
         self.main_device, self.sinogram_device= None, None
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
-        self.max_over_relaxation = 1.5  # This is used in vcd_subset_updater() to limit the maximum step size
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -278,43 +276,6 @@ class TomographyModel(ParameterHandler):
 
         return
 
-    @classmethod
-    def from_file(cls, source):
-        """
-        Construct a TomographyModel from parameters saved using :meth:`to_file`
-
-        Args:
-            source: A filename (str), a YAML string (str), or a file-like object.  Filename must end in .yml or .yaml
-
-        Returns:
-            ParallelBeamModel with the specified parameters.
-        """
-        # Load the parameters and separate into required and optional
-        required_param_names = cls.get_required_param_names()
-        required_params, params = ParameterHandler.load_param_dict(source, required_param_names, values_only=True)
-
-        # Get an instance with the required parameters, then set any optional parameters
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            new_model = cls(**required_params)
-            new_model.set_params(**params)
-        return new_model
-
-    def to_file(self, filename):
-        """
-        Save all parameters of the current TomographyModel to yaml file or string.  The resulting file can be loaded using
-        :meth:`from_file` to construct a new TomographyModel of the same type and with the same parameters.
-
-        Args:
-            filename (str or None): Path to file to store the parameter dictionary.  Must end in .yml or .yaml if a string.
-            If None, then the YAML text is returned.
-
-        Returns:
-            A string if filename=None; None if the filename is given and also creates or overwrites the specified file.
-        """
-        return self.save_params(self.params, filename)
-
     def get_recon_dict(self, recon_params=None, notes=None, save_log=True, save_model=True, str_format=False):
         """
         Encapsulate the recon parameters, logs, notes, and optionally all model parameters to a text-based dict
@@ -431,17 +392,16 @@ class TomographyModel(ParameterHandler):
 
         Args:
             filepath (str): Path to the HDF5 file containing the reconstructed volume.
-            recreate_model (bool, optional): If True, then use the recon_dict to recreate the model used for the recon.
+            recreate_model (bool, optional): Deprecated.  Will raise a ValueError if set to True.
 
         Returns:
-            (recon, recon_dict) or (recon, recon_dict, ct_model) if recreate_model=True
+            (recon, recon_dict)
                 - recon (ndarray): The tensor saved by save_data_hdf5()
                 - recon_dict (dict): A dict with the attributes for the data array as in :meth:`get_recon_dict`
-                - ct_model (TomographyModel): A model of the type and paramters encoded in recon_dict.
 
         Raises:
             FileNotFoundError: If the file does not exist.
-            ValueError: If more than one dataset is not found in the file.
+            ValueError: If more than one dataset is not found in the file or if recreate_model is set to True.
 
         Example:
             >>> recon, recon_dict = ct_model.load_recon_hdf5("output/recon_volume.h5")
@@ -449,13 +409,11 @@ class TomographyModel(ParameterHandler):
             (64, 256, 256)
         """
         recon, recon_dict = mj.load_data_hdf5(filepath)
-        if not recreate_model:
-            return recon, recon_dict
+        if recreate_model:
+            raise ValueError('recreate_model has been deprecated.  Remove this option and expect only 2 return values.')
 
-        model_yaml = recon_dict['model_params']
-        class_name = model_yaml.split("<class '")[1].split("'>")[0].split(".")[-1]
-        ct_model = getattr(mj, class_name).from_file(model_yaml)
-        return recon, recon_dict, ct_model
+        return recon, recon_dict
+
 
     def create_projectors(self):
         """
@@ -1133,6 +1091,7 @@ class TomographyModel(ParameterHandler):
             To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
         """
         # Ensure that everything has the right shape and is on the main device
+        self.verify_valid_params()
         if weights is None:
             weights = 1
             constant_weights = True
@@ -1353,6 +1312,7 @@ class TomographyModel(ParameterHandler):
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')
+        max_alpha = self.get_params('max_overrelaxation')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
         try:
@@ -1467,7 +1427,7 @@ class TomographyModel(ParameterHandler):
             # Estimated upper bound for hessian
             # time_names.append('pquad')
             # time_start = time.time()
-            prior_overrelaxation_factor = 2
+            prior_overrelaxation_factor = 1.0
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
             # prior_quadratic_approx = prior_quadratic_approx.block_until_ready()
@@ -1493,7 +1453,6 @@ class TomographyModel(ParameterHandler):
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
-            max_alpha = self.max_over_relaxation
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
             # alpha = alpha.block_until_ready()
             # times[time_index] += time.time() - time_start

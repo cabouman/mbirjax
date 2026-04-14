@@ -31,10 +31,16 @@ class TestProjectors(unittest.TestCase):
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         self.source_detector_dist = 4 * self.num_det_channels
         self.source_iso_dist = self.source_detector_dist
+        
+        # These can be adjusted to describe the geometry in the helical cone beam case.
+        self.helical_pitch = 1.0
+        self.helical_z_range = 80.0
+        self.helical_z_center = 40.0
 
         # Initialize sinogram
         self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
         self.angles = None
+        self.helical_z_shifts = None
         self.translation_vector = None
 
     def tearDown(self):
@@ -44,6 +50,14 @@ class TestProjectors(unittest.TestCase):
     def set_angles(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+        elif geometry_type == 'helical_cone':
+            detector_cone_angle = 0
+            magnification = self.source_detector_dist / self.source_iso_dist
+            det_height_iso = self.num_det_rows / magnification
+            z_per_rot = self.helical_pitch * det_height_iso
+            dz_per_view = z_per_rot / self.num_views
+            view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
+            self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
         else:
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
@@ -63,6 +77,10 @@ class TestProjectors(unittest.TestCase):
     def get_model(self, geometry_type):
         if geometry_type == 'cone':
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'helical_cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
@@ -87,60 +105,6 @@ class TestProjectors(unittest.TestCase):
             with self.subTest(geometry_type=geometry_type):
                 print("Testing Hessian with", geometry_type)
                 self.verify_hessian(geometry_type)
-
-    def test_save_load(self):
-        for geometry_type in self.geometry_types:
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing save/load with", geometry_type)
-                self.verify_save_load(geometry_type)
-
-    def verify_save_load(self, geometry_type):
-        """
-        Verify the adjoint property of the projectors:
-        Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
-        """
-        self.set_angles(geometry_type)
-        self.set_translation_vectors(geometry_type)
-        ct_model = self.get_model(geometry_type)
-
-        # Generate phantom
-        recon_shape = ct_model.get_params('recon_shape')
-        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-
-        # Get the vector of indices
-        indices = jnp.arange(num_recon_rows * num_recon_cols)
-
-        # ##########################
-        # Do a forward and back projection from a single pixel
-        i, j = num_recon_rows // 4, num_recon_cols // 3
-        x = jnp.zeros(recon_shape)
-        x = x.at[i, j, :].set(1)
-        voxel_values = x.reshape((-1, num_recon_slices))[indices]
-
-        Ax = ct_model.sparse_forward_project(voxel_values, indices)
-        Aty = ct_model.sparse_back_project(Ax, indices)
-        Aty = ct_model.reshape_recon(Aty)
-
-        # Save the model
-        with tempfile.NamedTemporaryFile('w', suffix='.yaml') as file:
-            filename = file.name
-            ct_model.to_file(filename)
-
-            # Load the model
-            new_model = self.get_model(geometry_type)
-            new_model = new_model.from_file(filename)
-
-        # Compare parameters
-        same_params = mj.ParameterHandler.compare_parameter_handlers(ct_model, new_model)
-        assert same_params
-
-        # Do a forward and back projection with loaded model
-        Ax_new = new_model.sparse_forward_project(voxel_values, indices)
-        Aty_new = new_model.sparse_back_project(Ax_new, indices)
-        Aty_new = new_model.reshape_recon(Aty_new)
-
-        # Compare to original
-        assert(np.allclose(Aty, Aty_new, atol=1e-4))
 
     def test_view_batching(self):
         for geometry_type in self.geometry_types:

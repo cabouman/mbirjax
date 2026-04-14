@@ -86,10 +86,3 @@ Segmentation functions
 .. autofunction:: multi_threshold_otsu
 .. autofunction:: segment_plastic_metal
 
-View selection (VCLS) functions
--------------------------------
-
-.. currentmodule:: mbirjax.preprocess
-
-.. autofunction:: get_opt_views
-.. autofunction:: show_image_with_projection_rays

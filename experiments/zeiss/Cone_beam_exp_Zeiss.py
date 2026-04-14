@@ -1,7 +1,7 @@
 ### This script is for reconstructing cone beam CT data from ORNL Zeiss scanner
 
 import os
-import sys
+import sys, os
 import numpy as np
 import jax.numpy as jnp
 import pprint
@@ -14,20 +14,36 @@ def main():
     # Recon parameters
     sharpness = 1.5
     snr_db = 35.0
-    downsample_factor = 2
-    subsample_view_factor = 2
+    downsample_factor = 8       # Spatial downsampling
+    subsample_view_factor = 8   # View  downsampling
+
+    # Determine which dataset to use
+    dataset_index = 0       # Index into one of the datasets below
+    use_local_data = False   # If True, then use local_data_directory/filename.  Otherwise, use the data_depot path.
+    local_data_directory = './data'  # Directory for local testing - you should copy the files below into this directory
 
     # Path to the dataset
-    dataset_dir = '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm'
+    depot_data_sets = [
+        '/depot/bouman/data/ORNL/versa/ParAM-Round-1_Z62.txrm',             # 0: Cylinder with rods and notches
+        '/depot/bouman/data/ORNL/versa/SiC-SiC_CompositeFFOV_tomo-A.txrm',  # 1:
+        '/depot/bouman/data/Zeiss/purdue/Scan_tomo-A.txrm',                 # 2:
+        '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm',    # 3: Solder drops, high-angle
+        '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_No_HART.txrm',          # 4: Solder drops, equiangle
+        '/depot/bouman/data/Zeiss/foam512R1N3000.txrm'                                      # 5: Synthetic foam data
+    ]
+
+    dataset_path = depot_data_sets[dataset_index]
+    if use_local_data:
+        filename = os.path.basename(dataset_path)
+        dataset_path = os.path.join(local_data_directory, filename)
 
     # Output path
     output_path = './output/'  # path to store output recon images
 
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params, metadata = mjp.zeiss_cb.compute_sino_and_params(dataset_dir, downsample_factor=(downsample_factor, downsample_factor),
-                                                                                                 subsample_view_factor=subsample_view_factor,
-                                                                                                 is_preprocessed=False)
+    sinogram, cone_beam_params, optional_params = mjp.zeiss_cb.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
+                                                                                                 subsample_view_factor=subsample_view_factor)
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
@@ -49,20 +65,21 @@ def main():
     # Perform FDK reconstruction
     print("\n********** Perform FDK reconstruction **************")
     direct_recon = ct_model.direct_recon(sinogram)
+    mj.slice_viewer(direct_recon, slice_axis=2, title='Direct reconstruction')
 
     # Perform sinogram per-view alignment
-    print("\n********** Perform sinogram alignment **************")
-    sinogram = mjp.align_sino_views(ct_model, sinogram, direct_recon)
+    # print("\n********** Perform sinogram alignment **************")
+    # sinogram = mjp.align_sino_views(ct_model, sinogram, direct_recon)
 
     # Weights
     weights = mj.gen_weights(sinogram, weight_type='transmission_root')
 
     # Perform FDK reconstruction
-    print("\n********** Perform FDK reconstruction after alignment **************")
-    direct_recon = ct_model.direct_recon(sinogram)
+    # print("\n********** Perform FDK reconstruction after alignment **************")
+    # direct_recon = ct_model.direct_recon(sinogram)
 
     # Perform MBIR reconstruction
-    print("\n********** Perform MBIR reconstruction after alignment **************")
+    print("\n********** Perform MBIR reconstruction **************")
     mbir_recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
     # Save recon to hdf5

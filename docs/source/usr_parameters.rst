@@ -53,6 +53,14 @@ This parameter determines if positivity is enforced in MBIR reconstruction.
 
 .. _param-verbose:
 
+max_overrelaxation
+""""""""""""""""""
+:Type: float (Defaults to 1.5)
+
+This parameter limits the step size of VCD updates.
+
+.. _param-max_overrelaxation:
+
 verbose
 """""""
 :Type: int (Defaults to 1)
