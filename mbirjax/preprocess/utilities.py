@@ -826,3 +826,52 @@ def align_sino_views(ct_model, sino, direct_recon):
         return shifted_view
 
     return jax.vmap(shift_view, in_axes=(0, 0))(sino, estimated_shifts)
+
+def convert_full_scan_to_short_scan_conebeam(sino, cone_beam_params, optional_params):
+    """
+    Convert a full scan sinogram into a short scan sinogram by selecting
+    a contiguous angular range of approximately pi + horizontal cone angle.
+
+    Args:
+        sino (np.ndarray): ndarray of shape (num_views, num_det_rows, num_det_channels)
+        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
+        optional_params (dict): Optional geometry parameters set after the model is constructed.
+
+    Returns:
+        sino_short: ndarray
+        cone_beam_params_short: dict
+    """
+
+    num_views, num_det_rows, num_det_channels = sino.shape
+
+    angles = cone_beam_params["angles"]
+    source_detector_dist = cone_beam_params["source_detector_dist"]
+
+    delta_det_channel = optional_params["delta_det_channel"]
+    det_channel_offset = optional_params["det_channel_offset"]
+
+    half_detector_width = delta_det_channel * num_det_channels / 2 + np.abs(det_channel_offset)
+    half_horiz_cone_angle = np.arctan2(half_detector_width, source_detector_dist)
+    angle_range = np.pi + half_horiz_cone_angle
+
+    # This function selects the short scan starting from the first view.
+    view_start = 0
+    # Need np.unwrap so that if the scan is taken counter-clockwise,
+    # 0, 359, 358, ... becomes 0, -1, -2, ..., which is easier for
+    # finding the ending index of the short-scan view selection.
+    angles_unwrap = np.unwrap(angles)
+    candidate_idx = np.argwhere(np.abs(angles_unwrap) >= angle_range)
+    if candidate_idx.size == 0:
+        warnings.warn("Input scan does not contain enough angular coverage for short scan, returning the original scan")
+        view_end = num_views
+    else:
+        view_end = int(candidate_idx[0, 0]) + 1
+    sino_short = sino[view_start:view_end]
+    angles_short = angles[view_start:view_end]
+
+    cone_beam_params_short = dict(cone_beam_params)
+
+    cone_beam_params_short['sinogram_shape'] = sino_short.shape
+    cone_beam_params_short['angles'] = angles_short
+
+    return sino_short, cone_beam_params_short
