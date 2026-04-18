@@ -471,6 +471,8 @@ def read_scan_dir(scan_dir, view_ids=None):
     import tifffile
     # Get the files that are views and check that we have as many as we need
     img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tif')))
+    if len(img_path_list) == 0:
+        img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tiff')))  # Assume files are '.tif' but check '.tiff' if not
     # Set the view ids if none given or check that we have enough.  This assumes that all the views are in the
     # directory and are labeled sequentially.
     if view_ids is None:

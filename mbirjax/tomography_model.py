@@ -838,13 +838,14 @@ class TomographyModel(ParameterHandler):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
-        threshold1 = mj.utilities.compute_background_cluster_width(sinogram)
+        percent_noise_floor = 5.0
+        threshold = (0.01 * percent_noise_floor) * np.mean(np.fabs(sinogram))
+        # Form indicator by thresholding sinogram
+        indicator = np.int8(sinogram > threshold)
 
-        object_level = 0.25
-        object_median = np.median(sinogram[sinogram > threshold1])
-        threshold2 = object_level * object_median
-
-        indicator = np.int8(sinogram > threshold2)
+        if not np.any(indicator):
+            warnings.warn('\n\nSinogram may be all 0 or include many negative values, which may affect regularization parameters and/or reconstruction.\n')
+            indicator = np.int8(np.fabs(sinogram) >= threshold)
 
         return indicator
 
