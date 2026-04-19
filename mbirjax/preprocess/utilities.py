@@ -417,8 +417,6 @@ def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pi
 # ####### END subroutines for image cropping and down-sampling
 
 
-# ####### subroutines for loading scan images
-
 def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
     """
     Convert image to float32 and normalize if it is an integer dtype.
@@ -471,8 +469,15 @@ def read_scan_dir(scan_dir, view_ids=None):
     import tifffile
     # Get the files that are views and check that we have as many as we need
     img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tif')))
-    # Set the view ids if none given or check that we have enough.  This assumes that all the views are in the
-    # directory and are labeled sequentially.
+    if len(img_path_list) == 0:
+        img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tiff')))  # Assume files are '.tif' but check '.tiff' if not
+
+    # if no views are found, raise an error
+    if len(img_path_list) == 0:
+        raise FileNotFoundError('No scan images found in directory: {}'.format(scan_dir))
+
+    # Set view_idx to be an array corresponding to the views that should be read.from
+    # This assumes that all the views are labeled sequentially.
     if view_ids is None:
         view_ids = np.arange(len(img_path_list))
     else:
@@ -486,7 +491,6 @@ def read_scan_dir(scan_dir, view_ids=None):
 
     # return shape = num_views x num_det_rows x num_det_channels
     return output_views
-# ####### END subroutines for loading scan images
 
 
 def compute_scaling_factor(target_vect: jnp.ndarray, vect_to_scale: jnp.ndarray) -> float:
