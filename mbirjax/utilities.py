@@ -1439,8 +1439,9 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
 def compute_background_cluster_width(sinogram, safety_factor=1.5):
     """
     Estimate background cluster width from the sinogram histogram.
+    This function assumes that the background takes on values near zero.
 
-    This function is used for computing sinogram indicator.
+    Note: The function is guaranteed to return a non-negative value, but it might be 0.
 
     Args:
         sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
