@@ -846,7 +846,9 @@ class TomographyModel(ParameterHandler):
             raise ValueError("sinogram contains NaN and/or Inf values.")
 
         # Compute an initial threshold the results in a non-empty region that contains no background.
-        _, right_cluster_boundary = mj.utilities.estimate_background_cluster_boundaries(sinogram)
+        left_cluster_boundary, right_cluster_boundary = mj.utilities.estimate_background_cluster_boundaries(sinogram)
+        cluster_width = right_cluster_boundary - left_cluster_boundary
+        threshold = right_cluster_boundary + cluster_width      # This give some measure of safety about the estimate background
 
         # Make sure right_cluster_boundary less than or equal to the maximum sinogram value
         max_sino = np.max(sinogram)
@@ -855,14 +857,14 @@ class TomographyModel(ParameterHandler):
             indicator = np.ones_like(sinogram, dtype=np.int8)
             return indicator
 
-        if max_sino < right_cluster_boundary:
+        if max_sino < threshold:
             warnings.warn('\nUnable to determine sinogram background. This may affect regularization.\n')
             indicator = np.ones_like(sinogram, dtype=np.int8)
             return indicator
 
         # Compute the a final threshold that is a fraction of the median of the object region
         object_level = 0.25
-        object_median = np.median(sinogram[sinogram >= right_cluster_boundary])
+        object_median = np.median(sinogram[sinogram >= threshold])
         object_threshold = object_level * object_median
 
         # Compute the indicator
