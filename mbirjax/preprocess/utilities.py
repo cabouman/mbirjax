@@ -203,11 +203,19 @@ def correct_background_offset(sino, edge_width=9, option='global'):
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
         edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
-        option (str): "global" or "per_view". Defaults to 'global'.
+        option (str or None): One of:
+            - None: No correction; return the input sinogram unchanged.
+            - "global": Estimate one scalar offset from edge regions across all views.
+            - "per_view": Estimate one offset per view from edge regions.
+            Defaults to 'global'.
 
     Returns:
         sino_corrected (numpy.ndarray)
     """
+
+    # No-op option: return the original sinogram without modification.
+    if option is None:
+        return sino
 
     if edge_width < 1:
         edge_width = 1
@@ -246,7 +254,7 @@ def correct_background_offset(sino, edge_width=9, option='global'):
         sino_corrected = sino - offset[:, None, None]
 
     else:
-        raise ValueError("option must be 'global' or 'per_view'")
+        raise ValueError("option must be None, 'global' or 'per_view'")
 
     return sino_corrected
 
