@@ -435,7 +435,8 @@ def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
         return img.astype(np.float32) / maxval
     return img.astype(np.float32)
 
-def read_scan_img(img_path):
+
+def read_tif_scan_img(img_path):
     """
     Reads a scan image from a TIFF file. Supports both 2D and 3D TIFFs.
 
@@ -455,8 +456,8 @@ def read_scan_img(img_path):
     return img
 
 
-def read_scan_dir(scan_dir, view_ids=None):
-    """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
+def read_tif_stack_dir(scan_dir, view_ids=None):
+    """Reads a tif stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
 
     Args:
         scan_dir (string): Path to a ConeBeam Scan directory.

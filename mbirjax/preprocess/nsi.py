@@ -294,9 +294,9 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     ### END load NSI parameters from an nsipro file
 
     ### read blank scans and dark scans
-    blank_scan = np.expand_dims(mjp.read_scan_img(blank_scan_path), axis=0)
+    blank_scan = np.expand_dims(mjp.read_tif_scan_img(blank_scan_path), axis=0)
     if dark_scan_path is not None:
-        dark_scan = np.expand_dims(mjp.read_scan_img(dark_scan_path), axis=0)
+        dark_scan = np.expand_dims(mjp.read_tif_scan_img(dark_scan_path), axis=0)
     else:
         dark_scan = np.zeros(blank_scan.shape)
 
@@ -306,7 +306,7 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     view_ids = np.arange(start=view_id_start, stop=view_id_end, step=subsample_view_factor, dtype=np.int32)
     if verbose > 0:
         print('Loading {} object scans from disk.'.format(len(view_ids)))
-    obj_scan = mjp.read_scan_dir(obj_scan_dir, view_ids)
+    obj_scan = mjp.read_tif_stack_dir(obj_scan_dir, view_ids)
     if verbose > 0:
         print('Scans loaded.')
 

@@ -42,6 +42,7 @@ PYMBIR functions
 
 .. autofunction:: compute_sino_and_params
 
+
 General preprocess functions
 ----------------------------
 
@@ -56,7 +57,9 @@ General preprocess functions
 .. autofunction:: downsample_view_data
 .. autofunction:: crop_view_data
 .. autofunction:: apply_cylindrical_mask
-.. autofunction:: read_scan_img
+.. autofunction:: read_tif_stack_dir
+.. autofunction:: read_tif_scan_img
+
 
 MAR utilities
 -------------
