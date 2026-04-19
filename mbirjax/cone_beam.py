@@ -217,7 +217,7 @@ class ConeBeamModel(TomographyModel):
         # Detector height mapped to iso
         H_iso = num_det_rows * (delta_det_row / magnification)
     
-        # Total axial coverage - we'll include all slices that are projected onto at least one view
+        # Total axial coverage: include all slices that are projected onto at least one view
         num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel))
         num_recon_slices = max(1, num_recon_slices)
     
