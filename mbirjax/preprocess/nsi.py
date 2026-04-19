@@ -294,9 +294,9 @@ def load_scans_and_params(dataset_dir, view_id_start=0, view_id_end=None, subsam
     ### END load NSI parameters from an nsipro file
 
     ### read blank scans and dark scans
-    blank_scan = np.expand_dims(mjp.read_tif_scan_img(blank_scan_path), axis=0)
+    blank_scan = np.expand_dims(mjp.read_tif_img(blank_scan_path), axis=0)
     if dark_scan_path is not None:
-        dark_scan = np.expand_dims(mjp.read_tif_scan_img(dark_scan_path), axis=0)
+        dark_scan = np.expand_dims(mjp.read_tif_img(dark_scan_path), axis=0)
     else:
         dark_scan = np.zeros(blank_scan.shape)
 

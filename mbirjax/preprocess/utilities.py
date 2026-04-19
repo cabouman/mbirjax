@@ -444,7 +444,7 @@ def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
     return img.astype(np.float32)
 
 
-def read_tif_scan_img(img_path):
+def read_tif_img(img_path):
     """
     Reads a scan image from a TIFF file. Supports both 2D and 3D TIFFs.
 
