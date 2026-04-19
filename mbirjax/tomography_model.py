@@ -838,13 +838,29 @@ class TomographyModel(ParameterHandler):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
+        # Sometimes users accidentally create complex sinograms when they take the -log.
+        # So we check for complex numbers or NaNs and raise an error.
+        if np.iscomplexobj(sinogram):
+            raise TypeError("sinogram must be real-valued; got complex dtype.")
+        if not np.isfinite(sinogram).all():
+            raise ValueError("sinogram contains NaN and/or Inf values.")
+
+        # Compute an initial threshold the results in a non-empty region that contains no background.
         threshold1 = mj.utilities.compute_background_cluster_width(sinogram)
 
+        # Make sure threshold1 less than or equal to the maximum sinogram value
+        max_sino = np.max(sinogram)
+        if max_sino < threshold1:
+            warnings.warn('\nSinogram does not appear to have a background cluster. Using mean instead.\n')
+            threshold1 = np.mean(sinogram)
+
+        # Compute the a final threshold that is a fraction of the median of the object region
         object_level = 0.25
-        object_median = np.median(sinogram[sinogram > threshold1])
+        object_median = np.median(sinogram[sinogram >= threshold1])
         threshold2 = object_level * object_median
 
-        indicator = np.int8(sinogram > threshold2)
+        # Compute the indicator
+        indicator = np.int8(sinogram >= threshold2)
 
         return indicator
 
