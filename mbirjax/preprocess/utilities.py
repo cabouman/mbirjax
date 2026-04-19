@@ -485,7 +485,7 @@ def read_tif_stack_dir(scan_dir, view_ids=None):
     if len(img_path_list) == 0:
         raise FileNotFoundError('No scan images found in directory: {}'.format(scan_dir))
 
-    # Set view_idx to be an array corresponding to the views that should be read.from
+    # Set view_idx to be an array corresponding to the views that should be read.
     # This assumes that all the views are labeled sequentially.
     if view_ids is None:
         view_ids = np.arange(len(img_path_list))
