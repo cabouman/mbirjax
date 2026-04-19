@@ -977,6 +977,26 @@ class TomographyModel(ParameterHandler):
             if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
                 init_recon = jax.device_put(init_recon, self.main_device)
 
+            # Test the sinogram contains valid data
+            # Sometimes users accidentally create complex sinograms when they take the -log.
+            # So we check for complex numbers or NaNs and raise an error.
+            if np.iscomplexobj(sinogram):
+                raise TypeError("sinogram must be real-valued; got complex dtype.")
+            if not np.isfinite(sinogram).all():
+                raise ValueError("sinogram contains NaN and/or Inf values.")
+
+            # Test the weights contain valid data
+            if weights is not None:
+                # Test for NaNs and Inf values
+                if not jnp.isfinite(weights).all():
+                    raise ValueError("weights contains NaN and/or Inf values.")
+                # Test the weights are non-negative
+                if weights is not None and (weights < 0).any():
+                    raise ValueError("weights contain negative values.")
+                # Test the weights are not all zero
+                if weights is not None and (weights == 0).all():
+                    raise ValueError("all weights are zero.")
+
             # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
             regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
 
