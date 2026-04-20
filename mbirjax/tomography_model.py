@@ -838,13 +838,37 @@ class TomographyModel(ParameterHandler):
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
         """
-        threshold1 = mj.utilities.compute_background_cluster_width(sinogram)
+        # Sometimes users accidentally create complex sinograms when they take the -log.
+        # So we check for complex numbers or NaNs and raise an error.
+        if np.iscomplexobj(sinogram):
+            raise TypeError("sinogram must be real-valued; got complex dtype.")
+        if not np.isfinite(sinogram).all():
+            raise ValueError("sinogram contains NaN and/or Inf values.")
 
+        # Compute an initial threshold the results in a non-empty region that contains no background.
+        left_cluster_boundary, right_cluster_boundary = mj.utilities.estimate_background_cluster_boundaries(sinogram)
+        cluster_width = right_cluster_boundary - left_cluster_boundary
+        threshold = right_cluster_boundary + cluster_width      # This give some measure of safety about the estimate background
+
+        # Make sure right_cluster_boundary less than or equal to the maximum sinogram value
+        max_sino = np.max(sinogram)
+        if max_sino <= 0:
+            warnings.warn("Sinogram contains no positive values. This may lead to a contrast reversed reconstruction.")
+            indicator = np.ones_like(sinogram, dtype=np.int8)
+            return indicator
+
+        if max_sino < threshold:
+            warnings.warn('\nUnable to determine sinogram background. This may affect regularization.\n')
+            indicator = np.ones_like(sinogram, dtype=np.int8)
+            return indicator
+
+        # Compute the a final threshold that is a fraction of the median of the object region
         object_level = 0.25
-        object_median = np.median(sinogram[sinogram > threshold1])
-        threshold2 = object_level * object_median
+        object_median = np.median(sinogram[sinogram >= threshold])
+        object_threshold = object_level * object_median
 
-        indicator = np.int8(sinogram > threshold2)
+        # Compute the indicator
+        indicator = np.int8(sinogram >= object_threshold)
 
         return indicator
 
@@ -954,6 +978,26 @@ class TomographyModel(ParameterHandler):
                 weights = jax.device_put(weights, self.sinogram_device)
             if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
                 init_recon = jax.device_put(init_recon, self.main_device)
+
+            # Test the sinogram contains valid data
+            # Sometimes users accidentally create complex sinograms when they take the -log.
+            # So we check for complex numbers or NaNs and raise an error.
+            if np.iscomplexobj(sinogram):
+                raise TypeError("sinogram must be real-valued; got complex dtype.")
+            if not np.isfinite(sinogram).all():
+                raise ValueError("sinogram contains NaN and/or Inf values.")
+
+            # Test the weights contain valid data
+            if weights is not None:
+                # Test for NaNs and Inf values
+                if not jnp.isfinite(weights).all():
+                    raise ValueError("weights contains NaN and/or Inf values.")
+                # Test the weights are non-negative
+                if weights is not None and (weights < 0).any():
+                    raise ValueError("weights contain negative values.")
+                # Test the weights are not all zero
+                if weights is not None and (weights == 0).all():
+                    raise ValueError("all weights are zero.")
 
             # Run auto regularization. If auto_regularize_flag is False, then this will have no effect
             regularization_params = self.auto_set_regularization_params(sinogram, weights=weights)
