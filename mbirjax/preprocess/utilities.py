@@ -203,50 +203,48 @@ def correct_background_offset(sino, edge_width=9, option='global'):
     Args:
         sino (numpy.ndarray): Sinogram data with shape (num_views, num_det_rows, num_det_channels).
         edge_width (int, optional): Width of the edge regions in pixels. Must be an integer >= 1.  Defaults to 9.
-        option (str): "global" or "per_view". Defaults to 'global'.
+        option (str or None): One of:
+            - None: No correction; return the input sinogram unchanged.
+            - "global": Estimate one scalar offset from edge regions across all views.
+            - "per_view": Estimate one offset per view from edge regions.
+            Defaults to 'global'.
 
     Returns:
         sino_corrected (numpy.ndarray)
     """
 
+    # No-op option: return the original sinogram without modification.
+    if option is None:
+        return sino
+
     if edge_width < 1:
         edge_width = 1
         warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
 
+    num_views, _, num_det_channels = sino.shape
+
+    sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
+    sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
+    sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
+
+    med_left  = np.median(sino_edge_left, axis=1)
+    med_right = np.median(sino_edge_right, axis=1)
+    med_top   = np.median(sino_edge_top, axis=1)
+
+    edge_medians = np.stack([med_left, med_right, med_top], axis=1)
+    offset = np.median(edge_medians, axis=1)   # (num_views,)
+
     if option == "global":
-        _, _, num_det_channels = sino.shape
-
-        # Extract edge regions from the sinogram (top, left, right)
-        sino_edge_left  = sino[:, :, :edge_width].flatten()
-        sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
-        sino_edge_top   = sino[:, :edge_width, :].flatten()
-
-        med_left = np.median(sino_edge_left)
-        med_right = np.median(sino_edge_right)
-        med_top = np.median(sino_edge_top)
-
-        offset = np.median([med_left, med_right, med_top])
-
+        # Estimate one scalar offset from edge regions across all views
+        percentile = 10
+        offset = np.percentile(offset, percentile)
         sino_corrected = sino - offset
 
     elif option == "per_view":
-        num_views, _, num_det_channels = sino.shape
-
-        sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
-        sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
-        sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
-
-        med_left  = np.median(sino_edge_left, axis=1)
-        med_right = np.median(sino_edge_right, axis=1)
-        med_top   = np.median(sino_edge_top, axis=1)
-
-        edge_medians = np.stack([med_left, med_right, med_top], axis=1)
-        offset = np.median(edge_medians, axis=1)   # (num_views,)
-
         sino_corrected = sino - offset[:, None, None]
 
     else:
-        raise ValueError("option must be 'global' or 'per_view'")
+        raise ValueError("option must be None, 'global' or 'per_view'")
 
     return sino_corrected
 
@@ -417,8 +415,6 @@ def crop_view_data(obj_scan, blank_scan, dark_scan, crop_pixels_sides=0, crop_pi
 # ####### END subroutines for image cropping and down-sampling
 
 
-# ####### subroutines for loading scan images
-
 def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
     """
     Convert image to float32 and normalize if it is an integer dtype.
@@ -437,7 +433,8 @@ def _normalize_to_float32(img: np.ndarray) -> np.ndarray:
         return img.astype(np.float32) / maxval
     return img.astype(np.float32)
 
-def read_scan_img(img_path):
+
+def read_tif_img(img_path):
     """
     Reads a scan image from a TIFF file. Supports both 2D and 3D TIFFs.
 
@@ -457,8 +454,8 @@ def read_scan_img(img_path):
     return img
 
 
-def read_scan_dir(scan_dir, view_ids=None):
-    """Reads a stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
+def read_tif_stack_dir(scan_dir, view_ids=None):
+    """Reads a tif stack of scan images from a directory. This function is a subroutine to `load_scans_and_params`.
 
     Args:
         scan_dir (string): Path to a ConeBeam Scan directory.
@@ -471,8 +468,15 @@ def read_scan_dir(scan_dir, view_ids=None):
     import tifffile
     # Get the files that are views and check that we have as many as we need
     img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tif')))
-    # Set the view ids if none given or check that we have enough.  This assumes that all the views are in the
-    # directory and are labeled sequentially.
+    if len(img_path_list) == 0:
+        img_path_list = sorted(glob.glob(os.path.join(scan_dir, '*[0-9].tiff')))  # Assume files are '.tif' but check '.tiff' if not
+
+    # if no views are found, raise an error
+    if len(img_path_list) == 0:
+        raise FileNotFoundError('No scan images found in directory: {}'.format(scan_dir))
+
+    # Set view_idx to be an array corresponding to the views that should be read.
+    # This assumes that all the views are labeled sequentially.
     if view_ids is None:
         view_ids = np.arange(len(img_path_list))
     else:
@@ -486,7 +490,6 @@ def read_scan_dir(scan_dir, view_ids=None):
 
     # return shape = num_views x num_det_rows x num_det_channels
     return output_views
-# ####### END subroutines for loading scan images
 
 
 def compute_scaling_factor(target_vect: jnp.ndarray, vect_to_scale: jnp.ndarray) -> float:
