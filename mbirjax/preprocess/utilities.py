@@ -221,36 +221,26 @@ def correct_background_offset(sino, edge_width=9, option='global'):
         edge_width = 1
         warnings.warn("edge_width of background regions should be >= 1! Setting edge_width to 1.")
 
+    num_views, _, num_det_channels = sino.shape
+
+    sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
+    sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
+    sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
+
+    med_left  = np.median(sino_edge_left, axis=1)
+    med_right = np.median(sino_edge_right, axis=1)
+    med_top   = np.median(sino_edge_top, axis=1)
+
+    edge_medians = np.stack([med_left, med_right, med_top], axis=1)
+    offset = np.median(edge_medians, axis=1)   # (num_views,)
+
     if option == "global":
-        _, _, num_det_channels = sino.shape
-
-        # Extract edge regions from the sinogram (top, left, right)
-        sino_edge_left  = sino[:, :, :edge_width].flatten()
-        sino_edge_right = sino[:, :, num_det_channels-edge_width:].flatten()
-        sino_edge_top   = sino[:, :edge_width, :].flatten()
-
-        med_left = np.median(sino_edge_left)
-        med_right = np.median(sino_edge_right)
-        med_top = np.median(sino_edge_top)
-
-        offset = np.median([med_left, med_right, med_top])
-
+        # Estimate one scalar offset from edge regions across all views
+        percentile = 10
+        offset = np.percentile(offset, percentile)
         sino_corrected = sino - offset
 
     elif option == "per_view":
-        num_views, _, num_det_channels = sino.shape
-
-        sino_edge_left  = sino[:, :, :edge_width].reshape(num_views, -1)
-        sino_edge_right = sino[:, :, num_det_channels-edge_width:].reshape(num_views, -1)
-        sino_edge_top   = sino[:, :edge_width, :].reshape(num_views, -1)
-
-        med_left  = np.median(sino_edge_left, axis=1)
-        med_right = np.median(sino_edge_right, axis=1)
-        med_top   = np.median(sino_edge_top, axis=1)
-
-        edge_medians = np.stack([med_left, med_right, med_top], axis=1)
-        offset = np.median(edge_medians, axis=1)   # (num_views,)
-
         sino_corrected = sino - offset[:, None, None]
 
     else:
