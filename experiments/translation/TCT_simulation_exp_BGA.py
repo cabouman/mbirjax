@@ -10,13 +10,13 @@ from scipy.ndimage import zoom
 def get_experiment_params(experiment_name):
     """Returns experiment-specific parameters."""
     base_config = {
-        "source_det_dist_mm": 80,
-        "source_iso_dist_mm": 30,
+        "source_det_dist_mm": 160,
+        "source_iso_dist_mm": 60,
         "det_pixel_pitch_mm": 75 / 1000,
-        "x_view_space_mm": 5,
+        "x_view_space_mm": 4,
         "z_view_space_mm": 3,
-        "num_x_translations": 11,
-        "num_z_translations": 9,
+        "num_x_translations": 15,
+        "num_z_translations": 11,
         "num_det_rows": 1936,
         "num_det_channels": 3064,
         "qggmrf_nbr_weights": [0.1, 1.0, 1.0],
@@ -129,7 +129,7 @@ def main():
     gt_phantom = np.pad(gt_phantom,((0, 0), (pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2)))
 
     # Crop excess empty rows
-    gt_phantom = gt_phantom[150:510, :, :]
+    gt_phantom = gt_phantom[200:460, :, :]
 
     # Set parameters for forward projection
     tct_model.set_params(positivity_flag=True)
