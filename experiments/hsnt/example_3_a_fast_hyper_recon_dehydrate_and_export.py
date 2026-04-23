@@ -2,22 +2,26 @@
 Hyperspectral Dehydration & Rehydration
 ---------------------------------------
 
-This script demonstrates the use of dehydration and rehydration for fast hyperspectral reconstruction.
+Examples 3(a) + 3(b) demonstrate the use of dehydration and rehydration for fast hyperspectral reconstruction.
 A simulated hyperspectral neutron dataset containing three materials (Ni, Cu, and Al) is used for the purpose.
+This script - example 3(a) - performs dehydration followed by MBIR and then exports the dehydrated reconstructions.
 """
 
 import os
 import numpy as np
 import time
-import matplotlib.pyplot as plt
 import mbirjax as mj
 
-from mbirjax.hsnt import dehydrate, rehydrate, generate_hyper_data
-from plot_utils import plot_images, plot_spectra
+from mbirjax.hsnt import generate_hyper_data, dehydrate, create_hsnt_metadata, export_hsnt_data_hdf5
 
 
 def main():
     start_time = time.time()
+    
+    # Set output path and dataset name
+    output_path = './processed_data/'  # Path to export data
+    dataset_name = "hsnt_dehydrated_recons"  # Name of the output dataset
+    os.makedirs(output_path, exist_ok=True)
 
     # Simulation parameters
     num_angles = 16  # Number of view angles
@@ -31,15 +35,6 @@ def main():
     num_materials = 3  # Number of materials
     recon_snr_db = 20  # Assumed SNR for the reconstruction
     verbose = 2  # Verbosity level
-
-    # Display parameters
-    display_wave_idx = 200  # Wavelength index of displayed image
-    display_slice_idx = 8  # Slice index of displayed image
-    display_vox_idx = [32, 32, 8]  # Voxel index [column, column, row] of displayed spectra
-    vmax = 0.1  # Maximum voxel value for displayed image
-    vmin = 0  # Minimum voxel value for displayed image
-    y_lim_attenuation = (0.04, 0.09)  # (y_min, y_max) to set y-axis range for attenuation spectra
-    y_lim_transmission = (0.91, 0.96)  # (y_min, y_max) to set y-axis range for transmission spectra
 
     # Fix seed for random number generation
     np.random.seed(129)
@@ -62,42 +57,30 @@ def main():
     mj_model = mj.ParallelBeamModel((num_angles, detector_rows, detector_columns), angles)
     mj_model.set_params(snr_db=recon_snr_db, verbose=0)
 
-    # Perform fast hyperspectral reconstruction (dehydrate + MBIR + rehydrate)
+    # Perform dehydration
     hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
 
+    # Unpack dehydrated data
     [subspace_data, subspace_basis, dataset_type] = hsnt_dehydrated
+    
+    # Perform MBIR
     subspace_dimension = subspace_data.shape[-1]
-    subspace_recons = np.zeros((detector_columns, detector_columns, detector_rows, subspace_dimension))
+    subspace_recons = []
     for idx in range(subspace_dimension):
         print("Reconstructing data for subspace index: " + str(idx))
-        subspace_recons[:, :, :, idx], _ = mj_model.recon(subspace_data[:, :, :, idx])
+        subspace_recon, _ = mj_model.recon(subspace_data[:, :, :, idx])
+        subspace_recons.append(subspace_recon)
+    subspace_recons = np.moveaxis(np.array(subspace_recons), 0, -1)
+    
+    # Repack dehydrated data
     hsnt_dehydrated_recons = [subspace_recons, subspace_basis, dataset_type]
-
-    hsnt_recons = rehydrate(hsnt_dehydrated_recons)
-
-    # Plot hyperspectral projections and spectra
-    if verbose > 1:
-        plot_images(images=[hsnt_recons[:, :, display_slice_idx, display_wave_idx]],
-                    titles=['Hyperspectral reconstruction' +
-                            '\n\nSlice index: ' + str(display_slice_idx) +
-                            '\nWavelength index: ' + str(display_wave_idx)],
-                    vmax=vmax, vmin=vmin)
-
-        plot_spectra(spectra=[hsnt_recons[display_vox_idx[0], display_vox_idx[1], display_vox_idx[2], :]],
-                     title='Single voxel spectra (attenuation) for reconstructed data',
-                     x_label='wavelength index',
-                     y_label='attenuation',
-                     y_lim=y_lim_attenuation)
-
-        plot_spectra(spectra=[np.exp(-hsnt_recons[display_vox_idx[0], display_vox_idx[1], display_vox_idx[2], :])],
-                     title='Single voxel spectra (transmission) for reconstructed data',
-                     x_label='wavelength index',
-                     y_label='transmission',
-                     y_lim=y_lim_transmission)
+    
+    # Export dehydrated reconstructions into HDF5 file
+    metadata = create_hsnt_metadata(dataset_name=dataset_name)
+    filename = os.path.join(output_path, dataset_name + ".h5")
+    export_hsnt_data_hdf5(filename, hsnt_dehydrated_recons, metadata)
 
     print('Total time elapsed: ', time.time() - start_time, ' seconds')
-
-    plt.show()
 
 
 if __name__ == "__main__":
