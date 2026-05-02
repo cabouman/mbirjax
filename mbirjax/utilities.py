@@ -1526,14 +1526,14 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
     num_parameters = int(num_parameters)
     if num_parameters < 2:
         raise ValueError(
-            'num_parameters must be at least 2.')
+            'fit_beam_hardening_curve: num_parameters must be at least 2.')
 
     linear_projection = np.asarray(linear_projection, dtype=np.float64)
     target_projection = np.asarray(target_projection, dtype=np.float64)
 
     if linear_projection.size != target_projection.size:
         raise ValueError(
-            'Input and target projection arrays must contain the same number of samples.')
+            'fit_beam_hardening_curve: Input and target projection arrays must contain the same number of samples.')
 
     # Treat the inputs as paired samples even when they are not already 1D.
     linear_projection = linear_projection.ravel()
@@ -1549,7 +1549,7 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
 
     if linear_projection.size == 0:
         raise ValueError(
-            'No valid training samples remain.')
+            'fit_beam_hardening_curve: No valid training samples remain.')
 
     # Default initialization: theta_0 = 1 and all exponential log-weights = 0.
     initial_params = np.zeros(num_parameters, dtype=np.float64)
@@ -1567,7 +1567,7 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
 
     if not optimization_result.success:
         warnings.warn(
-            f'Beam-hardening curve fit did not converge: {optimization_result.message}',
+            f'fit_beam_hardening_curve: Beam-hardening curve fit did not converge: {optimization_result.message}',
             RuntimeWarning)
 
     optimized_params = optimization_result.x
