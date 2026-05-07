@@ -33,7 +33,7 @@ class TestProjectors(unittest.TestCase):
         self.source_iso_dist = self.source_detector_dist
         
         # These can be adjusted to describe the geometry in the helical cone beam case.
-        self.helical_pitch = 1.0
+        self.helical_pitch = 0.5
         self.helical_z_range = 80.0
         self.helical_z_center = 40.0
 

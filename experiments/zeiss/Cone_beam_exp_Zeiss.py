@@ -14,8 +14,8 @@ def main():
     # Recon parameters
     sharpness = 1.5
     snr_db = 35.0
-    downsample_factor = 8       # Spatial downsampling
-    subsample_view_factor = 8   # View  downsampling
+    downsample_factor = 2       # Spatial downsampling
+    subsample_view_factor = 2   # View  downsampling
 
     # Determine which dataset to use
     dataset_index = 0       # Index into one of the datasets below
@@ -29,7 +29,7 @@ def main():
         '/depot/bouman/data/Zeiss/purdue/Scan_tomo-A.txrm',                 # 2:
         '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm',    # 3: Solder drops, high-angle
         '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_No_HART.txrm',          # 4: Solder drops, equiangle
-        '/depot/bouman/data/Zeiss/foam512R1N3000.txrm'                                      # 5: Synthetic foam data
+        '/depot/bouman/data/Zeiss/foam512R1N3000_raw_scan.txrm'                             # 5: Synthetic foam data
     ]
 
     dataset_path = depot_data_sets[dataset_index]

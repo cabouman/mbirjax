@@ -21,6 +21,7 @@ import h5py
 import re
 import warnings
 import subprocess
+import scipy
 
 
 def load_data_hdf5(file_path):
@@ -1436,18 +1437,17 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     return recon_shape, delta_voxel, delta_recon_row
 
 
-def compute_background_cluster_width(sinogram, safety_factor=1.5):
+def estimate_background_cluster_boundaries(sinogram):
     """
-    Estimate background cluster width from the sinogram histogram.
-
-    This function is used for computing sinogram indicator.
+    Estimate background cluster left and right boundaries from the sinogram histogram.
+    This function assumes that the background takes on values near zero.
 
     Args:
         sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
-        safety_factor (float): Multiplier applied to the estimated background cluster width.
 
     Returns:
-        background_cluster_width (float): width of the background cluster
+        left_boundary (float): value of the left boundary to the background cluster
+        right_boundary (float): value of the right boundary to the background cluster
     """
     # Compute histogram of sinogram values
     hist, edges = np.histogram(sinogram.ravel(), bins=400)
@@ -1488,6 +1488,146 @@ def compute_background_cluster_width(sinogram, safety_factor=1.5):
     left_boundary = centers[left_boundary_idx]
     right_boundary = centers[right_boundary_idx]
 
-    background_cluster_width = safety_factor*(right_boundary - left_boundary)
+    return left_boundary, right_boundary
 
-    return background_cluster_width
+
+def fit_beam_hardening_curve(linear_projection, target_projection, num_parameters=5):
+    """
+    Fit parametric beam-hardening function from paired samples.
+
+    This function fits the function
+
+        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p))
+
+    to paired ``(linear_projection, target_projection)`` samples using
+    nonlinear least squares.
+
+    Args:
+        linear_projection (np.ndarray): Ideal linear
+            projection or path-length samples.
+        target_projection (np.ndarray): Target
+            beam-hardened projection samples paired with
+            ``linear_projection``.
+        num_parameters (int, optional): Total number of fitted parameters.
+                                        Defaults to 5.
+
+    Returns:
+        ndarray: Optimized parameter vector
+            ``[theta_0, theta_1, ..., theta_{num_parameters-1}]``.
+
+    Example:
+        >>> linear_projection = sinogram.ravel()
+        >>> target_projection = sinogram_nonlinear.ravel()
+        >>> fitted_params = fit_beam_hardening_curve(
+        ...     linear_projection, target_projection, num_parameters=5)
+        >>> y_pred = apply_fitted_beam_hardening_curve(
+        ...     sinogram_test, fitted_params)
+    """
+    num_parameters = int(num_parameters)
+    if num_parameters < 2:
+        raise ValueError(
+            'fit_beam_hardening_curve: num_parameters must be at least 2.')
+
+    linear_projection = np.asarray(linear_projection, dtype=np.float64)
+    target_projection = np.asarray(target_projection, dtype=np.float64)
+
+    if linear_projection.size != target_projection.size:
+        raise ValueError(
+            'fit_beam_hardening_curve: Input and target projection arrays must contain the same number of samples.')
+
+    # Treat the inputs as paired samples even when they are not already 1D.
+    linear_projection = linear_projection.ravel()
+    target_projection = target_projection.ravel()
+
+    # Keep positive training pairs
+    valid_mask = (
+        np.isfinite(linear_projection) & np.isfinite(target_projection)
+        & (linear_projection > 1e-6) & (target_projection > 1e-6)
+    )
+    linear_projection = linear_projection[valid_mask]
+    target_projection = target_projection[valid_mask]
+
+    if linear_projection.size == 0:
+        raise ValueError(
+            'fit_beam_hardening_curve: No valid training samples remain.')
+
+    # Default initialization: theta_0 = 1 and all exponential log-weights = 0.
+    initial_params = np.zeros(num_parameters, dtype=np.float64)
+    initial_params[0] = 1.0
+
+    # Fit the filtered projection pairs by nonlinear least squares.
+    optimization_result = scipy.optimize.least_squares(
+        _beam_hardening_curve_residuals,
+        initial_params,
+        args=(linear_projection, target_projection),
+        loss='linear',
+        method='trf',
+        verbose=1,
+    )
+
+    if not optimization_result.success:
+        warnings.warn(
+            f'fit_beam_hardening_curve: Beam-hardening curve fit did not converge: {optimization_result.message}',
+            RuntimeWarning)
+
+    optimized_params = optimization_result.x
+
+    return optimized_params
+
+
+def apply_fitted_beam_hardening_curve(linear_projection, params):
+    """
+    Apply a fitted parametric beam-hardening function.
+
+    This is the inference step after :func:`fit_beam_hardening_curve`.
+    It maps a linear projection to the corresponding beam-hardened
+    projection using the fitted parameter vector:
+
+        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p)).
+
+    Args:
+        linear_projection (np.ndarray): Linear
+            projection values. Arrays of any shape are accepted and the output
+            preserves that shape.
+        params (np.ndarray): Parameter vector
+            ``[theta_0, theta_1, ..., theta_N]``.
+
+    Returns:
+        ndarray: Beam-hardened projection values with the same shape as
+            ``linear_projection``.
+    """
+    linear_projection = np.asarray(linear_projection, dtype=np.float64)
+    params = np.asarray(params, dtype=np.float64).reshape(-1)
+
+    if params.size < 2:
+        raise ValueError(
+            'Expected at least 2 parameters: theta_0 and one log-weight.')
+
+    theta_0 = params[0]
+    theta_rest = params[1:]
+
+    log_sum_exp = np.full_like(linear_projection, -np.inf, dtype=np.float64)
+    for i, theta_i in enumerate(theta_rest, start=1):
+        exponent = theta_i - i * theta_0 * linear_projection
+        log_sum_exp = np.logaddexp(log_sum_exp, exponent)
+
+    return -log_sum_exp
+
+
+def _beam_hardening_curve_residuals(params, linear_projection, target_projection):
+    """
+    Return fitted-minus-target residuals for nonlinear least-squares fitting.
+
+    Args:
+        params (np.ndarray): Current beam-hardening
+            model parameters.
+        linear_projection (np.ndarray): Filtered linear projection samples.
+        target_projection (np.ndarray): Filtered target beam-hardened samples.
+
+    Returns:
+        ndarray: One-dimensional residual vector used by
+            :func:`scipy.optimize.least_squares`.
+    """
+    fitted_projection = apply_fitted_beam_hardening_curve(
+        linear_projection, params)
+    return fitted_projection.ravel() - target_projection.ravel()
