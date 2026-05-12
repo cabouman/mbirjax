@@ -44,11 +44,11 @@ Parameter Handling
 Recon Shape and Voxel Spacing
 -----------------------------
 
+.. automethod:: mbirjax.TomographyModel.auto_set_recon_geometry
+
 .. automethod:: mbirjax.TomographyModel.scale_recon_shape
 
 .. automethod:: mbirjax.TomographyModel.get_magnification
-
-.. automethod:: mbirjax.TomographyModel.auto_set_recon_geometry
 
 
 .. _SaveLoadDocs:
