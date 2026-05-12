@@ -51,7 +51,7 @@ def main():
     ct_model.set_params(**optional_params)
 
     # Rerun auto-parameter functions because we changed the assumed detector pitch
-    ct_model.auto_set_recon_geometry(sinogram.shape) # Reset default recon shape
+    ct_model.auto_set_recon_geometry() # Reset default recon shape
 
     # Sharpness and snr_db
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db)
