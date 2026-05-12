@@ -52,7 +52,7 @@ class TranslationModel(mj.TomographyModel):
                 source_iso_dist=500.0
             )
             model.set_params(delta_recon_row=2.0)
-            model.auto_set_recon_geometry(sinogram_shape)
+            model.auto_set_recon_geometry()
     """
     DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
@@ -141,10 +141,11 @@ class TranslationModel(mj.TomographyModel):
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
-    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
         # Get model parameters
+        sinogram_shape = self.get_params('sinogram_shape')
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         translation_vectors = self.get_params('translation_vectors')
