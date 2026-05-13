@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 plt.style.use('tableau-colorblind10')
 from PIL import Image
 
-from mbirjax.hsnt import dehydrate, generate_hyper_data
+from mbirjax.hsnt import dehydrate, rehydrate, generate_hyper_data
 from plot_utils import plot_images, plot_spectra
 
 
@@ -50,15 +50,6 @@ def main():
     filename = os.path.join(material_basis_path, 'material_basis.npy')
     material_basis = np.load(filename)
 
-    # Create copy of material projections
-    height = detector_rows // 3
-    width = detector_columns // 2
-    thickness = 20 * np.sqrt((width//2)**2 - np.linspace(-width // 2, width // 2, width)**2)/ width
-    material_projection = np.zeros((num_angles, detector_rows, detector_columns, num_materials)).astype(np.float32)
-    material_projection[:, :height, width // 2:width + width // 2, 0] = material_density["Ni"] * thickness
-    material_projection[:, 2 * height:, width // 2:width + width // 2, 1] = material_density["Cu"] * thickness
-    material_projection[:, height:2 * height, width // 2:width + width // 2, 2] = material_density["Al"] * thickness
-
     # Generate simulated noisy hyperspectral data and ground truth
     [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(material_basis,
                                                                            num_angles=num_angles,
@@ -75,7 +66,7 @@ def main():
                         num_materials=num_materials,
                         safety_factor=1,
                         verbose=verbose)
-    frob_hyper_projection = (W @ H).reshape(num_angles, detector_rows, detector_columns, gt_hyper_projection.shape[-1])
+    frob_hyper_projection = rehydrate([W, H, dataset_type])
 
     # Refine using nonnegative attenuation loss
     W_newt = W.copy().reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
