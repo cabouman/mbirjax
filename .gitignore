@@ -14,8 +14,12 @@ experiments/zeiss/output/*
 
 experiments/hsnt/input_data/
 experiments/hsnt/input_data/*
+experiments/hsnt/processed_data/
+experiments/hsnt/processed_data/*
 
 experiments/translation/output/*
+
+experiments/fit_bh_curve/demo_data/*
 
 tests_data_dependent/data/*
 

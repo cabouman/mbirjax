@@ -54,19 +54,27 @@ class TestVCD(unittest.TestCase):
     def set_view_params(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
         elif geometry_type == 'helical_cone':
-            detector_cone_angle = 0
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+            # compute z_shifts:
+            total_angle_span = end_angle - start_angle
             magnification = self.source_detector_dist / self.source_iso_dist
             det_height_iso = self.num_det_rows / magnification
             z_per_rot = self.helical_pitch * det_height_iso
-            dz_per_view = z_per_rot / self.num_views
+            dz_per_view = (total_angle_span / (2 * np.pi)) * z_per_rot / self.num_views
             view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
             self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
         else:
             detector_cone_angle = 0
-        start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
-        end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
         num_x_translations = 7
         num_z_translations = 7
@@ -136,22 +144,18 @@ class TestVCD(unittest.TestCase):
         recon.block_until_ready()
         
         if geometry_type == 'helical_cone':
-            # only evaluate for slices that were in view for at least a half rotation
+            # only evaluate for slices that were in view for the required angular span (e.g., pi + cone angle)
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            required_angle_span = np.pi + detector_cone_angle
             magnification = self.source_detector_dist / self.source_iso_dist
             det_height_iso = self.num_det_rows / magnification
             z_per_rot = self.helical_pitch * det_height_iso
-            pi_z_span = z_per_rot / 2.0
-            z_min_valid = float(self.helical_z_shifts[0]) + 0.5 * pi_z_span
-            z_max_valid = float(self.helical_z_shifts[-1]) - 0.5 * pi_z_span
-            num_slices = phantom.shape[2]
-            slice_z = np.linspace(
-                self.helical_z_center - 0.5 * self.helical_z_range,
-                self.helical_z_center + 0.5 * self.helical_z_range,
-                num_slices
-            )
-            valid_mask = (slice_z >= z_min_valid) & (slice_z <= z_max_valid)
-            phantom_eval = phantom[:, :, valid_mask]
-            recon_eval = recon[:, :, valid_mask]
+            z_shift_per_required_angle_span = z_per_rot*required_angle_span/(2*np.pi)
+            if z_shift_per_required_angle_span>det_height_iso:
+                raise ValueError('No recon slices were in view throughout the requested angular span of {} radians.'.format(required_angle_span))
+            else:
+                phantom_eval = phantom[:, :, int(z_shift_per_required_angle_span):-int(z_shift_per_required_angle_span)]
+                recon_eval = recon[:, :, int(z_shift_per_required_angle_span):-int(z_shift_per_required_angle_span)]
         else:
             phantom_eval = phantom
             recon_eval = recon

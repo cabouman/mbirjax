@@ -98,7 +98,7 @@ class TemplateModel(TomographyModel):
 
         return geometry_params
 
-    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         # TODO: provide code to implement this

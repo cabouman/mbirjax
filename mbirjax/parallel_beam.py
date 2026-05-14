@@ -122,7 +122,7 @@ class ParallelBeamModel(TomographyModel):
 
         return psf_radius
 
-    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
@@ -131,6 +131,7 @@ class ParallelBeamModel(TomographyModel):
         delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
 
         # Compute the recon_shape
+        sinogram_shape = self.get_params('sinogram_shape')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
         num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
