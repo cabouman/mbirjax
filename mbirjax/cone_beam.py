@@ -1131,6 +1131,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_top_half = jax.device_get(recon_top_half)
         if init_recon is not None:
             bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
         else:
@@ -1141,6 +1142,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_bot_half = jax.device_get(recon_bot_half)
         # -------- Stitch together top and bottom reconstructions --------
         recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
 
