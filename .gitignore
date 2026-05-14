@@ -19,6 +19,8 @@ experiments/hsnt/processed_data/*
 
 experiments/translation/output/*
 
+experiments/fit_bh_curve/demo_data/*
+
 tests_data_dependent/data/*
 
 # ignore jupyter notebook files
