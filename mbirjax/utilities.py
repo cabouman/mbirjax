@@ -1291,16 +1291,25 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     return model
 
 
-def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
+def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_det_rows=None, new_num_det_cols=None):
     """
     Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
     and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
 
     Args:
         ct_model (TomographyModel): The model to copy.
-        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
-        new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
-        new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
+        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.
+            If None, then use the angles in ct_model. Defaults to None.
+        new_helical_z_shifts (ndarray of float, optional): 1D vector of per-view axial shifts in ALU for ConeBeamModel.
+            If both new_angles and new_helical_z_shifts are None, then use the helical_z_shifts in ct_model.
+            If new_angles is specified but new_helical_z_shifts is None, then zero shifts are used only when the
+            original helical_z_shifts are all zero. Otherwise, an error is raised.
+            If both new_angles and new_helical_z_shifts are specified, then they must have the same length.
+            Defaults to None.
+        new_num_det_rows (int, optional): Number of detector rows in the new model.
+            If None, then use the num_det_rows in ct_model. Defaults to None.
+        new_num_det_cols (int, optional): Number of detector columns in the new model.
+            If None, then use the num_det_cols in ct_model. Defaults to None.
 
     Returns:
         An instance of ConeBeamModel or ParallelBeam model
@@ -1323,7 +1332,21 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
                                                                                values_only=True)
         view_params = ct_model.get_params(view_params_name)
         old_angles = view_params[:, 0]
-        required_params['helical_z_shifts'] = view_params[:, 1]
+        old_helical_z_shifts = view_params[:, 1]
+
+        if new_angles is None and new_helical_z_shifts is None:
+            new_helical_z_shifts = old_helical_z_shifts
+        elif new_angles is not None and new_helical_z_shifts is None:
+            if np.any(old_helical_z_shifts != 0):
+                raise ValueError(
+                    'new_helical_z_shifts must be specified when changing angles for a helical scan.'
+                )
+            new_helical_z_shifts = np.zeros_like(new_angles)
+
+        if len(new_angles) != len(new_helical_z_shifts):
+            raise ValueError('new_angles and new_helical_z_shifts must have the same length.')
+
+        required_params['helical_z_shifts'] = new_helical_z_shifts
 
     elif str(type(ct_model)).find('ParallelBeamModel') > 0:
         required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
@@ -1343,6 +1366,13 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
 
     if new_num_det_cols is not None:
         new_shape[2] = new_num_det_cols
+
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        other_params['view_params_array'] = jnp.stack(
+            [jnp.asarray(new_angles).ravel(),
+             jnp.asarray(required_params['helical_z_shifts']).ravel()],
+            axis=1
+        )
 
     # Set the new sinogram shape and angles
     required_params['sinogram_shape'] = tuple(new_shape)
