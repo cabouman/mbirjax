@@ -1336,9 +1336,12 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
             if np.any(old_helical_z_shifts != 0):
                 raise ValueError('copy_ct_model: new_helical_z_shifts must be specified when changing angles for a helical scan.')
             new_helical_z_shifts = np.zeros_like(new_angles)
-
-        if len(new_angles) != len(new_helical_z_shifts):
-            raise ValueError('copy_ct_model: new_angles and new_helical_z_shifts must have the same length.')
+        elif new_angles is not None and new_helical_z_shifts is not None:
+            if len(new_angles) != len(new_helical_z_shifts):
+                raise ValueError('copy_ct_model: new_angles and new_helical_z_shifts must have the same length.')
+        elif new_angles is None and new_helical_z_shifts is not None:
+            if len(old_helical_z_shifts) != len(new_helical_z_shifts):
+                raise ValueError('copy_ct_model: new_helical_z_shifts must have the same length as the existing angles.')
 
         required_params['helical_z_shifts'] = new_helical_z_shifts
 
