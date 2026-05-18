@@ -10,7 +10,9 @@ Any of these parameters can be modified with :func:`TomographyModel.set_params`.
 Note that the default detector channel spacing is `delta_det_channel = 1 ALU`, and the voxel spacing is automatically
 set to `delta_voxel = 1/magnifaction ALU` where `magnification` is the magnification of a voxel at iso.
 
-Parameters that are specific to particular geometries are documented in the geometry's documentation.
+However, if you change geometry parameters with :func:`TomographyModel.set_params`,
+make sure to run :func:`TomographyModel.auto_set_recon_geometry` afterwards since this will update the reconstruction parameters such as the detector channel spacing to reasonable values.
+
 
 Reconstruction Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^

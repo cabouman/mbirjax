@@ -194,7 +194,7 @@ class ConeBeamModel(TomographyModel):
 
         return psf_radius
 
-    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
         """ Compute the automatic recon shape cone beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
@@ -203,6 +203,7 @@ class ConeBeamModel(TomographyModel):
         delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
 
         # Compute the recon_shape
+        sinogram_shape = self.get_params('sinogram_shape')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
         num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
@@ -1130,6 +1131,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_top_half = jax.device_get(recon_top_half)
         if init_recon is not None:
             bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
         else:
@@ -1140,6 +1142,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_bot_half = jax.device_get(recon_bot_half)
         # -------- Stitch together top and bottom reconstructions --------
         recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
 

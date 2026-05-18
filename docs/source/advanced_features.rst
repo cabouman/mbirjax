@@ -6,6 +6,11 @@ Advanced Features
 Once you have your first reconstruction, you can adjust the reconstruction parameters to improve results and performance for your application.
 Parameters can be set by either using ``model.set_params(param_name=param_value)``.
 
+However, some parameters are interdependent, and changing one parameter may require updating others.
+For example, if you change the detector spacing in ALU, you should also update the reconstruction voxel spacing.
+Alternatively, you can run ``model.auto_set_recon_geometry()`` to perform an automatic update of the reconstruction parameters.
+
+
 Below are tips on important and useful features:
 
 - **Tune Image Quality:**
@@ -24,6 +29,8 @@ Below are tips on important and useful features:
   - ``recon_shape`` -  The recon shape is a 3-tuple (num_rows, num_cols, num_slices). It defaults to something reasonable, but you can change its value to change the region of reconstruction.
   - ``delta_voxel`` - This defaults to 1.0 and sets the spacing between voxels in ALU in x, y, and z directions. (See :ref:`ALU conversion <ALU_conversion_label>`).
   - ``delta_det_channel`` and ``delta_det_row`` - These default to 1.0 and set the spacing between detector channels and rows in ALU. (See :ref:`ALU conversion <ALU_conversion_label>`).
+
+  **Important Note:** If you change parameters such as ``delta_det_channel``, then you should run ``model.auto_set_recon_geometry()`` to update the corresponding reconstruction parameters such as voxel pitch.
 
 - **Set Sinogram Weights:**
 

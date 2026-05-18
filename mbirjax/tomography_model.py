@@ -19,9 +19,10 @@ from jax.errors import JaxRuntimeError
 import jax
 import jax.numpy as jnp
 
-import mbirjax
 import mbirjax as mj
 from mbirjax import ParameterHandler
+
+from importlib.metadata import version, PackageNotFoundError
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # Set the GPU memory fraction for JAX
@@ -59,7 +60,7 @@ class TomographyModel(ParameterHandler):
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
 
         self.use_ror_mask = True
-        self.auto_set_recon_geometry(sinogram_shape, no_compile=True, no_warning=True)
+        self.auto_set_recon_geometry(no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
 
@@ -79,6 +80,12 @@ class TomographyModel(ParameterHandler):
         self.use_gpu = 'none'  # This is set in set_devices_and_batch_sizes based on memory and get_params('use_gpu')
         self.set_devices_and_batch_sizes()
         self.create_projectors()
+        try:
+            __version__ = version("mbirjax")
+        except PackageNotFoundError:
+            # package is not installed
+            __version__ = "unknown"
+        self.version = __version__
 
     @classmethod
     def get_required_param_names(cls):
@@ -803,7 +810,7 @@ class TomographyModel(ParameterHandler):
         sigma_prox = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
-    def auto_set_recon_geometry(self, sinogram_shape, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
         """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
         raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 
@@ -954,6 +961,7 @@ class TomographyModel(ParameterHandler):
         # Initialize logging for this run
         if first_iteration == 0 or self.logger is None:
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        self.logger.info('MBIRJAX Version = {}'.format(self.version))
         self.logger.info('GPU used for: {}'.format(self.use_gpu))
         self.logger.info('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
         self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))

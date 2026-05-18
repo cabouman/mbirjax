@@ -14,7 +14,7 @@ from mbirjax.hsnt import rehydrate, import_hsnt_list_hdf5, import_hsnt_data_hdf5
 
 def main():
     # Set output path
-    output_path = './output_data/'  # path to export output data
+    output_path = './processed_data/'  # path to export output data
 
     # 1. Generate random sample dehydrated data
     hsnt_dehydrated = [
