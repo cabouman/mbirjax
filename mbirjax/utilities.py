@@ -1291,7 +1291,7 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     return model
 
 
-def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
+def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_det_rows=None, new_num_det_cols=None):
     """
     Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
     and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
@@ -1299,6 +1299,7 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
     Args:
         ct_model (TomographyModel): The model to copy.
         new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
+        new_helical_z_shifts (ndarray of float, optional): 1D vector of per-view axial shifts in ALU for ConeBeamModel. If None, zero shifts are used. Defaults to None.
         new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
         new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
 
@@ -1323,20 +1324,10 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
                                                                                values_only=True)
         view_params = ct_model.get_params(view_params_name)
         old_angles = view_params[:, 0]
-        old_helical_z_shifts = view_params[:, 1]
 
-        if new_angles is not None:
-            if np.all(np.isin(new_angles, old_angles)):
-                matched_indices = np.argmax(old_angles[None, :] == new_angles[:, None], axis=1)
-                required_params['helical_z_shifts'] = old_helical_z_shifts[matched_indices]
-            else:
-                required_params['helical_z_shifts'] = np.zeros_like(new_angles)
-
-            other_params['view_params_array'] = jnp.stack(
-                [jnp.asarray(new_angles).ravel(),
-                 jnp.asarray(required_params['helical_z_shifts']).ravel()],
-                axis=1
-            )
+        if new_helical_z_shifts is None:
+            new_helical_z_shifts = np.zeros_like(new_angles)
+        required_params['helical_z_shifts'] = new_helical_z_shifts
 
     elif str(type(ct_model)).find('ParallelBeamModel') > 0:
         required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
@@ -1356,6 +1347,13 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
 
     if new_num_det_cols is not None:
         new_shape[2] = new_num_det_cols
+
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        other_params['view_params_array'] = jnp.stack(
+            [jnp.asarray(new_angles).ravel(),
+             jnp.asarray(required_params['helical_z_shifts']).ravel()],
+            axis=1
+        )
 
     # Set the new sinogram shape and angles
     required_params['sinogram_shape'] = tuple(new_shape)
