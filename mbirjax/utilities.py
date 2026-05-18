@@ -1323,7 +1323,20 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
                                                                                values_only=True)
         view_params = ct_model.get_params(view_params_name)
         old_angles = view_params[:, 0]
-        required_params['helical_z_shifts'] = view_params[:, 1]
+        old_helical_z_shifts = view_params[:, 1]
+
+        if new_angles is not None:
+            if np.all(np.isin(new_angles, old_angles)):
+                matched_indices = np.argmax(old_angles[None, :] == new_angles[:, None], axis=1)
+                required_params['helical_z_shifts'] = old_helical_z_shifts[matched_indices]
+            else:
+                required_params['helical_z_shifts'] = np.zeros_like(new_angles)
+
+            other_params['view_params_array'] = jnp.stack(
+                [jnp.asarray(new_angles).ravel(),
+                 jnp.asarray(required_params['helical_z_shifts']).ravel()],
+                axis=1
+            )
 
     elif str(type(ct_model)).find('ParallelBeamModel') > 0:
         required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
