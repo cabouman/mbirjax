@@ -811,7 +811,12 @@ class TomographyModel(ParameterHandler):
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
     def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
-        """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
+        """
+        Set the automatic value of the recon shape and voxel pitch using the geometry parameters and sinogram shape.
+
+        Note: This function should be run after changing geometry parameters such as ``delta_det_channel``.
+        It will set reconstruction parameters such as ``recon_shape`` and ``delta_voxel`` parameters to reasonable values.
+        """
         raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 
     def get_voxels_at_indices(self, recon, indices):
