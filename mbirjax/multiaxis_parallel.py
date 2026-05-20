@@ -120,7 +120,7 @@ class MultiAxisParallelModel(TomographyModel):
         """For parallel beam geometries, magnification is always 1.0 (same as ParallelBeamModel)."""
         return 1.0
 
-    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
         """
         Set the reconstruction geometry based on the largest bounding box required
         to project onto the detector at the given angles.
