@@ -810,7 +810,7 @@ class TomographyModel(ParameterHandler):
         sigma_prox = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
-    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
         """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
         raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 

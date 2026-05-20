@@ -141,7 +141,7 @@ class TranslationModel(mj.TomographyModel):
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
 
-    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
         """ Compute the automatic recon shape translation reconstruction.
         """
         # Get model parameters
