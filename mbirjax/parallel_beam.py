@@ -353,7 +353,6 @@ class ParallelBeamModel(TomographyModel):
             # axis produces strided -- not contiguous -- per-device buffers.
             # shard_map resolves this by handing each device a fresh contiguous
             # (num_views, local_rows, num_channels) array before the computation begins.
-            from jax.experimental.shard_map import shard_map
             P = jax.sharding.PartitionSpec
             # Ensure the sinogram is sharded along the slice axis.
             # If _maybe_shard was already called (e.g. from fbp_recon), this is a no-op.
@@ -362,9 +361,13 @@ class ParallelBeamModel(TomographyModel):
                 jax.sharding.NamedSharding(self.mesh, P(None, 'slices', None))
             )
             def apply_filter_local(sino_shard):
-                # sino_shard: (num_views, local_rows, num_channels) -- contiguous
-                return jax.lax.map(apply_convolution_to_view, sino_shard, batch_size=view_batch_size)
-            filtered_sinogram = shard_map(
+                # sino_shard: (num_views, local_rows, num_channels) -- contiguous on this device.
+                # Use vmap over views rather than lax.map with batch_size: on GPU, nesting
+                # lax.map(batch_size) inside shard_map can cause cuFFT to produce wrong values
+                # (confirmed empirically; exact root cause is XLA plan-selection inside scan).
+                # Memory is acceptable here because each shard is only 1/N of the sinogram.
+                return jax.vmap(apply_convolution_to_view)(sino_shard)
+            filtered_sinogram = jax.shard_map(
                 apply_filter_local,
                 mesh=self.mesh,
                 in_specs=P(None, 'slices', None),
