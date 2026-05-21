@@ -65,7 +65,8 @@ class TomographyModel(ParameterHandler):
 
         self.set_params(geometry_type=str(type(self)))
 
-        self.main_device, self.sinogram_device= None, None
+        self.main_device, self.sinogram_device = None, None
+        self.mesh = None   # set via configure_sharding() to enable multi-device sharding
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
@@ -112,23 +113,58 @@ class TomographyModel(ParameterHandler):
                 yield
 
     def _maybe_shard(self, x, axis=1):
-        """Shard x along `axis` across GPUs when in multi-GPU mode; otherwise return x unchanged.
+        """Shard x along `axis` across all mesh devices when sharding is configured.
 
-        This is a no-op stub. It will be wired to actual shard_map logic in Phase 5
-        (multi-GPU integration). The `axis` parameter is reserved for that phase and
-        currently unused.
+        When self.mesh is None (single-device mode), returns x unchanged.
+        Requires self.main_device and self.sinogram_device to be None (set automatically
+        by configure_sharding) so that all _device_put calls in the rest of the code
+        become no-ops and JAX routes data through the mesh automatically.
         """
-        return x
+        if self.mesh is None:
+            return x
+        spec = [None] * x.ndim
+        spec[axis] = 'slices'
+        sharding = jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec(*spec))
+        return jax.device_put(x, sharding)
 
     def _maybe_gather(self, x, axis=1):
-        """Gather a sharded array along `axis` back to a single array when in multi-GPU mode;
-        otherwise return x unchanged.
+        """Gather a sharded array to the first mesh device when sharding is configured.
 
-        This is a no-op stub. It will be wired to actual gather logic in Phase 5
-        (multi-GPU integration). The `axis` parameter is reserved for that phase and
-        currently unused.
+        When self.mesh is None (single-device mode), returns x unchanged.
+        The `axis` parameter is accepted for API consistency with _maybe_shard but is
+        not needed: jax.device_put with a single device always gathers all shards.
         """
-        return x
+        if self.mesh is None:
+            return x
+        target = self.mesh.devices.flat[0]
+        return jax.device_put(x, target)
+
+    def configure_sharding(self, devices):
+        """Configure multi-device sharding along the slice axis.
+
+        After calling this, _maybe_shard will distribute an array's slice axis across
+        the provided devices and _maybe_gather will collect it back to the first device.
+        Both main_device and sinogram_device are set to None so that all _device_put
+        calls in the rest of the code become no-ops, letting JAX manage placement
+        automatically through the mesh.
+
+        Call with devices=None to disable sharding and restore single-device placement.
+
+        Args:
+            devices: sequence of JAX devices to shard across (e.g. jax.devices()[:4]).
+                     The slice dimension must be evenly divisible by len(devices).
+                     Pass None to disable sharding.
+        """
+        if devices is None:
+            self.mesh = None
+            self.set_devices_and_batch_sizes()  # restore single-device placement
+            return
+        dev_array = np.array(devices)
+        self.mesh = jax.sharding.Mesh(dev_array, axis_names=('slices',))
+        # Disable explicit device placement so _device_put becomes a no-op and JAX
+        # routes sharded arrays through the mesh without interference.
+        self.main_device = None
+        self.sinogram_device = None
 
     @classmethod
     def get_required_param_names(cls):

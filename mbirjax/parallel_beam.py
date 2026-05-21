@@ -345,12 +345,35 @@ class ParallelBeamModel(TomographyModel):
         def apply_convolution_to_view(view):
             return jax.vmap(convolve_row)(view)
 
-        # Place the sinogram on sinogram_device, then apply the convolution over all views in a
-        # single lax.map call.  The batch_size argument limits how many views are processed at once,
-        # giving the same peak-memory control as the previous Python loop without requiring an
-        # explicit loop, block_until_ready, or concatenation step.
-        sinogram = self._device_put(sinogram, self.sinogram_device)
-        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
+        if self.mesh is not None:
+            # Multi-device path: use shard_map so each device operates on its own
+            # contiguous local shard.  NamedSharding-based SPMD alone fails for FFT
+            # because XLA's CPU FFT thunk requires row-major layout
+            # (IsMonotonicWithDim0Major), and sharding a 3D array along its middle
+            # axis produces strided -- not contiguous -- per-device buffers.
+            # shard_map resolves this by handing each device a fresh contiguous
+            # (num_views, local_rows, num_channels) array before the computation begins.
+            from jax.experimental.shard_map import shard_map
+            P = jax.sharding.PartitionSpec
+            # Ensure the sinogram is sharded along the slice axis.
+            # If _maybe_shard was already called (e.g. from fbp_recon), this is a no-op.
+            sino_in = jax.device_put(
+                sinogram,
+                jax.sharding.NamedSharding(self.mesh, P(None, 'slices', None))
+            )
+            def apply_filter_local(sino_shard):
+                # sino_shard: (num_views, local_rows, num_channels) -- contiguous
+                return jax.lax.map(apply_convolution_to_view, sino_shard, batch_size=view_batch_size)
+            filtered_sinogram = shard_map(
+                apply_filter_local,
+                mesh=self.mesh,
+                in_specs=P(None, 'slices', None),
+                out_specs=P(None, 'slices', None),
+            )(sino_in)
+        else:
+            # Single-device path: place on sinogram_device and map over all views.
+            sinogram = self._device_put(sinogram, self.sinogram_device)
+            filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
         filtered_sinogram *= jnp.pi / num_views  # scaling term
         return filtered_sinogram
 
