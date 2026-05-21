@@ -131,7 +131,7 @@ class TomographyModel(ParameterHandler):
         spec = [None] * x.ndim
         spec[axis] = 'slices'
         sharding = jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec(*spec))
-        return jax.device_put(np.array(x), sharding)
+        return jax.jit(lambda a: a, out_shardings=sharding)(x)
 
     def _maybe_gather(self, x, axis=1):
         """Gather a sharded array back to an uncommitted JAX array when sharding is configured.
