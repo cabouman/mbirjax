@@ -354,12 +354,14 @@ class ParallelBeamModel(TomographyModel):
             # shard_map resolves this by handing each device a fresh contiguous
             # (num_views, local_rows, num_channels) array before the computation begins.
             P = jax.sharding.PartitionSpec
-            # Ensure the sinogram is sharded along the slice axis.
-            # If _maybe_shard was already called (e.g. from fbp_recon), this is a no-op.
-            sino_in = jax.device_put(
-                sinogram,
-                jax.sharding.NamedSharding(self.mesh, P(None, 'slices', None))
-            )
+            # sinogram must be correctly sharded before reaching this point
+            # (via _maybe_shard or the caller).  Do NOT call jax.device_put here:
+            # jax.device_put(jax_array, NamedSharding) is buggy in JAX 0.10.0 on GPU
+            # and silently produces garbage data on non-default devices.
+            # If sinogram is not yet sharded, shard it safely via _maybe_shard.
+            if not isinstance(getattr(sinogram, 'sharding', None),
+                              jax.sharding.NamedSharding):
+                sinogram = self._maybe_shard(sinogram, axis=1)
             def apply_filter_local(sino_shard):
                 # sino_shard: (num_views, local_rows, num_channels) -- contiguous on this device.
                 # Use vmap over views rather than lax.map with batch_size: on GPU, nesting
@@ -372,7 +374,7 @@ class ParallelBeamModel(TomographyModel):
                 mesh=self.mesh,
                 in_specs=P(None, 'slices', None),
                 out_specs=P(None, 'slices', None),
-            )(sino_in)
+            )(sinogram)
         else:
             # Single-device path: place on sinogram_device and map over all views.
             sinogram = self._device_put(sinogram, self.sinogram_device)
