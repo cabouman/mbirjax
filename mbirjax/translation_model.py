@@ -81,6 +81,26 @@ class TranslationModel(mj.TomographyModel):
         else:
             magnification = source_detector_dist / source_iso_dist
         return magnification
+    
+    def verify_valid_params(self):
+        """
+        Check that all parameters are compatible for a reconstruction.
+
+        Note:
+            Raises ValueError for invalid parameters.
+        """
+        super().verify_valid_params()
+        voxel_row_aspect, voxel_slice_aspect = self.get_params(['voxel_row_aspect', 'voxel_slice_aspect'])
+        
+        if voxel_row_aspect != 1.0:
+            error_message = "Setting voxel_row_aspect is not currently supported for translation model. \n"
+            error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
+            raise ValueError(error_message)
+            
+        if voxel_slice_aspect != 1.0:
+            error_message = "Setting voxel_slice_aspect is not currently supported for translation model. \n"
+            error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
+            raise ValueError(error_message)
 
     def get_geometry_parameters(self):
         """

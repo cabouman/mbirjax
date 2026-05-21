@@ -41,6 +41,8 @@ _forward_model_defaults_dict = {
 _recon_model_defaults_dict = {
     'recon_shape': Param(None, True),
     'delta_voxel': Param(None, True),
+    'voxel_row_aspect': Param(1.0, True),
+    'voxel_slice_aspect': Param(1.0, True),
     'sigma_x': Param(1.0, False),
     'sigma_prox': Param(1.0, False),
     'p': Param(2.0, False),

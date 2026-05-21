@@ -973,7 +973,9 @@ def generate_demo_data(
     helical_pitch: float | None = None,
     helical_z_range: float | None = None,
     helical_z_center: float = 0.0,
-    use_curved_detector: bool = False
+    use_curved_detector: bool = False,
+    voxel_row_aspect: float = 1.0,
+    voxel_slice_aspect: float = 1.0
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1025,7 +1027,10 @@ def generate_demo_data(
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
         ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
-        params = {'angles': angles}
+        ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+        ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+        ct_model_for_generation.auto_set_recon_geometry()
+        params = {'angles': angles, 'voxel_row_aspect': voxel_row_aspect, 'voxel_slice_aspect': voxel_slice_aspect}
     elif model_type == ModelType.CONE:
         # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -1036,8 +1041,11 @@ def generate_demo_data(
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
             ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                                        source_iso_dist=source_iso_dist, use_curved_detector=use_curved_detector)
+            ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+            ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+            ct_model_for_generation.auto_set_recon_geometry()
             params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist,
-                      'use_curved_detector': use_curved_detector}
+                      'use_curved_detector': use_curved_detector, 'voxel_row_aspect': voxel_row_aspect, 'voxel_slice_aspect': voxel_slice_aspect}
         else:
             # Require both helical_pitch and helical_z_range
             if helical_pitch is None or helical_z_range is None:
@@ -1086,6 +1094,9 @@ def generate_demo_data(
                 helical_z_shifts=helical_z_shifts,
                 use_curved_detector=use_curved_detector
             )
+            ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+            ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+            ct_model_for_generation.auto_set_recon_geometry()
 
             params = {
                 'angles': angles,
@@ -1093,6 +1104,8 @@ def generate_demo_data(
                 'source_iso_dist': source_iso_dist,
                 'helical_z_shifts': helical_z_shifts,
                 'use_curved_detector': use_curved_detector,
+                'voxel_row_aspect': voxel_row_aspect,
+                'voxel_slice_aspect': voxel_slice_aspect
             }
     elif model_type == ModelType.TRANSLATION:
         source_iso_dist = np.min(num_det_rows, num_det_channels) / 2
@@ -1116,7 +1129,7 @@ def generate_demo_data(
         phantom = gen_cube_phantom(recon_shape, device=device)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
-
+    
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model_for_generation.forward_project(phantom)

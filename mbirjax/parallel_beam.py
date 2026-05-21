@@ -46,7 +46,7 @@ class ParallelBeamModel(TomographyModel):
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles):
-
+        
         angles = jnp.asarray(angles)
         view_params_name = 'angles'
         super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
@@ -77,7 +77,17 @@ class ParallelBeamModel(TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
+        sinogram_shape, angles, voxel_row_aspect, voxel_slice_aspect = self.get_params(['sinogram_shape', 'angles', 'voxel_row_aspect', 'voxel_slice_aspect'])
+        
+        if voxel_row_aspect <= 0:
+            error_message = "Voxel row aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
+            raise ValueError(error_message)
+            
+        if voxel_slice_aspect != 1.0:
+            error_message = "Setting voxel slice aspect ratio is not supported for parallel beam model. \n"
+            error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
+            raise ValueError(error_message)
 
         if angles.shape[0] != sinogram_shape[0]:
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
@@ -99,7 +109,7 @@ class ParallelBeamModel(TomographyModel):
             namedtuple of required geometry parameters.
         """
         # First get the parameters managed by ParameterHandler
-        geometry_param_names = ['delta_det_channel', 'det_channel_offset', 'delta_voxel']
+        geometry_param_names = ['delta_det_channel', 'det_channel_offset', 'delta_voxel', 'voxel_row_aspect']
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -115,10 +125,14 @@ class ParallelBeamModel(TomographyModel):
     def get_psf_radius(self):
         """Computes the integer radius of the PSF kernel for parallel beam projection.
         """
-        delta_det_channel, delta_voxel = self.get_params(['delta_det_channel', 'delta_voxel'])
+        delta_det_channel, delta_voxel, voxel_row_aspect = self.get_params(['delta_det_channel', 'delta_voxel', 'voxel_row_aspect'])
+        
+        delta_voxel_row = voxel_row_aspect * delta_voxel
 
+        max_footprint = jnp.sqrt(delta_voxel**2 + delta_voxel_row**2)
+        
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel/delta_det_channel)/2))
+        psf_radius = int(jnp.ceil(jnp.ceil(max_footprint / delta_det_channel) / 2))
 
         return psf_radius
 
@@ -126,16 +140,19 @@ class ParallelBeamModel(TomographyModel):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-
-        # Compute delta_voxel
+        
+        voxel_row_aspect = self.get_params('voxel_row_aspect')
+        
+        # Compute delta_voxel for each dimension
         delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
+        delta_voxel_row = voxel_row_aspect * delta_voxel
 
         # Compute the recon_shape
         sinogram_shape = self.get_params('sinogram_shape')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
-        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
-        num_recon_cols = num_recon_rows
+        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel_row * magnification)))
+        num_recon_cols = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
         num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
@@ -166,9 +183,9 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, center_path_length = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
-
+        
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
@@ -177,7 +194,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = center_path_length * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -208,7 +225,7 @@ class ParallelBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, center_path_length = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
         # Allocate the voxel cylinder array
@@ -219,7 +236,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = center_path_length * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -237,7 +254,7 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+            n_p, n_p_center, W_p_c, center_path_length
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -245,11 +262,13 @@ class ParallelBeamModel(TomographyModel):
 
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
+        
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
 
-        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, gp.delta_voxel, recon_shape, angle)
+        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, gp.delta_voxel, delta_voxel_row, recon_shape, angle)
 
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
@@ -257,19 +276,22 @@ class ParallelBeamModel(TomographyModel):
         n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
         n_p_center = jnp.round(n_p).astype(int)
 
-        # Compute cos alpha for row and columns
-        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle)),
-                                     jnp.abs(jnp.sin(angle)))
+        # Compute the path length through the center of the voxel
+        eps = 1e-12
+        center_path_length = jnp.minimum(gp.delta_voxel / jnp.maximum(jnp.abs(jnp.sin(angle)), eps), delta_voxel_row / jnp.maximum(jnp.abs(jnp.cos(angle)), eps))
+        
+        # Compute footprint for row and columns
+        footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle)) * gp.delta_voxel, jnp.abs(jnp.sin(angle)) * delta_voxel_row)
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
+        W_p_c = footprint_xy / gp.delta_det_channel
 
-        proj_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
+        proj_data = (n_p, n_p_center, W_p_c, center_path_length)
 
         return proj_data
 
     @staticmethod
-    def recon_ij_to_x(i, j, delta_voxel, recon_shape, angle):
+    def recon_ij_to_x(i, j, delta_voxel, delta_voxel_row, recon_shape, angle):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
@@ -277,7 +299,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = delta_voxel * (i - (num_recon_rows - 1) / 2.0)
+        y_tilde = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0)
         x_tilde = delta_voxel * (j - (num_recon_cols - 1) / 2.0)
 
         # Precompute cosine and sine of view angle, then do the rotation
@@ -325,11 +347,12 @@ class ParallelBeamModel(TomographyModel):
             view_batch_size = min(view_batch_size, max_view_batch_size)
 
         # Generate the reconstruction filter with appropriate scaling
-        delta_voxel = self.get_params('delta_voxel')
+        delta_voxel, voxel_row_aspect = self.get_params( ['delta_voxel', 'voxel_row_aspect'])
+        delta_voxel_row = voxel_row_aspect * delta_voxel
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        scaling_factor = 1 / (delta_voxel**2)
+        scaling_factor = 1.0 / (delta_voxel * delta_voxel_row)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
 
