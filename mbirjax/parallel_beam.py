@@ -1,7 +1,7 @@
 from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
-
+import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
@@ -336,6 +336,11 @@ class ParallelBeamModel(TomographyModel):
         scaling_factor = 1 / (delta_voxel**2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
+        # Keep recon_filter as a numpy array so it is treated as a device-independent
+        # constant when captured by the convolve_row closure.  If it were a jnp array
+        # it would be committed to GPU0, causing cross-device access errors inside
+        # shard_map when the closure runs on non-default GPUs.
+        recon_filter = np.array(recon_filter)
 
         # Define convolution for a single row (across its channels)
         def convolve_row(row):

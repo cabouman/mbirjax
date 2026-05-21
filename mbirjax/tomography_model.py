@@ -134,19 +134,22 @@ class TomographyModel(ParameterHandler):
         return jax.device_put(np.array(x), sharding)
 
     def _maybe_gather(self, x, axis=1):
-        """Gather a sharded array to the first mesh device when sharding is configured.
+        """Gather a sharded array back to an uncommitted JAX array when sharding is configured.
 
         When self.mesh is None (single-device mode), returns x unchanged.
 
-        Note: We collect all shards to a numpy array first (np.array reads from every
-        device, including non-default GPUs), then place the result on the target device.
-        This avoids relying on jax.device_put(sharded_jax_array, single_device), which
-        may silently fail to transfer data from non-default GPUs in JAX 0.10.0.
+        The result is intentionally left uncommitted (not pinned to any device).
+        When sharding is active, main_device and sinogram_device are both None so
+        all subsequent _device_put calls are no-ops; an uncommitted array slots in
+        naturally and lets JAX choose placement for follow-on operations.
+
+        Note: np.array(x) reads from every device (including non-default GPUs) into
+        host memory, which is a reliable read path.  jnp.array then wraps it as an
+        uncommitted JAX array without triggering the JAX 0.10.0 GPU placement bug.
         """
         if self.mesh is None:
             return x
-        target = self.mesh.devices.flat[0]
-        return jax.device_put(np.array(x), target)
+        return jnp.array(np.array(x))
 
     def configure_sharding(self, devices):
         """Configure multi-device sharding along the slice axis.
