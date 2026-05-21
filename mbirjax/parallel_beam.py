@@ -334,19 +334,14 @@ class ParallelBeamModel(TomographyModel):
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1 / (delta_voxel**2)
+
+        # Single-device helpers (used by the else branch below).
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
-        # Keep recon_filter as a numpy array so it is treated as a device-independent
-        # constant when captured by the convolve_row closure.  If it were a jnp array
-        # it would be committed to GPU0, causing cross-device access errors inside
-        # shard_map when the closure runs on non-default GPUs.
-        recon_filter = np.array(recon_filter)
 
-        # Define convolution for a single row (across its channels)
         def convolve_row(row):
             return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
 
-        # Apply above convolve func across each row of a view
         def apply_convolution_to_view(view):
             return jax.vmap(convolve_row)(view)
 
@@ -369,11 +364,25 @@ class ParallelBeamModel(TomographyModel):
                 sinogram = self._maybe_shard(sinogram, axis=1)
             def apply_filter_local(sino_shard):
                 # sino_shard: (num_views, local_rows, num_channels) -- contiguous on this device.
+                # The filter is computed locally inside shard_map so that each device owns
+                # its own copy.  Capturing the outer recon_filter (a jnp array committed to
+                # GPU0) would cause cross-device access errors on non-default GPUs.
+                # The filter is small (2*num_channels - 1 elements) so recomputing it here
+                # is negligible.
+                _filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+                _filter = _filter * scaling_factor
+
+                def _convolve_row(row):
+                    return jax.scipy.signal.fftconvolve(row, _filter, mode="valid")
+
+                def _apply_conv_to_view(view):
+                    return jax.vmap(_convolve_row)(view)
+
                 # Use vmap over views rather than lax.map with batch_size: on GPU, nesting
                 # lax.map(batch_size) inside shard_map can cause cuFFT to produce wrong values
                 # (confirmed empirically; exact root cause is XLA plan-selection inside scan).
                 # Memory is acceptable here because each shard is only 1/N of the sinogram.
-                return jax.vmap(apply_convolution_to_view)(sino_shard)
+                return jax.vmap(_apply_conv_to_view)(sino_shard)
             filtered_sinogram = jax.shard_map(
                 apply_filter_local,
                 mesh=self.mesh,
