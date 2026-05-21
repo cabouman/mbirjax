@@ -75,8 +75,8 @@ print(f"\nTest 1a-0 (gather after _maybe_shard, no shard_map):")
 print(f"  shape: {direct_gathered.shape}  (should be {sino_shape})")
 print(f"  max diff vs sino: {np.max(np.abs(direct_gathered - sino_np))}")  # expect 0.0
 
-# --- 1a-1: shard_map identity, gather, check per-shard-half ---------
-# Shows whether BOTH halves of the gathered output are wrong or just one.
+# --- 1a-1: shard_map identity, gather, check per-shard correctness --
+# Shows whether each shard's gathered output matches the correct rows.
 identity_out = jax.shard_map(
     lambda s: s * 1.0,
     mesh=model.mesh,
@@ -84,13 +84,14 @@ identity_out = jax.shard_map(
     out_specs=P(None, 'slices', None),
 )(sino_sharded)
 identity_gathered = np.array(model._maybe_gather(identity_out, axis=1))
-half = sino_shape[1] // N_SHARDS
+shard_rows = sino_shape[1] // N_SHARDS
 print(f"\nTest 1a-1 (shard_map identity, gathered):")
 print(f"  shape: {identity_gathered.shape}  (should be {sino_shape})")
-print(f"  max diff rows   0:{half}  vs sino rows   0:{half}:   {np.max(np.abs(identity_gathered[:, :half,  :] - sino_np[:, :half,  :]))}")
-print(f"  max diff rows {half}:{sino_shape[1]} vs sino rows {half}:{sino_shape[1]}: {np.max(np.abs(identity_gathered[:, half:, :] - sino_np[:, half:, :]))}")
-print(f"  max diff rows   0:{half}  vs sino rows {half}:{sino_shape[1]}: {np.max(np.abs(identity_gathered[:, :half,  :] - sino_np[:, half:, :]))}")
-print(f"  max diff rows {half}:{sino_shape[1]} vs sino rows   0:{half}:  {np.max(np.abs(identity_gathered[:, half:, :] - sino_np[:, :half,  :]))}")
+print(f"  overall max diff vs sino: {np.max(np.abs(identity_gathered - sino_np))}")
+for i in range(N_SHARDS):
+    lo, hi = i * shard_rows, (i + 1) * shard_rows
+    diff = np.max(np.abs(identity_gathered[:, lo:hi, :] - sino_np[:, lo:hi, :]))
+    print(f"  shard {i} rows {lo:3d}:{hi:3d} vs sino rows {lo:3d}:{hi:3d}: {diff}")
 
 # ------------------------------------------------------------------
 # Test 1b: sharded fbp_filter via configure_sharding / _maybe_shard

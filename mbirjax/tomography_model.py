@@ -119,25 +119,50 @@ class TomographyModel(ParameterHandler):
         Requires self.main_device and self.sinogram_device to be None (set automatically
         by configure_sharding) so that all _device_put calls in the rest of the code
         become no-ops and JAX routes data through the mesh automatically.
+
+        Note: We deliberately materialize x to a numpy array first and then place
+        each shard explicitly with jax.device_put, assembling the result via
+        jax.make_array_from_single_device_arrays.  This avoids a JAX bug (confirmed
+        in JAX 0.10.0) where jax.device_put(uncommitted_array, NamedSharding)
+        silently produces garbage data on non-default GPUs (e.g. GPU1 gets
+        uninitialized memory while GPU0 receives correct values).
         """
         if self.mesh is None:
             return x
         spec = [None] * x.ndim
         spec[axis] = 'slices'
         sharding = jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec(*spec))
-        return jax.device_put(x, sharding)
+        devices = list(self.mesh.devices.flat)
+        n = len(devices)
+        size = x.shape[axis]
+        rows_per = size // n
+        x_np = np.array(x)  # materialize to CPU before distributing
+        device_arrays = []
+        for i, dev in enumerate(devices):
+            sl = [slice(None)] * x_np.ndim
+            sl[axis] = slice(i * rows_per, (i + 1) * rows_per)
+            device_arrays.append(jax.device_put(x_np[tuple(sl)], dev))
+        return jax.make_array_from_single_device_arrays(x.shape, sharding, device_arrays)
 
     def _maybe_gather(self, x, axis=1):
         """Gather a sharded array to the first mesh device when sharding is configured.
 
         When self.mesh is None (single-device mode), returns x unchanged.
-        The `axis` parameter is accepted for API consistency with _maybe_shard but is
-        not needed: jax.device_put with a single device always gathers all shards.
+
+        Note: We use x.addressable_shards (sorted by shard index along `axis`) and
+        explicitly move each shard to the target device before concatenating.  This
+        avoids relying on jax.device_put(sharded_array, single_device), which may
+        silently fail to transfer data from non-default GPUs in JAX 0.10.0.
         """
         if self.mesh is None:
             return x
         target = self.mesh.devices.flat[0]
-        return jax.device_put(x, target)
+        shards = sorted(
+            x.addressable_shards,
+            key=lambda s: (s.index[axis].start or 0) if isinstance(s.index[axis], slice) else 0
+        )
+        parts = [jax.device_put(shard.data, target) for shard in shards]
+        return jnp.concatenate(parts, axis=axis)
 
     def configure_sharding(self, devices):
         """Configure multi-device sharding along the slice axis.
