@@ -57,16 +57,26 @@ print('Test 0 (unsharded self-consistency):',
       np.max(np.abs(filtered_full - data['filtered'])))  # expect 0.0
 
 # ------------------------------------------------------------------
-# Test 1a: data-routing diagnostic — does shard_map correctly route data?
-# Apply identity (x * 1.0) inside shard_map and verify the round-trip.
-# If this fails, the problem is with data distribution / gathering, not FFT.
+# Test 1a: data-routing diagnostics — isolate exactly where the failure is.
 # ------------------------------------------------------------------
 model.configure_sharding(devices)
 
 sino_sharded = model._maybe_shard(sino, axis=1)
-print(f"\nSinogram sharding: {sino_sharded.sharding}")
+print(f"\nSinogram sharding:    {sino_sharded.sharding}")
+print(f"sino_sharded.shape:   {sino_sharded.shape}  (global; should be {sino_shape})")
 
 P = jax.sharding.PartitionSpec
+sino_np = np.array(sino)
+
+# --- 1a-0: gather the sharded sino WITHOUT any shard_map ---------
+# If this fails, the bug is in _maybe_shard or _maybe_gather, not shard_map.
+direct_gathered = np.array(model._maybe_gather(sino_sharded, axis=1))
+print(f"\nTest 1a-0 (gather after _maybe_shard, no shard_map):")
+print(f"  shape: {direct_gathered.shape}  (should be {sino_shape})")
+print(f"  max diff vs sino: {np.max(np.abs(direct_gathered - sino_np))}")  # expect 0.0
+
+# --- 1a-1: shard_map identity, gather, check per-shard-half ---------
+# Shows whether BOTH halves of the gathered output are wrong or just one.
 identity_out = jax.shard_map(
     lambda s: s * 1.0,
     mesh=model.mesh,
@@ -74,8 +84,13 @@ identity_out = jax.shard_map(
     out_specs=P(None, 'slices', None),
 )(sino_sharded)
 identity_gathered = np.array(model._maybe_gather(identity_out, axis=1))
-print('Test 1a (data routing via shard_map):',
-      np.max(np.abs(identity_gathered - np.array(sino))))  # expect 0.0
+half = sino_shape[1] // N_SHARDS
+print(f"\nTest 1a-1 (shard_map identity, gathered):")
+print(f"  shape: {identity_gathered.shape}  (should be {sino_shape})")
+print(f"  max diff rows   0:{half}  vs sino rows   0:{half}:   {np.max(np.abs(identity_gathered[:, :half,  :] - sino_np[:, :half,  :]))}")
+print(f"  max diff rows {half}:{sino_shape[1]} vs sino rows {half}:{sino_shape[1]}: {np.max(np.abs(identity_gathered[:, half:, :] - sino_np[:, half:, :]))}")
+print(f"  max diff rows   0:{half}  vs sino rows {half}:{sino_shape[1]}: {np.max(np.abs(identity_gathered[:, :half,  :] - sino_np[:, half:, :]))}")
+print(f"  max diff rows {half}:{sino_shape[1]} vs sino rows   0:{half}:  {np.max(np.abs(identity_gathered[:, half:, :] - sino_np[:, :half,  :]))}")
 
 # ------------------------------------------------------------------
 # Test 1b: sharded fbp_filter via configure_sharding / _maybe_shard
