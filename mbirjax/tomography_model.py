@@ -1,3 +1,4 @@
+import contextlib
 import io
 import types
 import warnings
@@ -86,6 +87,48 @@ class TomographyModel(ParameterHandler):
             # package is not installed
             __version__ = "unknown"
         self.version = __version__
+
+    # ------------------------------------------------------------------
+    # Device-management helpers
+    # ------------------------------------------------------------------
+    def _device_put(self, x, device):
+        """Move x to device, or return x unchanged when device is None.
+
+        Use this instead of jax.device_put(x, device) everywhere so that
+        the sharded code path (where both main_device and sinogram_device
+        are None) becomes a no-op and JAX manages placement automatically.
+        """
+        if device is None:
+            return x
+        return jax.device_put(x, device)
+
+    @contextlib.contextmanager
+    def _device_context(self, device):
+        """Context manager that sets the default JAX device, or does nothing when device is None."""
+        if device is None:
+            yield
+        else:
+            with jax.default_device(device):
+                yield
+
+    def _maybe_shard(self, x, axis=1):
+        """Shard x along `axis` across GPUs when in multi-GPU mode; otherwise return x unchanged.
+
+        This is a no-op stub. It will be wired to actual shard_map logic in Phase 5
+        (multi-GPU integration). The `axis` parameter is reserved for that phase and
+        currently unused.
+        """
+        return x
+
+    def _maybe_gather(self, x, axis=1):
+        """Gather a sharded array along `axis` back to a single array when in multi-GPU mode;
+        otherwise return x unchanged.
+
+        This is a no-op stub. It will be wired to actual gather logic in Phase 5
+        (multi-GPU integration). The `axis` parameter is reserved for that phase and
+        currently unused.
+        """
+        return x
 
     @classmethod
     def get_required_param_names(cls):
@@ -519,8 +562,8 @@ class TomographyModel(ParameterHandler):
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
-        with jax.default_device(output_device):
-            recon = jnp.zeros(recon_shape, device=output_device)
+        with self._device_context(output_device):
+            recon = self._device_put(jnp.zeros(recon_shape), output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
@@ -555,19 +598,19 @@ class TomographyModel(ParameterHandler):
 
         sinogram = []
         for view_indices_batch in view_indices_batched:
-            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.sinogram_device)
+            sinogram_views = self._device_put(jnp.zeros((len(view_indices_batch), *sinogram_shape[1:])), self.sinogram_device)
             # Loop over pixel batches
             for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
                 # Send a batch of pixels to sinogram_device
                 pixel_index_end = pixel_batch_boundaries[k + 1]
-                voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                                 pixel_indices[pixel_index_start:pixel_index_end]],
-                                                                self.sinogram_device)
+                voxel_batch, pixel_index_batch = self._device_put([voxel_values[pixel_index_start:pixel_index_end],
+                                                                   pixel_indices[pixel_index_start:pixel_index_end]],
+                                                                  self.sinogram_device)
                 sinogram_views = sinogram_views.block_until_ready()
                 sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
 
             # Include these views in the sinogram
-            sinogram.append(jax.device_put(sinogram_views, output_device))
+            sinogram.append(self._device_put(sinogram_views, output_device))
 
         sinogram = jnp.concatenate(sinogram)
         return sinogram
@@ -599,7 +642,7 @@ class TomographyModel(ParameterHandler):
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
 
-        pixel_indices = jax.device_put(pixel_indices, self.sinogram_device)
+        pixel_indices = self._device_put(pixel_indices, self.sinogram_device)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
 
@@ -608,10 +651,10 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[2]
 
         # Get the final recon as a jax array
-        recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
+        recon_at_indices = self._device_put(jnp.zeros((num_pixels, num_slices)), output_device)
         for view_indices_batch in view_indices_batched:
             view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.sinogram_device)
+            view_batch = self._device_put(view_batch, self.sinogram_device)
 
             # Loop over pixel batches
             voxel_batch_list = []
@@ -621,7 +664,7 @@ class TomographyModel(ParameterHandler):
                                                                            view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
-                voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
+                voxel_batch_list.append(self._device_put(voxel_batch, output_device))
 
             recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
 
@@ -644,8 +687,8 @@ class TomographyModel(ParameterHandler):
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
         if weights is None:
-            with jax.default_device(self.main_device):
-                weights = jnp.ones((num_views,) + sinogram_shape[1:])
+            with self._device_context(self.main_device):
+                weights = self._device_put(jnp.ones((num_views,) + sinogram_shape[1:]), self.main_device)
         elif weights.shape != (num_views,) + sinogram_shape[1:]:
             error_message = 'Weights must be constant or an array compatible with sinogram'
             error_message += '\nGot weights.shape = {}, but sinogram.shape = {}'.format(weights.shape, sinogram_shape)
@@ -934,7 +977,7 @@ class TomographyModel(ParameterHandler):
         """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
-        return jnp.zeros(recon_shape, device=self.main_device)
+        return self._device_put(jnp.zeros(recon_shape), self.main_device)
 
     def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
@@ -949,7 +992,7 @@ class TomographyModel(ParameterHandler):
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
         warnings.warn('direct_filter not implemented for TomographyModel.')
-        return jnp.zeros_like(sinogram, device=self.sinogram_device)
+        return self._device_put(jnp.zeros_like(sinogram), self.sinogram_device)
 
     def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
                          compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
@@ -975,7 +1018,7 @@ class TomographyModel(ParameterHandler):
         recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
         partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
                                                     use_ror_mask=self.use_ror_mask)
-        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+        partitions = [self._device_put(partition, self.main_device) for partition in partitions]
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
@@ -985,12 +1028,12 @@ class TomographyModel(ParameterHandler):
 
         try:
             # Check that sinogram and weights are not taking up GPU space
-            if isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
-                sinogram = jax.device_put(sinogram, self.sinogram_device)
-            if weights is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
-                weights = jax.device_put(weights, self.sinogram_device)
-            if init_recon is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
-                init_recon = jax.device_put(init_recon, self.main_device)
+            if self.sinogram_device is not None and isinstance(sinogram, type(jnp.zeros(1))) and list(sinogram.devices())[0] != self.sinogram_device:
+                sinogram = self._device_put(sinogram, self.sinogram_device)
+            if weights is not None and self.sinogram_device is not None and isinstance(weights, type(jnp.zeros(1))) and list(weights.devices())[0] != self.sinogram_device:
+                weights = self._device_put(weights, self.sinogram_device)
+            if init_recon is not None and self.main_device is not None and isinstance(init_recon, type(jnp.zeros(1))) and list(init_recon.devices())[0] != self.main_device:
+                init_recon = self._device_put(init_recon, self.main_device)
 
             # Test the sinogram contains valid data
             # Sometimes users accidentally create complex sinograms when they take the -log.
@@ -1120,7 +1163,7 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        recon = jax.device_put(recon, device=self.main_device)
+        recon = self._device_put(recon, self.main_device)
         return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
@@ -1153,7 +1196,7 @@ class TomographyModel(ParameterHandler):
             weights = 1
             constant_weights = True
         else:
-            weights = jax.device_put(weights, self.sinogram_device)
+            weights = self._device_put(weights, self.sinogram_device)
             constant_weights = False
 
         recon_shape = self.get_params('recon_shape')
@@ -1165,7 +1208,7 @@ class TomographyModel(ParameterHandler):
             self.logger.info('Starting direct recon for initial reconstruction')
             init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
         elif isinstance(init_recon, int):
-            init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
+            init_recon = init_recon * self._device_put(jnp.ones(recon_shape), self.main_device)
 
         # Make sure that init_recon has the correct shape and type
         if init_recon.shape != recon_shape:
@@ -1194,8 +1237,8 @@ class TomographyModel(ParameterHandler):
         init_recon = alpha * init_recon
 
         recon = init_recon
-        recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
-        error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
+        recon = self._device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
+        error_sinogram = self._device_put(error_sinogram, self.sinogram_device)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -1207,9 +1250,9 @@ class TomographyModel(ParameterHandler):
                 self.logger.error(error_message)
                 raise ValueError(error_message)
 
-            with jax.default_device(self.main_device):
+            with self._device_context(self.main_device):
                 prox_input = jnp.array(prox_input.reshape((-1, num_recon_slices)))
-            prox_input = jax.device_put(prox_input, self.main_device)
+            prox_input = self._device_put(prox_input, self.main_device)
 
         # Get required parameters
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
@@ -1224,11 +1267,11 @@ class TomographyModel(ParameterHandler):
         if constant_weights:
             weights = 1
         else:
-            weights = jax.device_put(weights, self.sinogram_device)
+            weights = self._device_put(weights, self.sinogram_device)
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
-        flat_recon = jax.device_put(flat_recon, self.main_device)
+        flat_recon = self._device_put(flat_recon, self.main_device)
 
         # Create the finer grained recon update operators
         vcd_subset_updater = self.create_vcd_subset_updater(fm_hessian, weights=weights, prox_input=prox_input)
@@ -1324,7 +1367,7 @@ class TomographyModel(ParameterHandler):
 
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
-        partition_worker = jax.device_put(partition, self.sinogram_device)
+        partition_worker = self._device_put(partition, self.sinogram_device)
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
@@ -1419,7 +1462,7 @@ class TomographyModel(ParameterHandler):
             if prox_input is None:
 
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                with jax.default_device(self.main_device):
+                with self._device_context(self.main_device):
                     if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
                         prior_grad, prior_hess = (
                             mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
@@ -1542,7 +1585,7 @@ class TomographyModel(ParameterHandler):
 
                 # Clip updates to ensure non-negativity
                 pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
-                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+                delta_recon_at_indices = self._device_put(delta_recon_at_indices, self.main_device)
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
@@ -1551,7 +1594,7 @@ class TomographyModel(ParameterHandler):
             # time_names.append('scaledr')
             # time_start = time.time()
             # Perform sparse updates at index locations
-            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+            delta_recon_at_indices = self._device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
             # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
             # times[time_index] += time.time() - time_start
@@ -1607,8 +1650,8 @@ class TomographyModel(ParameterHandler):
         forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
         forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
 
-        forward_linear = jax.device_put(forward_linear, output_device)
-        forward_quadratic = jax.device_put(forward_quadratic, output_device)
+        forward_linear = self._device_put(forward_linear, output_device)
+        forward_quadratic = self._device_put(forward_quadratic, output_device)
         return forward_linear, forward_quadratic
 
     @staticmethod
@@ -1670,8 +1713,8 @@ class TomographyModel(ParameterHandler):
         compute_prior_loss = False
         prior_loss = [0]
         if do_initialization or self.prox_data is None:
-            if isinstance(prox_input, type(jnp.zeros(1))) and list(prox_input.devices())[0] != self.main_device:
-                prox_input = jax.device_put(prox_input, self.main_device)
+            if self.main_device is not None and isinstance(prox_input, type(jnp.zeros(1))) and list(prox_input.devices())[0] != self.main_device:
+                prox_input = self._device_put(prox_input, self.main_device)
 
             sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params = (
                 self.initialize_recon(sinogram, weights, init_recon, max_iterations, first_iteration,

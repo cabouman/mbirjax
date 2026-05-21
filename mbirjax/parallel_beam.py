@@ -169,8 +169,10 @@ class ParallelBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
-        # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        # Allocate the sinogram array. Use voxel_values.shape[1] rather than num_det_rows from
+        # projector_params so that this function works correctly on a slice-sharded subset of the
+        # full recon/sinogram (where the local slice count differs from the global num_det_rows).
+        sinogram_view = jnp.zeros((voxel_values.shape[1], num_det_channels))
 
         # Do the projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
@@ -211,8 +213,10 @@ class ParallelBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
-        # Allocate the voxel cylinder array
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
+        # Allocate the voxel cylinder array. Use sinogram_view.shape[0] rather than num_det_rows
+        # from projector_params so that this function works correctly on a slice-sharded subset
+        # (where the local det-row count differs from the global num_det_rows).
+        det_voxel_cylinder = jnp.zeros((num_pixels, sinogram_view.shape[0]))
         # jax.debug.breakpoint(num_frames=1)
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
@@ -341,15 +345,12 @@ class ParallelBeamModel(TomographyModel):
         def apply_convolution_to_view(view):
             return jax.vmap(convolve_row)(view)
 
-        # Apply convolution across the channels of the sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
+        # Place the sinogram on sinogram_device, then apply the convolution over all views in a
+        # single lax.map call.  The batch_size argument limits how many views are processed at once,
+        # giving the same peak-memory control as the previous Python loop without requiring an
+        # explicit loop, block_until_ready, or concatenation step.
+        sinogram = self._device_put(sinogram, self.sinogram_device)
+        filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
         filtered_sinogram *= jnp.pi / num_views  # scaling term
         return filtered_sinogram
 
@@ -371,10 +372,17 @@ class ParallelBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
+        # Normalize placement: shard sinogram along the slice axis (axis 1) across GPUs when in
+        # multi-GPU mode.  _maybe_shard is a no-op on single-device runs so behaviour is unchanged.
+        sinogram = self._maybe_shard(sinogram)
+
         filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
+
+        # Gather sharded recon back to a single array when in multi-GPU mode; no-op otherwise.
+        recon = self._maybe_gather(recon)
 
         return recon
 
