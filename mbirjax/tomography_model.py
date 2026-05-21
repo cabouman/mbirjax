@@ -816,6 +816,22 @@ class TomographyModel(ParameterHandler):
 
         Note: This function should be run after changing geometry parameters such as ``delta_det_channel``.
         It will set reconstruction parameters such as ``recon_shape`` and ``delta_voxel`` parameters to reasonable values.
+
+        Args:
+            no_compile (bool, optional): If True, do not recompile the JAX projector functions. Defaults to False.
+            no_warning (bool, optional): If True, do not issue warnings. Defaults to False.
+
+        Example:
+            >>> import mbirjax as mj
+            >>> import jax.numpy as jnp
+            >>> sinogram = jnp.zeros(shape=(100, 100, 100))
+            >>> angles = jnp.linspace(0, jnp.pi, 100)
+            >>> ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
+            >>> ct_model.set_params(delta_det_channel=100.0)
+            >>>
+            >>> # Required reset of recon shape and voxel spacing parameters
+            >>> ct_model.auto_set_recon_geometry()
+
         """
         raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 
