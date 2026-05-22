@@ -362,6 +362,15 @@ class ParallelBeamModel(TomographyModel):
             if not isinstance(getattr(sinogram, 'sharding', None),
                               jax.sharding.NamedSharding):
                 sinogram = self._maybe_shard(sinogram, axis=1)
+            # Split views into a body (largest prefix divisible by view_batch_size)
+            # and a tail (remainder, 0 <= tail < view_batch_size).
+            # lax.map with batch_size pads the last batch when num_views is not
+            # divisible, and that padding contaminates cuFFT outputs (empirically
+            # confirmed).  By splitting, neither piece is ever padded, so any
+            # view_batch_size works — including when num_views is large or prime.
+            body_views = (num_views // view_batch_size) * view_batch_size
+            tail_views = num_views - body_views
+
             def apply_filter_local(sino_shard):
                 # sino_shard: (num_views, local_rows, num_channels) -- contiguous on this device.
                 # The filter is computed locally inside shard_map so that each device owns
@@ -378,15 +387,16 @@ class ParallelBeamModel(TomographyModel):
                 def _apply_conv_to_view(view):
                     return jax.vmap(_convolve_row)(view)
 
-                # Use lax.map without batch_size (= one view at a time) rather than vmap.
-                # vmap fuses all views into a single cuFFT plan, which OOMs for large
-                # sinograms (~12 GB plan at size=1024) and is also slower due to memory
-                # pressure even when it fits.
-                # lax.map with batch_size > 1 causes wrong cuFFT results inside shard_map
-                # (XLA scan+cuFFT plan mismatch, confirmed empirically).
-                # lax.map without batch_size is strictly sequential (one view at a time):
-                # no batching, no scan, no plan mismatch, and the cuFFT plan stays small.
-                return jax.lax.map(_apply_conv_to_view, sino_shard)
+                parts = []
+                if body_views > 0:
+                    parts.append(jax.lax.map(_apply_conv_to_view,
+                                             sino_shard[:body_views],
+                                             batch_size=view_batch_size))
+                if tail_views > 0:
+                    # tail < view_batch_size: process one at a time to avoid padding
+                    parts.append(jax.lax.map(_apply_conv_to_view,
+                                             sino_shard[body_views:]))
+                return jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
             filtered_sinogram = jax.shard_map(
                 apply_filter_local,
                 mesh=self.mesh,
