@@ -378,11 +378,15 @@ class ParallelBeamModel(TomographyModel):
                 def _apply_conv_to_view(view):
                     return jax.vmap(_convolve_row)(view)
 
-                # Use vmap over views rather than lax.map with batch_size: on GPU, nesting
-                # lax.map(batch_size) inside shard_map can cause cuFFT to produce wrong values
-                # (confirmed empirically; exact root cause is XLA plan-selection inside scan).
-                # Memory is acceptable here because each shard is only 1/N of the sinogram.
-                return jax.vmap(_apply_conv_to_view)(sino_shard)
+                # Use lax.map without batch_size (= one view at a time) rather than vmap.
+                # vmap fuses all views into a single cuFFT plan, which OOMs for large
+                # sinograms (~12 GB plan at size=1024) and is also slower due to memory
+                # pressure even when it fits.
+                # lax.map with batch_size > 1 causes wrong cuFFT results inside shard_map
+                # (XLA scan+cuFFT plan mismatch, confirmed empirically).
+                # lax.map without batch_size is strictly sequential (one view at a time):
+                # no batching, no scan, no plan mismatch, and the cuFFT plan stays small.
+                return jax.lax.map(_apply_conv_to_view, sino_shard)
             filtered_sinogram = jax.shard_map(
                 apply_filter_local,
                 mesh=self.mesh,

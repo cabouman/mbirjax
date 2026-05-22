@@ -101,6 +101,7 @@ for size in SIZES:
         _ = model.fbp_filter(sinogram_np)
 
         # Correctness: compare sharded output to unsharded baseline.
+        mj.get_memory_stats()
         sharded_result = model.fbp_filter(sinogram_np)
         max_diff = float(np.max(np.abs(np.array(sharded_result) - baseline)))
 
