@@ -142,6 +142,10 @@ class TomographyModel(ParameterHandler):
         if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
             if x.sharding == sharding:
                 return x
+        # TODO: once jax-ml/jax#36524 lands, replace np.array(x) with just x.
+        # The numpy roundtrip works around a jaxlib bug (kReuseInput in HandlePyArray)
+        # that silently corrupts data on non-default GPUs when scattering a JAX array
+        # via device_put, jit(out_shardings=...), or with_sharding_constraint.
         return jax.device_put(np.array(x), sharding)
 
     def _maybe_gather(self, x, axis=1):
