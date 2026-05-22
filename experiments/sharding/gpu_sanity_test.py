@@ -31,11 +31,11 @@ import time
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def mem_gb(device):
-    """Current JAX pool bytes_in_use for a device, in GB.  Returns 0 on error."""
+    """Current JAX pool bytes_in_use for a device, in GB.  Returns -1 on error."""
     try:
         return device.memory_stats()['bytes_in_use'] / 1024**3
     except Exception:
-        return 0.0
+        return -1.0
 
 
 def print_mem(label, devices):
