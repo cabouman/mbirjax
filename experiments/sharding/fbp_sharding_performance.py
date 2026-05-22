@@ -80,7 +80,7 @@ for size in SIZES:
         jax.block_until_ready(out)
         times_base.append(time.time() - t0)
     mem_stats_base = mj.get_memory_stats(print_results=False)
-    gpu_mem_base = {s['id']: s['bytes_in_use'] for s in mem_stats_base
+    gpu_mem_base = {s['id']: s['peak_bytes_in_use'] for s in mem_stats_base
                     if s['id'].startswith('GPU')}
     results[(size, 0)] = {'time': min(times_base), 'max_diff': 0.0, 'gpu_mem': gpu_mem_base}
     mem_str = '  '.join(f"{dev}: {b/1024**3:.2f}GB" for dev, b in gpu_mem_base.items())
@@ -116,7 +116,7 @@ for size in SIZES:
         min_time = min(times)
         # Memory snapshot: current bytes_in_use per GPU after the timed runs.
         mem_stats = mj.get_memory_stats(print_results=False)
-        gpu_mem = {s['id']: s['bytes_in_use'] for s in mem_stats
+        gpu_mem = {s['id']: s['peak_bytes_in_use'] for s in mem_stats
                    if s['id'].startswith('GPU')}
 
         results[(size, n_devices)] = {

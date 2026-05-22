@@ -418,6 +418,13 @@ class ParallelBeamModel(TomographyModel):
             # divisible, and that padding contaminates cuFFT outputs (empirically
             # confirmed).  By splitting, neither piece is ever padded, so any
             # view_batch_size works — including when num_views is large or prime.
+            #
+            # These are computed once from num_views and reused for every shard.
+            # That is correct because sharding is along axis 1 (rows): every shard
+            # has shape (views, local_rows, channels) and therefore the same full
+            # num_views along axis 0.  If sharding were ever changed to axis 0
+            # (views), body_views/tail_views would need to be computed per-shard
+            # from local_views = num_views // n_devices.
             body_views = (num_views // view_batch_size) * view_batch_size
             tail_views = num_views - body_views
 
