@@ -30,7 +30,7 @@ elif model_type == 'cone':
     voxel_slice_aspect = 1./3.
 
 # Helical controls 
-use_helical = True        # set False for circular reconstruction
+use_helical = False        # set False for circular reconstruction
 helical_pitch = 1.0       # dimensionless. helical_pitch = (table travel per rotation) / (det height at iso).
 helical_z_range = 80.0    # ALU total travel
 helical_z_center = 40.0   # ALU

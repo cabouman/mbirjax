@@ -129,7 +129,7 @@ class ParallelBeamModel(TomographyModel):
         
         delta_voxel_row = voxel_row_aspect * delta_voxel
         
-        max_footprint = jnp.max(delta_voxel, delta_voxel_row)
+        max_footprint = jnp.maximum(delta_voxel, delta_voxel_row)
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil(max_footprint / delta_det_channel) / 2))
