@@ -106,7 +106,7 @@ class ConeBeamModel(TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
+        sinogram_shape, view_params_array, voxel_row_aspect, voxel_slice_aspect = self.get_params(['sinogram_shape', 'view_params_array', 'voxel_row_aspect', 'voxel_slice_aspect'])
         num_views, num_det_rows = sinogram_shape[:2]
         if view_params_array is None:
             raise ValueError("view_params_array was not set. This should be created in ConeBeamModel.__init__.")
@@ -115,6 +115,16 @@ class ConeBeamModel(TomographyModel):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[1], num_views)
+            raise ValueError(error_message)
+        
+        if voxel_row_aspect <= 0:
+            error_message = "Voxel row aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
+            raise ValueError(error_message)
+        
+        if voxel_slice_aspect <= 0:
+            error_message = "Voxel slice aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
             raise ValueError(error_message)
 
         # Check for cone angle > 45 degrees
@@ -186,11 +196,10 @@ class ConeBeamModel(TomographyModel):
             min_magnification = 1
         else:
             source_to_iso_dist = source_detector_dist / magnification
-            # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
             half_width_x = 0.5 * recon_shape[1] * delta_voxel
             half_width_y = 0.5 * recon_shape[0] * delta_voxel_row
             half_xy_extent = jnp.maximum(half_width_x, half_width_y)
-            
+            # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
             source_to_closest_pixel = source_to_iso_dist - half_xy_extent
             max_magnification = source_detector_dist / source_to_closest_pixel
             source_to_farthest_pixel = source_to_iso_dist + half_xy_extent
@@ -201,7 +210,7 @@ class ConeBeamModel(TomographyModel):
         psf_radius = int(jnp.ceil(jnp.ceil((max_voxel_pitch * max_magnification / delta_det)) / 2))
         # Then repeat for the back projection from detector elements to voxels.
         # The voxels closest to the detector will be covered the most by a given detector element.
-        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
+        # With magnification=1, the number of voxels per element would be delta_det / min_voxel_pitch
         min_voxel_pitch = jnp.minimum(jnp.minimum(delta_voxel, delta_voxel_row), delta_voxel_slice)
         max_voxels_per_detector = delta_det / (min_magnification * min_voxel_pitch)
         self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
@@ -215,7 +224,7 @@ class ConeBeamModel(TomographyModel):
         """ Compute the automatic recon shape cone beam reconstruction.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
-        
+
         voxel_row_aspect, voxel_slice_aspect = self.get_params(['voxel_row_aspect', 'voxel_slice_aspect'])
         
         magnification = self.get_magnification()
@@ -380,7 +389,7 @@ class ConeBeamModel(TomographyModel):
         num_slices = voxel_cylinder.shape[0]
         
         delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
-
+        
         # From pixel index, compute y and pixel_mag
         y, pixel_mag = ConeBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
 
@@ -750,7 +759,7 @@ class ConeBeamModel(TomographyModel):
         
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-        
+
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
         y_tilde = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0)
@@ -858,7 +867,7 @@ class ConeBeamModel(TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
-        
+
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
         y_tilde = delta_voxel_row * (row_index - (recon_shape[0] - 1) / 2.0)
@@ -908,6 +917,8 @@ class ConeBeamModel(TomographyModel):
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+        view_params_array = self.get_params('view_params_array')
+        helical_z_shifts = view_params_array[:, 1]
         
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
@@ -962,7 +973,13 @@ class ConeBeamModel(TomographyModel):
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views
+        z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
+        if num_views > 1 and z_range > 0:
+            det_height_iso = num_rows * delta_det_row / M_0
+            z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
+            filtered_sinogram *= jnp.pi * z_range / (det_height_iso * num_views)
+        else:
+            filtered_sinogram *= jnp.pi / num_views
         return filtered_sinogram
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
@@ -1177,6 +1194,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_top_half = jax.device_get(recon_top_half)
         if init_recon is not None:
             bot_init_recon = init_recon[:, :, -bot_recon_shape[2]:]
         else:
@@ -1187,6 +1205,7 @@ class ConeBeamModel(TomographyModel):
                                                                  first_iteration=first_iteration,
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
+        recon_bot_half = jax.device_get(recon_bot_half)
         # -------- Stitch together top and bottom reconstructions --------
         recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
 
@@ -1201,4 +1220,3 @@ class ConeBeamModel(TomographyModel):
                            'model_params_bottom': recon_bot_dict['model_params'], }
 
         return recon_full, recon_full_dict
-

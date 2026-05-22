@@ -46,7 +46,7 @@ class ParallelBeamModel(TomographyModel):
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles):
-        
+
         angles = jnp.asarray(angles)
         view_params_name = 'angles'
         super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
@@ -128,9 +128,9 @@ class ParallelBeamModel(TomographyModel):
         delta_det_channel, delta_voxel, voxel_row_aspect = self.get_params(['delta_det_channel', 'delta_voxel', 'voxel_row_aspect'])
         
         delta_voxel_row = voxel_row_aspect * delta_voxel
-
-        max_footprint = jnp.sqrt(delta_voxel**2 + delta_voxel_row**2)
         
+        max_footprint = jnp.max(delta_voxel, delta_voxel_row)
+
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
         psf_radius = int(jnp.ceil(jnp.ceil(max_footprint / delta_det_channel) / 2))
 
@@ -142,7 +142,7 @@ class ParallelBeamModel(TomographyModel):
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         
         voxel_row_aspect = self.get_params('voxel_row_aspect')
-        
+
         # Compute delta_voxel for each dimension
         delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
         delta_voxel_row = voxel_row_aspect * delta_voxel
@@ -185,7 +185,7 @@ class ParallelBeamModel(TomographyModel):
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, center_path_length = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
-        
+
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
 
@@ -400,4 +400,3 @@ class ParallelBeamModel(TomographyModel):
         recon = self.back_project(filtered_sinogram)
 
         return recon
-
