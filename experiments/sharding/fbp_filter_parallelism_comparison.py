@@ -175,7 +175,6 @@ import jax.numpy as jnp
 from jax import shard_map
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
-import mbirjax
 from mbirjax import tomography_utils
 from mbirjax.parallel_beam import _apply_fbp_filter_to_shard
 from mbirjax.memory_stats import get_memory_stats
@@ -257,6 +256,36 @@ def make_shardmap_vmap_fn(mesh):
             return jax.vmap(conv_view)(shard)   # vmap over ALL views at once
         return _inner(sinogram, filter_arr)
     return _fn
+
+
+# ── "Existing" reference: main-branch production core ────────────────────────
+
+def _existing_filter(sinogram, recon_filter, view_batch_size=VIEW_BATCH_SIZE):
+    """Core of the current main-branch fbp_filter, extracted for standalone timing.
+
+    Mirrors the Python-loop-over-batches pattern from production: one
+    jax.lax.map call per view batch, synchronized after each batch to bound
+    peak memory use.  No model-method overhead (no self.get_params, no
+    device_put to sinogram_device) — just the raw compute loop.
+    """
+    num_views = sinogram.shape[0]
+
+    def convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, recon_filter, mode='valid')
+
+    def apply_convolution_to_view(view):
+        return jax.vmap(convolve_row)(view)
+
+    parts = []
+    for i in range(0, num_views, view_batch_size):
+        batch    = sinogram[i:i + view_batch_size]
+        filtered = jax.lax.map(apply_convolution_to_view, batch,
+                               batch_size=view_batch_size)
+        jax.block_until_ready(filtered)   # match production memory behaviour
+        parts.append(filtered)
+
+    result = jnp.concatenate(parts, axis=0)
+    return result * (jnp.pi / num_views)
 
 
 # ── Paths E / F / G: threading ────────────────────────────────────────────────
@@ -399,24 +428,44 @@ def main():
         filter_np   = make_filter_np(size, delta_voxel)
         filter_jax  = jnp.array(filter_np)
 
+        # body_views/tail_views split used by all paths (sharding is along
+        # axis 1 — rows — so every shard has the same full num_views = size).
+        body_views = (size // VIEW_BATCH_SIZE) * VIEW_BATCH_SIZE
+        tail_views = size - body_views
+
         row = {'size': size}
 
-        # ── Path A: unsharded baseline ────────────────────────────────
-        angles  = jnp.linspace(0, np.pi, size, endpoint=False)
-        model_1 = mbirjax.ParallelBeamModel((size, size, size), angles)
-        model_1.set_params(delta_voxel=delta_voxel, delta_det_channel=1.0)
-        model_1.auto_set_recon_geometry()
-
+        # ── Path A: single-device pure-compute baseline ───────────────
+        # Call _apply_fbp_filter_to_shard directly — the same JIT-compiled
+        # function used by the threading paths (E/F/G) — so path A measures
+        # raw FFT compute with no model-method Python overhead.  Using
+        # model.fbp_filter() as the baseline would inflate the apparent
+        # speedup of B/C/E/F/G because the model method includes parameter
+        # lookups and geometry checks on every call.
         jax.block_until_ready(
-            model_1.fbp_filter(sino_dev, view_batch_size=VIEW_BATCH_SIZE))  # warmup
+            _apply_fbp_filter_to_shard(
+                sino_dev, filter_jax,
+                body_views=body_views, tail_views=tail_views,
+                view_batch_size=VIEW_BATCH_SIZE))  # warmup / JIT compile
 
-        t_a, out_a = time_fn(
-            lambda: model_1.fbp_filter(sino_dev, view_batch_size=VIEW_BATCH_SIZE))
-        ref_np = np.asarray(out_a)  # scaled by π/n_views inside fbp_filter
+        t_a, out_a_raw = time_fn(
+            lambda: _apply_fbp_filter_to_shard(
+                sino_dev, filter_jax,
+                body_views=body_views, tail_views=tail_views,
+                view_batch_size=VIEW_BATCH_SIZE))
+        ref_np = np.asarray(out_a_raw) * (np.pi / size)  # apply π/n_views scale
 
         row['A'] = (t_a, 1.0)
         print(f"\n  A. Baseline (1 {backend}, lax.map+vmap):  "
               f"{t_a:.3f} s{peak_mem_str()}")
+
+        # ── "Existing" reference (not in summary table yet) ───────────
+        jax.block_until_ready(
+            _existing_filter(sino_dev, filter_jax))   # warmup / JIT compile
+        t_ex, out_ex = time_fn(lambda: _existing_filter(sino_dev, filter_jax))
+        diff_ex = float(np.max(np.abs(np.asarray(out_ex) - ref_np)))
+        print(f"  Existing (main branch, Python loop):  "
+              f"{t_ex:.3f} s  ({t_a/t_ex:.2f}x vs A)  diff={diff_ex:.1e}")
 
         if n_avail < 2:
             summary.append(row)
