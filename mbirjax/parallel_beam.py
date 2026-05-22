@@ -385,45 +385,28 @@ class ParallelBeamModel(TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         if self.mesh is not None:
-            # Multi-device path: use pmap so each device operates on its own
-            # contiguous local shard with device-parallel (not SPMD) compilation.
+            # Multi-device path: Python threads, one per device, each calling the
+            # module-level _apply_fbp_filter_to_shard via standard jax.jit.
             #
-            # Why pmap instead of shard_map:
-            #   shard_map invokes XLA's SPMD partitioner, which changes how lax.map
-            #   is lowered — adding extra intermediate materializations and producing
-            #   a slower scan.  Measured: shard_map + lax.map is 3–5× slower than
-            #   single-device lax.map even on 1 device, and 2 devices give no speedup
-            #   over 1.  pmap uses device-parallel compilation: each device runs an
-            #   independent copy of the function with standard (non-SPMD) lax.map,
-            #   so per-device timing matches single-device and scales near-linearly.
+            # Why not shard_map or pmap:
+            #   Both invoke XLA's SPMD partitioner on GPU backends, which changes how
+            #   lax.map is lowered — adding extra intermediate materializations and
+            #   producing a 3–6× slowdown even with a single device.  Threading bypasses
+            #   SPMD: each thread uses the standard jit + XLA path and runs at
+            #   single-device speed.  See .claude/parallel_options.md for the full analysis.
             #
-            # Why NamedSharding + jit doesn't work here:
+            # Why not NamedSharding + jit:
             #   XLA's cuFFT thunk requires row-major contiguous memory
-            #   (IsMonotonicWithDim0Major).  Sharding a 3D array along its middle
-            #   axis produces strided per-device views that fail this check.  Both
-            #   pmap and shard_map work around this by handing each device a fresh
-            #   contiguous local array.
+            #   (IsMonotonicWithDim0Major).  Sharding along axis 1 (rows) of a 3D array
+            #   produces strided per-device views that fail this check.
             #
-            # Input reshape:  (views, rows, channels)
-            #   → np.asarray → transpose(1,0,2) → reshape(n_dev, local_rows, views, channels)
-            # pmap fn:        receives (local_rows, views, channels) per device
-            #   → transpose(1,0,2) → (views, local_rows, channels)
-            #   → lax.map + vmap over rows → (views, local_rows, channels_filtered)
-            #   → transpose(1,0,2) back → (local_rows, views, channels_filtered)
-            # Gather:         (n_dev, local_rows, views, channels_filtered)
-            #   → np.asarray → reshape(rows, views, channels_filtered)
-            #   → transpose(1,0,2) → (views, rows, channels_filtered) → jnp.array
-            #
-            # The np.asarray before the reshape sidesteps the JAX 0.10.0 GPU scatter
-            # bug (see status.md): numpy host memory is used as the XLA copy source,
-            # so each GPU receives correct data independently.  Reading from GPUs for
-            # the gather is unaffected by the bug.
-            #
-            # Deprecation note: pmap is deprecated in JAX in favour of shard_map.
-            # For fbp_filter (pure forward pass, no cross-device collectives) the
-            # SPMD overhead of shard_map is pure cost.  Revert to shard_map once
-            # the lax.map-inside-shard_map performance regression is fixed upstream.
-            # See .claude/parallel_options.md for the full analysis.
+            # Data flow (all numpy until the per-device jnp.array upload):
+            #   sinogram  (views, rows, channels)  → np.asarray → np.split along axis=1
+            #   shard[i]  (views, local_rows, channels)  → jnp.array on device i
+            #   filter_np (2*channels-1,) float32  → jnp.array on device i
+            #   _apply_fbp_filter_to_shard → out (views, local_rows, channels_filtered)
+            #   out → np.asarray (D→H, frees device memory)
+            #   np.concatenate along axis=1 → jnp.array (uncommitted, default device)
             n_devices = self.mesh.devices.size
             pmap_devices = list(self.mesh.devices.flat)
             num_rows = sinogram.shape[1]
@@ -439,12 +422,13 @@ class ParallelBeamModel(TomographyModel):
             tail_views = num_views - body_views
 
             # ── Compute filter as numpy ──────────────────────────────────────
-            # Each thread needs a device-local copy of the filter.  Passing numpy
-            # to jnp.array() inside the thread puts it on that thread's default device.
-            filter_np = (np.asarray(
-                tomography_utils.generate_direct_recon_filter(
-                    num_channels, filter_name=filter_name))
-                * scaling_factor)
+            # Reuse the float32 recon_filter computed above (in-place *= preserves
+            # dtype).  A fresh np.asarray avoids the GPU scatter bug and gives each
+            # thread an independent numpy source to upload to its assigned device.
+            # DO NOT recompute via generate_direct_recon_filter(...) * scaling_factor:
+            # that out-of-place multiply promotes float32 → float64, which is 2–32×
+            # slower on GPU.
+            filter_np = np.asarray(recon_filter)
 
             # ── Split sinogram along rows ────────────────────────────────────
             sino_np = np.asarray(sinogram)  # (views, rows, channels)
@@ -511,10 +495,9 @@ class ParallelBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
-        # In multi-GPU mode, fbp_filter uses pmap and handles the device split internally
-        # (np.asarray → reshape → pmap → gather).  Pre-sharding here would only add a
-        # pointless shard+gather roundtrip before fbp_filter un-shards it again.
-        # _maybe_shard is still a no-op in single-device mode, so we skip it entirely.
+        # In multi-GPU mode, fbp_filter handles the device split internally via threading
+        # (np.asarray → np.split → per-device jit → gather).  Pre-sharding here would
+        # only add a pointless shard+gather roundtrip, so we skip it entirely.
         filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection.  filtered_sinogram is uncommitted after fbp_filter's gather.
