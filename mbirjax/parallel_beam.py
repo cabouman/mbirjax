@@ -1,6 +1,7 @@
 from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
+import concurrent.futures
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -8,6 +9,44 @@ import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
+
+
+@partial(jax.jit, static_argnames=('body_views', 'tail_views', 'view_batch_size'))
+def _apply_fbp_filter_to_shard(shard, filter_arr, *, body_views, tail_views, view_batch_size):
+    """Apply the FBP filter to a (views, local_rows, channels) shard on the current device.
+
+    Defined at module level so JAX's JIT cache can be shared across all threads and all
+    calls to fbp_filter.  The cache is keyed on:
+      - this function's Python identity (stable — defined once)
+      - the static args (body_views, tail_views, view_batch_size)
+      - the abstract types of shard and filter_arr (shape + dtype)
+    so compilation happens once per unique (size, view_batch_size) combination.
+
+    Args:
+        shard (jax array):      Shape (views, local_rows, channels), fully contiguous.
+        filter_arr (jax array): Shape (2*channels - 1,), the FBP reconstruction filter.
+        body_views (int):       Largest prefix of views divisible by view_batch_size.
+        tail_views (int):       Remaining views (0 ≤ tail_views < view_batch_size).
+        view_batch_size (int):  Batch size for lax.map over views.
+
+    Returns:
+        jax array of shape (views, local_rows, channels_filtered).
+    """
+    def _convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
+
+    def _apply_conv_to_view(view):
+        # view: (local_rows, channels) — contiguous; vmap over rows
+        return jax.vmap(_convolve_row)(view)
+
+    parts = []
+    if body_views > 0:
+        parts.append(jax.lax.map(_apply_conv_to_view, shard[:body_views],
+                                 batch_size=view_batch_size))
+    if tail_views > 0:
+        # tail < view_batch_size — process one at a time to avoid cuFFT padding
+        parts.append(jax.lax.map(_apply_conv_to_view, shard[body_views:]))
+    return jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
 
 
 class ParallelBeamModel(TomographyModel):
@@ -399,84 +438,54 @@ class ParallelBeamModel(TomographyModel):
             body_views = (num_views // view_batch_size) * view_batch_size
             tail_views = num_views - body_views
 
-            # ── pmap function cache ──────────────────────────────────────────
-            # pmap's compilation cache keys on the Python function object identity.
-            # Defining apply_filter_pmap inline creates a new closure every call,
-            # causing a cache miss and full XLA recompilation on every call (~300 ms
-            # overhead measured at size=512).  We cache the pmap-wrapped function on
-            # self, keyed by every parameter that affects the compiled computation.
-            device_ids = tuple(d.id for d in pmap_devices)
-            pmap_cache_key = (device_ids, num_channels, filter_name,
-                              scaling_factor, body_views, tail_views, view_batch_size)
-            if not hasattr(self, '_pmap_filter_cache'):
-                self._pmap_filter_cache = {}
+            # ── Compute filter as numpy ──────────────────────────────────────
+            # Each thread needs a device-local copy of the filter.  Passing numpy
+            # to jnp.array() inside the thread puts it on that thread's default device.
+            filter_np = (np.asarray(
+                tomography_utils.generate_direct_recon_filter(
+                    num_channels, filter_name=filter_name))
+                * scaling_factor)
 
-            if pmap_cache_key not in self._pmap_filter_cache:
-                # Capture all loop-varying scalars in the closure at definition time
-                # so the cached function is self-contained.
-                _bv, _tv, _vbs = body_views, tail_views, view_batch_size
-                _nc, _fn, _sf = num_channels, filter_name, scaling_factor
-
-                def apply_filter_pmap(shard):
-                    # shard: (views, local_rows, channels) — fully contiguous.
-                    # Input layout is (n_devices, views, local_rows, channels) so
-                    # each device receives its rows already in (views, local_rows, channels)
-                    # order; no transpose is needed before lax.map.
-                    #
-                    # The filter is computed locally so each device owns its own copy.
-                    # Capturing the outer recon_filter (a jnp array committed to GPU 0)
-                    # causes cross-device access errors on non-default GPUs.
-                    _filter = tomography_utils.generate_direct_recon_filter(
-                        _nc, filter_name=_fn)
-                    _filter = _filter * _sf
-
-                    def _convolve_row(row):
-                        return jax.scipy.signal.fftconvolve(row, _filter, mode="valid")
-
-                    def _apply_conv_to_view(view):
-                        # view: (local_rows, channels) — contiguous, vmap over rows
-                        return jax.vmap(_convolve_row)(view)
-
-                    parts = []
-                    if _bv > 0:
-                        parts.append(jax.lax.map(_apply_conv_to_view,
-                                                 shard[:_bv],
-                                                 batch_size=_vbs))
-                    if _tv > 0:
-                        # tail < view_batch_size: process one at a time to avoid padding
-                        parts.append(jax.lax.map(_apply_conv_to_view, shard[_bv:]))
-                    return (jnp.concatenate(parts, axis=0)
-                            if len(parts) > 1 else parts[0])
-                    # result: (views, local_rows, channels_filtered)
-
-                self._pmap_filter_cache[pmap_cache_key] = jax.pmap(
-                    apply_filter_pmap, devices=pmap_devices)
-
-            pmap_fn = self._pmap_filter_cache[pmap_cache_key]
-
-            # ── Input split ─────────────────────────────────────────────────
-            # Split along rows (axis 1) and stack so each device's shard is
-            # (views, local_rows, channels) — fully contiguous in C order, no
-            # transpose needed.  The previous layout (n_devices, local_rows, views,
-            # channels) required a transpose inside pmap which made the row dimension
-            # non-contiguous, forcing cuFFT to work on strided data.
+            # ── Split sinogram along rows ────────────────────────────────────
             sino_np = np.asarray(sinogram)  # (views, rows, channels)
             row_splits = np.split(sino_np, n_devices, axis=1)
-            # row_splits[i]: (views, local_rows, channels) — contiguous
-            sino_pmap = np.stack(row_splits, axis=0)
-            # sino_pmap: (n_devices, views, local_rows, channels)
+            # row_splits[i]: (views, local_rows, channels) — contiguous numpy shard
 
-            # ── Execute pmap ─────────────────────────────────────────────────
-            # result: (n_devices, views, local_rows, channels_filtered)
-            result = pmap_fn(sino_pmap)
+            # ── Dispatch one thread per device ───────────────────────────────
+            # Each thread calls the module-level _apply_fbp_filter_to_shard,
+            # which is a standard jax.jit function (not pmap/shard_map).
+            # Using jax.default_device inside each thread assigns that thread's
+            # operations to a specific device.  JAX is async: the GIL is held only
+            # for the brief dispatch call, so both GPU kernels run concurrently.
+            # The JIT cache is global (keyed on the module-level function object +
+            # static args + abstract input types), so compilation happens once during
+            # warmup and is reused by all threads on all subsequent calls.
+            #
+            # Why not pmap: on GPU backends, jax.pmap uses the same XLA SPMD
+            # partitioner as shard_map, producing the same ~5× slowdown.  Threading
+            # bypasses SPMD entirely — each thread compiles with the standard
+            # (non-SPMD) XLA path and achieves single-device speed.
+            results = [None] * n_devices
+
+            def _filter_on_device(i):
+                with jax.default_device(pmap_devices[i]):
+                    shard_jax = jnp.array(row_splits[i])   # H→D for device i
+                    filter_jax = jnp.array(filter_np)       # filter copy on device i
+                    out = _apply_fbp_filter_to_shard(
+                        shard_jax, filter_jax,
+                        body_views=body_views,
+                        tail_views=tail_views,
+                        view_batch_size=view_batch_size)
+                    jax.block_until_ready(out)
+                results[i] = np.asarray(out)               # D→H, frees device memory
+
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=n_devices) as executor:
+                list(executor.map(_filter_on_device, range(n_devices)))
 
             # ── Gather ───────────────────────────────────────────────────────
-            # Concatenate device shards along local_rows → (views, rows, channels_filtered).
-            # np.concatenate on a list of (views, local_rows, channels) arrays along
-            # axis=1 gives (views, rows, channels_filtered) directly — no transpose.
-            result_np = np.asarray(result)  # (n_devices, views, local_rows, channels_filtered)
-            filtered_sinogram = jnp.array(np.concatenate(list(result_np), axis=1))
-            # (views, rows, channels_filtered)
+            # Concatenate along local_rows → (views, rows, channels_filtered)
+            filtered_sinogram = jnp.array(np.concatenate(results, axis=1))
         else:
             # Single-device path: place on sinogram_device and map over all views.
             sinogram = self._device_put(sinogram, self.sinogram_device)
