@@ -9,23 +9,34 @@ Two independent bottlenecks were discovered during development:
 
   BOTTLENECK 1 — XLA SPMD compilation overhead
   ─────────────────────────────────────────────
-  Affects: shard_map (all variants), pmap on GPU
-  NOT GPU-only: the SPMD compiler path exists on CPU too, just with
-    different (sometimes smaller) overhead.
-  Symptom: n_devices=1 is much slower than the unsharded baseline even
-           though both run on the same single device (zero data-movement
-           possible).  Slowness must come from compilation, not transfers.
-  Cause:   lax.map compiled inside an SPMD context (shard_map or GPU pmap)
-           goes through XLA's SPMD partitioner, which produces different —
-           and slower — scan code than the standard lax.map path.
-  Proof:   time(shard_map 1-dev) ≈ time(shard_map 2-dev)  [no speedup]
-           time(shard_map 1-dev) >> time(baseline 1-dev)   [overhead present]
-  Note on pmap:
-    GPU backend — pmap uses the SAME XLA SPMD partitioner as shard_map;
-      n_devices=1 pmap is just as slow as shard_map.
-    CPU backend — pmap uses a DIFFERENT, device-parallel compilation path
-      (no SPMD); n_devices=1 ≈ baseline, and n_devices=N gives near-linear
-      speedup.  This CPU/GPU asymmetry was a key diagnostic clue.
+  Concept: lax.map compiled inside a shard_map SPMD context goes through
+    XLA's SPMD partitioner, which may produce different code than the
+    standard single-device path.  The expected symptom is that a 1-device
+    shard_map run is *slower* than the plain baseline on the same device,
+    proving the overhead is compilation-only (zero data movement possible).
+
+  What we actually observed on CPU:
+    SPMD overhead is negligible — 1-dev ≈ baseline; 2-dev gives near-linear
+    speedup comparable to the threading paths.  shard_map is viable on CPU.
+
+  What we actually observed on GPU:
+    shard_map 1-dev was *faster* than baseline A, not slower.  Two confounds
+    make the GPU result hard to interpret as a clean SPMD measurement:
+      (a) Baseline A calls model.fbp_filter(), which includes Python overhead
+          (parameter lookups, geometry checks) beyond the raw FFT compute.
+          Paths B/C call a pre-compiled closure with a pre-built filter.
+      (b) Earlier measurements were made before fixing a float64 dtype bug
+          in the threading path; that bug made the baseline look slower, which
+          led to the incorrect conclusion that SPMD was the bottleneck.
+    Net: any SPMD overhead on GPU is outweighed by these confounds at the
+    sizes tested here.
+
+  Correctness concern (GPU only):
+    shard_map 2-dev shows a non-trivial diff vs the baseline (flagged in
+    output when diff > MAX_DIFF_THRESHOLD).  The 1-dev path and all threading
+    paths are bit-exact.  Root cause unknown — possibly related to filter
+    replication across devices or memory pressure at large sizes.  shard_map
+    multi-GPU is not production-ready until this is understood.
 
   BOTTLENECK 2 — Host↔device data movement
   ─────────────────────────────────────────
@@ -122,6 +133,7 @@ SIZES              = [256, 512]
 VIEW_BATCH_SIZE    = 100
 N_RUNS             = 1     # report min over this many timed calls
 VMAP_ONLY_MAX_SIZE = 512   # path C vmap-over-all-views OOMs for large sizes
+MAX_DIFF_THRESHOLD = 1e-4  # flag shard_map multi-dev results above this
 
 # ── Backend selection (must happen before JAX import) ─────────────────────────
 
@@ -449,8 +461,12 @@ def main():
                         np.asarray(out) * (np.pi / size) - ref_np)))
                     spd  = t_a / t
                     row[f'{label}_{n_dev}'] = (t, spd)
-                    annot = ('← SPMD overhead proved (1-dev, no data movement)'
-                             if n_dev == 1 else '')
+                    if n_dev == 1:
+                        annot = '← 1-dev: no data movement; pure SPMD vs baseline'
+                    elif diff > MAX_DIFF_THRESHOLD:
+                        annot = f'*** diff={diff:.1e} > {MAX_DIFF_THRESHOLD:.0e} — correctness suspect ***'
+                    else:
+                        annot = ''
                     print(f"  {label}. {tag}  {n_dev}-dev:  "
                           f"{t:.3f} s  ({spd:.2f}x)  diff={diff:.1e}  {annot}")
                 except Exception as e:
@@ -551,16 +567,20 @@ def main():
     print()
     if is_gpu:
         print("Key findings (GPU):")
-        print("  B/C 1-dev >> A:  SPMD compilation overhead; not data movement.")
-        print("  B/C 1-dev ≈ 2-dev:  SPMD gives no parallelism — overhead only.")
-        print("  E/F << A:  PCIe roundtrips dominate; constant cost vs n_devices.")
-        print("  G >> A:  both bottlenecks eliminated; super-linear at small sizes")
-        print("           (halving rows/device relieves GPU memory pressure).")
+        print("  B/C 1-dev faster than A: not a clean SPMD measurement — baseline A")
+        print("    includes model-method overhead; earlier runs had a float64 filter")
+        print("    bug that inflated baseline time.  See docstring for details.")
+        print("  B/C 2-dev correctness: non-trivial diff on GPU (flagged above).")
+        print("    Root cause unknown; shard_map multi-GPU not production-ready.")
+        print("  E/F << A:  PCIe roundtrips dominate; cost is constant vs n_devices.")
+        print("  G >> A:  zero PCIe; super-linear at small sizes (reduced per-GPU")
+        print("           memory pressure); confirmed correct.  Production winner.")
     else:
         print("Key findings (CPU):")
-        print("  B/C 1-dev > A:  SPMD overhead exists on CPU too, but may be smaller.")
-        print("  E/F/G similar:  no PCIe bus; host copies are cheap; threading speedup")
-        print("           visible in all three threading paths.")
+        print("  B/C: SPMD overhead negligible on CPU — 1-dev ≈ baseline,")
+        print("    2-dev gives near-linear speedup.  shard_map is viable on CPU.")
+        print("  E/F/G all similar: no PCIe bus; host copies cheap; threading")
+        print("    speedup visible across all three paths.")
 
 
 if __name__ == '__main__':
