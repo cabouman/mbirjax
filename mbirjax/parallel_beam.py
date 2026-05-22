@@ -399,57 +399,84 @@ class ParallelBeamModel(TomographyModel):
             body_views = (num_views // view_batch_size) * view_batch_size
             tail_views = num_views - body_views
 
-            # Reshape to (n_devices, local_rows, views, channels) as a numpy array.
-            sino_np = np.asarray(sinogram)
-            sino_pmap = sino_np.transpose(1, 0, 2).reshape(
-                n_devices, local_rows, num_views, num_channels)
+            # ── pmap function cache ──────────────────────────────────────────
+            # pmap's compilation cache keys on the Python function object identity.
+            # Defining apply_filter_pmap inline creates a new closure every call,
+            # causing a cache miss and full XLA recompilation on every call (~300 ms
+            # overhead measured at size=512).  We cache the pmap-wrapped function on
+            # self, keyed by every parameter that affects the compiled computation.
+            device_ids = tuple(d.id for d in pmap_devices)
+            pmap_cache_key = (device_ids, num_channels, filter_name,
+                              scaling_factor, body_views, tail_views, view_batch_size)
+            if not hasattr(self, '_pmap_filter_cache'):
+                self._pmap_filter_cache = {}
 
-            def apply_filter_pmap(shard):
-                # shard: (local_rows, views, channels) — contiguous on this device.
-                # Transpose so lax.map scans over views.
-                shard_vf = shard.transpose(1, 0, 2)  # (views, local_rows, channels)
+            if pmap_cache_key not in self._pmap_filter_cache:
+                # Capture all loop-varying scalars in the closure at definition time
+                # so the cached function is self-contained.
+                _bv, _tv, _vbs = body_views, tail_views, view_batch_size
+                _nc, _fn, _sf = num_channels, filter_name, scaling_factor
 
-                # Compute the filter locally so each device owns its own copy.
-                # Capturing the outer recon_filter (a jnp array committed to GPU 0)
-                # would cause cross-device access errors on non-default GPUs — same
-                # issue as in the shard_map version.
-                _filter = tomography_utils.generate_direct_recon_filter(
-                    num_channels, filter_name=filter_name)
-                _filter = _filter * scaling_factor
+                def apply_filter_pmap(shard):
+                    # shard: (views, local_rows, channels) — fully contiguous.
+                    # Input layout is (n_devices, views, local_rows, channels) so
+                    # each device receives its rows already in (views, local_rows, channels)
+                    # order; no transpose is needed before lax.map.
+                    #
+                    # The filter is computed locally so each device owns its own copy.
+                    # Capturing the outer recon_filter (a jnp array committed to GPU 0)
+                    # causes cross-device access errors on non-default GPUs.
+                    _filter = tomography_utils.generate_direct_recon_filter(
+                        _nc, filter_name=_fn)
+                    _filter = _filter * _sf
 
-                def _convolve_row(row):
-                    return jax.scipy.signal.fftconvolve(row, _filter, mode="valid")
+                    def _convolve_row(row):
+                        return jax.scipy.signal.fftconvolve(row, _filter, mode="valid")
 
-                def _apply_conv_to_view(view):
-                    # view: (local_rows, channels) → vmap over rows
-                    return jax.vmap(_convolve_row)(view)
+                    def _apply_conv_to_view(view):
+                        # view: (local_rows, channels) — contiguous, vmap over rows
+                        return jax.vmap(_convolve_row)(view)
 
-                parts = []
-                if body_views > 0:
-                    parts.append(jax.lax.map(_apply_conv_to_view,
-                                             shard_vf[:body_views],
-                                             batch_size=view_batch_size))
-                if tail_views > 0:
-                    # tail < view_batch_size: process one at a time to avoid padding
-                    parts.append(jax.lax.map(_apply_conv_to_view,
-                                             shard_vf[body_views:]))
-                filtered_vf = (jnp.concatenate(parts, axis=0)
-                               if len(parts) > 1 else parts[0])
+                    parts = []
+                    if _bv > 0:
+                        parts.append(jax.lax.map(_apply_conv_to_view,
+                                                 shard[:_bv],
+                                                 batch_size=_vbs))
+                    if _tv > 0:
+                        # tail < view_batch_size: process one at a time to avoid padding
+                        parts.append(jax.lax.map(_apply_conv_to_view, shard[_bv:]))
+                    return (jnp.concatenate(parts, axis=0)
+                            if len(parts) > 1 else parts[0])
+                    # result: (views, local_rows, channels_filtered)
 
-                # Transpose back to (local_rows, views, channels_filtered)
-                return filtered_vf.transpose(1, 0, 2)
+                self._pmap_filter_cache[pmap_cache_key] = jax.pmap(
+                    apply_filter_pmap, devices=pmap_devices)
 
-            # result: (n_devices, local_rows, views, channels_filtered)
-            result = jax.pmap(apply_filter_pmap, devices=pmap_devices)(sino_pmap)
+            pmap_fn = self._pmap_filter_cache[pmap_cache_key]
 
-            # Gather: reshape to (rows, views, channels_filtered),
-            # transpose to (views, rows, channels_filtered), wrap as JAX array.
-            result_np = np.asarray(result)
-            n_channels_filtered = result_np.shape[-1]
-            filtered_sinogram = jnp.array(
-                result_np.reshape(num_rows, num_views, n_channels_filtered)
-                         .transpose(1, 0, 2)
-            )
+            # ── Input split ─────────────────────────────────────────────────
+            # Split along rows (axis 1) and stack so each device's shard is
+            # (views, local_rows, channels) — fully contiguous in C order, no
+            # transpose needed.  The previous layout (n_devices, local_rows, views,
+            # channels) required a transpose inside pmap which made the row dimension
+            # non-contiguous, forcing cuFFT to work on strided data.
+            sino_np = np.asarray(sinogram)  # (views, rows, channels)
+            row_splits = np.split(sino_np, n_devices, axis=1)
+            # row_splits[i]: (views, local_rows, channels) — contiguous
+            sino_pmap = np.stack(row_splits, axis=0)
+            # sino_pmap: (n_devices, views, local_rows, channels)
+
+            # ── Execute pmap ─────────────────────────────────────────────────
+            # result: (n_devices, views, local_rows, channels_filtered)
+            result = pmap_fn(sino_pmap)
+
+            # ── Gather ───────────────────────────────────────────────────────
+            # Concatenate device shards along local_rows → (views, rows, channels_filtered).
+            # np.concatenate on a list of (views, local_rows, channels) arrays along
+            # axis=1 gives (views, rows, channels_filtered) directly — no transpose.
+            result_np = np.asarray(result)  # (n_devices, views, local_rows, channels_filtered)
+            filtered_sinogram = jnp.array(np.concatenate(list(result_np), axis=1))
+            # (views, rows, channels_filtered)
         else:
             # Single-device path: place on sinogram_device and map over all views.
             sinogram = self._device_put(sinogram, self.sinogram_device)
