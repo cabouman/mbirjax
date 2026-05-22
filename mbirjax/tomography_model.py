@@ -120,13 +120,18 @@ class TomographyModel(ParameterHandler):
         by configure_sharding) so that all _device_put calls in the rest of the code
         become no-ops and JAX routes data through the mesh automatically.
 
-        Note: When x is not already sharded, we materialize it to a numpy array before
-        calling jax.device_put.  This avoids a JAX bug (confirmed in JAX 0.10.0) where
-        jax.device_put(uncommitted_jax_array, NamedSharding) silently produces garbage
-        data on non-default GPUs.  A numpy source is always on host memory and JAX
-        correctly distributes it to every device in the sharding.
-        If x is already correctly sharded (e.g. output of a previous shard_map or
-        _maybe_shard call) the numpy roundtrip is skipped entirely.
+        If x already carries the correct NamedSharding (e.g. it came from a previous
+        shard_map or _maybe_shard call), it is returned as-is with no data movement.
+
+        Otherwise x is materialized to a numpy array first, then distributed via
+        jax.device_put(np_array, sharding).  The numpy roundtrip is load-bearing:
+        in JAX 0.10.0, scattering a JAX array to a NamedSharding silently produces
+        garbage on non-default GPUs regardless of whether the scatter goes through
+        jax.device_put, jax.jit(out_shardings=...), or jax.lax.with_sharding_constraint
+        inside jit.  All three paths share the same broken XLA scatter for non-default
+        devices when the source array has not been concretely placed on host memory.
+        A numpy source is always concrete host memory, so XLA copies it to each GPU
+        independently and correctly.
         """
         if self.mesh is None:
             return x
