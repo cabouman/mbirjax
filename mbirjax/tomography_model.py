@@ -155,7 +155,7 @@ class TomographyModel(ParameterHandler):
         """
         if self.mesh is None:
             return x
-        return jnp.array(np.array(x))
+        return jax.jit(lambda a: a)(x)
 
     def configure_sharding(self, devices):
         """Configure multi-device sharding along the slice axis.
