@@ -120,18 +120,24 @@ class TomographyModel(ParameterHandler):
         by configure_sharding) so that all _device_put calls in the rest of the code
         become no-ops and JAX routes data through the mesh automatically.
 
-        Note: We deliberately materialize x to a numpy array before calling
-        jax.device_put.  This avoids a JAX bug (confirmed in JAX 0.10.0) where
+        Note: When x is not already sharded, we materialize it to a numpy array before
+        calling jax.device_put.  This avoids a JAX bug (confirmed in JAX 0.10.0) where
         jax.device_put(uncommitted_jax_array, NamedSharding) silently produces garbage
         data on non-default GPUs.  A numpy source is always on host memory and JAX
         correctly distributes it to every device in the sharding.
+        If x is already correctly sharded (e.g. output of a previous shard_map or
+        _maybe_shard call) the numpy roundtrip is skipped entirely.
         """
         if self.mesh is None:
             return x
         spec = [None] * x.ndim
         spec[axis] = 'slices'
         sharding = jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec(*spec))
-        return jax.jit(lambda a: a, out_shardings=sharding)(x)
+        # Skip the numpy roundtrip if x is already correctly sharded.
+        if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
+            if x.sharding == sharding:
+                return x
+        return jax.device_put(np.array(x), sharding)
 
     def _maybe_gather(self, x, axis=1):
         """Gather a sharded array back to an uncommitted JAX array when sharding is configured.
