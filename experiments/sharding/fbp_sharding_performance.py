@@ -12,13 +12,13 @@ USE_VIRTUAL_CPU = True   # True → virtual CPU devices via XLA_FLAGS
 
 # Sizes to sweep.  num_views = num_det_rows = num_det_channels = size.
 # Every size must be divisible by every entry in N_DEVICES_LIST.
-SIZES = [64, 128, 256, 512]
+SIZES = [512, 1024]
 
 # Device counts to test.  Entries larger than the number of available devices
 # are skipped automatically.
 N_DEVICES_LIST = [1, 2, 4]
 
-N_TIMING_RUNS = 3   # timed runs per (size, n_devices); report the minimum
+N_TIMING_RUNS = 1   # timed runs per (size, n_devices); report the minimum
 
 MAX_DIFF_THRESHOLD = 1e-4  # warn if sharded vs unsharded max diff exceeds this
 
