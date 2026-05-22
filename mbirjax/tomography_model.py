@@ -146,7 +146,7 @@ class TomographyModel(ParameterHandler):
         # The numpy roundtrip works around a jaxlib bug (kReuseInput in HandlePyArray)
         # that silently corrupts data on non-default GPUs when scattering a JAX array
         # via device_put, jit(out_shardings=...), or with_sharding_constraint.
-        return jax.device_put(np.array(x), sharding)
+        return jax.device_put(np.asarray(x), sharding)
 
     def _maybe_gather(self, x, axis=1):
         """Gather a sharded array back to an uncommitted JAX array when sharding is configured.
