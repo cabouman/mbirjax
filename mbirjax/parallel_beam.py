@@ -412,6 +412,15 @@ class ParallelBeamModel(TomographyModel):
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
+        # Record whether the caller provided an already-sharded sinogram so we can
+        # return a sharded result (zero PCIe for pipelined callers) or gather it
+        # (backward-compatible plain array for user-facing calls).
+        input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
+                                      jax.sharding.NamedSharding)
+        # Ensure sinogram is in sinogram-native sharding.  No-op if already correct;
+        # scatters via numpy roundtrip (JAX bug workaround) if input is uncommitted.
+        sinogram = self._shard_sinogram(sinogram)
+
         num_views, _, num_channels = sinogram.shape
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
@@ -425,7 +434,6 @@ class ParallelBeamModel(TomographyModel):
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1 / (delta_voxel**2)
 
-        # Single-device helpers (used by the else branch below).
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
 
@@ -436,104 +444,77 @@ class ParallelBeamModel(TomographyModel):
             return jax.vmap(convolve_row)(view)
 
         if self.mesh is not None:
-            # Multi-device path: Python threads, one per device, each calling the
-            # module-level _apply_fbp_filter_to_shard via standard jax.jit.
+            # ── Path G multi-device: zero PCIe ──────────────────────────────
             #
-            # Why not shard_map or pmap:
-            #   Both invoke XLA's SPMD partitioner on GPU backends, which changes how
-            #   lax.map is lowered — adding extra intermediate materializations and
-            #   producing a 3–6× slowdown even with a single device.  Threading bypasses
-            #   SPMD: each thread uses the standard jit + XLA path and runs at
-            #   single-device speed.  See .claude/parallel_options.md for the full analysis.
+            # Why threading over shard_map/pmap:
+            #   Both invoke XLA's SPMD partitioner on GPU backends, adding extra
+            #   intermediate materializations and a 3–6× slowdown.  Threading uses
+            #   the standard jit + XLA path at full single-device speed.
             #
             # Why not NamedSharding + jit:
-            #   XLA's cuFFT thunk requires row-major contiguous memory
-            #   (IsMonotonicWithDim0Major).  Sharding along axis 1 (rows) of a 3D array
-            #   produces strided per-device views that fail this check.
+            #   XLA's cuFFT thunk requires row-major contiguous memory.  Sharding
+            #   along axis 1 (rows) produces strided views that fail this check.
             #
-            # Data flow (all numpy until the per-device jnp.array upload):
-            #   sinogram  (views, rows, channels)  → np.asarray → np.split along axis=1
-            #   shard[i]  (views, local_rows, channels)  → jnp.array on device i
-            #   filter_np (2*channels-1,) float32  → jnp.array on device i
-            #   _apply_fbp_filter_to_shard → out (views, local_rows, channels_filtered)
-            #   out → np.asarray (D→H, frees device memory)
-            #   np.concatenate along axis=1 → jnp.array (uncommitted, default device)
+            # Data flow (Path G — sinogram stays on devices throughout):
+            #   sinogram already sharded (det_rows axis) by _shard_sinogram above
+            #   addressable_shards → shard.data already on device i  (zero PCIe)
+            #   filter_np (2*channels-1,) float32  → jnp.array on device i (tiny)
+            #   _apply_fbp_filter_to_shard → out  (still on device i)
+            #   results[i] = out              stays on device — zero PCIe
+            #   make_array_from_single_device_arrays → NamedSharding result
             n_devices = self.mesh.devices.size
             pmap_devices = list(self.mesh.devices.flat)
-            num_rows = sinogram.shape[1]
-            local_rows = num_rows // n_devices
 
-            # Split views into a body (largest prefix divisible by view_batch_size)
-            # and a tail (remainder, 0 <= tail < view_batch_size).
-            # lax.map with batch_size pads the last batch when num_views is not
-            # divisible, and that padding contaminates cuFFT outputs (empirically
-            # confirmed).  By splitting, neither piece is ever padded, so any
-            # view_batch_size works — including when num_views is large or prime.
-            #
-            # These are computed once from num_views and reused for every shard.
-            # That is correct because sharding is along axis 1 (rows): every shard
-            # has shape (views, local_rows, channels) and therefore the same full
-            # num_views along axis 0.  If sharding were ever changed to axis 0
-            # (views), body_views/tail_views would need to be computed per-shard
-            # from local_views = num_views // n_devices.
+            # Split views into body (largest multiple of view_batch_size) + tail.
+            # lax.map pads the last batch when num_views is not divisible, which
+            # contaminates cuFFT outputs.  Splitting avoids any padding.
             body_views = (num_views // view_batch_size) * view_batch_size
             tail_views = num_views - body_views
 
-            # ── Compute filter as numpy ──────────────────────────────────────
-            # Reuse the float32 recon_filter computed above (in-place *= preserves
-            # dtype).  A fresh np.asarray avoids the GPU scatter bug and gives each
-            # thread an independent numpy source to upload to its assigned device.
-            # DO NOT recompute via generate_direct_recon_filter(...) * scaling_factor:
-            # that out-of-place multiply promotes float32 → float64, which is 2–32×
-            # slower on GPU.
+            # Materialise filter as numpy once; each thread uploads its own copy.
+            # in-place *= above preserves float32 — do NOT recompute with out-of-place
+            # multiply (that promotes to float64, 2–32× slower on GPU).
             filter_np = np.asarray(recon_filter)
 
-            # ── Split sinogram along rows ────────────────────────────────────
-            sino_np = np.asarray(sinogram)  # (views, rows, channels)
-            row_splits = np.split(sino_np, n_devices, axis=1)
-            # row_splits[i]: (views, local_rows, channels) — contiguous numpy shard
+            # Map device → its local shard (already resident on that device).
+            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
 
-            # ── Dispatch one thread per device ───────────────────────────────
-            # Each thread calls the module-level _apply_fbp_filter_to_shard,
-            # which is a standard jax.jit function (not pmap/shard_map).
-            # Using jax.default_device inside each thread assigns that thread's
-            # operations to a specific device.  JAX is async: the GIL is held only
-            # for the brief dispatch call, so both GPU kernels run concurrently.
-            # The JIT cache is global (keyed on the module-level function object +
-            # static args + abstract input types), so compilation happens once during
-            # warmup and is reused by all threads on all subsequent calls.
-            #
-            # Why not pmap: on GPU backends, jax.pmap uses the same XLA SPMD
-            # partitioner as shard_map, producing the same ~5× slowdown.  Threading
-            # bypasses SPMD entirely — each thread compiles with the standard
-            # (non-SPMD) XLA path and achieves single-device speed.
             results = [None] * n_devices
 
             def _filter_on_device(i):
-                with jax.default_device(pmap_devices[i]):
-                    shard_jax = jnp.array(row_splits[i])   # H→D for device i
-                    filter_jax = jnp.array(filter_np)       # filter copy on device i
+                dev = pmap_devices[i]
+                with jax.default_device(dev):
+                    filter_jax = jnp.array(filter_np)   # small upload: 2*ch-1 floats
                     out = _apply_fbp_filter_to_shard(
-                        shard_jax, filter_jax,
+                        dev_to_shard[dev], filter_jax,
                         body_views=body_views,
                         tail_views=tail_views,
                         view_batch_size=view_batch_size)
                     jax.block_until_ready(out)
-                results[i] = np.asarray(out)               # D→H, frees device memory
+                results[i] = out                         # stays on device — zero PCIe
 
             with concurrent.futures.ThreadPoolExecutor(
                     max_workers=n_devices) as executor:
                 list(executor.map(_filter_on_device, range(n_devices)))
 
-            # ── Gather ───────────────────────────────────────────────────────
-            # Concatenate along local_rows → (views, rows, channels_filtered)
-            filtered_sinogram = jnp.array(np.concatenate(results, axis=1))
+            # Assemble per-device arrays into a NamedSharding array without any
+            # device-to-host transfer.  Output shape == sinogram.shape because
+            # fftconvolve(mode='valid') with a (2c-1)-length filter returns c channels.
+            filtered_sinogram = jax.make_array_from_single_device_arrays(
+                shape=sinogram.shape,
+                sharding=sinogram.sharding,
+                arrays=results)
         else:
             # Single-device path: place on sinogram_device and map over all views.
             sinogram = self._device_put(sinogram, self.sinogram_device)
             filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
-        filtered_sinogram *= jnp.pi / num_views  # scaling term
-        return filtered_sinogram
+
+        # Apply π/num_views scaling.  Works for both sharded and plain arrays.
+        filtered_sinogram = filtered_sinogram * (jnp.pi / num_views)
+
+        # Return sharded if the caller provided a sharded input (pipelined path);
+        # otherwise gather to a plain uncommitted array (backward-compatible).
+        return filtered_sinogram if input_is_sharded else self._gather_sinogram(filtered_sinogram)
 
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
@@ -553,16 +534,14 @@ class ParallelBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
 
-        # In multi-GPU mode, fbp_filter handles the device split internally via threading
-        # (np.asarray → np.split → per-device jit → gather).  Pre-sharding here would
-        # only add a pointless shard+gather roundtrip, so we skip it entirely.
+        # fbp_filter shards internally (Path G): sinogram is a plain input here, so
+        # fbp_filter scatters it, filters each shard on-device, then gathers the result
+        # back to a plain uncommitted array before returning.
         filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-        # Apply backprojection.  filtered_sinogram is uncommitted after fbp_filter's gather.
+        # back_project receives a plain array; it will shard/gather internally in
+        # multi-device mode once Step 3 is implemented.
         recon = self.back_project(filtered_sinogram)
-
-        # _maybe_gather is a no-op here (recon is already uncommitted after pmap gather),
-        # but kept for symmetry and to handle any future path where recon may be sharded.
         recon = self._maybe_gather(recon)
 
         return recon

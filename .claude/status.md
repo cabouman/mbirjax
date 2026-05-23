@@ -272,8 +272,8 @@ def _extract_halos(self, flat_recon):
     # Extract one boundary slice per device — O(rows²) data, negligible cost
     shards = sorted(flat_recon.addressable_shards,
                     key=lambda s: s.index[1].start)
-    left_halos  = [None] + [np.asarray(s.data[:, 0])  for s in shards[:-1]]
-    right_halos = [np.asarray(s.data[:, -1]) for s in shards[1:]] + [None]
+    left_halos  = [None] + [np.asarray(s.data[:, -1]) for s in shards[:-1]]
+    right_halos = [np.asarray(s.data[:, 0])  for s in shards[1:]] + [None]
     return left_halos, right_halos
 ```
 
@@ -370,7 +370,7 @@ Add a note to both docstrings:
 
 ---
 
-### Step 1 — `fbp_filter`: Path E → Path G (zero PCIe)
+### Step 1 — `fbp_filter`: Path E → Path G (zero PCIe) ✓ COMPLETE
 
 **File:** `parallel_beam.py`
 
