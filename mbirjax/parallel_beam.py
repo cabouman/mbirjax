@@ -183,8 +183,9 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, center_path_length = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
@@ -194,7 +195,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = center_path_length * L_p_c_n
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -225,8 +226,9 @@ class ParallelBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, center_path_length = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
@@ -236,7 +238,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = center_path_length * L_p_c_n
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -254,7 +256,7 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, center_path_length
+            n_p, n_p_center, W_p_c, footprint_xy
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -275,10 +277,6 @@ class ParallelBeamModel(TomographyModel):
         # Calculate indices on the detector grid
         n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
         n_p_center = jnp.round(n_p).astype(int)
-
-        # Compute the path length through the center of the voxel
-        eps = 1e-12
-        center_path_length = jnp.minimum(gp.delta_voxel / jnp.maximum(jnp.abs(jnp.sin(angle)), eps), delta_voxel_row / jnp.maximum(jnp.abs(jnp.cos(angle)), eps))
         
         # Compute footprint for row and columns
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle)) * gp.delta_voxel, jnp.abs(jnp.sin(angle)) * delta_voxel_row)
@@ -286,7 +284,7 @@ class ParallelBeamModel(TomographyModel):
         # Compute projected voxel width along columns and rows (in fraction of detector size)
         W_p_c = footprint_xy / gp.delta_det_channel
 
-        proj_data = (n_p, n_p_center, W_p_c, center_path_length)
+        proj_data = (n_p, n_p_center, W_p_c, footprint_xy)
 
         return proj_data
 
