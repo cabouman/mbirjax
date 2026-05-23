@@ -66,7 +66,8 @@ class TomographyModel(ParameterHandler):
         self.set_params(geometry_type=str(type(self)))
 
         self.main_device, self.sinogram_device = None, None
-        self.mesh = None   # set via configure_sharding() to enable multi-device sharding
+        self.mesh = None                    # set by _apply_sharding(); None = single-device
+        self._explicit_shard_devices = None # set by configure_sharding(); None = auto-detect
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
@@ -158,40 +159,127 @@ class TomographyModel(ParameterHandler):
         all subsequent _device_put calls are no-ops; an uncommitted array slots in
         naturally and lets JAX choose placement for follow-on operations.
 
-        Note: np.array(x) reads from every device (including non-default GPUs) into
-        host memory, which is a reliable read path.  jnp.array then wraps it as an
-        uncommitted JAX array without triggering the JAX 0.10.0 GPU placement bug.
+        np.asarray(x) reads every device shard into a contiguous host buffer — the
+        reliable read path, unaffected by the JAX 0.10.0 scatter bug.  jnp.array(...)
+        then wraps the host buffer as an uncommitted JAX array without triggering the
+        placement bug on the write side.
         """
         if self.mesh is None:
             return x
-        return jax.jit(lambda a: a)(x)
+        return jnp.array(np.asarray(x))
 
-    def configure_sharding(self, devices):
-        """Configure multi-device sharding along the slice axis.
+    def _apply_sharding(self, devices):
+        """Low-level: create mesh and null device attributes for multi-device sharding.
 
-        After calling this, _maybe_shard will distribute an array's slice axis across
-        the provided devices and _maybe_gather will collect it back to the first device.
-        Both main_device and sinogram_device are set to None so that all _device_put
-        calls in the rest of the code become no-ops, letting JAX manage placement
-        automatically through the mesh.
-
-        Call with devices=None to disable sharding and restore single-device placement.
+        This is the mechanism layer — it does the actual setup without any policy logic.
+        Always call this from set_devices_and_batch_sizes, never from configure_sharding
+        directly, to avoid circular calls.
 
         Args:
-            devices: sequence of JAX devices to shard across (e.g. jax.devices()[:4]).
-                     The slice dimension must be evenly divisible by len(devices).
-                     Pass None to disable sharding.
+            devices: non-empty sequence of JAX devices to shard across.
         """
-        if devices is None:
-            self.mesh = None
-            self.set_devices_and_batch_sizes()  # restore single-device placement
-            return
-        dev_array = np.array(devices)
+        dev_array = np.array(list(devices))
         self.mesh = jax.sharding.Mesh(dev_array, axis_names=('slices',))
-        # Disable explicit device placement so _device_put becomes a no-op and JAX
-        # routes sharded arrays through the mesh without interference.
+        # Null out explicit device placement so every _device_put becomes a no-op
+        # and JAX routes sharded arrays through the mesh without interference.
         self.main_device = None
         self.sinogram_device = None
+
+    def configure_sharding(self, devices):
+        """Explicitly configure multi-device sharding, or revert to automatic selection.
+
+        Stores the requested device list and delegates all policy decisions to
+        set_devices_and_batch_sizes().  There is no circular dependency: this method
+        calls set_devices_and_batch_sizes; that method calls _apply_sharding (not this).
+
+        Args:
+            devices: sequence of JAX devices to shard across (e.g. jax.devices()[:2]),
+                     or None to clear the explicit override and revert to automatic
+                     device selection (which re-runs the memory budget logic).
+
+        Example::
+
+            model.configure_sharding(jax.devices('gpu'))   # use all GPUs
+            model.configure_sharding(jax.devices('cpu')[:2])  # 2 virtual CPUs
+            model.configure_sharding(None)                 # revert to automatic
+        """
+        self._explicit_shard_devices = list(devices) if devices is not None else None
+        self.set_devices_and_batch_sizes()
+
+    # ------------------------------------------------------------------
+    # Geometry-specific sharding hooks — override in each subclass
+    # ------------------------------------------------------------------
+    # These define the "native sharding" for each array type in a given
+    # geometry.  The base-class implementations are no-ops when no mesh is
+    # configured, and raise NotImplementedError in sharded mode so that a
+    # subclass that forgets to override gets a clear error rather than silently
+    # running single-device.
+    #
+    # Contract: _shard_X applied to an array already in X-native sharding
+    # must be a no-op (checked via _maybe_shard's existing-sharding guard).
+    # _gather_X must invert _shard_X.
+
+    def _shard_sinogram(self, sino):
+        """Return sino distributed in sinogram-native sharding for this geometry.
+
+        When self.mesh is None, returns sino unchanged.
+        Subclasses must override to specify which axis to shard along.
+        """
+        if self.mesh is None:
+            return sino
+        raise NotImplementedError(
+            f'{type(self).__name__} must implement _shard_sinogram '
+            f'to support multi-device sharding.')
+
+    def _gather_sinogram(self, sino):
+        """Gather a sharded sinogram to an uncommitted single-device array.
+
+        When self.mesh is None, returns sino unchanged.
+        Subclasses must override; the default implementation calls _maybe_gather
+        which is correct for any 1-D mesh sharding.
+        """
+        return self._maybe_gather(sino)
+
+    def _shard_recon(self, recon):
+        """Return recon distributed in recon-native sharding for this geometry.
+
+        Handles both 3-D recon (rows, cols, slices) and 2-D flat_recon
+        (rows*cols, slices).  When self.mesh is None, returns recon unchanged.
+        Subclasses must override to specify which axis to shard along.
+        """
+        if self.mesh is None:
+            return recon
+        raise NotImplementedError(
+            f'{type(self).__name__} must implement _shard_recon '
+            f'to support multi-device sharding.')
+
+    def _gather_recon(self, recon):
+        """Gather a sharded recon to an uncommitted single-device array.
+
+        When self.mesh is None, returns recon unchanged.
+        """
+        return self._maybe_gather(recon)
+
+    def _extract_halos(self, flat_recon):
+        """Return per-device boundary slices for the qggmrf inter-slice prior.
+
+        Returns (left_halos, right_halos), each a list of length n_devices.
+        left_halos[i] is a numpy array of shape (rows*cols,) containing the
+        slice immediately before device i's shard, or None for device 0
+        (reflected BC applies at the physical left boundary).
+        right_halos[i] is the slice immediately after device i's shard, or
+        None for the last device.
+
+        When self.mesh is None (single-device), returns ([None], [None]).
+
+        Subclasses must override for geometries where the halo structure
+        differs (e.g. cone beam with larger ghost zones).
+        """
+        if self.mesh is None:
+            return [None], [None]
+        raise NotImplementedError(
+            f'{type(self).__name__} must implement _extract_halos '
+            f'to support multi-device sharding.')
 
     @classmethod
     def get_required_param_names(cls):
@@ -240,6 +328,10 @@ class TomographyModel(ParameterHandler):
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
+        # Record whether sharding was active before this call so we can warn
+        # if a geometry change silently switches us to single-device mode.
+        was_sharded = self.mesh is not None
+
         # Get the cpu and any gpus
         cpus = jax.devices('cpu')
         gb = 1024 ** 3
@@ -332,15 +424,81 @@ class TomographyModel(ParameterHandler):
         frac_gpu_mem_to_use = 0.9
         gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
 
+        # ── 'sharded': multi-device path ─────────────────────────────────────────
+        # Checked before the single-device modes.  Two triggers:
+        #   (a) User called configure_sharding(devices) → _explicit_shard_devices set.
+        #   (b) Auto-detect: multiple GPUs available and problem fits per-device.
+        explicit_devices = getattr(self, '_explicit_shard_devices', None)
+        n_gpus = len(gpus)
+
+        if explicit_devices is not None:
+            # Explicit override: use exactly the requested devices regardless of memory.
+            # Warn if per-device memory looks tight (GPU only; CPU memory is flexible).
+            n_dev = len(explicit_devices)
+            if gpu_memory > 0 and n_dev > 0:
+                per_device_req = mem_for_all_vcd / max(n_dev, 1)
+                if per_device_req > gpu_memory_to_use:
+                    warnings.warn(
+                        f'configure_sharding() requested {n_dev} device(s), but the estimated '
+                        f'per-device memory requirement ({per_device_req:.1f} GB) exceeds '
+                        f'available GPU memory ({gpu_memory_to_use:.1f} GB). '
+                        f'This may cause an out-of-memory error.')
+            self._apply_sharding(explicit_devices)
+            self.use_gpu = 'sharded'
+            mem_required_for_gpu = mem_for_all_vcd / max(len(explicit_devices), 1)
+            mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram
+            if cpu_memory < mem_required_for_cpu:
+                warnings.warn('CPU memory may be insufficient for this problem. '
+                              'This may lead to a fatal error.')
+            self.mem_required_for_gpu = mem_required_for_gpu
+            self.mem_required_for_cpu = mem_required_for_cpu
+            return
+
+        if (n_gpus > 1
+                and use_gpu in ['automatic', 'sharded']
+                and mem_for_all_vcd / n_gpus < gpu_memory_to_use):
+            # Auto-detect: problem fits across all GPUs — use multi-GPU sharding.
+            self._apply_sharding(gpus)
+            self.use_gpu = 'sharded'
+            mem_required_for_gpu = mem_for_all_vcd / n_gpus
+            mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram
+            if cpu_memory < mem_required_for_cpu:
+                warnings.warn('CPU memory may be insufficient for this problem. '
+                              'This may lead to a fatal error.')
+            self.mem_required_for_gpu = mem_required_for_gpu
+            self.mem_required_for_cpu = mem_required_for_cpu
+            return
+
+        # ── Single-device modes ───────────────────────────────────────────────────
+        # If we reach here, sharding is not active.  Clear any stale mesh and warn
+        # the user if they were previously in sharded mode (geometry change may have
+        # made per-device memory too large or use_gpu may have changed).
+        if was_sharded:
+            warnings.warn(
+                'The reconstruction has switched from multi-device (sharded) to '
+                'single-device mode. This can happen when a geometry change causes '
+                'the per-device memory estimate to exceed available GPU memory, or '
+                'when use_gpu was changed to a single-device value. '
+                'Call configure_sharding() to re-enable sharding if desired.')
+        self.mesh = None
+
+        if use_gpu == 'sharded' and n_gpus <= 1:
+            warnings.warn(
+                "use_gpu='sharded' was requested but could not be enabled "
+                f"(found {n_gpus} GPU(s)). Reverting to automatic single-device "
+                "selection.")
+
         # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'sinograms']):
+        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use
+                                  and use_gpu not in ['none', 'sinograms', 'sharded']):
             self.main_device, self.sinogram_device = gpus[0], gpus[0]
             self.use_gpu = 'full'
             mem_required_for_gpu = mem_for_all_vcd
             mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
 
         # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none']):
+        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use
+                                        and use_gpu not in ['none', 'sharded']):
             self.main_device, self.sinogram_device = cpus[0], gpus[0]
             self.use_gpu = 'sinograms'
             mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
@@ -644,6 +802,15 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
+
+        Note - multi-device (sharded) mode:
+            When called from within the VCD loop with sharding configured, ``voxel_values``
+            is expected to be a NamedSharding JAX array already distributed across devices
+            in recon-native sharding (slice axis).  Each device operates on its local shard
+            independently and returns the corresponding sinogram shard.  No automatic
+            scatter/gather is performed; the caller is responsible for providing correctly
+            sharded inputs.  If calling directly from user code in sharded mode, shard
+            ``voxel_values`` first with ``model._shard_recon(voxel_values)``.
         """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
@@ -695,6 +862,15 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             A jax array of shape (len(indices), num_slices)
+
+        Note - multi-device (sharded) mode:
+            When called from within the VCD loop with sharding configured, ``sinogram``
+            is expected to be a NamedSharding JAX array already distributed across devices
+            in sinogram-native sharding (det_rows axis).  Each device operates on its local
+            shard independently and returns the corresponding recon shard (slice axis).  No
+            automatic scatter/gather is performed; the caller is responsible for providing
+            correctly sharded inputs.  If calling directly from user code in sharded mode,
+            shard ``sinogram`` first with ``model._shard_sinogram(sinogram)``.
         """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
@@ -801,12 +977,13 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'sinograms', 'none']:
+        if use_gpu not in ['automatic', 'full', 'sinograms', 'none', 'sharded']:
             error_message = "use_gpu must be one of \n"
-            error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
+            error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n"
             error_message += " 'full' (use gpu for all calculations),\n"
             error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
-            error_message += " 'none' (do not use gpu at all)."
+            error_message += " 'none' (do not use gpu at all),\n"
+            error_message += " 'sharded' (distribute across multiple devices; requires multiple GPUs or configure_sharding())."
             raise ValueError(error_message)
 
     def auto_set_regularization_params(self, sinogram, weights=None):

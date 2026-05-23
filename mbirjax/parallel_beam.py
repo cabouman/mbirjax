@@ -84,6 +84,57 @@ class ParallelBeamModel(TomographyModel):
 
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
+    # ------------------------------------------------------------------
+    # Geometry-specific sharding hooks (parallel beam)
+    # ------------------------------------------------------------------
+    # In parallel beam, sinogram det-rows and recon slices share the same
+    # physical axis (row i of the detector corresponds to slice i of the
+    # recon), so both arrays are sharded along the same logical dimension.
+    #   sinogram:   (views, det_rows, channels)  →  shard axis 1 (det_rows)
+    #   flat_recon: (rows*cols, slices)           →  shard axis 1 (slices)
+    #   3-D recon:  (rows, cols, slices)          →  shard axis 2 (slices)
+    #
+    # For a future cone-beam subclass, override these methods with the
+    # geometry-appropriate axes and halo strategy; the VCD loop in the
+    # base class calls only these hooks and requires no changes.
+
+    def _shard_sinogram(self, sino):
+        """Shard sinogram along det_rows (axis 1) — the parallel-beam slice axis."""
+        return self._maybe_shard(sino, axis=1)
+
+    def _gather_sinogram(self, sino):
+        """Gather a det_row-sharded sinogram to an uncommitted single-device array."""
+        return self._maybe_gather(sino)
+
+    def _shard_recon(self, recon):
+        """Shard recon along slices (axis 2 for 3-D, axis 1 for flat 2-D)."""
+        axis = 1 if recon.ndim == 2 else 2
+        return self._maybe_shard(recon, axis=axis)
+
+    def _gather_recon(self, recon):
+        """Gather a slice-sharded recon to an uncommitted single-device array."""
+        return self._maybe_gather(recon)
+
+    def _extract_halos(self, flat_recon):
+        """Return per-device boundary slices for the qggmrf inter-slice prior.
+
+        flat_recon has shape (rows*cols, local_slices) on each device, sharded
+        along axis 1.  The halo for device i is one slice of shape (rows*cols,):
+          left_halo[i]  = last slice of device i-1  (or None for device 0)
+          right_halo[i] = first slice of device i+1 (or None for last device)
+
+        Cost: reads 2*(n_devices-1) slices from device memory to host numpy —
+        approximately 2*(rows²*4) bytes total, negligible vs compute.
+        """
+        if self.mesh is None:
+            return [None], [None]
+        # Sort shards by their slice-axis start index so ordering is deterministic.
+        shards = sorted(flat_recon.addressable_shards,
+                        key=lambda s: s.index[1].start)
+        left_halos  = [None] + [np.asarray(s.data[:, -1]) for s in shards[:-1]]
+        right_halos = [np.asarray(s.data[:, 0])  for s in shards[1:]] + [None]
+        return left_halos, right_halos
+
     def __init__(self, sinogram_shape, angles):
 
         angles = jnp.asarray(angles)

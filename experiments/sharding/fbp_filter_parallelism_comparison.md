@@ -390,7 +390,81 @@ distributed format expected by the rest of the pipeline.
 ## Timing results
 
 ```
-GPU:
+========================================================================
+                         GPU NVIDIA H100:
+========================================================================
+
+[detect]  real_gpus=2  xla_virtual_cpus=0  →  backend=GPU, 2 device(s) available
+JAX backend: GPU   devices: 2   [CudaDevice(id=0), CudaDevice(id=1)]
+Sizes: [512, 1024, 1280]   view_batch_size: 100   runs: 1
+
+========================================================================
+Size 512  —  sinogram 512×512×512  (0.50 GB float32)
+
+  A. Baseline (1 GPU, lax.map+vmap):  0.017 s  [GPU 0: 2.66GB  GPU 1: 0.00GB]
+  Existing (main branch, Python loop):  0.487 s  (0.03x vs A)  diff=0.0e+00
+
+  ── BOTTLENECK 1: SPMD overhead ──  (1-dev proof: same GPU, no PCIe possible)
+  B. shard_map+lax   1-dev:  0.017 s  (1.00x)  diff=0.0e+00  ← 1-dev: no data movement; pure SPMD vs baseline
+  B. shard_map+lax   2-dev:  0.009 s  (1.85x)  diff=0.0e+00  
+  C. shard_map+vmap  1-dev:  0.015 s  (1.10x)  diff=0.0e+00  ← 1-dev: no data movement; pure SPMD vs baseline
+  C. shard_map+vmap  2-dev:  0.008 s  (2.15x)  diff=0.0e+00  
+
+  D. pmap  (skipped — jax.pmap deprecated)
+
+  ── BOTTLENECK 2: data movement ──  E has ~2.0 GB PCIe overhead
+  E. thread unshard  2-dev:  0.257 s  (0.06x)  diff=0.0e+00  ← ~2.0 GB PCIe
+  F. thread fast     2-dev:  0.225 s  (0.07x)  diff=0.0e+00  ← ~1.0 GB PCIe (output gather only)
+  G. thread sharded  2-dev:  0.010 s  (1.67x)  diff=0.0e+00  ← zero PCIe  ★
+========================================================================
+Size 1024  —  sinogram 1024×1024×1024  (4.00 GB float32)
+
+  A. Baseline (1 GPU, lax.map+vmap):  0.105 s  [GPU 0: 19.89GB  GPU 1: 3.50GB]
+  Existing (main branch, Python loop):  1.311 s  (0.08x vs A)  diff=0.0e+00
+
+  ── BOTTLENECK 1: SPMD overhead ──  (1-dev proof: same GPU, no PCIe possible)
+  B. shard_map+lax   1-dev:  0.105 s  (1.00x)  diff=0.0e+00  ← 1-dev: no data movement; pure SPMD vs baseline
+  B. shard_map+lax   2-dev:  0.054 s  (1.96x)  diff=0.0e+00  
+  C. shard_map+vmap: skipped for size 1024 (vmap over all views risks OOM above 512)
+
+  D. pmap  (skipped — jax.pmap deprecated)
+
+  ── BOTTLENECK 2: data movement ──  E has ~16.0 GB PCIe overhead
+  E. thread unshard  2-dev:  2.025 s  (0.05x)  diff=0.0e+00  ← ~16.0 GB PCIe
+  F. thread fast     2-dev:  1.770 s  (0.06x)  diff=0.0e+00  ← ~8.0 GB PCIe (output gather only)
+  G. thread sharded  2-dev:  0.056 s  (1.89x)  diff=0.0e+00  ← zero PCIe  ★
+========================================================================
+Size 1280  —  sinogram 1280×1280×1280  (7.81 GB float32)
+
+  A. Baseline (1 GPU, lax.map+vmap):  0.305 s  [GPU 0: 56.35GB  GPU 1: 14.55GB]
+  Existing (main branch, Python loop):  1.440 s  (0.21x vs A)  diff=0.0e+00
+
+  ── BOTTLENECK 1: SPMD overhead ──  (1-dev proof: same GPU, no PCIe possible)
+  B. shard_map+lax   1-dev:  0.304 s  (1.00x)  diff=0.0e+00  ← 1-dev: no data movement; pure SPMD vs baseline
+  B. shard_map+lax   2-dev:  0.155 s  (1.97x)  diff=0.0e+00  
+  C. shard_map+vmap: skipped for size 1280 (vmap over all views risks OOM above 512)
+
+  D. pmap  (skipped — jax.pmap deprecated)
+
+  ── BOTTLENECK 2: data movement ──  E has ~31.2 GB PCIe overhead
+  E. thread unshard  2-dev:  4.121 s  (0.07x)  diff=0.0e+00  ← ~31.2 GB PCIe
+  F. thread fast     2-dev:  3.486 s  (0.09x)  diff=0.0e+00  ← ~15.6 GB PCIe (output gather only)
+  G. thread sharded  2-dev:  0.158 s  (1.92x)  diff=0.0e+00  ← zero PCIe  ★
+
+
+========================================================================
+SUMMARY  —  backend=GPU  min of 1 runs; speedup vs A (unsharded baseline)
+
+   size       A  baseline      B  sm+lax 1d      B  sm+lax 2d     C  sm+vmap 1d     C  sm+vmap 2d        D  pmap 1d        D  pmap 2d   E  thrd unshard      F  thrd fast   G  thrd sharded
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    512       0.017s base      0.017s 1.00x      0.009s 1.85x      0.015s 1.10x      0.008s 2.15x           skipped           skipped      0.257s 0.06x      0.225s 0.07x      0.010s 1.67x
+   1024       0.105s base      0.105s 1.00x      0.054s 1.96x           skipped           skipped           skipped           skipped      2.025s 0.05x      1.770s 0.06x      0.056s 1.89x
+   1280       0.305s base      0.304s 1.00x      0.155s 1.97x           skipped           skipped           skipped           skipped      4.121s 0.07x      3.486s 0.09x      0.158s 1.92x
+
+
+========================================================================
+                         GPU NVIDIA L40S:
+========================================================================
 
 [detect]  real_gpus=2  xla_virtual_cpus=0  →  backend=GPU, 2 device(s) available
 JAX backend: GPU   devices: 2   [CudaDevice(id=0), CudaDevice(id=1)]
@@ -452,7 +526,9 @@ Key findings (GPU):
            memory pressure); confirmed correct.  Production winner.
 
 
-CPU:
+========================================================================
+                   Mac M3 Max (multiple cores)
+========================================================================
 
 [detect]  real_gpus=0  xla_virtual_cpus=4  →  backend=CPU, 4 device(s) available
 JAX backend: CPU   devices: 4   [CpuDevice(id=0), CpuDevice(id=1), CpuDevice(id=2), CpuDevice(id=3)]
