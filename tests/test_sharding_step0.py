@@ -14,8 +14,8 @@ Run with::
 
     python -m pytest tests/test_sharding_step0.py -v
 
-conftest.py sets XLA_FLAGS=--xla_force_host_platform_device_count=4 so that
-multi-device tests work on CPU without a real GPU.
+conftest.py sets XLA_FLAGS=--xla_force_host_platform_device_count=4 (CPU fallback)
+and provides preferred_devices() which selects real GPUs when available.
 """
 import warnings
 import unittest
@@ -24,12 +24,13 @@ import jax
 import jax.numpy as jnp
 import mbirjax
 import mbirjax.tomography_model as tm
+from conftest import preferred_devices
 
 # ---------------------------------------------------------------------------
 # Verify that conftest.py took effect.
-# conftest.py sets XLA_FLAGS before JAX is imported, giving us 4 virtual
-# CPU devices.  If this assertion fires, conftest.py was not loaded before
-# JAX initialised (e.g. JAX was already imported by a plugin or another file).
+# On any machine, conftest.py guarantees ≥4 virtual CPU devices via XLA_FLAGS.
+# Real GPUs (if present) are also available and will be preferred by
+# preferred_devices(), but the CPU count assertion is the safest fallback guard.
 # ---------------------------------------------------------------------------
 _N_VIRTUAL_CPU_DEVICES = len(jax.devices('cpu'))
 assert _N_VIRTUAL_CPU_DEVICES >= 4, (
@@ -61,8 +62,10 @@ def _make_model(use_gpu='none'):
 
 
 def _make_sharded_model(n_devices=2):
-    """Return a ParallelBeamModel configured with n_devices virtual CPU devices."""
-    devices = jax.devices('cpu')[:n_devices]
+    """Return a ParallelBeamModel configured with n_devices (GPU if available)."""
+    devices = preferred_devices(n_devices)
+    if devices is None:
+        raise unittest.SkipTest(f"Need {n_devices} devices; none available")
     angles = np.linspace(0, np.pi, N_VIEWS, endpoint=False)
     model = mbirjax.ParallelBeamModel(
         (N_VIEWS, N_DET_ROWS, N_DET_CHANS), angles)
@@ -83,14 +86,11 @@ class TestMaybeGatherSingleDevice(unittest.TestCase):
 
 
 class TestMaybeGatherMultiDevice(unittest.TestCase):
-    """_maybe_gather correctly collects a sharded array on CPU virtual devices."""
+    """_maybe_gather correctly collects a sharded array (GPU if available, else CPU)."""
 
     @classmethod
     def setUpClass(cls):
-        n_dev = 2
-        if len(jax.devices('cpu')) < n_dev:
-            raise unittest.SkipTest(f"Need {n_dev} CPU devices; got {len(jax.devices('cpu'))}")
-        cls.model, cls.devices = _make_sharded_model(n_devices=n_dev)
+        cls.model, cls.devices = _make_sharded_model(n_devices=2)
 
     def test_gather_produces_uncommitted_array(self):
         sino = jnp.ones((N_VIEWS, N_DET_ROWS, N_DET_CHANS))
@@ -153,9 +153,6 @@ class TestHookMethodsMultiDevice(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if len(jax.devices('cpu')) < cls.N_DEV:
-            raise unittest.SkipTest(
-                f"Need {cls.N_DEV} CPU devices; got {len(jax.devices('cpu'))}")
         cls.model, cls.devices = _make_sharded_model(n_devices=cls.N_DEV)
         cls.rows_per_dev = N_DET_ROWS // cls.N_DEV   # 4
         cls.slices_per_dev = N_SLICES // cls.N_DEV   # 4
@@ -376,9 +373,6 @@ class TestConfigureShadingWithVirtualDevices(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if len(jax.devices('cpu')) < cls.N_DEV:
-            raise unittest.SkipTest(
-                f"Need {cls.N_DEV} CPU devices; got {len(jax.devices('cpu'))}")
         cls.model, cls.devices = _make_sharded_model(n_devices=cls.N_DEV)
 
     def test_mesh_is_set(self):

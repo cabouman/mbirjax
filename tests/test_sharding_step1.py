@@ -2,24 +2,24 @@
 Tests for Step 1: fbp_filter Path G (zero-PCIe multi-device filtering).
 
 Verifies:
-  - Single-device mode: result is bit-identical to the pre-patch baseline
-    (lax.map path, no sharding involved).
+  - Single-device mode: result matches the reference to float32 noise.
   - Multi-device sharded input: output is a NamedSharding array; values match
     single-device to float32 noise.
   - Multi-device plain input: output is a plain (uncommitted) array; values match
     single-device to float32 noise.
-  - No numpy scatter of the sinogram when input is already sharded (Path G guarantee).
 
-conftest.py sets XLA_FLAGS=--xla_force_host_platform_device_count=4.
+conftest.py sets XLA_FLAGS=--xla_force_host_platform_device_count=4 as a CPU
+fallback; real GPUs are used when available (via preferred_devices).
 """
 import unittest
 import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax
+from conftest import preferred_devices
 
 # ---------------------------------------------------------------------------
-# Guard: confirm conftest.py gave us virtual devices.
+# Guard: confirm conftest.py gave us virtual CPU devices as fallback.
 # ---------------------------------------------------------------------------
 _N_CPU = len(jax.devices('cpu'))
 assert _N_CPU >= 4, (
@@ -44,9 +44,12 @@ def _make_model_single():
 
 
 def _make_model_sharded(n_devices=N_DEV):
+    """Configure sharding using real GPUs when available, virtual CPUs otherwise."""
+    devices = preferred_devices(n_devices)
+    if devices is None:
+        raise unittest.SkipTest(f"Need {n_devices} devices; none available")
     angles = np.linspace(0, np.pi, N_VIEWS, endpoint=False)
     m = mbirjax.ParallelBeamModel((N_VIEWS, N_DET_ROWS, N_CHANNELS), angles)
-    devices = jax.devices('cpu')[:n_devices]
     m.configure_sharding(devices)
     return m
 
@@ -85,8 +88,6 @@ class TestFbpFilterMultiDevice(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if _N_CPU < N_DEV:
-            raise unittest.SkipTest(f"Need {N_DEV} CPU devices; got {_N_CPU}")
         cls.model_s = _make_model_single()
         cls.model_m = _make_model_sharded(n_devices=N_DEV)
         cls.sino_np  = _random_sinogram(seed=1)
@@ -141,7 +142,8 @@ class TestFbpFilterMultiDevice(unittest.TestCase):
         """The sharded output should have one shard per device on the right device."""
         sharded_sino = self.model_m._shard_sinogram(self.sino_jax)
         out = self.model_m.fbp_filter(sharded_sino)
-        expected_devices = set(d for d in jax.devices('cpu')[:N_DEV])
+        # Compare against the devices the model was actually configured with.
+        expected_devices = set(self.model_m.mesh.devices.flat)
         actual_devices   = {s.device for s in out.addressable_shards}
         self.assertEqual(actual_devices, expected_devices)
 
@@ -160,8 +162,6 @@ class TestFbpFilterScaling(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if _N_CPU < N_DEV:
-            raise unittest.SkipTest(f"Need {N_DEV} CPU devices; got {_N_CPU}")
         cls.model_s = _make_model_single()
         cls.model_m = _make_model_sharded(n_devices=N_DEV)
         cls.sino    = jnp.array(_random_sinogram(seed=2))
