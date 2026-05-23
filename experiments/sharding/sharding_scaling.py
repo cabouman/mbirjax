@@ -183,17 +183,22 @@ def main():
     print(f"  Warmup / trials: {args.warmup} / {args.trials}")
     print(f"{'='*62}\n")
 
-    # Build shared inputs once
+    # Build raw numpy inputs once.  Each n_dev iteration will pre-shard or
+    # pre-upload the relevant array before timing so that fbp_filter (and
+    # future operations) never perform a GPU→CPU→GPU scatter inside the
+    # timed loop.  Passing a plain JAX array to fbp_filter triggers
+    # _shard_sinogram → np.asarray (GPU→CPU) + device_put (CPU→GPU scatter)
+    # on every call — O(sinogram bytes) of PCIe traffic that swamps the
+    # compute speedup on GPU.
     rng = np.random.default_rng(42)
-    sino_np  = rng.standard_normal((n_views, n_rows, n_channels)).astype(np.float32)
-    sino_jax = jnp.array(sino_np)
+    sino_np = rng.standard_normal((n_views, n_rows, n_channels)).astype(np.float32)
 
     # recon_np = rng.standard_normal((n_rows, n_channels, n_rows)).astype(np.float32)
-    # recon_jax = jnp.array(recon_np)
 
-    inputs = {
-        'sinogram': sino_jax,
-        # 'recon': recon_jax,   # uncomment for Steps 2/3
+    # Map input_key → raw numpy array (sharded per n_dev inside the loop).
+    inputs_np = {
+        'sinogram': sino_np,
+        # 'recon': recon_np,   # uncomment for Steps 2/3
     }
 
     # ── Run each operation ────────────────────────────────────────────────────
@@ -213,7 +218,21 @@ def main():
                 print(f"  {n_dev:>5}  {'skip (not enough devices)':>40}")
                 continue
 
-            inp = inputs[input_key]
+            # Pre-shard / pre-upload the input once outside timing.
+            # model.mesh is always set (configure_sharding is called with ≥1
+            # real device), so we always take the sharded path here.
+            raw_np = inputs_np[input_key]
+            if model.mesh is not None:
+                # Sinogram: shard along det_rows (axis 1 = 'slices' mesh axis).
+                # Update the PartitionSpec when adding recon operations.
+                sharding = jax.sharding.NamedSharding(
+                    model.mesh,
+                    jax.sharding.PartitionSpec(None, 'slices', None))
+                inp = jax.device_put(raw_np, sharding)
+            else:
+                inp = jnp.array(raw_np)
+            jax.block_until_ready(inp)
+
             try:
                 times, result = bench_fn(model, inp, args.warmup, args.trials)
             except Exception as e:
