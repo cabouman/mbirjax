@@ -437,11 +437,17 @@ class ParallelBeamModel(TomographyModel):
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
 
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+        # Split views into body (largest multiple of view_batch_size) + tail.
+        # lax.map pads the last batch when num_views is not divisible, which
+        # contaminates cuFFT outputs.  Splitting avoids any padding.
+        body_views = (num_views // view_batch_size) * view_batch_size
+        tail_views = num_views - body_views
 
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
+        # Materialise filter as numpy once; each code path uploads its own copy
+        # to the relevant device(s).  The in-place *= above preserves float32 —
+        # recomputing with an out-of-place multiply promotes to float64,
+        # which is 2–32× slower on GPU.
+        filter_np = np.asarray(recon_filter)
 
         if self.mesh is not None:
             # ── Path G multi-device: zero PCIe ──────────────────────────────
@@ -464,17 +470,6 @@ class ParallelBeamModel(TomographyModel):
             #   make_array_from_single_device_arrays → NamedSharding result
             n_devices = self.mesh.devices.size
             pmap_devices = list(self.mesh.devices.flat)
-
-            # Split views into body (largest multiple of view_batch_size) + tail.
-            # lax.map pads the last batch when num_views is not divisible, which
-            # contaminates cuFFT outputs.  Splitting avoids any padding.
-            body_views = (num_views // view_batch_size) * view_batch_size
-            tail_views = num_views - body_views
-
-            # Materialise filter as numpy once; each thread uploads its own copy.
-            # in-place *= above preserves float32 — do NOT recompute with out-of-place
-            # multiply (that promotes to float64, 2–32× slower on GPU).
-            filter_np = np.asarray(recon_filter)
 
             # Map device → its local shard (already resident on that device).
             dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
@@ -505,9 +500,22 @@ class ParallelBeamModel(TomographyModel):
                 sharding=sinogram.sharding,
                 arrays=results)
         else:
-            # Single-device path: place on sinogram_device and map over all views.
+            # ── Single-device path ───────────────────────────────────────────
+            # Use the module-level @jax.jit _apply_fbp_filter_to_shard rather
+            # than a local closure + lax.map.  A local closure is a new Python
+            # object on every fbp_filter call, so JAX re-traces the computation
+            # every time — O(sinogram_size) tracing overhead on top of compute.
+            # _apply_fbp_filter_to_shard is stable (defined once at module level)
+            # so its compiled form is cached by Python function identity and
+            # subsequent calls skip re-tracing entirely.
             sinogram = self._device_put(sinogram, self.sinogram_device)
-            filtered_sinogram = jax.lax.map(apply_convolution_to_view, sinogram, batch_size=view_batch_size)
+            with self._device_context(self.sinogram_device):
+                filter_jax = jnp.array(filter_np)
+                filtered_sinogram = _apply_fbp_filter_to_shard(
+                    sinogram, filter_jax,
+                    body_views=body_views,
+                    tail_views=tail_views,
+                    view_batch_size=view_batch_size)
 
         # Apply π/num_views scaling.  Works for both sharded and plain arrays.
         filtered_sinogram = filtered_sinogram * (jnp.pi / num_views)

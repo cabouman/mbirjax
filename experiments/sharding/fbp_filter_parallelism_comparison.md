@@ -92,7 +92,7 @@ faster than Existing on GPU and essentially identical on CPU.
 
 ## Path B — `shard_map` + `lax.map`
 
-**Summary:** Slower than A at small sizes, modest gain at large sizes, and incorrect results with 2 devices on GPU.
+**Summary:** Faster than A at all tested sizes on H100 (1.85–1.97×), and slightly faster than Path G on H100. Correct on H100 but produces large errors on L40S (diff up to 5.9e-01). Not production-safe on all GPU hardware until the L40S failure is understood.
 
 `shard_map` is JAX's SPMD (Single Program, Multiple Data) primitive.  You
 write the computation for *one device's block* of the data; JAX compiles
@@ -159,14 +159,22 @@ rather than the sinogram itself (4 GB).  Splitting across two GPUs halves
 the working memory per device, which could allow the GPU's caches and memory
 bandwidth to be used more efficiently.
 
-### <span style="color:red">Incorrect results</span>
+### <span style="color:red">Incorrect results on L40S</span>
 
-The 2-device results (marked ⚠ above) differ from path A by far more than
+The L40S 2-device results (marked ⚠ above) differ from path A by far more than
 float32 noise (`diff = 1.1e-02` at size=512, `diff = 5.9e-01` at size=1024).
 Since every row is processed independently and the sharding is along the row
 axis, the results should be bit-identical to path A.  The source of the
-discrepancy is not yet understood, which makes path B unsuitable for
-production on GPU.
+discrepancy is not yet understood.
+
+**H100 update:** The same experiment on two H100s produced `diff=0.0` at all
+sizes (512, 1024, 1280), confirming the issue is specific to the L40S hardware
+or driver configuration, not an inherent flaw in the `shard_map` approach.
+The H100 results also showed near-2× speedup at all sizes (1.85× at 512,
+1.96× at 1024, 1.97× at 1280) — slightly better than Path G at the same sizes.
+Until the root cause of the L40S failure is understood (possibly a difference
+in NVLink/PCIe topology, compiler version, or GPU microarchitecture), path B
+is not safe for deployment on arbitrary GPU hardware.
 
 ---
 
@@ -460,6 +468,35 @@ SUMMARY  —  backend=GPU  min of 1 runs; speedup vs A (unsharded baseline)
     512       0.017s base      0.017s 1.00x      0.009s 1.85x      0.015s 1.10x      0.008s 2.15x           skipped           skipped      0.257s 0.06x      0.225s 0.07x      0.010s 1.67x
    1024       0.105s base      0.105s 1.00x      0.054s 1.96x           skipped           skipped           skipped           skipped      2.025s 0.05x      1.770s 0.06x      0.056s 1.89x
    1280       0.305s base      0.304s 1.00x      0.155s 1.97x           skipped           skipped           skipped           skipped      4.121s 0.07x      3.486s 0.09x      0.158s 1.92x
+
+Key findings (H100):
+  B 2-dev: correct at all sizes (diff=0.0) — no suspect results.
+    Consistently faster than G on H100: B 1.85× vs G 1.67× at size=512;
+    B 1.96× vs G 1.89× at size=1024; B 1.97× vs G 1.92× at size=1280.
+    The ~5% B-over-G advantage likely reflects the SPMD partitioner's ability
+    to keep all row data resident in L2/HBM across the two GPUs without any
+    software-managed threading overhead.
+  G 2-dev: correct at all sizes (diff=0.0), near-2× speedup throughout.
+    Slightly behind B on H100 but within 5–10% at production sizes.
+  H100 vs L40S discrepancy: B is correct on H100 and wrong on L40S. Root
+    cause unknown — candidates include CUDA driver version, NVLink vs PCIe
+    topology, or GPU microarchitecture (Hopper vs Ada). Until reproduced and
+    fixed, B is not safe for deployment on arbitrary hardware.
+  E/F << A:  PCIe roundtrips dominate regardless of GPU generation.
+  Production decision: Path G remains the choice for the VCD loop (Steps 2–6).
+    G is correct on all hardware tested, avoids all PCIe, and its output is
+    already in the distributed NamedSharding format expected by downstream ops.
+    If the L40S B failure is eventually diagnosed and fixed, B is a viable
+    future upgrade — it is essentially a drop-in replacement for G and would
+    give ~5% additional speedup on H100-class hardware.
+
+VCD loop note: Both G and B maintain the fully-sharded invariant (data stays
+  in NamedSharding arrays throughout the pipeline). The key difference for VCD
+  is halo exchange: Path G must extract halos in host numpy (one row per device
+  boundary), while Path B could use lax.ppermute for on-device halo exchange.
+  For fbp_filter (no halos needed) this distinction is irrelevant. For the VCD
+  loop it may matter if halo bandwidth ever becomes a bottleneck, but that is
+  unlikely at 1–2 slices per halo compared to the full recon volume.
 
 
 ========================================================================

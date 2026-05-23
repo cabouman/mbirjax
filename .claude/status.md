@@ -1,5 +1,5 @@
 # Multi-GPU Sharding: Status and Implementation Plan
-*Last updated: 2026-05-23*
+*Last updated: 2026-05-23 (H100 analysis added to comparison file)*
 
 ---
 
@@ -24,13 +24,18 @@ See `experiments/sharding/fbp_filter_parallelism_comparison.{py,md}` for full an
 
 ## Architecture: why threading over shard_map
 
-| | shard_map | Path G threading |
+| | shard_map (Path B) | Path G threading |
 |---|---|---|
-| GPU correctness | ✗ diff=1.1e-02 at 2-dev | ✓ diff=0.0 |
-| GPU speedup (2-dev, size=1024) | 1.54× (but wrong) | 1.89× |
+| GPU correctness | ✓ H100 (diff=0.0), ✗ L40S (diff up to 5.9e-01) | ✓ diff=0.0 on all hardware |
+| GPU speedup (2-dev, size=1024) | 1.96× H100, 1.54× L40S (wrong) | 1.89× H100, 1.89× L40S |
 | SPMD overhead | Non-trivial at small sizes | None |
 | PCIe traffic | Zero | Zero (Path G) |
-| Portability | GPU-specific issues | Same code on GPU/CPU/Metal |
+| Portability | L40S failure undiagnosed; not safe for arbitrary GPU | Same code on GPU/CPU/Metal |
+
+Note: Path B (shard_map) was re-run on 2× H100 and produced correct results (diff=0.0)
+at all sizes with near-2× speedup (slightly better than G). The L40S failure (diff up to
+5.9e-01) is undiagnosed. Path B is a viable future upgrade if the L40S issue is resolved,
+but Path G is the current production choice since it is hardware-agnostic.
 
 The threading approach keeps each device's data resident throughout the VCD loop.
 Because sinogram det-rows and recon slices are in 1-to-1 correspondence in parallel beam,
