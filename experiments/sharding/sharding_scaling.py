@@ -140,17 +140,31 @@ OPERATIONS = [
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    # Determine device counts to test
+    n_gpus = len(_gpus())
+    n_cpus = len(jax.devices('cpu'))
+    max_avail = n_gpus if n_gpus > 0 else n_cpus
+
+    if n_gpus > 0:
+        n_views = 1024
+        n_rows = 1024
+        n_channels = 1024
+    else:
+        n_views = 180
+        n_rows = 128
+        n_channels = 256
+
     parser = argparse.ArgumentParser(
         description='Measure multi-device speedup for mbirjax sharding.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(__doc__))
-    parser.add_argument('--n-views',        type=int, default=180,
-                        help='Number of projection views (default 180)')
-    parser.add_argument('--n-rows',         type=int, default=128,
-                        help='Number of detector rows / recon slices (default 128, '
-                             'must be divisible by max device count)')
-    parser.add_argument('--n-channels',     type=int, default=256,
-                        help='Number of detector channels / recon cols (default 256)')
+    parser.add_argument('--n-views',        type=int, default=n_views,
+                        help='Number of projection views (default {})'.format(n_views))
+    parser.add_argument('--n-rows',         type=int, default=n_rows,
+                        help='Number of detector rows / recon slices (default {}), '
+                             'must be divisible by max device count)'.format(n_rows))
+    parser.add_argument('--n-channels',     type=int, default=n_channels,
+                        help='Number of detector channels / recon cols (default {})'.format(n_channels))
     parser.add_argument('--device-counts',  type=int, nargs='+', default=None,
                         help='Device counts to benchmark (default: 1 plus all '
                              'available GPUs or up to 4 virtual CPUs)')
@@ -161,11 +175,6 @@ def main():
     args = parser.parse_args()
 
     n_views, n_rows, n_channels = args.n_views, args.n_rows, args.n_channels
-
-    # Determine device counts to test
-    n_gpus = len(_gpus())
-    n_cpus = len(jax.devices('cpu'))
-    max_avail = n_gpus if n_gpus > 0 else n_cpus
 
     if args.device_counts is not None:
         device_counts = sorted(set(args.device_counts))

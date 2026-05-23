@@ -33,9 +33,6 @@ on both platforms.
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-# Sizes to sweep.  num_views = num_det_rows = num_det_channels = size.
-# Every size must be divisible by every entry in N_DEVICES_LIST.
-SIZES = [128, 256, 512]
 
 # Device counts to test.  Entries larger than the number of available devices
 # are skipped automatically.
@@ -77,9 +74,15 @@ except RuntimeError:
 
 if available_devices:
     device_type = 'GPU'
+    # Sizes to sweep.  num_views = num_det_rows = num_det_channels = size.
+    # Every size must be divisible by every entry in N_DEVICES_LIST.
+    SIZES = [512, 1024]
 else:
     available_devices = jax.devices('cpu')
     device_type = 'CPU (virtual)'
+    # Sizes to sweep.  num_views = num_det_rows = num_det_channels = size.
+    # Every size must be divisible by every entry in N_DEVICES_LIST.
+    SIZES = [128, 256, 512]
 
 print(f"Using {device_type} — {len(available_devices)} device(s): {available_devices}")
 
