@@ -12,11 +12,11 @@ USE_VIRTUAL_CPU = True   # True → virtual CPU devices via XLA_FLAGS
 
 # Sizes to sweep.  num_views = num_det_rows = num_det_channels = size.
 # Every size must be divisible by every entry in N_DEVICES_LIST.
-SIZES = [512, 1024]
+SIZES = [48*3, 48*5, 48*11]
 
 # Device counts to test.  Entries larger than the number of available devices
 # are skipped automatically.
-N_DEVICES_LIST = [1, 2, 4]
+N_DEVICES_LIST = [1, 2, 4, 6, 8]
 
 N_TIMING_RUNS = 1   # timed runs per (size, n_devices); report the minimum
 
