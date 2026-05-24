@@ -8,9 +8,9 @@ combination, along with a correctness check (max absolute diff vs the
 single-device reference).
 
 Operations tested (enabled as each step is implemented):
-  ✓ fbp_filter      — Step 1
-  ✓ forward_project — Step 2
-  ✓ back_project    — Step 2
+  ✓ fbp_filter      — Step 1 (pre-sharded input; threading in fbp_filter)
+  ✓ forward_project — Step 2 (plain input; threading internal to sparse_forward_project)
+  ○ back_project    — deferred (limited CPU scaling; GPU scaling good but not yet integrated)
   ○ fbp_recon       — Step 4  (uncomment when implemented)
 
 Usage:
@@ -139,10 +139,11 @@ def bench_back_project(model, inp, warmup, trials):
 OPERATIONS = [
     # (name, bench_fn, input_key, shard_axis)
     # input_key matches a key in the inputs_np dict built in main().
-    # shard_axis is the array axis sharded across the 'slices' mesh axis.
-    ('fbp_filter',      bench_fbp_filter,      'sinogram', 1),  # shard det_rows (axis 1)
-    ('forward_project', bench_forward_project, 'recon',    2),  # shard slices   (axis 2)
-    ('back_project',    bench_back_project,    'sinogram', 1),  # shard det_rows (axis 1)
+    # shard_axis: array axis to pre-shard across 'slices' mesh, or None to upload
+    #             as a plain array (sparse_forward_project handles slicing internally).
+    ('fbp_filter',      bench_fbp_filter,      'sinogram', 1),    # pre-shard det_rows (axis 1)
+    ('forward_project', bench_forward_project, 'recon',    None), # threading internal to sparse_forward_project
+    # back_project deferred (poor CPU scaling; GPU scaling good but not yet integrated)
     # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
 
@@ -245,12 +246,15 @@ def main():
                 # print(f"n_dev={n_dev} does not divide n_rows={n_rows}: skipping")
                 continue
 
-            # Pre-shard / pre-upload the input once outside timing.
-            # model.mesh is always set (configure_sharding is called with ≥1
-            # real device), so we always take the sharded path here.
-            # Build a PartitionSpec that shards only along shard_axis.
+            # Pre-upload / pre-shard the input once outside timing so that the
+            # benchmarked operation never performs a scatter inside the timed loop.
+            #
+            # shard_axis is not None  → pre-shard (e.g. fbp_filter expects a
+            #   sharded sinogram so it can scatter to per-device FFT with zero PCIe).
+            # shard_axis is None      → upload as a plain array (e.g. forward_project:
+            #   sparse_forward_project slices the recon internally per thread).
             raw_np = inputs_np[input_key]
-            if model.mesh is not None:
+            if model.mesh is not None and shard_axis is not None:
                 spec = [None] * raw_np.ndim
                 spec[shard_axis] = 'slices'
                 sharding = jax.sharding.NamedSharding(
