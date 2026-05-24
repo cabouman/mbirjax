@@ -383,6 +383,144 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
+    # ------------------------------------------------------------------
+    # Path G overrides: forward_project and back_project with threading
+    # ------------------------------------------------------------------
+    # In parallel beam, det_rows and recon_slices share the same physical
+    # axis (row i of the detector ↔ slice i of the recon), so each device's
+    # sinogram shard maps one-to-one to its recon shard.  The projection is
+    # therefore embarrassingly parallel along the slice axis: no halo exchange
+    # is needed between devices for these operations.
+    #
+    # Threading (same approach as fbp_filter) is used instead of shard_map
+    # or pmap because both invoke XLA's SPMD partitioner on GPU backends,
+    # adding 3–6× overhead.  See .claude/parallel_options.md for details.
+    #
+    # Data flow (Path G — zero PCIe when input is pre-sharded):
+    #   input already sharded by _shard_recon / _shard_sinogram
+    #   addressable_shards → shard.data already on device i  (zero PCIe)
+    #   thread i runs sparse_forward/back_project on that shard
+    #   results assembled with make_array_from_single_device_arrays
+    # ------------------------------------------------------------------
+
+    def forward_project(self, recon):
+        """
+        Perform a full forward projection at all voxels in the field-of-view.
+
+        In multi-device (sharded) mode the projection is split across devices
+        along the slice axis (Path G threading).  Each device projects its local
+        slice shard to the corresponding sinogram rows independently, with zero
+        PCIe traffic when the input is already sharded.
+
+        In single-device mode, delegates to the base-class implementation.
+
+        Args:
+            recon (jnp array): The 3D reconstruction array, shape (rows, cols, slices).
+                May be a plain uncommitted array or a NamedSharding array.
+
+        Returns:
+            jnp array: Sinogram of shape (num_views, num_det_rows, num_channels).
+                Returns a sharded array if the input was sharded; plain otherwise.
+        """
+        if self.mesh is None:
+            return super().forward_project(recon)
+
+        # ── Path G multi-device: zero PCIe ──────────────────────────────
+        input_is_sharded = isinstance(getattr(recon, 'sharding', None),
+                                      jax.sharding.NamedSharding)
+        recon_sharded = self._shard_recon(recon)     # shard along slice axis (axis 2)
+
+        recon_shape = self.get_params('recon_shape')
+        sinogram_shape = self.get_params('sinogram_shape')
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+
+        n_devices = self.mesh.devices.size
+        pmap_devices = list(self.mesh.devices.flat)
+        dev_to_shard = {s.device: s.data for s in recon_sharded.addressable_shards}
+        results = [None] * n_devices
+
+        def _project_on_device(i):
+            dev = pmap_devices[i]
+            with jax.default_device(dev):
+                local_recon = dev_to_shard[dev]                          # (rows, cols, local_slices)
+                voxel_values = self.get_voxels_at_indices(local_recon, full_indices)  # (n_pixels, local_slices)
+                sino_shard = self.sparse_forward_project(voxel_values, full_indices)  # (n_views, local_slices, channels)
+                jax.block_until_ready(sino_shard)
+            results[i] = sino_shard
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_devices) as executor:
+            list(executor.map(_project_on_device, range(n_devices)))
+
+        sino_sharding = jax.sharding.NamedSharding(
+            self.mesh,
+            jax.sharding.PartitionSpec(None, 'slices', None))
+        sinogram = jax.make_array_from_single_device_arrays(
+            shape=sinogram_shape,
+            sharding=sino_sharding,
+            arrays=results)
+
+        return sinogram if input_is_sharded else self._gather_sinogram(sinogram)
+
+    def back_project(self, sinogram):
+        """
+        Perform a full back projection at all voxels in the field-of-view.
+
+        In multi-device (sharded) mode the back projection is split across
+        devices along the det_row axis (Path G threading).  Each device back-
+        projects its local sinogram rows to the corresponding recon slices
+        independently, with zero PCIe traffic when the input is already sharded.
+
+        In single-device mode, delegates to the base-class implementation.
+
+        Args:
+            sinogram (jnp array): 3D sinogram of shape (num_views, num_det_rows, num_channels).
+                May be a plain uncommitted array or a NamedSharding array.
+
+        Returns:
+            jnp array: Reconstruction of shape (rows, cols, slices).
+                Returns a sharded array if the input was sharded; plain otherwise.
+        """
+        if self.mesh is None:
+            return super().back_project(sinogram)
+
+        # ── Path G multi-device: zero PCIe ──────────────────────────────
+        input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
+                                      jax.sharding.NamedSharding)
+        sino_sharded = self._shard_sinogram(sinogram)   # shard along det_rows (axis 1)
+
+        recon_shape = self.get_params('recon_shape')
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
+
+        n_devices = self.mesh.devices.size
+        pmap_devices = list(self.mesh.devices.flat)
+        dev_to_shard = {s.device: s.data for s in sino_sharded.addressable_shards}
+        results = [None] * n_devices
+
+        def _back_project_on_device(i):
+            dev = pmap_devices[i]
+            with jax.default_device(dev):
+                local_sino = dev_to_shard[dev]                     # (n_views, local_det_rows, channels)
+                recon_cylinder = self.sparse_back_project(local_sino, full_indices)  # (n_pixels, local_slices)
+                local_slices = local_sino.shape[1]
+                local_recon = jnp.zeros((*recon_shape[:2], local_slices))
+                local_recon = local_recon.at[row_index, col_index].set(recon_cylinder)
+                jax.block_until_ready(local_recon)
+            results[i] = local_recon
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_devices) as executor:
+            list(executor.map(_back_project_on_device, range(n_devices)))
+
+        recon_sharding = jax.sharding.NamedSharding(
+            self.mesh,
+            jax.sharding.PartitionSpec(None, None, 'slices'))
+        recon = jax.make_array_from_single_device_arrays(
+            shape=recon_shape,
+            sharding=recon_sharding,
+            arrays=results)
+
+        return recon if input_is_sharded else self._gather_recon(recon)
+
     def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 

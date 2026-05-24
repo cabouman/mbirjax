@@ -828,7 +828,11 @@ class TomographyModel(ParameterHandler):
 
         sinogram = []
         for view_indices_batch in view_indices_batched:
-            sinogram_views = self._device_put(jnp.zeros((len(view_indices_batch), *sinogram_shape[1:])), self.sinogram_device)
+            # Use voxel_values.shape[1] (local slice count) rather than sinogram_shape[1] (global det_rows)
+            # so that this function works correctly when called per-device in the sharded threading path,
+            # where each device's voxel_values shard has fewer slices than the global sinogram_shape[1].
+            local_det_rows = voxel_values.shape[1]
+            sinogram_views = self._device_put(jnp.zeros((len(view_indices_batch), local_det_rows, sinogram_shape[2])), self.sinogram_device)
             # Loop over pixel batches
             for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
                 # Send a batch of pixels to sinogram_device
@@ -885,9 +889,12 @@ class TomographyModel(ParameterHandler):
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
 
-        recon_shape = self.get_params('recon_shape')
         num_pixels = len(pixel_indices)
-        num_slices = recon_shape[2]
+        # Use sinogram.shape[1] (local det_row count) rather than recon_shape[2] (global slice count)
+        # so that this function works correctly when called per-device in the sharded threading path,
+        # where each device's sinogram shard has fewer det_rows than the global sinogram_shape[1].
+        # For parallel beam, det_rows == slices, so sinogram.shape[1] == local_slices.
+        num_slices = sinogram.shape[1]
 
         # Get the final recon as a jax array
         recon_at_indices = self._device_put(jnp.zeros((num_pixels, num_slices)), output_device)
@@ -1133,8 +1140,11 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
 
-        # Flatten the recon along the first two dimensions, then retrieve values of recon at the indices locations
-        voxel_values = recon.reshape((-1,) + recon_shape[2:])[indices]
+        # Flatten the recon along the first two dimensions, then retrieve values of recon at the indices locations.
+        # Use recon.shape[2:] (actual array shape) rather than recon_shape[2:] (global params) so that this
+        # function works correctly when called per-device in the sharded threading path, where recon is a
+        # local shard with fewer slices than the global recon_shape.
+        voxel_values = recon.reshape((-1,) + recon.shape[2:])[indices]
 
         return voxel_values
 

@@ -9,8 +9,8 @@ single-device reference).
 
 Operations tested (enabled as each step is implemented):
   ✓ fbp_filter      — Step 1
-  ○ forward_project — Step 2  (uncomment when implemented)
-  ○ back_project    — Step 3  (uncomment when implemented)
+  ✓ forward_project — Step 2
+  ✓ back_project    — Step 2
   ○ fbp_recon       — Step 4  (uncomment when implemented)
 
 Usage:
@@ -114,33 +114,36 @@ def _correctness(ref_np: np.ndarray, out) -> float:
 # Per-operation benchmark definitions
 # ──────────────────────────────────────────────────────────────────────────────
 
-def bench_fbp_filter(model, sino_jax, warmup, trials):
+def bench_fbp_filter(model, inp, warmup, trials):
     """Return (times, result_jax) for fbp_filter."""
-    fn = lambda: model.fbp_filter(sino_jax)
+    fn = lambda: model.fbp_filter(inp)
     return _timed_run(fn, warmup, trials)
 
 
-# ── Add new operations here as steps are completed ────────────────────────────
-# def bench_forward_project(model, recon_jax, warmup, trials):
-#     fn = lambda: model.forward_project(recon_jax)
+def bench_forward_project(model, inp, warmup, trials):
+    """Return (times, result_jax) for forward_project."""
+    fn = lambda: model.forward_project(inp)
+    return _timed_run(fn, warmup, trials)
+
+
+def bench_back_project(model, inp, warmup, trials):
+    """Return (times, result_jax) for back_project."""
+    fn = lambda: model.back_project(inp)
+    return _timed_run(fn, warmup, trials)
+
+
+# def bench_fbp_recon(model, inp, warmup, trials):
+#     fn = lambda: model.fbp_recon(inp)
 #     return _timed_run(fn, warmup, trials)
-#
-# def bench_back_project(model, sino_jax, warmup, trials):
-#     fn = lambda: model.back_project(sino_jax)
-#     return _timed_run(fn, warmup, trials)
-#
-# def bench_fbp_recon(model, sino_jax, warmup, trials):
-#     fn = lambda: model.fbp_recon(sino_jax)
-#     return _timed_run(fn, warmup, trials)
-# ─────────────────────────────────────────────────────────────────────────────
 
 OPERATIONS = [
-    # (name, bench_fn, input_key)
-    # input_key matches a key in the `inputs` dict built in main()
-    ('fbp_filter', bench_fbp_filter, 'sinogram'),
-    # ('forward_project', bench_forward_project, 'recon'),   # Step 2
-    # ('back_project',   bench_back_project,   'sinogram'),  # Step 3
-    # ('fbp_recon',      bench_fbp_recon,      'sinogram'),  # Step 4
+    # (name, bench_fn, input_key, shard_axis)
+    # input_key matches a key in the inputs_np dict built in main().
+    # shard_axis is the array axis sharded across the 'slices' mesh axis.
+    ('fbp_filter',      bench_fbp_filter,      'sinogram', 1),  # shard det_rows (axis 1)
+    ('forward_project', bench_forward_project, 'recon',    2),  # shard slices   (axis 2)
+    ('back_project',    bench_back_project,    'sinogram', 1),  # shard det_rows (axis 1)
+    # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
 
 
@@ -152,6 +155,7 @@ def main():
     # Determine device counts to test
     n_gpus = len(_gpus())
     n_cpus = len(jax.devices('cpu'))
+    n_cpus = np.round(n_cpus / 2).astype(int) + 1
     max_avail = n_gpus if n_gpus > 0 else n_cpus
 
     if n_gpus > 0:
@@ -188,7 +192,7 @@ def main():
     if args.device_counts is not None:
         device_counts = sorted(set(args.device_counts))
     else:
-        device_counts = sorted({1, 2, max_avail}) if max_avail > 1 else [1]
+        device_counts = 1 + np.arange(max_avail)
 
     print(f"\n{'='*62}")
     print(f"  mbirjax sharding scaling benchmark")
@@ -202,25 +206,27 @@ def main():
     print(f"{'='*62}\n")
 
     # Build raw numpy inputs once.  Each n_dev iteration will pre-shard or
-    # pre-upload the relevant array before timing so that fbp_filter (and
-    # future operations) never perform a GPU→CPU→GPU scatter inside the
-    # timed loop.  Passing a plain JAX array to fbp_filter triggers
-    # _shard_sinogram → np.asarray (GPU→CPU) + device_put (CPU→GPU scatter)
-    # on every call — O(sinogram bytes) of PCIe traffic that swamps the
-    # compute speedup on GPU.
+    # pre-upload the relevant array before timing so that the benchmarked
+    # operations never perform a GPU→CPU→GPU scatter inside the timed loop.
+    # Passing a plain JAX array triggers _shard_* → np.asarray (GPU→CPU) +
+    # device_put (CPU→GPU scatter) on every call — O(array bytes) of PCIe
+    # traffic that swamps the compute speedup on GPU.
     rng = np.random.default_rng(42)
     sino_np = rng.standard_normal((n_views, n_rows, n_channels)).astype(np.float32)
 
-    # recon_np = rng.standard_normal((n_rows, n_channels, n_rows)).astype(np.float32)
+    # Build a 1-device model just to get the recon_shape (geometry-derived).
+    _ref_model = _make_model(n_views, n_rows, n_channels, n_devices=1)
+    recon_shape = _ref_model.get_params('recon_shape')
+    recon_np = rng.standard_normal(recon_shape).astype(np.float32)
 
     # Map input_key → raw numpy array (sharded per n_dev inside the loop).
     inputs_np = {
         'sinogram': sino_np,
-        # 'recon': recon_np,   # uncomment for Steps 2/3
+        'recon':    recon_np,
     }
 
     # ── Run each operation ────────────────────────────────────────────────────
-    for op_name, bench_fn, input_key in OPERATIONS:
+    for op_name, bench_fn, input_key, shard_axis in OPERATIONS:
         print(f"  {'─'*58}")
         print(f"  Operation: {op_name}")
         print(f"  {'─'*58}")
@@ -235,17 +241,21 @@ def main():
             if model is None:
                 print(f"  {n_dev:>5}  {'skip (not enough devices)':>40}")
                 continue
+            if n_rows % n_dev != 0:
+                # print(f"n_dev={n_dev} does not divide n_rows={n_rows}: skipping")
+                continue
 
             # Pre-shard / pre-upload the input once outside timing.
             # model.mesh is always set (configure_sharding is called with ≥1
             # real device), so we always take the sharded path here.
+            # Build a PartitionSpec that shards only along shard_axis.
             raw_np = inputs_np[input_key]
             if model.mesh is not None:
-                # Sinogram: shard along det_rows (axis 1 = 'slices' mesh axis).
-                # Update the PartitionSpec when adding recon operations.
+                spec = [None] * raw_np.ndim
+                spec[shard_axis] = 'slices'
                 sharding = jax.sharding.NamedSharding(
                     model.mesh,
-                    jax.sharding.PartitionSpec(None, 'slices', None))
+                    jax.sharding.PartitionSpec(*spec))
                 inp = jax.device_put(raw_np, sharding)
             else:
                 inp = jnp.array(raw_np)
