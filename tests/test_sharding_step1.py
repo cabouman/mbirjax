@@ -19,11 +19,12 @@ import mbirjax
 from conftest import preferred_devices
 
 # ---------------------------------------------------------------------------
-# Guard: confirm conftest.py gave us virtual CPU devices as fallback.
+# Guard: confirm mbirjax._device_setup (via conftest.py) gave us virtual CPUs.
 # ---------------------------------------------------------------------------
 _N_CPU = len(jax.devices('cpu'))
-assert _N_CPU >= 4, (
-    f"Expected ≥4 virtual CPU devices from conftest.py; got {_N_CPU}."
+assert _N_CPU >= 2, (
+    f"Expected ≥2 virtual CPU devices (set by mbirjax._device_setup); got {_N_CPU}. "
+    f"Ensure conftest.py (which imports mbirjax first) is loaded before JAX."
 )
 
 # ---------------------------------------------------------------------------

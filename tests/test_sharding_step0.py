@@ -27,16 +27,15 @@ import mbirjax.tomography_model as tm
 from conftest import preferred_devices
 
 # ---------------------------------------------------------------------------
-# Verify that conftest.py took effect.
-# On any machine, conftest.py guarantees ≥4 virtual CPU devices via XLA_FLAGS.
-# Real GPUs (if present) are also available and will be preferred by
-# preferred_devices(), but the CPU count assertion is the safest fallback guard.
+# Verify that mbirjax._device_setup took effect via conftest.py.
+# On any machine, importing mbirjax before JAX guarantees at least one virtual
+# CPU device per available core.  ≥2 are required for 2-device sharding tests.
 # ---------------------------------------------------------------------------
 _N_VIRTUAL_CPU_DEVICES = len(jax.devices('cpu'))
-assert _N_VIRTUAL_CPU_DEVICES >= 4, (
-    f"Expected ≥4 virtual CPU devices (set by conftest.py via XLA_FLAGS), "
+assert _N_VIRTUAL_CPU_DEVICES >= 2, (
+    f"Expected ≥2 virtual CPU devices (set by mbirjax._device_setup), "
     f"but JAX reports only {_N_VIRTUAL_CPU_DEVICES}. "
-    f"Run this file in isolation or ensure conftest.py is loaded before JAX."
+    f"Ensure conftest.py (which imports mbirjax first) is loaded before JAX."
 )
 
 

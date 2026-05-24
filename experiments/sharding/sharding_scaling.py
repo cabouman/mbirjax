@@ -31,11 +31,20 @@ import os
 import time
 import textwrap
 
-# Must be set before JAX initialises.  On a machine with real GPUs this is a
-# no-op (setdefault won't override an env var that is already set or that JAX
-# has already processed).  On a CPU-only machine it creates 4 virtual devices
-# so the script can demonstrate 1-vs-2-vs-4 scaling without real hardware.
-os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=4")
+
+def _count_available_cpus() -> int:
+    try:
+        return len(os.sched_getaffinity(0))   # Linux — process CPU set
+    except AttributeError:
+        return os.cpu_count() or 1             # macOS / Windows fallback
+
+
+# Must be set before JAX initialises.  The flag only affects the CPU backend;
+# on GPU machines it is harmless.  setdefault leaves cluster-set values alone.
+os.environ.setdefault(
+    "XLA_FLAGS",
+    f"--xla_force_host_platform_device_count={_count_available_cpus()}"
+)
 
 import numpy as np
 import jax

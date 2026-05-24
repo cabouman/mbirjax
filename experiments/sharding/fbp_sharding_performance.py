@@ -31,8 +31,24 @@ sharding.  Pre-sharding removes the asymmetry and reveals true compute scaling
 on both platforms.
 """
 
-# ── Configuration ────────────────────────────────────────────────────────────
+import os
 
+
+def _count_available_cpus() -> int:
+    try:
+        return len(os.sched_getaffinity(0))   # Linux — process CPU set
+    except AttributeError:
+        return os.cpu_count() or 1             # macOS / Windows fallback
+
+
+# Must be set before JAX initialises.  The flag only affects the CPU backend;
+# on GPU machines it is harmless.  setdefault leaves cluster-set values alone.
+os.environ.setdefault(
+    "XLA_FLAGS",
+    f"--xla_force_host_platform_device_count={_count_available_cpus()}"
+)
+
+# ── Configuration ────────────────────────────────────────────────────────────
 
 # Device counts to test.  Entries larger than the number of available devices
 # are skipped automatically.
@@ -43,18 +59,6 @@ N_TIMING_RUNS = 5   # timed runs per (size, n_devices); report the minimum
                     # Use ≥3 on GPU — single-trial GPU timing is noisy.
 
 MAX_DIFF_THRESHOLD = 1e-4  # warn if max diff between device counts exceeds this
-
-# ── Environment setup (must happen before any JAX import) ────────────────────
-# Always create virtual CPU devices equal to max(N_DEVICES_LIST).  This flag
-# only affects the CPU backend; on GPU machines it is harmless because JAX
-# still sees the real GPUs as a separate backend.  setdefault leaves any
-# existing XLA_FLAGS untouched (e.g. set by a cluster job script).
-
-import os
-os.environ.setdefault(
-    "XLA_FLAGS",
-    f"--xla_force_host_platform_device_count={max(N_DEVICES_LIST)}"
-)
 
 # ── Imports ───────────────────────────────────────────────────────────────────
 
