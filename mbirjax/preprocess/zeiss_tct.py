@@ -1,6 +1,7 @@
 import os, sys
 from operator import itemgetter
 import numpy as np
+import jax
 import jax.numpy as jnp
 import warnings
 import mbirjax as mj
@@ -58,8 +59,7 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
     """
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
-    obj_scan, blank_scan, dark_scan, zeiss_params = \
-        load_scans_and_params(dataset_dir, verbose=verbose)
+    obj_scan, blank_scan, dark_scan, zeiss_params = load_scans_and_params(dataset_dir, verbose=verbose)
 
     translation_params, optional_params = convert_zeiss_to_mbirjax_params(zeiss_params,
                                                                           crop_pixels_sides=crop_pixels_sides,
@@ -75,22 +75,22 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
                                                                                 crop_pixels_top=crop_pixels_top,
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
+    weights = create_detector_weight_mask(obj_scan, threshold_ratio=0.35)
+
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
     sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
-    scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
-    del obj_scan, blank_scan, dark_scan  # delete scan images to save memory
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
     sino = mjp.correct_background_offset(sino)
 
     if verbose > 0:
-        print('obj_scan shape = ', scan_shapes[0])
-        print('blank_scan shape = ', scan_shapes[1])
-        print('dark_scan shape = ', scan_shapes[2])
+        print('obj_scan shape = ', obj_scan.shape)
+        print('blank_scan shape = ', blank_scan.shape)
+        print('dark_scan shape = ', dark_scan.shape)
 
-    return sino, translation_params, optional_params
+    return sino, translation_params, optional_params, weights
 
 
 def load_scans_and_params(dataset_dir, verbose=1):
@@ -115,8 +115,7 @@ def load_scans_and_params(dataset_dir, verbose=1):
             - ``zeiss_params`` (dict): Required parameters for ``convert_zeiss_to_mbirjax_params`` (e.g., geometry vectors, spacings, and angles).
     """
     ### automatically parse the paths to Zeiss scans from dataset—dir
-    obj_scan_dir, blank_scan_dir, dark_scan_dir = \
-        _parse_filenames_from_dataset_dir(dataset_dir)
+    obj_scan_dir, blank_scan_dir, dark_scan_dir = _parse_filenames_from_dataset_dir(dataset_dir)
 
     if verbose > 0:
         print("The following files will be used to compute the Zeiss reconstruction:\n",
@@ -124,131 +123,145 @@ def load_scans_and_params(dataset_dir, verbose=1):
               f"    - Blank scan directory: {blank_scan_dir}\n",
               f"    - Dark scan directory: {dark_scan_dir}\n",)
 
-    _, Zeiss_params = read_xrm_dir(obj_scan_dir) # Zeiss parameters of all the object scans
+    # Read object scans and metadata
+    obj_scan, zeiss_params = read_xrm_dir(obj_scan_dir)
 
-    # source to iso distance
-    source_iso_dist = Zeiss_params["source_iso_dist"][0]
-    source_iso_dist = float(np.abs(source_iso_dist))
-
-    # iso to detector distance
-    iso_det_dist = Zeiss_params["iso_det_dist"][0]
-    iso_det_dist = float(np.abs(iso_det_dist))
-
-    # detector pixel pitch
-    # Zeiss detector pixel has equal width and height
-    det_pixel_pitch = Zeiss_params["det_pixel_pitch"]
-    iso_pixel_pitch = Zeiss_params["iso_pixel_pitch"]
-    delta_det_row = det_pixel_pitch
-    delta_det_channel = det_pixel_pitch
-
-    # dimensions of radiograph
-    num_views = Zeiss_params["num_views"]
-    num_det_channels = Zeiss_params["num_det_channels"]
-    num_det_rows = Zeiss_params["num_det_rows"]
-
-    # Detector offset
-    # TODO: Need to check whether the detector offset parameter is correctly read from the file
-    #   Since I can only decoded one single float from the directory I found in the file,
-    #   I am assuming that this is the detector channel offset, and I am setting the detector row offset to 0.0
-    detector_offset = Zeiss_params["det_offset"]
-    det_channel_offset = detector_offset
-    det_row_offset = 0.0
-
-    # object positions in x, y, z axis
-    # The scanner uses a coordinate system different from MBIRJAX
-    # ToDo: Perform experiments to determine the Zeiss coordinates
-    # Axis mapping:
-    #   Scanner z-axis -> MBIRJAX x-axis or -x-axis not sure
-    #   Scanner x-axis -> MBIRJAX y-axis or -y-axis not sure
-    #   Scanner y-axis -> MBIRJAX z-axis or -z-axis not sure
-    obj_x_positions = np.array(Zeiss_params['z_positions'], dtype=float).ravel()
-    obj_y_positions = np.array(Zeiss_params['x_positions'], dtype=float).ravel()
-    obj_z_positions = np.array(Zeiss_params['y_positions'], dtype=float).ravel()
-
-    # Unit of parameters
-    axis_names = Zeiss_params["axis_names"]
-    axis_units = Zeiss_params["axis_units"]
-
-    source_iso_dist_unit = None
-    iso_det_dist_unit = None
-    delta_det_row_unit = None
-    delta_det_channel_unit = None
-    obj_x_position_unit = None
-    obj_y_position_unit = None
-    obj_z_position_unit = None
-
-    if axis_names is not None and axis_units is not None:
-        for name, unit in zip(axis_names, axis_units):
-            # TODO: Need to verify whether the geometry parameter units actually match the specified axis names.
-            if name == "Source Z":
-                source_iso_dist_unit = unit
-                iso_det_dist_unit = unit
-
-            elif name == "CCD_X":
-                delta_det_row_unit = unit
-                delta_det_channel_unit = unit
-
-            elif name == "Sample X":
-                obj_x_position_unit = unit
-
-            elif name == "Sample Y":
-                obj_y_position_unit = unit
-
-            elif name == "Sample Z":
-                obj_z_position_unit = unit
-
-    else:
-        raise ValueError("Unknown units for geometry parameters; cannot safely convert to mbirjax format.")
-
-    if verbose > 0:
-        print("############ Zeiss geometry parameters ############")
-        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
-        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
-        print(f"Detector pixel pitch: (delta_det_row, delta_det_channel) = ({det_pixel_pitch:.3f} [{delta_det_row_unit}], {det_pixel_pitch:.3f} [{delta_det_channel_unit}])")
-        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
-        print("############ End Zeiss geometry parameters ############")
-    ### END load Zeiss parameters from scan data
-
-    ### read blank scans and dark scans
+    # Read blank scans
     blank_scan, _ = read_xrm_dir(blank_scan_dir)
-    if dark_scan_dir is not None:
+
+    # Read dark scans
+    # TODO: If there is no dark scan available, using an array of all 0s.
+    if os.path.isdir(dark_scan_dir) and len(os.listdir(dark_scan_dir)) > 0:
         dark_scan, _ = read_xrm_dir(dark_scan_dir)
     else:
         dark_scan = np.zeros(blank_scan.shape)
 
-    ### read object scans
-    obj_scan, _ = read_xrm_dir(obj_scan_dir)
-    if verbose > 0:
-        print("Scans loaded.")
-
-    ### flip the scans vertically
+    # Flip the scans vertically
+    # TODO: It seems that we need to flip the scan to get the correct object orientation
     if verbose > 0:
         print("Flipping scans vertically")
     obj_scan = np.flip(obj_scan, axis=1)
     blank_scan = np.flip(blank_scan, axis=1)
     dark_scan = np.flip(dark_scan, axis=1)
 
+    try:
+        # Get the list of measurement axis names and units
+        axis_names = zeiss_params.get("axis_names")  # This is a list of names: ['Sample X', 'Sample Y', ..., 'CCD_X', ...]
+        axis_units = zeiss_params.get("axis_units")  # This is a list of units: ['um', 'um', ..., ]
+
+        # Get source to iso distance
+        source_iso_dist = zeiss_params["source_iso_dist"]
+        source_iso_dist = float(np.abs(source_iso_dist))
+        source_iso_dist_index = get_index_in_list(axis_names, 'Source Z')
+        source_iso_dist_unit = axis_units[source_iso_dist_index] if source_iso_dist_index > -1 else 'mm'
+
+        # Get iso to detector distance
+        iso_det_dist = zeiss_params["iso_det_dist"]
+        iso_det_dist = float(np.abs(iso_det_dist)) if iso_det_dist is not None else 0.0
+        iso_det_dist_unit = source_iso_dist_unit
+
+        # Get detector pixel pitch
+        det_pixel_pitch = zeiss_params["det_pixel_pitch"]
+        det_pixel_pitch = float(np.abs(det_pixel_pitch))
+
+        # Zeiss detector pixel has equal width and height
+        delta_det_row = det_pixel_pitch
+        delta_det_channel = det_pixel_pitch
+        delta_det_index = get_index_in_list(axis_names, 'CCD_X')
+        delta_det_row_unit = axis_units[delta_det_index] if delta_det_index > -1 else 'um'
+        delta_det_channel_unit = delta_det_row_unit
+
+        # Get pixel pitch at iso
+        iso_pixel_pitch = zeiss_params["iso_pixel_pitch"]
+        iso_pixel_pitch = float(np.abs(iso_pixel_pitch))
+        iso_pixel_pitch_index = get_index_in_list(axis_names, 'Sample X')
+        iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index] if iso_pixel_pitch_index > -1 else 'um'
+
+        # Get object positions in x, y, z axis
+        # TODO: It seems that purdue p dataset and purdue BGA dataset use the different coordinate system
+        # The scanner uses a coordinate system different from MBIRJAX
+        # Axis mapping:
+        #   Scanner z-axis -> MBIRJAX x-axis or -x-axis not sure
+        #   Scanner x-axis -> MBIRJAX y-axis or -y-axis not sure
+        #   Scanner y-axis -> MBIRJAX z-axis or -z-axis not sure
+        object_x_positions = -np.array(zeiss_params['x_positions'], dtype=float).ravel()
+        object_y_positions = np.array(zeiss_params['z_positions'], dtype=float).ravel()
+        object_z_positions = np.array(zeiss_params['y_positions'], dtype=float).ravel()
+
+        object_x_position_index = get_index_in_list(axis_names, 'Sample X')
+        object_y_position_index = get_index_in_list(axis_names, 'Sample Y')
+        object_z_position_index = get_index_in_list(axis_names, 'Sample Z')
+
+        object_x_position_unit = axis_units[object_x_position_index] if object_x_position_index > -1 else 'um'
+        object_y_position_unit = axis_units[object_y_position_index] if object_y_position_index > -1 else 'um'
+        object_z_position_unit = axis_units[object_z_position_index] if object_z_position_index > -1 else 'um'
+
+        # Get sinogram per-view shifts
+        x_shifts = zeiss_params["x_shifts"]
+        y_shifts = zeiss_params["y_shifts"]
+
+    except ValueError as e:
+        print("Unable to determine units for geometry parameters; cannot safely convert to mbirjax format.")
+        raise e
+
+    # Get optical Magnification
+    opt_mag = zeiss_params["opt_mag"]
+    opt_mag = 1 if opt_mag is None else opt_mag
+
+    # Get dimensions of radiograph
+    num_views = zeiss_params["num_views"]
+    num_det_channels = zeiss_params["num_det_channels"]
+    num_det_rows = zeiss_params["num_det_rows"]
+
+    # Get detector offset
+    # MBIRJAX has the reverse convention for the channel shift
+    center_shift = zeiss_params.get("center_shift")
+
+    if center_shift is None:
+        det_channel_offset = 0.0
+    else:
+        det_channel_offset = -center_shift
+
+    det_row_offset = 0.0  # There doesn't appear to be a Zeiss parameter for detector row offset
+
     zeiss_params = {
         'source_iso_dist': source_iso_dist,
         'iso_det_dist': iso_det_dist,
         'delta_det_channel': delta_det_channel,
         'delta_det_row': delta_det_row,
+        'iso_pixel_pitch': iso_pixel_pitch,
+        'opt_mag': opt_mag,
         'num_views': num_views,
         'num_det_channels': num_det_channels,
         'num_det_rows': num_det_rows,
         'det_row_offset': det_row_offset,
         'det_channel_offset': det_channel_offset,
-        'obj_x_positions': obj_x_positions,
-        'obj_y_positions': obj_y_positions,
-        'obj_z_positions': obj_z_positions,
+        'object_x_positions': object_x_positions,
+        'object_y_positions': object_y_positions,
+        'object_z_positions': object_z_positions,
         'source_iso_dist_unit': source_iso_dist_unit,
         'iso_det_dist_unit': iso_det_dist_unit,
         'delta_det_row_unit': delta_det_row_unit,
         'delta_det_channel_unit': delta_det_channel_unit,
-        'obj_x_position_unit': obj_x_position_unit,
-        'obj_y_position_unit': obj_y_position_unit,
-        'obj_z_position_unit': obj_z_position_unit,
+        'iso_pixel_pitch_unit': iso_pixel_pitch_unit,
+        'object_x_position_unit': object_x_position_unit,
+        'object_y_position_unit': object_y_position_unit,
+        'object_z_position_unit': object_z_position_unit,
+        'x_shifts': x_shifts,
+        'y_shifts': y_shifts,
     }
+
+    if verbose > 0:
+        print("############ Zeiss geometry parameters ############")
+        print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
+        print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
+        print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
+        print(f"Pixel pitch at iso: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
+        print(f"Optical magnification: {opt_mag}")
+        print(f"Number of views: {num_views}")
+        print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
+        print("############ End Zeiss geometry parameters ############")
+    ### END load Zeiss parameters from scan data
 
     return obj_scan, blank_scan, dark_scan, zeiss_params
 
@@ -269,49 +282,64 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
         translation_params (dict): Required parameters for the TranslationModel constructor.
         optional_params (dict): Additional TranslationModel parameters to be set using set_params()
     """
-    # Get zeiss parameters and convert them
+    # Get zeiss parameters
     source_iso_dist, iso_det_dist, source_iso_dist_unit, iso_det_dist_unit = itemgetter('source_iso_dist', 'iso_det_dist', 'source_iso_dist_unit', 'iso_det_dist_unit')(zeiss_params)
     delta_det_channel, delta_det_row, delta_det_channel_unit, delta_det_row_unit = itemgetter('delta_det_channel', 'delta_det_row', 'delta_det_channel_unit', 'delta_det_row_unit')(zeiss_params)
-    num_views, num_det_rows, num_det_channels = itemgetter('num_views', 'num_det_rows', 'num_det_channels')(zeiss_params)
-    obj_x_positions, obj_y_positions, obj_z_positions, obj_x_position_unit, obj_y_position_unit, obj_z_position_unit = itemgetter('obj_x_positions', 'obj_y_positions', 'obj_z_positions', 'obj_x_position_unit', 'obj_y_position_unit', 'obj_z_position_unit')(zeiss_params)
+    iso_pixel_pitch, iso_pixel_pitch_unit = itemgetter('iso_pixel_pitch', 'iso_pixel_pitch_unit')(zeiss_params)
+    opt_mag = itemgetter('opt_mag')(zeiss_params)
+    num_det_rows, num_det_channels = itemgetter('num_det_rows', 'num_det_channels')(zeiss_params)
+    object_x_positions, object_x_position_unit = itemgetter('object_x_positions', 'object_x_position_unit')(zeiss_params)
+    object_y_positions, object_y_position_unit = itemgetter('object_y_positions', 'object_y_position_unit')(zeiss_params)
+    object_z_positions, object_z_position_unit = itemgetter('object_z_positions', 'object_z_position_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
+    # Create unit conversion table for all units used in the xrm files
+    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
+
+    # Define 1 ALU as 1 unit of alu_unit
+    alu_value = 1
+
+    # Convert physical units to ALU
+    source_iso_dist *= unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
+    iso_det_dist *= unit_conversion[iso_det_dist_unit] / unit_conversion[alu_unit]
+    delta_det_channel *= unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
+    delta_det_row *= unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
+    iso_pixel_pitch *= unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
+    object_x_positions *= unit_conversion[object_x_position_unit] / unit_conversion[alu_unit]
+    object_y_positions *= unit_conversion[object_y_position_unit] / unit_conversion[alu_unit]
+    object_z_positions *= unit_conversion[object_z_position_unit] / unit_conversion[alu_unit]
+
+    # Compute default value of source to detector distance
     source_detector_dist = source_iso_dist + iso_det_dist
-    translation_vectors = calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_positions)
+
+    # Compute translation vectors
+    translation_vectors = calc_translation_vec_params(object_x_positions, object_y_positions, object_z_positions)
+
+    # Make conversions for optical magnification
+    # In this case, the "detector" is actually a scintillator
+    if opt_mag is not None:
+        # Compute total magnification = (optical magnification) * (magnification to scintillator)
+        scintillator_mag = source_detector_dist / source_iso_dist
+        magnification = opt_mag * scintillator_mag
+    else:
+        magnification = 1.0
+
+    # Compute source to equivalent quantities accounting for total magnification
+    source_detector_dist = magnification * source_iso_dist
+    delta_det_channel = magnification * iso_pixel_pitch
+    delta_det_row = magnification * iso_pixel_pitch
 
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
 
-    sinogram_shape = (num_views, num_det_rows, num_det_channels)
-
-    # Unit conversion table (relative to um)
-    # TODO: Need to include other possible unit conversions to ensure all geometry parameters can be safely converted to ALU.
-    #   For now, I assume that only um and mm appear in the xrm file
-    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
-
-    # Define 1 ALU as 1 unit of alu_unit
-    ALU_value = 1
-
-    # Convert physical units to ALU
-    source_iso_dist = source_iso_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-    source_detector_dist = source_detector_dist * unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-
-    if obj_x_position_unit == obj_y_position_unit == obj_z_position_unit:
-        translation_vectors = translation_vectors * unit_conversion[obj_x_position_unit] / unit_conversion[alu_unit]
-    else:
-        translation_vectors[:, 0] = translation_vectors[:, 0] * unit_conversion[obj_x_position_unit] / unit_conversion[alu_unit]
-        translation_vectors[:, 1] = translation_vectors[:, 1] * unit_conversion[obj_y_position_unit] / unit_conversion[alu_unit]
-        translation_vectors[:, 2] = translation_vectors[:, 2] * unit_conversion[obj_z_position_unit] / unit_conversion[alu_unit]
-
-    delta_det_channel = delta_det_channel * unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
-    delta_det_row = delta_det_row * unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
-
-    # ToDo: Need to check the units of detector offset
-    #  For now, we assume that the det_channel_offset have units of pixels.
-    det_channel_offset *= delta_det_channel # pixels to ALU
+    # Convert offset parameters to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
+    det_channel_offset *= delta_det_channel
+    det_row_offset *= delta_det_row
 
     # Calculate recon_shape, delta_voxel, and delta_recon_row parameters
+    num_views = len(translation_vectors)
+    sinogram_shape = (num_views, num_det_rows, num_det_channels)
     recon_shape, delta_voxel, delta_recon_row = mj.utilities.calc_tct_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
 
     # Create a dictionary to store MBIR parameters
@@ -330,7 +358,7 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
     optional_params['det_row_offset'] = det_row_offset
     optional_params['det_channel_offset'] = det_channel_offset
     optional_params['alu_unit'] = alu_unit
-    optional_params['alu_value'] = ALU_value
+    optional_params['alu_value'] = alu_value
 
     return translation_params, optional_params
 
@@ -368,11 +396,8 @@ def _check_read(fname):
     """
     Validate the file path and ensure it has a recognized extension.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         fname (str) : Path to the file to be read. Must be a string and have one of the recognized file extensions:
@@ -402,11 +427,8 @@ def read_xrm(fname):
     """
     Read data from xrm file.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         fname (str): String defining the path of file or file name.
@@ -422,14 +444,18 @@ def read_xrm(fname):
         print('No such file or directory: %s', fname)
         return False
 
-    metadata = read_ole_metadata(ole)
+    # Read metadata from xrm file
+    metadata = read_metadata(ole)
 
+    # Read scan data from xrm file
     stream = ole.openstream("ImageData1/Image1")
     data = stream.read()
 
+    # Get the data type of scan data
     data_type = _get_ole_data_type(metadata)
     data_type = data_type.newbyteorder('<')
 
+    # Reshape the scan data into 2D array
     arr = np.reshape(
         np.frombuffer(data, data_type),
         (
@@ -440,12 +466,8 @@ def read_xrm(fname):
 
     _log_imported_data(fname, arr)
 
-    if np.issubdtype(arr.dtype, np.integer):
-        # make float and normalize integer types
-        maxval = np.iinfo(arr.dtype).max
-        arr = arr.astype(np.float32) / maxval
-
-    arr.astype(np.float32)
+    # Normalize the scan data
+    # arr = mjp.utilities._normalize_to_float32(arr)
 
     ole.close()
     return arr, metadata
@@ -454,13 +476,10 @@ def read_xrm(fname):
 def read_xrm_dir(dir_path):
     """
     Read all .xrm files in a directory (filesystem order), stack into (num_views, num_det_rows, num_det_cols),
-    and concatenate x/y/z position metadata.
+    and concatenate selected metadata.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         dir_path (str) : Path to the directory to be read.
@@ -472,14 +491,14 @@ def read_xrm_dir(dir_path):
     dir_path = Path(dir_path)
     files = [p for p in dir_path.iterdir() if p.is_file()]
 
-    # Load the first file
+    # Load the scan data and metadata from first file
     proj0, md0 = read_xrm(str(files[0]))
     num_views = len(files)
     num_det_rows, num_det_channels = proj0.shape
     arr = np.empty((num_views, num_det_rows, num_det_channels), dtype=proj0.dtype)
     arr[0] = proj0
 
-    # Load the x, y, z positions of the first file
+    # Load the x, y, z object positions of the first file
     x0 = md0['x_positions'][0]
     y0 = md0['y_positions'][0]
     z0 = md0['z_positions'][0]
@@ -500,12 +519,8 @@ def read_xrm_dir(dir_path):
 
     _log_imported_data(str(dir_path), arr)
 
-    if np.issubdtype(arr.dtype, np.integer):
-        # make float and normalize integer types
-        maxval = np.iinfo(arr.dtype).max
-        arr = arr.astype(np.float32) / maxval
-
-    arr.astype(np.float32)
+    # Normalize the scan data
+    # arr = mjp.utilities._normalize_to_float32(arr)
 
     return arr, metadata
 
@@ -534,7 +549,7 @@ def read_txrm(file_name):
         print('No such file or directory: %s', file_name)
         return False
 
-    metadata = read_ole_metadata(ole)
+    metadata = read_metadata(ole)
 
     array_of_images = np.empty(
         (
@@ -556,15 +571,12 @@ def read_txrm(file_name):
     return array_of_images, metadata
 
 
-def read_ole_metadata(ole):
+def read_metadata(ole):
     """
     Read metadata from an xradia OLE file (.xrm, .txrm, .txm).
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO instance) : An ole file to read from.
@@ -582,24 +594,30 @@ def read_ole_metadata(ole):
         'num_views': number_of_images,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        # TODO: Need to check whether we read the correct detector offset parameter from the file
-        'det_offset': _read_ole_value(ole, 'DetAssemblyInfo/CameraOffset', '<f'),
-        'iso_det_dist': _read_ole_arr(
-            ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
-        'source_iso_dist': _read_ole_arr(
-            ole, 'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
+        'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', "<f"),
+        'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
-            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)) * np.pi / 180.,
+            ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),
         'x_positions': _read_ole_arr(
             ole, 'ImageInfo/XPosition', "<{0}f".format(number_of_images)),
         'y_positions': _read_ole_arr(
             ole, 'ImageInfo/YPosition', "<{0}f".format(number_of_images)),
         'z_positions': _read_ole_arr(
             ole, 'ImageInfo/ZPosition', "<{0}f".format(number_of_images)),
-        'x-shifts': _read_ole_arr(
+        'x_shifts':_read_ole_arr(
             ole, 'alignment/x-shifts', "<{0}f".format(number_of_images)),
-        'y-shifts': _read_ole_arr(
+        'y_shifts': _read_ole_arr(
             ole, 'alignment/y-shifts', "<{0}f".format(number_of_images)),
+        'current': _read_ole_value(
+            ole, "ImageInfo/XrayCurrent", "<{0}f".format(number_of_images)),
+        'voltage': _read_ole_value(
+            ole, "ImageInfo/XrayVoltage", "<{0}f".format(number_of_images)),
+        'ExpTimes': _read_ole_value(
+            ole, "ImageInfo/ExpTimes", "<{0}f".format(number_of_images)),
+        'center_shift': _read_ole_value(ole, "ReconSettings/CenterShift", '<f'),
+        'opt_mag': _read_ole_value(ole, 'ImageInfo/OpticalMagnification', '<f'),
+        'fan_angle': _read_ole_value(ole, 'ImageInfo/FanAngle', '<f'),
+        'cone_angle': _read_ole_value(ole, 'ImageInfo/ConeAngle', '<f'),
         'axis_names': _read_ole_str(ole, 'PositionInfo/AxisNames'),
         'axis_units': _read_ole_str(ole, 'PositionInfo/AxisUnits')
     }
@@ -611,11 +629,8 @@ def _log_imported_data(fname, arr):
     """
     Log information about imported data.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         fname (str) : Path of the file from which data was imported.
@@ -625,15 +640,25 @@ def _log_imported_data(fname, arr):
     logger.info('Data successfully imported: %s', fname)
 
 
+def get_index_in_list(input_list, target):
+    """
+    Find the index of target in the given list.
+    Return -1 if not present.
+    """
+    if target in input_list:
+        idx = input_list.index(target)
+    else:
+        idx = -1  # or None
+
+    return idx
+
+
 def _get_ole_data_type(metadata, datatype=None):
     """
     Determine the Numpy data type for image data stored in a Zeiss OLE (.xrm, .txrm, .txm) file.
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         metadata (dict) : Dictionary containing metadata extracted from the OLE file.
@@ -658,11 +683,8 @@ def _read_ole_struct(ole, label, struct_fmt):
     """
     Reads the struct associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -684,11 +706,8 @@ def _read_ole_value(ole, label, struct_fmt):
     """
     Reads the value associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -708,11 +727,8 @@ def _read_ole_arr(ole, label, struct_fmt):
     """
     Reads the numpy array associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -732,11 +748,8 @@ def _read_ole_image(ole, label, metadata, datatype=None):
     """
     Reads the image data associated with label in an ole file
 
-    This code is adapted from the DXchange library:
-    https://github.com/data-exchange/dxchange
-
-    Reference:
-    [1] DXchange library: https://github.com/data-exchange/dxchange
+    Notes:
+        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
 
     Args:
         ole (OleFileIO) : An ole file to read from.
@@ -760,8 +773,6 @@ def _read_ole_image(ole, label, metadata, datatype=None):
 
 def _read_ole_str(ole, label):
     """
-    NOTICE: THIS FUNCTION IS STILL UNDER DEVELOPMENT AND MAY CONTAIN BUGS OR NOT WORK AS EXPECTED
-
     Reads the string associated with label in an ole file
 
     Args:
@@ -810,3 +821,93 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
 
     return translation_vectors
 ######## END subroutines for Zeiss-MBIR parameter conversion
+
+
+def correct_sino_shifts(sino, zeiss_params):
+    """
+    Align each sinogram view based on the per-view projection offset.
+
+    The xrm file stores the horizontal (x-shift) and vertical (y-shift) offsets for each projection.
+    This function compensates the object's vibration by shifting each view of the sinogram accordingly.
+
+    Coordinate convention (view from source):
+      • x-shift: shift should be applied in the horizontal direction. Positive x-shift means the view should be shifted to the right
+      • y-shift: shift should be applied in the vertical direction. Positive y-shift means the view should be shifted down
+
+    For each view, the function:
+      1. Reads the corresponding offset (x-shift, y-shift)
+      2. Translate the view based on the (x-shift, y-shift)
+
+    Padding is added before shifting to handle image boundary,
+    and the padding is removed afterward.
+
+    Args:
+        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+        zeiss_params (dict): parameters stored in Zeiss xrm file.
+
+    Returns:
+        corrected_sino (numpy array or jax array): 3D sinogram data after alignment
+    """
+    # Get sinogram view offset
+    # TODO: Currrently I assume that the view offset has units of pixels
+    #   I test it and think that this assumption is correct
+    sino_x_offset = zeiss_params["x_shifts"]
+    sino_y_offset = zeiss_params["y_shifts"]
+
+    ### Pad the sinogram to handle boundaries
+    # Set pad size as the largest shift in pixels across views
+    max_x_offset = np.max(sino_x_offset) - np.min(sino_x_offset)
+    max_y_offset = np.max(sino_y_offset) - np.min(sino_y_offset)
+
+    pad_size = int(np.ceil(np.maximum(max_x_offset, max_y_offset)))
+
+    if pad_size > 0:
+        sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')
+    else:
+        sino_pad = sino
+
+    # Apply per-view translation
+    corrected_sino = np.zeros_like(sino_pad)
+    for view in range(sino.shape[0]):
+        corrected_sino[view] = jax.image.scale_and_translate(sino_pad[view],
+                                      shape=sino_pad[view].shape,
+                                      spatial_dims=(0, 1),
+                                      scale=jnp.array([1.0, 1.0]),
+                                      translation=jnp.array([sino_y_offset[view], sino_x_offset[view]]),
+                                      method='linear',
+                                      antialias=False)
+
+    # Remove padding
+    if pad_size > 0:
+        corrected_sino = corrected_sino[:, pad_size:-pad_size, pad_size:-pad_size]
+
+    return corrected_sino
+
+
+def create_detector_weight_mask(obj_scan, threshold_ratio=0.05):
+    """
+    Create a binary weight matrix to exclude black boundary regions.
+
+    Args:
+        obj_scan: array with shape (num_views, rows, cols)
+        threshold_ratio: threshold relative to mean intensity
+
+    Returns:
+        weights: A 3D array of weights with the same shape as the input obj_scan.
+    """
+
+    # Use first view because boundary is same for all views
+    img = obj_scan[0]
+
+    # Simple threshold
+    threshold = threshold_ratio * np.mean(img)
+
+    mask = img > threshold
+
+    # Convert to float
+    mask = mask.astype(np.float32)
+
+    # Broadcast to all views
+    weights = np.broadcast_to(mask, obj_scan.shape)
+
+    return jnp.array(weights)
