@@ -19,8 +19,8 @@ def main():
     start_time = time.time()
 
     # Choose dataset from '0.8C_Ni_cylinder', '1.6C_Ni_cylinder', '2.4C_Ni_cylinder', '4.8C_Ni_cylinder', '9.6C_Ni_cylinder'
-    dataset_name = '2.4C_Ni_cylinder'
-    input_path = './input_data/'  # path to import input noisy data
+    dataset_name = '2_4c_Ni_cylinder_dataset'
+    input_path = './input_data/2_4c/processed_data_2_4c_Ni_cylinder.h5'  # path to import input noisy data
     output_path = './output_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
@@ -30,7 +30,7 @@ def main():
     test_denoise = False  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
 
     # Display parameters
-    display_wave_idx = 500  # Wavelength index of displayed images
+    display_wave_idx = 100  # Wavelength index of displayed images
     display_pix_idx = [200, 200]  # Pixel index [row, column] of displayed spectra
     vmax = 2  # Maximum pixel value for displayed images
     vmin = 0  # Minimum pixel value for displayed images
@@ -41,8 +41,7 @@ def main():
     np.random.seed(129)
 
     # Import real hyperspectral data
-    filename = os.path.join(input_path, dataset_name+'_dataset.h5')
-    hsnt_data, metadata = import_hsnt_data_hdf5(filename, dataset_name)
+    hsnt_data, metadata = import_hsnt_data_hdf5(input_path, dataset_name)
     dataset_type = metadata['dataset_type']
     wavelengths = metadata['wavelengths']
 
@@ -69,29 +68,32 @@ def main():
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
-        plot_images(images=[hsnt_data[:, :, display_wave_idx],
-                            hsnt_denoised[:, :, display_wave_idx]],
+        plot_images(images=[hsnt_data[0, :, :, display_wave_idx],
+                            hsnt_denoised[0, :, :, display_wave_idx]],
                     titles=['Fig (a): Noisy hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
                             'Fig (b): Denoised hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx)],
-                    vmax=vmax, vmin=vmin)
+                    vmax=vmax, vmin=vmin,
+                    filename="cylinder.png")
 
-        plot_spectra(spectra=[hsnt_data[display_pix_idx[0], display_pix_idx[1], :],
-                              hsnt_denoised[display_pix_idx[0], display_pix_idx[1], :]],
+        plot_spectra(spectra=[hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :],
+                              hsnt_denoised[0, display_pix_idx[0], display_pix_idx[1], :]],
                      labels=['Noisy', 'Denoised'],
                      title='Single pixel spectra (attenuation) for noisy and denoised data',
                      x_label='wavelength (Angstrom)',
                      y_label='attenuation',
                      y_lim=y_lim_attenuation,
-                     wavelengths=wavelengths)
+                     wavelengths=wavelengths,
+                     filename="cylinder_attenuation.png")
 
-        plot_spectra(spectra=[np.exp(-hsnt_data[display_pix_idx[0], display_pix_idx[1], :]),
-                              np.exp(-hsnt_denoised[display_pix_idx[0], display_pix_idx[1], :])],
+        plot_spectra(spectra=[np.exp(-hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :]),
+                              np.exp(-hsnt_denoised[0, display_pix_idx[0], display_pix_idx[1], :])],
                      labels=['Noisy', 'Denoised'],
                      title='Single pixel spectra (transmission) for noisy and denoised data',
                      x_label='wavelength (Angstrom)',
                      y_label='transmission',
                      y_lim=y_lim_transmission,
-                     wavelengths=wavelengths)
+                     wavelengths=wavelengths,
+                     filename="cylinder_transmission.png")
 
     print('Total time elapsed: ', time.time() - start_time, ' seconds')
 
