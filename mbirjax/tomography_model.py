@@ -259,6 +259,22 @@ class TomographyModel(ParameterHandler):
         """
         return voxel_values
 
+    def _prepare_sinogram_for_backprojection(self, sinogram):
+        """Prepare sinogram before sparse_back_project is called.
+
+        Called by back_project immediately before sparse_back_project.
+        The base-class implementation is a no-op; geometry subclasses may
+        override to shard, reformat, or otherwise prepare sinogram so
+        that sparse_back_project receives the expected input type.
+
+        Note: the output sharding of back_project mirrors the sharding of
+        the sinogram input (plain in → plain out; sharded in → sharded out).
+        Subclass implementations that shard here should be paired with a
+        corresponding _gather_recon call at the end of back_project, which
+        is handled automatically by TomographyModel.back_project.
+        """
+        return sinogram
+
     def _shard_recon(self, recon):
         """Return recon distributed in recon-native sharding for this geometry.
 
@@ -826,16 +842,25 @@ class TomographyModel(ParameterHandler):
             sinogram (jnp array): 3D jax array containing sinogram.
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.
+            jnp array: The resulting 3D recon array.  When a mesh is configured,
+            the output sharding mirrors the input: a sharded sinogram produces a
+            sharded recon; a plain sinogram produces a plain recon (multi-device
+            is used internally but the result is gathered before return).
         """
+        input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
+                                      jax.sharding.NamedSharding)
+        sinogram = self._prepare_sinogram_for_backprojection(sinogram)
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
+        recon_cylinder = self._gather_recon(recon_cylinder)   # no-op if plain; gathers if sharded
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
         with self._device_context(output_device):
             recon = self._device_put(jnp.zeros(recon_shape), output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
+        if input_is_sharded:
+            recon = self._shard_recon(recon)
         return recon
 
     def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):

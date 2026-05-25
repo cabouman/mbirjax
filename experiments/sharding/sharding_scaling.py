@@ -131,9 +131,14 @@ def bench_sparse_forward_project(model, inp, warmup, trials):
     return _timed_run(fn, warmup, trials)
 
 
-def bench_back_project(model, inp, warmup, trials):
-    """Return (times, result_jax) for back_project."""
-    fn = lambda: model.back_project(inp)
+def bench_sparse_back_project(model, inp, warmup, trials):
+    """Return (times, result_jax) for sparse_back_project with pre-sharded sinogram.
+
+    inp is a tuple (sharded_sino, pixel_indices) pre-computed outside
+    the timing loop so that the shard-scatter is not included in the timing.
+    """
+    sharded_sino, pixel_indices = inp
+    fn = lambda: model.sparse_back_project(sharded_sino, pixel_indices)
     return _timed_run(fn, warmup, trials)
 
 
@@ -145,11 +150,11 @@ OPERATIONS = [
     # (name, bench_fn, input_key, shard_axis)
     # input_key matches a key in the inputs_np dict built in main().
     # shard_axis: axis of the primary data array to pre-shard across 'slices'.
-    #   'flat_recon' entries carry a (flat_recon_np, pixel_indices_np) tuple;
-    #   the primary array (index 0) is sharded along axis 1 (slices).
-    ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
-    ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
-    # back_project deferred (poor CPU scaling; GPU scaling good but not yet integrated)
+    #   tuple entries carry a (primary_np, aux_np) pair; primary is sharded
+    #   along shard_axis, aux (pixel_indices) is uploaded as a plain array.
+    # ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
+    # ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
+    ('sparse_back_project',    bench_sparse_back_project,    'sino_bp',    1),
     # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
 
@@ -231,11 +236,12 @@ def main():
         _ref_model.get_voxels_at_indices(jnp.array(recon_np), jnp.array(_all_indices_np)))
 
     # Map input_key → raw data for pre-sharding.
-    # 'flat_recon' entries are (data_np, aux_np) tuples; data_np is sharded,
-    # aux_np (pixel_indices) is uploaded as a plain array.
+    # Tuple entries are (data_np, aux_np) pairs; data_np is sharded along
+    # shard_axis, aux_np (pixel_indices) is uploaded as a plain array.
     inputs_np = {
         'sinogram':   sino_np,
         'flat_recon': (_flat_recon_np, _all_indices_np),
+        'sino_bp':    (sino_np, _all_indices_np),
     }
 
     # ── Run each operation ────────────────────────────────────────────────────

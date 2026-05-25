@@ -3,14 +3,16 @@ Tests for Step 2: multi-device forward_project via threaded sparse_forward_proje
 
 Design
 ------
-Slice-level parallelism lives in TomographyModel.sparse_forward_project, NOT in a
-ParallelBeamModel.forward_project override.  When self.mesh is not None,
-sparse_forward_project splits voxel_values along the slice axis, runs one thread
-per device, and assembles a NamedSharding sinogram.  forward_project (base class,
-unchanged) therefore returns a sharded sinogram whenever a mesh is configured —
-regardless of whether the recon input was sharded or plain.
+Slice-level parallelism lives in ParallelBeamModel.sparse_forward_project.
+When self.mesh is not None, sparse_forward_project splits voxel_values along
+the slice axis, runs one thread per device, and assembles a NamedSharding
+sinogram.  forward_project (base class, unchanged) therefore returns a sharded
+sinogram whenever a mesh is configured — regardless of whether the recon input
+was sharded or plain.
 
-back_project is single-device in this step (threading deferred).
+back_project multi-device threading is implemented in Step 3 (test_sharding_step3.py).
+These tests cover the single-device back_project path and basic regression when a
+mesh is configured.
 
 Verifies:
   forward_project
@@ -198,8 +200,9 @@ class TestBackProjectSingleDevice(unittest.TestCase):
 
 class TestBackProjectWithMesh(unittest.TestCase):
     """
-    back_project uses the base-class single-device path even when a mesh is
-    configured (threading deferred).  It must still produce correct results.
+    Regression: back_project (Step 2 baseline) must still produce correct results
+    when a mesh is configured.  Multi-device threading for back_project is tested
+    in test_sharding_step3.py.
     """
 
     @classmethod

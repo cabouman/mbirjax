@@ -113,9 +113,8 @@ class ParallelBeamModel(TomographyModel):
         return self._maybe_gather(sino)
 
     def _shard_recon(self, recon):
-        """Shard recon along slices (axis 2 for 3-D, axis 1 for flat 2-D)."""
-        axis = 1 if recon.ndim == 2 else 2
-        return self._maybe_shard(recon, axis=axis)
+        """Shard recon along slices (axis 1 since this comes in as a 2D array (num_pixels, num_slices)."""
+        return self._maybe_shard(recon, axis=1)
 
     def _gather_recon(self, recon):
         """Gather a slice-sharded recon to an uncommitted single-device array."""
@@ -152,8 +151,22 @@ class ParallelBeamModel(TomographyModel):
         When self.mesh is None, returns voxel_values unchanged (no-op).
         """
         if self.mesh is not None:
-            return self._shard_recon(voxel_values)   # axis=1 for 2-D flat recon
+            return self._shard_recon(voxel_values)   # axis=2 for 2-D flat recon
         return voxel_values
+
+    def _prepare_sinogram_for_backprojection(self, sinogram):
+        """Shard sinogram along det_rows (axis 1) when a mesh is configured.
+
+        Called by TomographyModel.back_project immediately before
+        sparse_back_project.  Sharding here ensures that the subsequent
+        sparse_back_project call receives a NamedSharding array and takes
+        the multi-device threading path.
+
+        When self.mesh is None, returns sinogram unchanged (no-op).
+        """
+        if self.mesh is not None:
+            return self._shard_sinogram(sinogram)   # axis=1 for det_rows
+        return sinogram
 
     @overload
     def get_params(self, parameter_names: Union[ParallelBeamParamNames, list[ParallelBeamParamNames]]) -> Any: ...
@@ -325,6 +338,90 @@ class ParallelBeamModel(TomographyModel):
             self.mesh, jax.sharding.PartitionSpec(None, 'slices', None))
         return jax.make_array_from_single_device_arrays(
             shape=output_sino_shape, sharding=sino_sharding, arrays=results)
+
+    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
+        """Multi-device back projection via slice-parallel threading.
+
+        When self.mesh is None, or when sinogram is not a NamedSharding array
+        (plain input), falls through to the base-class single-device path.
+
+        When sinogram IS a NamedSharding array:
+          - Each per-device shard (views, local_det_rows, channels) is already
+            resident on its device (zero PCIe when called from back_project via
+            _prepare_sinogram_for_backprojection, or directly from the VCD path).
+          - One Python thread per device runs the full view/pixel batching
+            pipeline on the local sinogram chunk using _device_context.
+          - Returns a NamedSharding flat_recon sharded along slices (axis 1).
+
+        Contract: output sharding matches input sharding (sharded → sharded,
+        plain → plain).  The parallel-beam geometry assumption (det_rows ==
+        num_slices) is validated in verify_valid_params.
+
+        Note: this method adds no entry/exit sharding; the caller (back_project
+        via _prepare_sinogram_for_backprojection, or VCD directly) is responsible
+        for providing an appropriately sharded sinogram.
+        """
+        if self.mesh is None or not isinstance(
+                getattr(sinogram, 'sharding', None), jax.sharding.NamedSharding):
+            return super().sparse_back_project(
+                sinogram, pixel_indices, view_indices, coeff_power, output_device)
+
+        sinogram_shape = self.get_params('sinogram_shape')
+        n_devices = self.mesh.devices.size
+        pmap_devices = list(self.mesh.devices.flat)
+        # Each device holds local_slices det-rows of the sinogram, corresponding to
+        # local_slices recon slices (det_rows == slices for parallel beam).
+        local_slices = sinogram_shape[1] // n_devices
+
+        num_views = sinogram.shape[0]
+        if view_indices is None:
+            view_indices = jnp.arange(num_views)
+
+        transfer_view_batch_size = self.view_batch_size_for_vmap
+        num_view_batches = int(jnp.ceil(num_views / transfer_view_batch_size))
+        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+
+        num_pixels = len(pixel_indices)
+        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=self.transfer_pixel_batch_size)
+        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
+
+        # Build device → local shard mapping (data already resident, zero PCIe).
+        dev_to_sino_shard = {s.device: s.data for s in sinogram.addressable_shards}
+
+        # pixel_indices is tiny and identical on every device.
+        pixel_np = np.asarray(pixel_indices)
+
+        results = [None] * n_devices
+
+        def _back_project_shard(i):
+            dev = pmap_devices[i]
+            with self._device_context(dev):
+                sino_shard = dev_to_sino_shard[dev]    # (views, local_slices, channels)
+                pix = jnp.array(pixel_np)              # tiny upload to device i
+                recon_chunk = jnp.zeros((num_pixels, local_slices))
+                for vib in view_indices_batched:
+                    view_batch = sino_shard[vib]       # (batch_views, local_slices, channels)
+                    voxel_batch_list = []
+                    for k in range(len(pixel_batch_boundaries) - 1):
+                        ps = int(pixel_batch_boundaries[k])
+                        pe = int(pixel_batch_boundaries[k + 1])
+                        voxel_batch = self.projector_functions.sparse_back_project(
+                            view_batch, pix[ps:pe], view_indices=vib, coeff_power=coeff_power)
+                        voxel_batch = voxel_batch.block_until_ready()
+                        voxel_batch_list.append(voxel_batch)
+                    recon_chunk = recon_chunk + jnp.concatenate(voxel_batch_list, axis=0)
+                jax.block_until_ready(recon_chunk)
+            results[i] = recon_chunk
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_devices) as executor:
+            list(executor.map(_back_project_shard, range(n_devices)))
+
+        # Assemble per-device recon chunks into a NamedSharding flat_recon.
+        output_shape = (num_pixels, sinogram_shape[1])
+        recon_sharding = jax.sharding.NamedSharding(
+            self.mesh, jax.sharding.PartitionSpec(None, 'slices'))
+        return jax.make_array_from_single_device_arrays(
+            shape=output_shape, sharding=recon_sharding, arrays=results)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -642,8 +739,8 @@ class ParallelBeamModel(TomographyModel):
         # back to a plain uncommitted array before returning.
         filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-        # back_project receives a plain array; it will shard/gather internally in
-        # multi-device mode once Step 3 is implemented.
+        # back_project receives a plain array and scatters/gathers internally in
+        # multi-device mode via _prepare_sinogram_for_backprojection.
         recon = self.back_project(filtered_sinogram)
         recon = self._maybe_gather(recon)
 
