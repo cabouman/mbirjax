@@ -113,8 +113,17 @@ class ParallelBeamModel(TomographyModel):
         return self._maybe_gather(sino)
 
     def _shard_recon(self, recon):
-        """Shard recon along slices (axis 1 since this comes in as a 2D array (num_pixels, num_slices)."""
-        return self._maybe_shard(recon, axis=1)
+        """Shard recon along the slice axis.
+
+        The slice axis differs by array rank:
+          - 2-D flat recon  (num_pixels, slices) → axis 1  (slices are the
+            second dimension of the flattened pixel-cylinder layout)
+          - 3-D full recon  (rows, cols, slices)  → axis 2  (slices are the
+            third dimension of the volumetric layout)
+        In both cases slices are the innermost / last axis of the shape.
+        """
+        axis = 1 if recon.ndim == 2 else 2
+        return self._maybe_shard(recon, axis=axis)
 
     def _gather_recon(self, recon):
         """Gather a slice-sharded recon to an uncommitted single-device array."""
@@ -377,8 +386,17 @@ class ParallelBeamModel(TomographyModel):
         if view_indices is None:
             view_indices = jnp.arange(num_views)
 
-        transfer_view_batch_size = self.view_batch_size_for_vmap
-        num_view_batches = int(jnp.ceil(num_views / transfer_view_batch_size))
+        # Choose a view-batch size that keeps the per-thread sinogram working-set
+        # cache-friendly when several threads share the same memory hierarchy (CPU).
+        # Each thread holds sino_shard[vib] of shape (view_batch, local_slices, channels).
+        # Targeting ~1 MB per thread gives good L3 reuse on typical CPUs; on GPU
+        # each device has its own HBM so this cap is rarely reached in practice.
+        _CACHE_TARGET_BYTES = 1 << 20   # 1 MB per thread
+        _bytes_per_view = local_slices * sinogram_shape[2] * 4
+        _cache_view_batch = max(1, _CACHE_TARGET_BYTES // _bytes_per_view)
+        effective_view_batch = min(self.view_batch_size_for_vmap, _cache_view_batch)
+
+        num_view_batches = int(np.ceil(num_views / effective_view_batch))
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
 
         num_pixels = len(pixel_indices)
@@ -440,31 +458,70 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
-            jax array of shape (num_det_rows, num_det_channels)
+            jax array of shape (num_recon_slices, num_det_channels)
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
-        # Get the data needed for horizontal projection
+        # Precompute the horizontal projection coefficients.
+        # In parallel beam, slice k projects exactly onto detector row k, so the
+        # horizontal footprint of each pixel (n_p, A_chan_n, …) is the same for
+        # every slice — it depends only on the pixel's (x, y) position and the
+        # view angle.  Computing these once and capturing them in the closure below
+        # avoids redundant work inside the per-slice map.
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
-        # Allocate the sinogram array. Use voxel_values.shape[1] rather than num_det_rows from
-        # projector_params so that this function works correctly on a slice-sharded subset of the
-        # full recon/sinogram (where the local slice count differs from the global num_det_rows).
-        sinogram_view = jnp.zeros((voxel_values.shape[1], num_det_channels))
+        # ── Slice-batch size ───────────────────────────────────────────────────
+        # Tune _B to explore the cache effect of different scatter-output sizes.
+        #   _B = 1            → per-slice map (regression baseline, slowest)
+        #   _B = local_slices → one map step, equivalent to the original
+        #                        vectorized scatter (fastest baseline)
+        #   Powers of 2 between 1 and local_slices vary the (B × channels)
+        #   scatter-target buffer size; smaller _B keeps the output buffer in L1.
+        _B = 16
+        # ──────────────────────────────────────────────────────────────────────
 
-        # Do the projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+        local_slices = voxel_values.shape[1]
+        num_pixels_local = voxel_values.shape[0]
 
+        # Pad local_slices to an exact multiple of _B so every lax.map call
+        # receives a uniform (B, num_pixels) input.  Padding rows are zero and
+        # are discarded from the output after the map.
+        padded = ((local_slices + _B - 1) // _B) * _B
+        num_batches = padded // _B
+        voxel_padded = jnp.zeros((num_pixels_local, padded)).at[:, :local_slices].set(voxel_values)
+        # voxel_batched shape: (num_batches, _B, num_pixels)
+        voxel_batched = voxel_padded.T.reshape(num_batches, _B, num_pixels_local)
+
+        def project_slice_batch(voxel_batch):
+            """Forward project a batch of _B recon slices to _B sinogram rows.
+
+            Args:
+                voxel_batch (jax array): shape (_B, num_pixels)
+
+            Returns:
+                jax array: shape (_B, num_det_channels)
+            """
+            sino_batch = jnp.zeros((_B, num_det_channels))
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+                A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                # 2-D scatter-add: A_chan_n * voxel_batch broadcasts to (_B, num_pixels);
+                # column indices n have shape (num_pixels,).  For each pixel i,
+                # A_chan_n[i] * voxel_batch[:, i] is added to sino_batch[:, n[i]].
+                sino_batch = sino_batch.at[:, n].add(A_chan_n * voxel_batch)
+            return sino_batch
+
+        # lax.map over (num_batches, _B, num_pixels) → (num_batches, _B, num_det_channels).
+        sino_batched = jax.lax.map(project_slice_batch, voxel_batched)
+        # Flatten to (padded, num_det_channels) and trim to actual local_slices.
+        sinogram_view = sino_batched.reshape(padded, num_det_channels)[:local_slices]
         return sinogram_view
 
     @staticmethod

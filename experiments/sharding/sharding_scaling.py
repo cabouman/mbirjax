@@ -153,8 +153,8 @@ OPERATIONS = [
     #   tuple entries carry a (primary_np, aux_np) pair; primary is sharded
     #   along shard_axis, aux (pixel_indices) is uploaded as a plain array.
     # ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
-    # ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
-    ('sparse_back_project',    bench_sparse_back_project,    'sino_bp',    1),
+    ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
+    # ('sparse_back_project',    bench_sparse_back_project,    'sino_bp',    1),
     # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
 
@@ -179,6 +179,9 @@ def main():
         n_rows = 128
         n_channels = 256
 
+    num_warmup = 1
+    num_trials = 3
+
     parser = argparse.ArgumentParser(
         description='Measure multi-device speedup for mbirjax sharding.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -193,10 +196,10 @@ def main():
     parser.add_argument('--device-counts',  type=int, nargs='+', default=None,
                         help='Device counts to benchmark (default: 1 plus all '
                              'available GPUs or up to 4 virtual CPUs)')
-    parser.add_argument('--warmup',         type=int, default=2,
-                        help='Number of warmup iterations (default 2)')
-    parser.add_argument('--trials',         type=int, default=5,
-                        help='Number of timed iterations (default 5)')
+    parser.add_argument('--warmup',         type=int, default=num_warmup,
+                        help='Number of warmup iterations (default {})'.format(num_warmup))
+    parser.add_argument('--trials',         type=int, default=num_trials,
+                        help='Number of timed iterations (default {})'.format(num_trials))
     args = parser.parse_args()
 
     n_views, n_rows, n_channels = args.n_views, args.n_rows, args.n_channels
