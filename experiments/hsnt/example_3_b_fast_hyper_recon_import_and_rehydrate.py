@@ -34,7 +34,7 @@ def main():
 
     # Import dehydrated reconstructions from HDF5 file
     filename = os.path.join(input_path, dataset_name + ".h5")
-    hsnt_dehydrated_recons, metadata_dehydrated = import_hsnt_data_hdf5(filename, dataset_name)
+    hsnt_dehydrated_recons, metadata_dehydrated = import_hsnt_data_hdf5(filename)
 
     # Perform rehydration
     hsnt_recons = rehydrate(hsnt_dehydrated_recons)

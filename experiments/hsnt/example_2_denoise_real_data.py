@@ -42,9 +42,9 @@ def main():
 
     # Import real hyperspectral data
     filename = os.path.join(input_path, dataset_name+'_dataset.h5')
-    hsnt_data, metadata = import_hsnt_data_hdf5(filename, dataset_name)
-    dataset_type = metadata['dataset_type']
-    wavelengths = metadata['wavelengths']
+    hsnt_data, metadata = import_hsnt_data_hdf5(filename)
+    dataset_type = metadata.get('dataset_type', 'attenuation')
+    wavelengths = metadata.get('wavelengths', None)
 
     if verbose >= 1:
         print("Hyperspectral data shape: ", hsnt_data.shape)
