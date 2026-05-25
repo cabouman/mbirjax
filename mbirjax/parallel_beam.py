@@ -518,10 +518,29 @@ class ParallelBeamModel(TomographyModel):
                 sino_batch = sino_batch.at[:, n].add(A_chan_n * voxel_batch)
             return sino_batch
 
-        # lax.map over (num_batches, _B, num_pixels) → (num_batches, _B, num_det_channels).
-        sino_batched = jax.lax.map(project_slice_batch, voxel_batched)
-        # Flatten to (padded, num_det_channels) and trim to actual local_slices.
-        sinogram_view = sino_batched.reshape(padded, num_det_channels)[:local_slices]
+        if num_batches == 1:
+            # All slices fit in one batch (_B >= local_slices).  Bypass project_slice_batch
+            # and the padding/reshape machinery entirely: compute a direct vectorized scatter
+            # against voxel_values.T.  This is the known-correct original computation and
+            # avoids a JAX/XLA issue where the compiled code for project_slice_batch gives
+            # wrong results when _B equals local_slices (the JIT traces a different code path
+            # through the padded-zeros allocation when _B == local_slices vs _B < local_slices,
+            # and at least one XLA backend mis-compiles that case).
+            # This branch is resolved at JAX trace time — num_batches is a Python int derived
+            # from static array shapes — so there is zero runtime overhead from the conditional.
+            sinogram_view = jnp.zeros((local_slices, num_det_channels))
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+                A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view = sinogram_view.at[:, n].add(A_chan_n * voxel_values.T)
+        else:
+            # lax.map over (num_batches, _B, num_pixels) → (num_batches, _B, num_det_channels).
+            sino_batched = jax.lax.map(project_slice_batch, voxel_batched)
+            # Flatten to (padded, num_det_channels) and trim to actual local_slices.
+            sinogram_view = sino_batched.reshape(padded, num_det_channels)[:local_slices]
         return sinogram_view
 
     @staticmethod

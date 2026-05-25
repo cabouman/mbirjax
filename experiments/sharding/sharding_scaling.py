@@ -30,6 +30,7 @@ import argparse
 import os
 import time
 import textwrap
+import warnings
 
 
 def _count_available_cpus() -> int:
@@ -164,6 +165,14 @@ OPERATIONS = [
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    out_file = 'sharding_baseline_ref.npz'
+    ref_dict = None
+    if os.path.exists(out_file):
+        ref_dict = np.load(out_file)
+        print('Using saved baseline.')
+    else:
+        warnings.warn('No existing baseline found. Comparing to current code.')
+
     # Determine device counts to test
     n_gpus = len(_gpus())
     n_cpus = len(jax.devices('cpu'))
@@ -312,6 +321,10 @@ def main():
                 ref_np = np.asarray(result)
                 speedup_str = '  1.00×'
                 diff_str    = '      —'
+                if ref_dict is not None:
+                    ref_saved = ref_dict[op_name]
+                    if not np.allclose(ref_np, ref_saved):
+                        warnings.warn('Saved reference does not match new reference.  Max diff = {}'.format(np.amax(np.abs(ref_np - ref_saved))))
             else:
                 speedup = baseline_mean / mean_ms
                 diff    = _correctness(ref_np, result)
