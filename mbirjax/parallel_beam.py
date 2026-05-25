@@ -84,6 +84,12 @@ class ParallelBeamModel(TomographyModel):
 
     DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
+    def __init__(self, sinogram_shape, angles):
+
+        angles = jnp.asarray(angles)
+        view_params_name = 'angles'
+        super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
+
     # ------------------------------------------------------------------
     # Geometry-specific sharding hooks (parallel beam)
     # ------------------------------------------------------------------
@@ -135,11 +141,19 @@ class ParallelBeamModel(TomographyModel):
         right_halos = [np.asarray(s.data[:, 0])  for s in shards[1:]] + [None]
         return left_halos, right_halos
 
-    def __init__(self, sinogram_shape, angles):
+    def _prepare_voxels_for_projection(self, voxel_values):
+        """Shard flat voxel_values along the slice axis when a mesh is configured.
 
-        angles = jnp.asarray(angles)
-        view_params_name = 'angles'
-        super().__init__(sinogram_shape, angles=angles, view_params_name=view_params_name)
+        Called by TomographyModel.forward_project immediately after
+        get_voxels_at_indices.  Sharding here ensures that the subsequent
+        sparse_forward_project call receives a NamedSharding array and takes
+        the multi-device threading path.
+
+        When self.mesh is None, returns voxel_values unchanged (no-op).
+        """
+        if self.mesh is not None:
+            return self._shard_recon(voxel_values)   # axis=1 for 2-D flat recon
+        return voxel_values
 
     @overload
     def get_params(self, parameter_names: Union[ParallelBeamParamNames, list[ParallelBeamParamNames]]) -> Any: ...
@@ -180,6 +194,14 @@ class ParallelBeamModel(TomographyModel):
             error_message = "Number of recon slices must match number of sinogram rows. \n"
             error_message += "Got {} for recon_shape and {} for sinogram_shape".format(recon_shape, sinogram_shape)
             raise ValueError(error_message)
+
+        if self.mesh is not None:
+            n_devices = self.mesh.devices.size
+            if sinogram_shape[1] % n_devices != 0:
+                raise ValueError(
+                    f"sinogram_shape[1] ({sinogram_shape[1]}) must be divisible by "
+                    f"the number of sharding devices ({n_devices})."
+                )
 
     def get_geometry_parameters(self):
         """
@@ -230,6 +252,79 @@ class ParallelBeamModel(TomographyModel):
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel)
+
+    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
+        """Multi-device forward projection via slice-parallel threading.
+
+        When self.mesh is None, or when voxel_values is not a NamedSharding
+        array (plain input), falls through to the base-class single-device path.
+
+        When voxel_values IS a NamedSharding array:
+          - Each per-device shard is already resident on its device (zero PCIe
+            when called from the VCD hot path or via forward_project which calls
+            _prepare_voxels_for_projection first).
+          - One Python thread per device runs the full view/pixel batching
+            pipeline on the local slice chunk using _device_context.
+          - Returns a NamedSharding sinogram sharded along det_rows (axis 1).
+
+        Contract: output sharding matches input sharding (sharded → sharded,
+        plain → plain).  The parallel-beam geometry assumption (det_rows ==
+        num_slices) is validated in verify_valid_params.
+
+        Note: this method adds no entry/exit sharding; the caller (forward_project
+        via _prepare_voxels_for_projection, or VCD directly) is responsible for
+        providing an appropriately sharded voxel_values.
+        """
+        if self.mesh is None or not isinstance(
+                getattr(voxel_values, 'sharding', None), jax.sharding.NamedSharding):
+            return super().sparse_forward_project(
+                voxel_values, pixel_indices, view_indices, output_device)
+
+        view_indices, view_indices_batched, pixel_batch_boundaries, sinogram_shape = \
+            self._compute_projection_batch_params(pixel_indices, view_indices)
+
+        n_devices = self.mesh.devices.size
+        pmap_devices = list(self.mesh.devices.flat)
+        # Each device holds local_slices columns of the flat recon; assertion is
+        # checked at configure_sharding time by verify_valid_params.
+        local_slices = voxel_values.shape[1] // n_devices
+
+        # Build device → local shard mapping (data already resident, zero PCIe).
+        dev_to_chunk = {s.device: s.data for s in voxel_values.addressable_shards}
+
+        # pixel_indices is tiny and identical on every device.
+        pixel_np = np.asarray(pixel_indices)
+
+        results = [None] * n_devices
+
+        def _project_slice_chunk(i):
+            dev = pmap_devices[i]
+            with self._device_context(dev):
+                voxel_chunk = dev_to_chunk[dev]        # already on device i — zero PCIe
+                pix = jnp.array(pixel_np)              # tiny upload to device i
+                sino_parts = []
+                for vib in view_indices_batched:
+                    sino_views = jnp.zeros((len(vib), local_slices, sinogram_shape[2]))
+                    for k in range(len(pixel_batch_boundaries) - 1):
+                        ps, pe = int(pixel_batch_boundaries[k]), int(pixel_batch_boundaries[k + 1])
+                        sino_views = sino_views.block_until_ready()
+                        sino_views = sino_views + self.projector_functions.sparse_forward_project(
+                            voxel_chunk[ps:pe], pix[ps:pe], view_indices=vib)
+                    sino_parts.append(sino_views)
+                chunk_sino = jnp.concatenate(sino_parts)
+                jax.block_until_ready(chunk_sino)
+            results[i] = chunk_sino
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_devices) as executor:
+            list(executor.map(_project_slice_chunk, range(n_devices)))
+
+        # n_views_out may be < sinogram_shape[0] when called from VCD with a view subset.
+        n_views_out = int(view_indices.shape[0])
+        output_sino_shape = (n_views_out, sinogram_shape[1], sinogram_shape[2])
+        sino_sharding = jax.sharding.NamedSharding(
+            self.mesh, jax.sharding.PartitionSpec(None, 'slices', None))
+        return jax.make_array_from_single_device_arrays(
+            shape=output_sino_shape, sharding=sino_sharding, arrays=results)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')

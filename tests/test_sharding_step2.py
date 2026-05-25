@@ -118,9 +118,10 @@ class TestForwardProjectSingleDevice(unittest.TestCase):
 
 class TestForwardProjectMultiDevice(unittest.TestCase):
     """
-    When a mesh is configured, sparse_forward_project threads over slices and
-    returns a NamedSharding sinogram.  forward_project (base class) passes this
-    straight through, so multi-device forward_project always returns sharded.
+    forward_project with a mesh configured:
+      - Plain recon input  → multi-device projection used internally, plain sinogram returned.
+      - Sharded recon input → multi-device projection, sharded sinogram returned.
+    Output sharding mirrors input sharding; values always match single-device reference.
     """
 
     @classmethod
@@ -135,31 +136,32 @@ class TestForwardProjectMultiDevice(unittest.TestCase):
         out = self.model_m.forward_project(self.recon_jax)
         self.assertEqual(out.shape, (N_VIEWS, N_DET_ROWS, N_CHANNELS))
 
-    def test_output_is_sharded(self):
-        """Multi-device forward_project always returns a NamedSharding sinogram."""
+    def test_plain_input_plain_output(self):
+        """Plain recon → multi-device used internally, output gathered to plain array."""
         out = self.model_m.forward_project(self.recon_jax)
+        self.assertNotIsInstance(getattr(out, 'sharding', None),
+                                 jax.sharding.NamedSharding,
+                                 "forward_project with plain recon should return plain sinogram")
+
+    def test_sharded_input_sharded_output(self):
+        """Sharded recon → sharded sinogram (output sharding mirrors input)."""
+        sharded_recon = self.model_m._shard_recon(self.recon_jax)
+        out = self.model_m.forward_project(sharded_recon)
         self.assertIsInstance(getattr(out, 'sharding', None),
                               jax.sharding.NamedSharding,
-                              "forward_project with mesh should return NamedSharding")
+                              "forward_project with sharded recon should return sharded sinogram")
 
     def test_correct_values(self):
         out = np.asarray(self.model_m.forward_project(self.recon_jax))
         np.testing.assert_allclose(out, self.ref, rtol=RTOL, atol=ATOL,
                                    err_msg="Multi-device FP diverges from single-device")
 
-    def test_per_device_shard_shape(self):
-        """Each sinogram shard should have N_DET_ROWS // N_DEV rows."""
-        out = self.model_m.forward_project(self.recon_jax)
-        rows_per_dev = N_DET_ROWS // N_DEV
-        for shard in out.addressable_shards:
-            self.assertEqual(shard.data.shape,
-                             (N_VIEWS, rows_per_dev, N_CHANNELS))
-
-    def test_shards_on_correct_devices(self):
-        out = self.model_m.forward_project(self.recon_jax)
-        expected = set(self.model_m.mesh.devices.flat)
-        actual   = {s.device for s in out.addressable_shards}
-        self.assertEqual(actual, expected)
+    def test_sharded_input_correct_values(self):
+        """Sharded recon path also produces correct values."""
+        sharded_recon = self.model_m._shard_recon(self.recon_jax)
+        out = np.asarray(self.model_m.forward_project(sharded_recon))
+        np.testing.assert_allclose(out, self.ref, rtol=RTOL, atol=ATOL,
+                                   err_msg="Sharded-input FP diverges from single-device")
 
     def test_deterministic(self):
         a = np.asarray(self.model_m.forward_project(self.recon_jax))
@@ -226,8 +228,9 @@ class TestRoundTrip(unittest.TestCase):
     """
     AT(A(x)) shape must match x, and both paths must agree numerically.
 
-    forward_project returns a sharded sinogram in multi-device mode;
-    back_project is always single-device, so we gather the sinogram first.
+    forward_project with a plain recon returns a plain sinogram (multi-device
+    used internally, result gathered), so back_project receives a plain array
+    in both single- and multi-device paths.
     """
 
     @classmethod
@@ -237,10 +240,8 @@ class TestRoundTrip(unittest.TestCase):
         cls.recon   = jnp.array(_random_recon(cls.model_s, seed=3))
 
     def _round_trip(self, model):
-        sino = model.forward_project(self.recon)
-        # Gather to plain array before back_project (single-device)
-        sino_plain = jnp.array(np.asarray(sino))
-        return model.back_project(sino_plain)
+        sino = model.forward_project(self.recon)   # plain recon → plain sinogram
+        return model.back_project(sino)
 
     def test_round_trip_single_device_shape(self):
         out = self._round_trip(self.model_s)

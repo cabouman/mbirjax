@@ -206,6 +206,8 @@ class TomographyModel(ParameterHandler):
         """
         self._explicit_shard_devices = list(devices) if devices is not None else None
         self.set_devices_and_batch_sizes()
+        if devices is not None:
+            self.verify_valid_params()
 
     # ------------------------------------------------------------------
     # Geometry-specific sharding hooks — override in each subclass
@@ -240,6 +242,22 @@ class TomographyModel(ParameterHandler):
         which is correct for any 1-D mesh sharding.
         """
         return self._maybe_gather(sino)
+
+    def _prepare_voxels_for_projection(self, voxel_values):
+        """Prepare flat voxel_values before sparse_forward_project is called.
+
+        Called by forward_project immediately after get_voxels_at_indices.
+        The base-class implementation is a no-op; geometry subclasses may
+        override to shard, reformat, or otherwise prepare voxel_values so
+        that sparse_forward_project receives the expected input type.
+
+        Note: the output sharding of forward_project mirrors the sharding of
+        the recon input (plain in → plain out; sharded in → sharded out).
+        Subclass implementations that shard here should be paired with a
+        corresponding _gather_sinogram call at the end of forward_project,
+        which is handled automatically by TomographyModel.forward_project.
+        """
+        return voxel_values
 
     def _shard_recon(self, recon):
         """Return recon distributed in recon-native sharding for this geometry.
@@ -743,6 +761,30 @@ class TomographyModel(ParameterHandler):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
+    def _compute_projection_batch_params(self, pixel_indices, view_indices=None):
+        """Compute view and pixel batching parameters shared by sparse projection methods.
+
+        Args:
+            pixel_indices: Array of pixel indices for the current projection call.
+            view_indices: Optional array of view indices; defaults to all views.
+
+        Returns:
+            (view_indices, view_indices_batched, pixel_batch_boundaries, sinogram_shape)
+              view_indices              — jax array, full or subset
+              view_indices_batched      — list of jax arrays (one per view batch)
+              pixel_batch_boundaries    — 1-D numpy array of batch start/stop indices
+              sinogram_shape            — tuple from get_params('sinogram_shape')
+        """
+        sinogram_shape = self.get_params('sinogram_shape')
+        if view_indices is None:
+            view_indices = jnp.arange(sinogram_shape[0])
+        num_view_batches = jnp.ceil(sinogram_shape[0] / self.view_batch_size_for_vmap).astype(int)
+        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        num_pixels = len(pixel_indices)
+        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=self.transfer_pixel_batch_size)
+        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
+        return view_indices, view_indices_batched, pixel_batch_boundaries, sinogram_shape
+
     def forward_project(self, recon):
         """
         Perform a full forward projection at all voxels in the field-of-view.
@@ -755,14 +797,21 @@ class TomographyModel(ParameterHandler):
             recon (jnp array): The 3D reconstruction array.
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.
+            jnp array: The resulting 3D sinogram after projection.  When a mesh is
+            configured, the output sharding mirrors the input: a sharded recon
+            produces a sharded sinogram; a plain recon produces a plain sinogram
+            (multi-device is used internally but the result is gathered before return).
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        input_is_sharded = isinstance(getattr(recon, 'sharding', None),
+                                      jax.sharding.NamedSharding)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
+        voxel_values = self._prepare_voxels_for_projection(voxel_values)
         output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
-
+        if not input_is_sharded:
+            sinogram = self._gather_sinogram(sinogram)
         return sinogram
 
     def back_project(self, sinogram):
@@ -796,115 +845,27 @@ class TomographyModel(ParameterHandler):
         all voxels with those indices across all the slices.
 
         Args:
-            voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
+            voxel_values (jax array): 2D array of voxel values to project, shape (len(pixel_indices), num_recon_slices).
             pixel_indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (jax array): Array of indices of views to project
-            output_device (jax device): Device on which to put the output.  Ignored in multi-device mode.
+            view_indices (jax array): Optional array of view indices to project; defaults to all views.
+            output_device (jax device): Device on which to place the output.
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.  In multi-device mode this is a
-            NamedSharding array distributed across the configured devices along the slice axis;
-            in single-device mode it is a plain (uncommitted) array on output_device.
+            jnp array: Plain (uncommitted) sinogram array on output_device.
+
+        Note:
+            When self.mesh is not None, geometry subclasses (e.g. ParallelBeamModel) override
+            this method to add multi-device threading.  The contract for overrides is:
+            a NamedSharding voxel_values produces a NamedSharding sinogram; a plain array
+            produces a plain sinogram.
         """
-        # Shared setup: view batching and pixel batching boundaries used by both paths.
-        transfer_view_batch_size = self.view_batch_size_for_vmap
-        transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        sinogram_shape = self.get_params('sinogram_shape')
-        if view_indices is None:
-            view_indices = jnp.arange(sinogram_shape[0])
-        num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        view_indices, view_indices_batched, pixel_batch_boundaries, sinogram_shape = \
+            self._compute_projection_batch_params(pixel_indices, view_indices)
 
-        num_pixels = len(pixel_indices)
-        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
-        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
-
-        if self.mesh is not None:
-            # ── Multi-device threading path ──────────────────────────────────
-            # Split voxel_values along the slice axis (axis 1) into one chunk
-            # per device.  Each thread runs the full view/pixel batching pipeline
-            # on its local slice chunk — no inter-device communication needed
-            # because slices are independent in parallel-beam geometry.
-            #
-            # Two cases for voxel_values:
-            #   Already sharded (VCD hot path): use addressable_shards directly;
-            #     data is already resident on each device — zero PCIe.
-            #   Plain array (standalone forward_project call): materialise to
-            #     numpy once; per-thread slicing is a cheap numpy view; each
-            #     thread uploads only its local chunk.  On CPU virtual devices
-            #     np.asarray() is zero-copy.
-            #
-            # Note: this function adds no entry/exit sharding of its own when
-            # called from VCD; the caller is responsible for passing a sharded
-            # voxel_values and consuming the sharded sinogram result directly.
-            n_devices = self.mesh.devices.size
-            pmap_devices = list(self.mesh.devices.flat)
-            total_slices = voxel_values.shape[1]
-            local_slices = total_slices // n_devices
-
-            # pixel_indices is tiny and replicated on every device.
-            pixel_np = np.asarray(pixel_indices)
-
-            # Detect whether voxel_values is already sharded (VCD path).
-            shards = getattr(voxel_values, 'addressable_shards', None)
-            if shards is not None and len(shards) == n_devices:
-                # Already sharded: map device → resident shard data (zero PCIe).
-                dev_to_chunk = {s.device: s.data for s in shards}
-                voxel_np = None
-            else:
-                # Plain array: materialise to numpy once; slicing per thread is a view.
-                dev_to_chunk = None
-                voxel_np = np.asarray(voxel_values)
-
-            results = [None] * n_devices
-
-            def _project_slice_chunk(i):
-                dev = pmap_devices[i]
-                with self._device_context(dev):
-                    if dev_to_chunk is not None:
-                        voxel_chunk = dev_to_chunk[dev]          # already on device i
-                    else:
-                        s, e = i * local_slices, (i + 1) * local_slices
-                        voxel_chunk = jnp.array(voxel_np[:, s:e])  # CPU → device i
-                    pix = jnp.array(pixel_np)                    # tiny upload to device i
-                    sino_parts = []
-                    for vib in view_indices_batched:
-                        # Allocate zeros with local_slices rows (not global sinogram_shape[1]).
-                        sino_views = jnp.zeros((len(vib), local_slices, sinogram_shape[2]))
-                        for k in range(len(pixel_batch_boundaries) - 1):
-                            ps, pe = int(pixel_batch_boundaries[k]), int(pixel_batch_boundaries[k + 1])
-                            sino_views = sino_views.block_until_ready()
-                            sino_views = sino_views + self.projector_functions.sparse_forward_project(
-                                voxel_chunk[ps:pe], pix[ps:pe], view_indices=vib)
-                        sino_parts.append(sino_views)
-                    chunk_sino = jnp.concatenate(sino_parts)
-                    jax.block_until_ready(chunk_sino)
-                results[i] = chunk_sino
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=n_devices) as executor:
-                list(executor.map(_project_slice_chunk, range(n_devices)))
-
-            # Output view count may be < sinogram_shape[0] when called from VCD
-            # with a view subset; compute shape from the actual view_indices length.
-            n_views_out = int(view_indices.shape[0])
-            output_sino_shape = (n_views_out, sinogram_shape[1], sinogram_shape[2])
-            sino_sharding = jax.sharding.NamedSharding(
-                self.mesh,
-                jax.sharding.PartitionSpec(None, 'slices', None))
-            return jax.make_array_from_single_device_arrays(
-                shape=output_sino_shape,
-                sharding=sino_sharding,
-                arrays=results)
-
-        # ── Single-device path ───────────────────────────────────────────────
         sinogram = []
         for view_indices_batch in view_indices_batched:
-            # Use voxel_values.shape[1] (actual slice count) rather than sinogram_shape[1]
-            # (global det_rows) so that this function can also be called with a pre-sliced
-            # voxel_values chunk without needing to update projector_params.
-            local_det_rows = voxel_values.shape[1]
             sinogram_views = self._device_put(
-                jnp.zeros((len(view_indices_batch), local_det_rows, sinogram_shape[2])),
+                jnp.zeros((len(view_indices_batch), sinogram_shape[1], sinogram_shape[2])),
                 self.sinogram_device)
             for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
                 pixel_index_end = pixel_batch_boundaries[k + 1]

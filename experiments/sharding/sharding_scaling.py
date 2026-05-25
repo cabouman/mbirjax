@@ -120,9 +120,14 @@ def bench_fbp_filter(model, inp, warmup, trials):
     return _timed_run(fn, warmup, trials)
 
 
-def bench_forward_project(model, inp, warmup, trials):
-    """Return (times, result_jax) for forward_project."""
-    fn = lambda: model.forward_project(inp)
+def bench_sparse_forward_project(model, inp, warmup, trials):
+    """Return (times, result_jax) for sparse_forward_project.
+
+    inp is a tuple (sharded_flat_recon, pixel_indices) pre-computed outside
+    the timing loop so that the shard-scatter is not included in the timing.
+    """
+    sharded_flat_recon, pixel_indices = inp
+    fn = lambda: model.sparse_forward_project(sharded_flat_recon, pixel_indices)
     return _timed_run(fn, warmup, trials)
 
 
@@ -139,10 +144,11 @@ def bench_back_project(model, inp, warmup, trials):
 OPERATIONS = [
     # (name, bench_fn, input_key, shard_axis)
     # input_key matches a key in the inputs_np dict built in main().
-    # shard_axis: array axis to pre-shard across 'slices' mesh, or None to upload
-    #             as a plain array (sparse_forward_project handles slicing internally).
-    ('fbp_filter',      bench_fbp_filter,      'sinogram', 1),    # pre-shard det_rows (axis 1)
-    ('forward_project', bench_forward_project, 'recon',    None), # threading internal to sparse_forward_project
+    # shard_axis: axis of the primary data array to pre-shard across 'slices'.
+    #   'flat_recon' entries carry a (flat_recon_np, pixel_indices_np) tuple;
+    #   the primary array (index 0) is sharded along axis 1 (slices).
+    ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
+    ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
     # back_project deferred (poor CPU scaling; GPU scaling good but not yet integrated)
     # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
@@ -209,21 +215,27 @@ def main():
     # Build raw numpy inputs once.  Each n_dev iteration will pre-shard or
     # pre-upload the relevant array before timing so that the benchmarked
     # operations never perform a GPU→CPU→GPU scatter inside the timed loop.
-    # Passing a plain JAX array triggers _shard_* → np.asarray (GPU→CPU) +
-    # device_put (CPU→GPU scatter) on every call — O(array bytes) of PCIe
-    # traffic that swamps the compute speedup on GPU.
     rng = np.random.default_rng(42)
     sino_np = rng.standard_normal((n_views, n_rows, n_channels)).astype(np.float32)
 
-    # Build a 1-device model just to get the recon_shape (geometry-derived).
+    # Build a 1-device model just to get geometry-derived shapes.
     _ref_model = _make_model(n_views, n_rows, n_channels, n_devices=1)
     recon_shape = _ref_model.get_params('recon_shape')
     recon_np = rng.standard_normal(recon_shape).astype(np.float32)
 
-    # Map input_key → raw numpy array (sharded per n_dev inside the loop).
+    # Pre-compute flat recon for the sparse_forward_project benchmark.
+    # pixel_indices selects all in-ROR voxels; flat_recon_np is (num_pixels, n_slices).
+    _all_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=_ref_model.use_ror_mask)
+    _all_indices_np = np.asarray(_all_indices)
+    _flat_recon_np = np.asarray(
+        _ref_model.get_voxels_at_indices(jnp.array(recon_np), jnp.array(_all_indices_np)))
+
+    # Map input_key → raw data for pre-sharding.
+    # 'flat_recon' entries are (data_np, aux_np) tuples; data_np is sharded,
+    # aux_np (pixel_indices) is uploaded as a plain array.
     inputs_np = {
-        'sinogram': sino_np,
-        'recon':    recon_np,
+        'sinogram':   sino_np,
+        'flat_recon': (_flat_recon_np, _all_indices_np),
     }
 
     # ── Run each operation ────────────────────────────────────────────────────
@@ -238,32 +250,44 @@ def main():
         ref_np = None
 
         for n_dev in device_counts:
+            shape = (n_views, n_rows, n_channels)
+            if shape[shard_axis] % n_dev != 0:
+                # print(f"n_dev={n_dev} does not divide n_rows={n_rows}: skipping")
+                continue
             model = _make_model(n_views, n_rows, n_channels, n_devices=n_dev)
             if model is None:
                 print(f"  {n_dev:>5}  {'skip (not enough devices)':>40}")
                 continue
-            if n_rows % n_dev != 0:
-                # print(f"n_dev={n_dev} does not divide n_rows={n_rows}: skipping")
-                continue
 
-            # Pre-upload / pre-shard the input once outside timing so that the
-            # benchmarked operation never performs a scatter inside the timed loop.
+            # Pre-upload / pre-shard input(s) once outside timing.
             #
-            # shard_axis is not None  → pre-shard (e.g. fbp_filter expects a
-            #   sharded sinogram so it can scatter to per-device FFT with zero PCIe).
-            # shard_axis is None      → upload as a plain array (e.g. forward_project:
-            #   sparse_forward_project slices the recon internally per thread).
-            raw_np = inputs_np[input_key]
-            if model.mesh is not None and shard_axis is not None:
-                spec = [None] * raw_np.ndim
-                spec[shard_axis] = 'slices'
-                sharding = jax.sharding.NamedSharding(
-                    model.mesh,
-                    jax.sharding.PartitionSpec(*spec))
-                inp = jax.device_put(raw_np, sharding)
+            # Plain arrays: shard along shard_axis when mesh is configured.
+            # Tuple entries (data_np, aux_np): shard data_np along shard_axis,
+            #   upload aux_np (pixel_indices) as a plain array.  The bench
+            #   function receives the assembled tuple as `inp`.
+            raw = inputs_np[input_key]
+            if isinstance(raw, tuple):
+                data_np, aux_np = raw
+                if model.mesh is not None:
+                    spec = [None] * data_np.ndim
+                    spec[shard_axis] = 'slices'
+                    sharding = jax.sharding.NamedSharding(
+                        model.mesh, jax.sharding.PartitionSpec(*spec))
+                    data_jax = jax.device_put(data_np, sharding)
+                else:
+                    data_jax = jnp.array(data_np)
+                jax.block_until_ready(data_jax)
+                inp = (data_jax, jnp.array(aux_np))
             else:
-                inp = jnp.array(raw_np)
-            jax.block_until_ready(inp)
+                if model.mesh is not None and shard_axis is not None:
+                    spec = [None] * raw.ndim
+                    spec[shard_axis] = 'slices'
+                    sharding = jax.sharding.NamedSharding(
+                        model.mesh, jax.sharding.PartitionSpec(*spec))
+                    inp = jax.device_put(raw, sharding)
+                else:
+                    inp = jnp.array(raw)
+                jax.block_until_ready(inp)
 
             try:
                 times, result = bench_fn(model, inp, args.warmup, args.trials)
