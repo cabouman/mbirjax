@@ -325,6 +325,8 @@ def main():
                     ref_saved = ref_dict[op_name]
                     if not np.allclose(ref_np, ref_saved):
                         warnings.warn('Saved reference does not match new reference.  Max diff = {}'.format(np.amax(np.abs(ref_np - ref_saved))))
+                    diff_str = _correctness(ref_np, ref_saved)
+                    ref_np = ref_saved
             else:
                 speedup = baseline_mean / mean_ms
                 diff    = _correctness(ref_np, result)
