@@ -1396,7 +1396,7 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     return new_model
 
 
-def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
+def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect, voxel_slice_aspect):
     """
     Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
 
@@ -1407,11 +1407,13 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
         delta_det_channel (float): the spacing between detector channels (in ALU)
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels)
         translation_vectors (numpy array): A (num_views, 3) array of translations (x, y, z) in ALU
+        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel
+        voxel_slice_aspect (float): the aspect ratio between delta_voxel_slice and delta_voxel
 
     Returns:
         recon_shape (tuple): Shape of the reconstruction shape as (num_recon_rows, num_recon_cols, num_recon_slices)
         delta_voxel (float): the voxel pitch at isocenter (in ALU)
-        delta_recon_row (float): the row pitch of the reocnstruction (in ALU)
+        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel
     """
     # Get parameters
     num_views, num_det_rows, num_det_channels = sinogram_shape
@@ -1437,6 +1439,9 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     # Set delta_voxel
     delta_voxel = float(det_pixel_pitch_iso)
 
+    # Compute delta_voxel in slice dimension
+    delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
     ######### Compute the row pitch based on a heuristic #########
     # ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
     # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
@@ -1445,14 +1450,20 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
     delta_recon_row = float(delta_recon_row)
 
+    # Compute voxel row aspect
+    if voxel_row_aspect == 1.0:
+        voxel_row_aspect = delta_recon_row / delta_voxel
+
     # Compute cube = (width, depth, height) of the scanned region in ALU
     max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
     min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
     cube = max_translation - min_translation
 
-    # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
-    # Nominal voxels are the voxels that would result using the detector pitch at iso
-    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
+    # Compute recon_box = (num_recon_cols, num_recon_slices) of the reconstruction volume.
+    # The reconstruction box size is determined using:
+    #   delta_voxel for the column direction
+    #   delta_voxel_slice for the slice direction
+    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / jnp.array([delta_voxel, delta_voxel_slice]))
 
     # ************ Use a heuristic to determine a reasonable number of rows *************
     # Compute the number of unknown pixels per view
@@ -1474,7 +1485,7 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     num_recon_slices = int(num_recon_slices)
     recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
-    return recon_shape, delta_voxel, delta_recon_row
+    return recon_shape, delta_voxel, voxel_row_aspect
 
 
 def estimate_background_cluster_boundaries(sinogram):
