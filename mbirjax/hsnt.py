@@ -397,72 +397,57 @@ def _with_key_docstring(style):
     return decorator
 
 
-def import_hsnt_list_hdf5(filename):
-    """
-    Returns a list of all datasets in the HDF5 file.
-
-    Args:
-        filename: Path to the HDF5 file containing the datasets.
-
-    Returns:
-        A list of dataset names available in the HDF5 file.
-    """
-    with h5py.File(filename, "r") as f:
-        dataset_names = list(f.keys())
-
-    return dataset_names
-
-
 @_with_key_docstring("dict")
-def import_hsnt_data_hdf5(filename, dataset_name):
+def import_hsnt_data_hdf5(filename):
     """
     Import a hyperspectral dataset and metadata from an HDF5 file.
 
     Args:
         filename: Path to the HDF5 file.
-        dataset_name: Character string with the name of the dataset.
 
     Returns:
         A list containing hyperspectral data and parameters in the form [data, metadata].
-            - data: ndarray with spectral last axis (hyperspectral form) or a list (dehydrated form).
+            - data: ndarray with spectral last axis (hyperspectral form), a list (dehydrated form), or None.
             - metadata: A dictionary with the keys shown below.
 
     Keys:
     {_KEY_DOCS}
-
-    Note:
-        Multiple datasets can coexist in the same HDF5 file, each stored under a unique dataset name.
     """
-    with h5py.File(filename, "r") as f:
-        if dataset_name not in f:
-            raise ValueError(f"Dataset '{dataset_name}' not found in file '{filename}'.")
-        group = f[dataset_name]
+    data = None
+    metadata = {key: None for key in ALLOWED_KEYS}
 
-        # Check if data is dehydrated/compressed
-        dehydrated = all(k in group for k in ["subspace_data", "subspace_basis", "dataset_type"])
+    try:
+        with h5py.File(filename, "r") as f:
+            group = f
 
-        # Importing data
-        if dehydrated:
-            data = [group["subspace_data"][()],
-                    group["subspace_basis"][()],
-                    group["dataset_type"][()].decode()]
-        else:
-            data = group["data"][()]
+            # Check if data is dehydrated/compressed
+            dehydrated = all(k in group for k in ["subspace_data", "subspace_basis", "dataset_type"])
 
-        # Importing metadata
-        metadata = {"dataset_name": dataset_name}
-        for key in ALLOWED_KEYS:
-            if key == "dataset_name":
-                continue
-            if key in group:
-                value = group[key][()]
-                if isinstance(value, (bytes, np.bytes_)):
-                    value = value.decode()
-                elif isinstance(value, np.ndarray) and value.shape == ():
-                    value = value.item()
-                metadata[key] = value
+            # Importing data
+            if dehydrated:
+                dataset_type = group["dataset_type"][()]
+                if isinstance(dataset_type, (bytes, np.bytes_)):
+                    dataset_type = dataset_type.decode()
+                data = [group["subspace_data"][()],
+                        group["subspace_basis"][()],
+                        dataset_type]
+            elif "data" in group:
+                data = group["data"][()]
             else:
-                metadata[key] = None
+                warnings.warn(f"No HSNT data found in HDF5 file '{filename}'. Returning data=None.")
+
+            # Importing metadata
+            for key in ALLOWED_KEYS:
+                if key in group:
+                    value = group[key][()]
+                    if isinstance(value, (bytes, np.bytes_)):
+                        value = value.decode()
+                    elif isinstance(value, np.ndarray) and value.shape == ():
+                        value = value.item()
+                    metadata[key] = value
+    except Exception as error:
+        warnings.warn(f"Could not import HSNT data from HDF5 file '{filename}': {error}. Returning data=None.")
+        data = None
 
     # Validate categorical keys
     for key, value in metadata.items():
@@ -502,8 +487,6 @@ def create_hsnt_metadata(**kwargs):
             warnings.warn(f"Ignoring invalid key '{key}' in arguments.")
 
     metadata = {k: kwargs.get(k, None) for k in ALLOWED_KEYS}
-    if not metadata.get("dataset_name"):
-        raise ValueError("'dataset_name' is required.")
 
     # Validation
     for key, value in metadata.items():
@@ -513,7 +496,7 @@ def create_hsnt_metadata(**kwargs):
 
 
 @_with_key_docstring("dict")
-def export_hsnt_data_hdf5(filename, data, metadata):
+def export_hsnt_data_hdf5(filename, data, metadata=None):
     """
     Export a hyperspectral dataset and metadata to an HDF5 file.
 
@@ -526,15 +509,10 @@ def export_hsnt_data_hdf5(filename, data, metadata):
     {_KEY_DOCS}
 
     Returns:
-        None. Creates or appends to an HDF5 file with the corresponding structure.
-
-    Note:
-        - Multiple datasets can coexist in the same HDF5 file, each is stored under a unique dataset name.
-        - If a dataset with the same name already exists in the file, it will be overwritten with a warning.
+        None. Creates an HDF5 file with the corresponding structure.
     """
-    dataset_name = metadata.get("dataset_name")
-    if not dataset_name:
-        raise ValueError("'dataset_name' is required in metadata.")
+    if metadata is None:
+        metadata = {}
 
     # Check if data is dehydrated/compressed
     dehydrated = (isinstance(data, list)
@@ -546,11 +524,8 @@ def export_hsnt_data_hdf5(filename, data, metadata):
     for key, value in metadata.items():
         _validate_key(key, value)
 
-    with h5py.File(filename, "a") as f:
-        if dataset_name in f:
-            warnings.warn(f"Overwriting existing dataset '{dataset_name}' in the HDF5 file.")
-            del f[dataset_name]
-        group = f.create_group(dataset_name)
+    with h5py.File(filename, "w") as f:
+        group = f
 
         # Exporting data
         if dehydrated:
@@ -565,7 +540,7 @@ def export_hsnt_data_hdf5(filename, data, metadata):
             if key not in ALLOWED_KEYS:
                 warnings.warn(f"Ignoring invalid key '{key}' in metadata.")
                 continue
-            if key == "dataset_name" or value is None or (key == "dataset_type" and dehydrated):
+            if value is None or (key == "dataset_type" and dehydrated):
                 continue
             if isinstance(value, str):
                 group.create_dataset(key, data=np.bytes_(value))
