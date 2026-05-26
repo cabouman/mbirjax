@@ -10,9 +10,9 @@ import os
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-
-from mbirjax.hsnt import hyper_denoise, generate_hyper_data
 from plot_utils import plot_images, plot_spectra
+
+import mbirjax as mj
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
     material_basis = np.load(filename)
 
     # Generate simulated noisy hyperspectral data and ground truth
-    [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(material_basis,
+    [noisy_hyper_projection, _, gt_hyper_projection] = mj.generate_hyper_data(material_basis,
                                                                            detector_rows=detector_rows,
                                                                            detector_columns=detector_columns,
                                                                            dosage_rate=dosage_rate,
@@ -54,7 +54,7 @@ def main():
                                                                            verbose=verbose)
 
     # Perform hyperspectral denoising (dehydrate + rehydrate)
-    denoised_hyper_projection = hyper_denoise(noisy_hyper_projection,
+    denoised_hyper_projection = mj.hyper_denoise(noisy_hyper_projection,
                                               dataset_type=dataset_type,
                                               num_materials=num_materials,
                                               verbose=verbose)

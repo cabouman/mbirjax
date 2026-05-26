@@ -11,9 +11,9 @@ import os
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-
-from mbirjax.hsnt import import_hsnt_data_hdf5, rehydrate
 from plot_utils import plot_images, plot_spectra
+
+import mbirjax as mj
 
 
 def main():
@@ -34,10 +34,10 @@ def main():
 
     # Import dehydrated reconstructions from HDF5 file
     filename = os.path.join(input_path, dataset_name + ".h5")
-    hsnt_dehydrated_recons, metadata_dehydrated = import_hsnt_data_hdf5(filename)
+    hsnt_dehydrated_recons, metadata_dehydrated = mj.import_hsnt_data_hdf5(filename)
 
     # Perform rehydration
-    hsnt_recons = rehydrate(hsnt_dehydrated_recons)
+    hsnt_recons = mj.rehydrate(hsnt_dehydrated_recons)
 
     # Plot hyperspectral projections and spectra
     plot_images(images=[hsnt_recons[:, :, display_slice_idx, display_wave_idx]],

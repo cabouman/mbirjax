@@ -1,7 +1,9 @@
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+
 import mbirjax as mj
+import mbirjax.preprocess as mjp
 
 
 if __name__ == "__main__":
@@ -9,7 +11,7 @@ if __name__ == "__main__":
     # Get the data
     data_directory = '/depot/bouman/data/ORNL/hsnt/dinosaur'
     angles = np.load(os.path.join(data_directory, 'angles_radian.npy'))
-    sinogram = mj.preprocess.read_tif_stack_dir(data_directory + '/attenuation_data')
+    sinogram = mjp.read_tif_stack_dir(data_directory + '/attenuation_data')
 
     start_slice = 400
     num_slices = 20

@@ -10,10 +10,9 @@ import os
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-
-from mbirjax.hsnt import hyper_denoise, dehydrate, rehydrate, import_hsnt_data_hdf5, export_hsnt_data_hdf5
 from plot_utils import plot_images, plot_spectra
 
+import mbirjax as mj
 
 def main():
     start_time = time.time()
@@ -42,7 +41,7 @@ def main():
 
     # Import real hyperspectral data
     filename = os.path.join(input_path, dataset_name+'_dataset.h5')
-    hsnt_data, metadata = import_hsnt_data_hdf5(filename)
+    hsnt_data, metadata = mj.import_hsnt_data_hdf5(filename)
     dataset_type = metadata.get('dataset_type', 'attenuation')
     wavelengths = metadata.get('wavelengths', None)
 
@@ -52,20 +51,20 @@ def main():
     if test_denoise:
         if verbose >= 1:
             print("Running hyperspectral denoising (i.e., dehydrate + rehydrate)")
-        hsnt_denoised = hyper_denoise(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
+        hsnt_denoised = mj.hyper_denoise(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
     else:
         if verbose >= 1:
             print("Running hyperspectral dehydrate followed by rehydrate (i.e., denoising)")
-        hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
-        hsnt_denoised = rehydrate(hsnt_dehydrated)
+        hsnt_dehydrated = mj.dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
+        hsnt_denoised = mj.rehydrate(hsnt_dehydrated)
 
         # Write out dehydrated data
         filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
-        export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata)
+        mj.export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata)
 
     # Write out denoised/rehydrated data
     filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
-    export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata)
+    mj.export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata)
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
