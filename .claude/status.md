@@ -1,5 +1,89 @@
 # Multi-GPU Sharding: Status and Implementation Plan
-*Last updated: 2026-05-23 (H100 analysis added to comparison file)*
+*Last updated: 2026-05-25 (brief status update at beginning of file)*
+
+---
+
+## Table of Contents
+
+- [Current Status (2026-05-25)](#2026-05-25-status)
+- [Active Investigations](#active-investigations)
+- [Overview](#overview)
+- [Architecture: Why Threading over shard_map](#architecture-why-threading-over-shard_map)
+- [Critical JAX Bug](#critical-jax-bug-device_put-corrupts-non-default-gpus)
+- [Forward Plan](#forward-plan)
+  - [Step 0 ✓ — Infrastructure fixes](#step-0--infrastructure-fixes-prerequisites-do-once-before-steps-16--complete)
+  - [Step 1 ✓ — fbp_filter](#step-1--fbp_filter-path-e--path-g-zero-pcie--complete)
+  - [Step 2 ⚠ — sparse_forward_project](#step-2--forward_project--sparse_forward_project-path-g-threading-in-progress)
+  - [Step 3 ⚠ — sparse_back_project](#step-3--back_project--sparse_back_project-path-g-threading-in-progress)
+  - [Step 4 — direct_recon](#step-4--direct_recon-fbp-path-end-to-end-sharded)
+  - [Step 5 — qggmrf halo exchange](#step-5--qggmrf-wire-halo-exchange-into-vcd-loop)
+  - [Step 6 — VCD loop sharding](#step-6--vcd-loop-wire-entryexit-sharding)
+- [Additional Work](#additional-work-not-blocking-but-planned)
+- [Completed Work (historical)](#completed-work)
+
+---
+
+## 2026-05-25 status
+
+* **Steps 0 and 1** (infrastructure fixes, FBP filter sharding) are complete.
+* **Steps 2 and 3** (sparse forward/back projection sharding) are partially implemented
+  but blocked on correctness and performance investigations — see [Active Investigations](#active-investigations).
+* **qggmrf** is sharded but needs to be tested in the full VCD context (Step 5).
+* **fbp_recon** (Step 4) needs to be tested once back projection is verified.
+* **vcd_subset_updater** (Step 6) needs to be made sharding-agnostic and tested thoroughly.
+
+---
+
+## Active Investigations
+
+### 1. Forward projection correctness vs. prerelease baseline
+
+**Symptom:** When the prerelease branch output of `sparse_forward_project` is saved and
+compared to the current branch on the same input, differences appear at specific
+(view, channel) pairs. The pattern is a 3-pixel +x/0/−x horizontal structure, magnitude
+~0–1, in values of ~−20 to 20.
+
+**What has been tested (not yet conclusive):** A single-view kernel test
+(`scatter_compare.py`, Phase 1, view 45, all pixels) shows bit-identical results between
+the prerelease scatter and the `_B`-batched scatter for all `_B` values tested. This does
+**not** rule out a discrepancy — the error appears at only a few specific (view, channel)
+pairs that may not fall in view 45. All 180 views need to be tested.
+
+**Open questions:**
+- Is the source the `_B` lax.map batching in `forward_project_pixel_batch_to_one_view`,
+  or the difference between the sharded and unsharded `sparse_forward_project` code paths
+  (or both)?
+- Does the discrepancy persist when comparing unsharded n_dev=1 current code vs.
+  prerelease, or only with sharding enabled?
+
+**Next step:** Extend the comparison to all views; implement a full-pipeline test using a
+subclass-based approach to isolate the two code paths cleanly.
+
+---
+
+### 2. Forward projection performance (`_B` lax.map experiment)
+
+**Experiment:** Commit `0f85fa1` on HEAD introduces a slice-batch `lax.map` in
+`forward_project_pixel_batch_to_one_view` with a tunable constant `_B`. At `_B=16`,
+single-device CPU throughput improves ~27% vs. the prerelease. The code is in
+experimental state.
+
+**Status:** Blocked by Investigation 1 — correctness must be established before choosing
+a final `_B` value or committing the approach. Whether a similar cache-aware batching
+could improve back projection is also an open question.
+
+---
+
+### 3. Back projection CPU scaling
+
+**Symptom:** `sparse_back_project` scales well on GPU (tested to 2 GPUs) but scales
+poorly with additional CPU cores.
+
+**Partially tried:** Commit `0f85fa1` also adds a 1 MB view-batch-size cap in the back
+projection threading path to improve CPU cache efficiency. Effect not yet quantified.
+
+**Open question:** Is the CPU bottleneck threading overhead, memory bandwidth, or
+something else? Performance investigation ongoing.
 
 ---
 
@@ -64,83 +148,6 @@ Cone beam sharding will require different axes (or a different sharding strategy
 since cone beam projections are not embarrassingly parallel by slice). The design uses
 geometry-specific hook methods overridden per subclass, so the base class VCD loop is
 geometry-agnostic. See Step 0b.
-
----
-
-## Completed work
-
-### Phase 1 — Projector allocation fixes (`parallel_beam.py`) ✓
-
-Two 1-line fixes so inner JIT'd projectors derive allocation shapes from input array
-dimensions rather than from `projector_params`:
-
-```python
-# _sparse_forward_project_view:
-sinogram_view = jnp.zeros((voxel_values.shape[1], num_det_channels))
-
-# _back_project_one_view_to_pixel_batch:
-det_voxel_cylinder = jnp.zeros((num_pixels, sinogram_view.shape[0]))
-```
-
-Zero behavioral change on single-device. Verified against baseline.
-
-**Still needed (Step 2 below):** The outer Python-loop projectors still have hardcoded
-shape dependencies: `sparse_forward_project` uses `sinogram_shape[1:]` and
-`sparse_back_project` uses `recon_shape[2]`. These must be fixed before sharded
-projectors will work, and the docstrings must note that sharded callers pass local shapes.
-
-### Phase 2 — qggmrf halo-aware prior (`qggmrf.py`) ✓
-
-`qggmrf_grad_and_hessian_per_cylinder` accepts explicit `left_val` / `right_val` scalars
-(one per cylinder, vmapped). When halos are `None`, mirrors the boundary slice —
-identical to prior behavior (reflected BC). When halos are provided, uses actual
-neighboring-shard slice values.
-
-```python
-def qggmrf_gradient_and_hessian_at_indices(..., left_halo=None, right_halo=None):
-    lh_vals = (left_halo[pixel_indices]  if left_halo  is not None
-               else flat_recon[pixel_indices, 0])
-    rh_vals = (right_halo[pixel_indices] if right_halo is not None
-               else flat_recon[pixel_indices, -1])
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, 0, 0))
-    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params, lh_vals, rh_vals)
-```
-
-Verified: halo=None vs baseline diff=0.0; explicit mirror halos diff=0.0; interior shard
-self-consistency diff=0.0.
-
-### Phase 4 — Device management helpers (`tomography_model.py`) ✓
-
-All raw `jax.device_put` / `jax.default_device` / `jnp.zeros(..., device=...)` calls
-replaced with helpers that become no-ops when `device is None`:
-
-```python
-def _device_put(self, x, device):
-    return x if device is None else jax.device_put(x, device)
-
-@contextlib.contextmanager
-def _device_context(self, device):
-    if device is None: yield
-    else:
-        with jax.default_device(device): yield
-```
-
-Key: `sinogram_device != main_device` evaluates `False` when both are `None`, so the
-CPU-to-GPU transfer branch in `vcd_subset_updater` is never taken in sharded mode.
-
-### Phase 1.5 (unplanned) — FBP sharding infrastructure ✓ (partially — see Step 1)
-
-Added `configure_sharding(devices)`, `_maybe_shard(x, axis)`, `_maybe_gather(x)` to
-`tomography_model.py`. Added multi-device path to `fbp_filter` in `parallel_beam.py`
-using Python threading.
-
-**Current state of fbp_filter multi-device path:** Path E (numpy roundtrips at both ends:
-`np.asarray(sinogram)` to scatter, `np.asarray(out)` per device then `jnp.array(concat)`
-to gather). This is ~4× the sinogram in PCIe traffic and does not meet the zero-PCIe
-target. **Step 1 upgrades this to Path G.**
-
-**`_maybe_gather` bug:** Was `jax.jit(lambda a: a)(x)` — does NOT gather a sharded array.
-**Fixed in Step 0a** to `jnp.array(np.asarray(x))`.
 
 ---
 
@@ -443,7 +450,7 @@ path; remove the separate `filtered_sinogram *= jnp.pi / num_views` line from th
 
 ---
 
-### Step 2 — `forward_project` / `sparse_forward_project`: Path G threading
+### Step 2 — `forward_project` / `sparse_forward_project`: Path G threading ⚠ IN PROGRESS
 
 **File:** `parallel_beam.py` (and `tomography_model.py` for outer projectors)
 
@@ -484,7 +491,7 @@ path; remove the separate `filtered_sinogram *= jnp.pi / num_views` line from th
 
 ---
 
-### Step 3 — `back_project` / `sparse_back_project`: Path G threading
+### Step 3 — `back_project` / `sparse_back_project`: Path G threading ⚠ IN PROGRESS
 
 **File:** `parallel_beam.py` (and `tomography_model.py` for outer projectors)
 
@@ -678,3 +685,85 @@ deferred to a separate planning session.
   and must switch to an appropriate single-device mode automatically.
 - All operations in Steps 1–6 use `jax.default_device` inside each thread, which is
   thread-local in JAX. No global device state is modified.
+
+---
+
+## Completed work
+
+> **Note:** This section uses an earlier numbering scheme (Phases 1, 2, 4, 1.5) that
+> predates the current Step 0–6 plan. The work described here corresponds roughly to
+> Steps 0 and 1 and their prerequisites.
+
+### Phase 1 — Projector allocation fixes (`parallel_beam.py`) ✓
+
+Two 1-line fixes so inner JIT'd projectors derive allocation shapes from input array
+dimensions rather than from `projector_params`:
+
+```python
+# _sparse_forward_project_view:
+sinogram_view = jnp.zeros((voxel_values.shape[1], num_det_channels))
+
+# _back_project_one_view_to_pixel_batch:
+det_voxel_cylinder = jnp.zeros((num_pixels, sinogram_view.shape[0]))
+```
+
+Zero behavioral change on single-device. Verified against baseline.
+
+**Still needed (Step 2 below):** The outer Python-loop projectors still have hardcoded
+shape dependencies: `sparse_forward_project` uses `sinogram_shape[1:]` and
+`sparse_back_project` uses `recon_shape[2]`. These must be fixed before sharded
+projectors will work, and the docstrings must note that sharded callers pass local shapes.
+
+### Phase 2 — qggmrf halo-aware prior (`qggmrf.py`) ✓
+
+`qggmrf_grad_and_hessian_per_cylinder` accepts explicit `left_val` / `right_val` scalars
+(one per cylinder, vmapped). When halos are `None`, mirrors the boundary slice —
+identical to prior behavior (reflected BC). When halos are provided, uses actual
+neighboring-shard slice values.
+
+```python
+def qggmrf_gradient_and_hessian_at_indices(..., left_halo=None, right_halo=None):
+    lh_vals = (left_halo[pixel_indices]  if left_halo  is not None
+               else flat_recon[pixel_indices, 0])
+    rh_vals = (right_halo[pixel_indices] if right_halo is not None
+               else flat_recon[pixel_indices, -1])
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, 0, 0))
+    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params, lh_vals, rh_vals)
+```
+
+Verified: halo=None vs baseline diff=0.0; explicit mirror halos diff=0.0; interior shard
+self-consistency diff=0.0.
+
+### Phase 4 — Device management helpers (`tomography_model.py`) ✓
+
+All raw `jax.device_put` / `jax.default_device` / `jnp.zeros(..., device=...)` calls
+replaced with helpers that become no-ops when `device is None`:
+
+```python
+def _device_put(self, x, device):
+    return x if device is None else jax.device_put(x, device)
+
+@contextlib.contextmanager
+def _device_context(self, device):
+    if device is None: yield
+    else:
+        with jax.default_device(device): yield
+```
+
+Key: `sinogram_device != main_device` evaluates `False` when both are `None`, so the
+CPU-to-GPU transfer branch in `vcd_subset_updater` is never taken in sharded mode.
+
+### Phase 1.5 (unplanned) — FBP sharding infrastructure ✓ (partially — see Step 1)
+
+Added `configure_sharding(devices)`, `_maybe_shard(x, axis)`, `_maybe_gather(x)` to
+`tomography_model.py`. Added multi-device path to `fbp_filter` in `parallel_beam.py`
+using Python threading.
+
+**Current state of fbp_filter multi-device path:** Path E (numpy roundtrips at both ends:
+`np.asarray(sinogram)` to scatter, `np.asarray(out)` per device then `jnp.array(concat)`
+to gather). This is ~4× the sinogram in PCIe traffic and does not meet the zero-PCIe
+target. **Step 1 upgrades this to Path G.**
+
+**`_maybe_gather` bug:** Was `jax.jit(lambda a: a)(x)` — does NOT gather a sharded array.
+**Fixed in Step 0a** to `jnp.array(np.asarray(x))`.
+
