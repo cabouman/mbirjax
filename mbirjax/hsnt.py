@@ -407,38 +407,47 @@ def import_hsnt_data_hdf5(filename):
 
     Returns:
         A list containing hyperspectral data and parameters in the form [data, metadata].
-            - data: ndarray with spectral last axis (hyperspectral form) or a list (dehydrated form).
+            - data: ndarray with spectral last axis (hyperspectral form), a list (dehydrated form), or None.
             - metadata: A dictionary with the keys shown below.
 
     Keys:
     {_KEY_DOCS}
     """
-    with h5py.File(filename, "r") as f:
-        group = f
+    data = None
+    metadata = {key: None for key in ALLOWED_KEYS}
 
-        # Check if data is dehydrated/compressed
-        dehydrated = all(k in group for k in ["subspace_data", "subspace_basis", "dataset_type"])
+    try:
+        with h5py.File(filename, "r") as f:
+            group = f
 
-        # Importing data
-        if dehydrated:
-            data = [group["subspace_data"][()],
-                    group["subspace_basis"][()],
-                    group["dataset_type"][()].decode()]
-        else:
-            data = group["data"][()]
+            # Check if data is dehydrated/compressed
+            dehydrated = all(k in group for k in ["subspace_data", "subspace_basis", "dataset_type"])
 
-        # Importing metadata
-        metadata = {}
-        for key in ALLOWED_KEYS:
-            if key in group:
-                value = group[key][()]
-                if isinstance(value, (bytes, np.bytes_)):
-                    value = value.decode()
-                elif isinstance(value, np.ndarray) and value.shape == ():
-                    value = value.item()
-                metadata[key] = value
+            # Importing data
+            if dehydrated:
+                dataset_type = group["dataset_type"][()]
+                if isinstance(dataset_type, (bytes, np.bytes_)):
+                    dataset_type = dataset_type.decode()
+                data = [group["subspace_data"][()],
+                        group["subspace_basis"][()],
+                        dataset_type]
+            elif "data" in group:
+                data = group["data"][()]
             else:
-                metadata[key] = None
+                warnings.warn(f"No HSNT data found in HDF5 file '{filename}'. Returning data=None.")
+
+            # Importing metadata
+            for key in ALLOWED_KEYS:
+                if key in group:
+                    value = group[key][()]
+                    if isinstance(value, (bytes, np.bytes_)):
+                        value = value.decode()
+                    elif isinstance(value, np.ndarray) and value.shape == ():
+                        value = value.item()
+                    metadata[key] = value
+    except Exception as error:
+        warnings.warn(f"Could not import HSNT data from HDF5 file '{filename}': {error}. Returning data=None.")
+        data = None
 
     # Validate categorical keys
     for key, value in metadata.items():
