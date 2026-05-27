@@ -1396,9 +1396,9 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     return new_model
 
 
-def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect, voxel_slice_aspect):
+def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):
     """
-    Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
+    Calculate the translation geometry parameters: recon_shape, delta_voxel, voxel_row_aspect
 
     Args:
         source_det_dist (float): distance from the X-ray source to the detector (in ALU)
@@ -1407,8 +1407,8 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
         delta_det_channel (float): the spacing between detector channels (in ALU)
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels)
         translation_vectors (numpy array): A (num_views, 3) array of translations (x, y, z) in ALU
-        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel
-        voxel_slice_aspect (float): the aspect ratio between delta_voxel_slice and delta_voxel
+        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel. Defaults to 1.0
+        voxel_slice_aspect (float): the aspect ratio between delta_voxel_slice and delta_voxel. Defaults to 1.0
 
     Returns:
         recon_shape (tuple): Shape of the reconstruction shape as (num_recon_rows, num_recon_cols, num_recon_slices)
@@ -1450,9 +1450,17 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
     delta_recon_row = float(delta_recon_row)
 
-    # Compute voxel row aspect
+    ##### Compute voxel row aspect
+    # In translation geometry, anisotropic row spacing is usually needed for good reconstruction results.
+    #
+    # If voxel_row_aspect == 1.0 (default value), assume the user did not explicitly specify
+    # a row aspect ratio, and automatically compute it using the current TCT row-pitch heuristic.
+    #
+    # Otherwise, use the user-defined voxel_row_aspect to determine delta_recon_row.
     if voxel_row_aspect == 1.0:
         voxel_row_aspect = delta_recon_row / delta_voxel
+    else:
+        delta_recon_row = voxel_row_aspect * delta_voxel
 
     # Compute cube = (width, depth, height) of the scanned region in ALU
     max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
