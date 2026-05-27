@@ -135,7 +135,7 @@ print()
 N_VIEWS = 180;  N_ROWS = 128;  N_CHANNELS = 256
 angles_np  = np.linspace(0, np.pi, N_VIEWS, endpoint=False)
 angles_jax = jnp.array(angles_np.astype(np.float32))
-angles_jax = np.array((angles_jax[12], angles_jax[134]))
+# angles_jax = np.array((angles_jax[12], angles_jax[134]))
 
 model = mbirjax.ParallelBeamModel((N_VIEWS, N_ROWS, N_CHANNELS), angles_np)
 model.set_params(no_compile=True, no_warning=True)
@@ -162,11 +162,22 @@ print(f"  DV={DV}, DDC={DDC}, OFF={OFF}")
 print(f"  _B={_B}, _NB={_NB}, ND={ND}")
 print()
 
+phantom = np.zeros(recon_shape)
+phantom = phantom.reshape((-1, recon_shape[2]))
+phantom[all_indices_np, :] = flat_recon_np
+phantom = phantom.reshape(recon_shape)
+phantom, sinogram, params = mbirjax.generate_demo_data(object_type='shepp-logan', model_type='parallel',
+                                                  num_views=N_VIEWS, num_det_rows=N_ROWS,
+                                                  num_det_channels=N_CHANNELS)
+flat_recon_np = phantom.reshape((-1, N_ROWS))
+
 # ── Select pixel batch 8 (contains views 12/134 with the bug) ─────────────────
 BAD = 8
-vb_all = jnp.array(flat_recon_np [BAD*PBSZ:(BAD+1)*PBSZ])   # (NP, N_ROWS) voxel values
 pb     = jnp.array(all_indices_np[BAD*PBSZ:(BAD+1)*PBSZ])   # (NP,)        pixel indices
+vb_all = flat_recon_np[pb]  # jnp.array(flat_recon_np [BAD*PBSZ:(BAD+1)*PBSZ])   # (NP, N_ROWS) voxel values
 NP     = vb_all.shape[0]
+
+
 
 # Convert flat pixel indices to (y, x) physical coordinates
 _rs = pp.recon_shape
@@ -270,6 +281,8 @@ def forward_fixed(angle):
 
 
 # ── Run all three over all views ──────────────────────────────────────────────
+ref_orig = model.sparse_forward_project(vb_all, pb)
+
 ref_out   = jax.jit(jax.vmap(forward_ref)  )(angles_jax)
 buggy_out = jax.jit(jax.vmap(forward_buggy))(angles_jax)
 fixed_out = jax.jit(jax.vmap(forward_fixed))(angles_jax)
@@ -293,7 +306,7 @@ print(f"  fixed vs reference : max|diff| = {fix_max:.4e}  "
       f"{'✓ FIX CONFIRMED' if fix_max < 1e-5 else '✗'}")
 
 # Show the antisymmetric error pattern at the worst view
-for worst_view in [0, 1]:
+for worst_view in [12, 134]:
     # worst_view = int(np.argmax(np.asarray(diff_br).max(axis=(1, 2))))
     signed_err = (buggy_out[worst_view] - ref_out[worst_view]).sum(axis=0)   # sum over slices
     err_ch     = int(jnp.argmax(jnp.abs(signed_err)))
@@ -500,5 +513,6 @@ print()
 print(f"  JAX  :  {jax.__version__}")
 print()
 
-mbirjax.slice_viewer(ref_out, 10 * (buggy_out-ref_out), slice_axis=0,
-                     title='Reference projection (left) and 10*(ref - buggy) (right)')
+mbirjax.slice_viewer(ref_orig, ref_out, 10 * (buggy_out-ref_out), slice_axis=0,
+                     title='Forward projection. Left: current implementation, Mid: ref, Right: 10*(ref - buggy) (right)\nLook at views 12 and 134',
+                     vmin=-5, vmax=10)
