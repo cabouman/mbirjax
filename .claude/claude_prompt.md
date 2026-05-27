@@ -40,3 +40,5 @@ When implementing:
 * When possible, suggest ways to test or validate correctness and performance.
 
 For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, and computational efficiency over stylistic changes.
+
+Remember, we're in the curiosity business, so a little bit of exploration and a lot of understanding are much better than a quick fix.

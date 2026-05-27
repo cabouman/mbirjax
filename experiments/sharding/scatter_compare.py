@@ -374,7 +374,7 @@ if diff_ab.max() > 0:
 # unsharded code path differs from the prerelease — independent of sharding.
 print()
 _script_dir   = os.path.dirname(os.path.abspath(__file__))
-BASELINE_PATH = os.path.join(_script_dir, '..', 'sandboxes', 'sharding_baseline_ref.npz')
+BASELINE_PATH = os.path.join(_script_dir, '..', 'sharding', 'sharding_baseline_ref.npz')
 
 if not os.path.exists(BASELINE_PATH):
     print(f"Baseline not found at:\n  {BASELINE_PATH}")

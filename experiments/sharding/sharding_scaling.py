@@ -153,8 +153,8 @@ OPERATIONS = [
     # shard_axis: axis of the primary data array to pre-shard across 'slices'.
     #   tuple entries carry a (primary_np, aux_np) pair; primary is sharded
     #   along shard_axis, aux (pixel_indices) is uploaded as a plain array.
-    # ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
-    ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
+    ('fbp_filter',             bench_fbp_filter,             'sinogram',   1),
+    # ('sparse_forward_project', bench_sparse_forward_project, 'flat_recon', 1),
     # ('sparse_back_project',    bench_sparse_back_project,    'sino_bp',    1),
     # ('fbp_recon', bench_fbp_recon, 'sinogram', 1),  # Step 4
 ]
