@@ -755,8 +755,13 @@ class TranslationModel(mj.TomographyModel):
         # Get parameters
         num_views, num_rows, num_channels = sinogram.shape
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+        voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
 
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
@@ -786,7 +791,7 @@ class TranslationModel(mj.TomographyModel):
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         recon_filter = mj.tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        alpha = delta_det_row / (voxel_volume * M_0)
         recon_filter = alpha * recon_filter
 
         # Define convolution for a single row (across its channels)
