@@ -1,0 +1,54 @@
+[workspace]
+name = "mbirjax"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64"]
+
+[dependencies]
+python = ">=3.10,<3.13"
+pip = "*"
+pytest = "*"
+matplotlib = "*"
+numpy = "*"
+scipy = "*"
+setuptools = "*"
+jax = "*"
+jaxlib = "*"
+"ruamel.yaml" = "*"
+psutil = "*"
+tifffile = "*"
+h5py = "*"
+tqdm = "*"
+gdown = "*"
+pywavelets = "*"
+olefile = "*"
+scikit-learn = "*"
+osqp = "*"
+opencv = "*"
+sphinx = "*"
+sphinxcontrib-bibtex = "*"
+sphinx-book-theme = ">=1.0.1"
+sphinx-design = "*"
+sphinx-copybutton = "*"
+
+[pypi-dependencies]
+dm-pix = "*"
+easygui = "*"
+mbirjax = { path = ".", editable = true }
+
+[feature.cuda]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12" }
+
+[feature.cuda.dependencies]
+jaxlib = { version = "*", build = "cuda*" }
+
+[environments]
+cuda = ["cuda"]
+
+[tasks]
+smoke = "python -c \"import mbirjax; print(mbirjax.__file__)\""
+smoke-jax = "python -c \"import jax; print(jax.default_backend()); print(jax.devices())\""
+test = "pytest"
+test-fast = "pytest -q -p no:cacheprovider"
+test-data = "pytest -m data_dependent"
+docs = "sphinx-build -b html docs/source docs/build/html"
