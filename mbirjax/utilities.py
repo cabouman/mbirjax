@@ -707,7 +707,8 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None,
+                            horizontal_offset=0, vertical_offset=0, voxel_slice_aspect=1.0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
@@ -722,6 +723,7 @@ def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size
                                            Must have the same length as 'words' if provided.
         horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
         vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
+        voxel_slice_aspect (float, optional): Ratio between slice voxel spacing and column voxel spacing. Default is 1.0.
 
     Returns:
         np.ndarray: Generated phantom volume.
@@ -729,7 +731,8 @@ def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size
     if option == 'dots':
         return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset)
+        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset,
+                                voxel_slice_aspect=voxel_slice_aspect)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
@@ -765,7 +768,7 @@ def gen_dot_phantom(recon_shape, fill_rate):
 
 
 def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal_offset=0,
-                     vertical_offset=0, font_path="DejaVuSans.ttf"):
+                     vertical_offset=0, voxel_slice_aspect=1.0, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -778,11 +781,16 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
                                            Must have the same length as 'words' if provided.
         horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
         vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
+        voxel_slice_aspect (float, optional): Ratio between slice voxel spacing and column voxel spacing. The rendered
+            text is corrected so it has the same physical aspect ratio when slices are anisotropic. Default is 1.0.
         font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
 
     Returns:
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
+    if voxel_slice_aspect <= 0:
+        raise ValueError(f"voxel_slice_aspect must be positive. Got {voxel_slice_aspect}.")
+
     if row_indices is not None:
         if len(row_indices) != len(words):
             raise ValueError(
@@ -805,7 +813,10 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
             slice_pos = recon_shape[2] // 2 - vertical_offset
             positions.append((int(round(r)), col_pos, slice_pos))
 
-    array_size = np.minimum(recon_shape[1], recon_shape[2])
+    array_size = int(np.minimum(recon_shape[1], recon_shape[2]))
+    array_num_cols = array_size
+    array_num_slices = int(round(array_size / voxel_slice_aspect))
+    array_num_slices = min(max(array_num_slices, 1), recon_shape[2])
 
     phantom = np.zeros(recon_shape, dtype=np.float32)
     try:
@@ -841,14 +852,19 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
         draw.text((x, y), word, fill=1, font=font)
 
         word_array = np.array(img.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT))
+        if array_num_slices != array_size:
+            word_img = Image.fromarray(word_array)
+            nearest_resampling = getattr(getattr(Image, 'Resampling', Image), 'NEAREST')
+            word_img = word_img.resize((array_num_slices, array_num_cols), resample=nearest_resampling)
+            word_array = np.array(word_img)
         word_array = (word_array > 0).astype(np.float32)
 
         # Crop or pad word_array to fit in the recon volume
         r_start, r_end = r, r + 1
-        c_start = c - array_size // 2
-        c_end = c_start + array_size
-        s_start = s - array_size // 2
-        s_end = s_start + array_size
+        c_start = c - array_num_cols // 2
+        c_end = c_start + array_num_cols
+        s_start = s - array_num_slices // 2
+        s_end = s_start + array_num_slices
 
         c_start_valid = max(c_start, 0)
         c_end_valid = min(c_end, recon_shape[1])
