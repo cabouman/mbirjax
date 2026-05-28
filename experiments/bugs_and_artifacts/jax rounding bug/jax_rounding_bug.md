@@ -19,8 +19,9 @@ Investigation 2026-05-25/26; JAX 0.10.1.*
     - [4.5 Other call sites with the bug precondition](#45-other-call-sites-with-the-bug-precondition)
     - [4.6 Testing](#46-testing)
     - [4.7 Open questions for the design discussion](#47-open-questions-for-the-design-discussion)
-- [5. Status](#5-status)
-- [6. Files](#6-files)
+- [5. Diagnostic: half-integer preflight check](#5-diagnostic-half-integer-preflight-check)
+- [6. Status and decision](#6-status-and-decision)
+- [7. Files](#7-files)
 
 ---
 
@@ -66,13 +67,13 @@ nesting levels away — or precompute `n_pc` on the host so the `round`
 doesn't appear inside the chain at all — and the bug vanishes.
 
 The full investigation, with all 15 test variants and the HLO
-post-mortem, is in `../lax_map_scatter_bug/minimal_lax_map_repro.md`.
+post-mortem, is in `./lax_map_scatter_bug/minimal_lax_map_repro.md`.
 
 ---
 
 ## 2. What we tried (summary)
 
-Run by `../lax_map_scatter_bug/minimal_lax_map_repro.py`, which sweeps
+Run by `./lax_map_scatter_bug/minimal_lax_map_repro.py`, which sweeps
 all 24 ROR-masked pixel batches of a 256×256 recon under `vmap` of
 size 1 over view 12, with `lax.map` over `_NB = 8` slice batches.
 
@@ -126,6 +127,11 @@ adds a second `int32` array of similar size.
 ---
 
 ## 4. Implementation plan
+
+> **Deferred (2026-05-26).**  This rewire is **not** being implemented
+> at this time — see §6 for the decision and rationale.  The plan is
+> kept here, ready to execute, in case the bug ever proves to matter
+> in practice.
 
 This section is an outline, not a final spec.  It identifies the
 moving parts and the questions that need to be answered before writing
@@ -361,27 +367,126 @@ geometries — so they get the same treatment in the rewire.
 
 ---
 
-## 5. Status
+## 5. Diagnostic: half-integer preflight check
 
-- Root cause and fix are known and tested in `minimal_lax_map_repro.py`
-  (T15i / T15j).
-- Production implementation is **not** done.  Awaits coordination with
-  other maintainers per §4.6.
-- Earlier `lax.map → vmap` workaround was considered and rejected in
-  favor of the precompute approach.
+An alternative to the §3–§4 precompute rewire was considered: a
+preflight pass that computes all `n_p` values (and the cone /
+translation analogs), flags any that land *exactly* on a half-integer,
+and perturbs the corresponding view angle by a small amount
+(e.g. +1e-5 rad) so the existing in-jit code runs on an angle that
+doesn't produce the tie.  The perturbed angle is then used unchanged
+by the existing projector code — no kernel rewiring.
+
+**As a silent auto-fix we would *not* use it**, for reasons worth
+recording so they aren't re-derived later:
+
+1. **It bets correctness on "exact half-integer is the only trigger,"
+   and we never established the XLA mechanism.**  CSE-failure was ruled
+   out, `optimization_barrier` didn't help, float64 didn't help.  The
+   failure mode is a *silent wrong answer*, so relying on a complete
+   characterization of a bug we couldn't explain is the riskiest kind
+   of bet.  The precompute fix is robust regardless of the true
+   trigger set; the preflight is only as good as our model of it.
+
+2. **It must reproduce XLA's in-jit `n_p` bit-for-bit, or it misses
+   the trigger.**  The bug fires on whatever `n_p` XLA computes inside
+   the jit.  A host-side preflight that computes `n_p` even 1 ULP
+   differently (different FMA fusion, op order, or backend) can fail
+   to flag a value that XLA rounds to an exact tie internally —
+   a silent wrong answer despite the check.  This parity is hard to
+   guarantee across backends and JAX versions.
+
+3. **Whack-a-mole across pixels at one angle.**  Perturbing the angle
+   moves every pixel's `n_p` by a different amount; clearing the
+   flagged pixel can land a *different* pixel on a tie.  Requires an
+   iterate-recheck-reperturb loop with a probabilistic bound.
+
+4. **Adjoint consistency.**  Forward and back projectors must stay
+   adjoint in the VCD loop.  Perturbed angles would have to be used
+   consistently everywhere geometry enters — effectively a global
+   mutation of the model's angle set, not a local preflight.
+
+5. **Silent modification of user-specified angles.**  The model would
+   no longer use exactly the angles the user passed.  Harmless for
+   almost everyone, but spooky for precise geometry work or cross-tool
+   comparison.
+
+6. **Multiple rounded quantities.**  Cone beam and translation_model
+   round more than one quantity; one angle perturbation would have to
+   clear all of them jointly.
+
+**As a non-mutating *warning* it is pure upside**, and that is the
+role it would be given if built:
+
+- Scan `n_p` (and the cone / translation analogs) for exact
+  half-integer values; emit a warning identifying the
+  (geometry, view, pixel) so a developer knows they are in the danger
+  zone.
+- Do **not** auto-perturb — just report.
+- After any future precompute rewire, the same scan becomes a
+  regression tripwire.
+
+**Open question if we build even the warning:** how stable is the set
+of exact-half-integer `n_p` across backends?  If CPU and GPU disagree
+on which pixels land exactly on 0.5 (different cos/sin/FMA), a warning
+computed on one backend doesn't predict the bug on another.  Worth a
+quick cross-backend test before relying on it.
+
+**Status:** on the back burner; not built.  Recorded here so the
+option and its caveats aren't re-discovered from scratch.
 
 ---
 
-## 6. Files
+## 6. Status and decision
+
+**Decision (2026-05-26): do *not* implement the precompute rewire at
+this time.**  Rationale:
+
+- Whatever the precise trigger is, it is **rare** — one specific pixel
+  cloud at one or two specific view angles, requiring an *exact*
+  half-integer `n_p`.  Real reconstructions with measured or otherwise
+  non-idealized angles are very unlikely to hit it; and when they do,
+  the error is a localized, near-antisymmetric perturbation of ~0.5
+  per affected pixel that largely averages out across views.  The
+  practical impact on a real reconstruction is expected to be
+  negligible.
+- The precompute rewire (§4) is a real, multi-file change with an API
+  design that needs maintainer coordination.  Given the low practical
+  risk, it is not the best use of current resources.
+
+**What we are doing instead:**
+
+- Keep the diagnosis, reproducer, and rewire plan fully documented
+  (here and in `./lax_map_scatter_bug/`) so the work isn't lost.
+- Treat the precompute approach (§3–§4) as the known, robust fix,
+  ready to implement if the bug ever proves to matter in practice.
+- Keep the preflight *warning* (§5) as a possible future diagnostic.
+- Continue watching for other code structures in which the bug may
+  appear, and extend the §4.5 inventory as new sites are found.
+
+**What is known and tested:**
+
+- The bug's precondition and the precompute fix are confirmed in
+  `./lax_map_scatter_bug/minimal_lax_map_repro.py` (T15i / T15j).
+- The precise XLA mechanism remains **undetermined**.
+- Earlier `lax.map → vmap` and `safe_round` workarounds were
+  considered and not adopted — the former restricts code
+  expressiveness, the latter only shifts the bug to a different
+  pixel batch.
+
+---
+
+## 7. Files
 
 - `jax_rounding_bug_v2.py` (this directory) — direct CSE-failure probe.
   Inconclusive but informative.
-- `../lax_map_scatter_bug/minimal_lax_map_repro.py` — T1–T15j
+- `./lax_map_scatter_bug/minimal_lax_map_repro.py` — T1–T15j
   systematic minimization, includes the working fixes.
-- `../lax_map_scatter_bug/minimal_lax_map_repro.md` — investigation
-  notes; should be updated to reference this plan once the implementation
-  lands.
-- `../lax_map_scatter_bug/vmap_lax_map_demo.py` — annotated demo of
+- `./lax_map_scatter_bug/minimal_lax_map_repro.md` — investigation
+  notes.
+- `./lax_map_scatter_bug/vmap_lax_map_demo.py` — annotated demo of
   the original bug.
-- `mbirjax/parallel_beam.py` and `mbirjax/cone_beam.py` — the
-  production sites to be patched (see §4.4).
+- `mbirjax/parallel_beam.py`, `mbirjax/cone_beam.py`,
+  `mbirjax/multiaxis_parallel.py`, `mbirjax/translation_model.py` —
+  the geometry kernels with `jnp.round`-inside-jit sites (see §4.5
+  inventory); to be patched only if/when the rewire is undertaken.

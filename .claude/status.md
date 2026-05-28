@@ -27,16 +27,17 @@
 
 * **Steps 0 and 1** (infrastructure fixes, FBP filter sharding) are complete.
 * **Steps 2 and 3** (sparse forward/back projection sharding) are partially implemented.
-  The forward-projection correctness investigation (Investigation 1 below) is **root-caused
-  as a JAX/XLA-level bug** in the `vmap → lax.map → scatter-add` chain when an integer
-  scatter destination is derived in-jit via `jnp.round`.  Resolution: precompute the
-  integer scatter indices on the host (or as concrete JAX arrays) and pass them into the
-  jit'd projector kernels.  See
+  The forward-projection correctness investigation (Investigation 1 below) is **diagnosed
+  to a precondition** — a JAX/XLA-level bug appears when an integer scatter destination is
+  derived in-jit via `jnp.round` inside a `vmap → lax.map → scatter-add` chain — but the
+  **precise XLA mechanism remains undetermined**.  A robust fix is known (precompute the
+  integer scatter indices outside the jit and pass them in).  **Decision (2026-05-26): the
+  rewire is deferred** — the trigger is rare and the practical impact on real
+  reconstructions is expected to be negligible.  See
   [`experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/jax_rounding_bug.md)
-  for the full plan, including the inventory of ~11 sites across `parallel_beam.py`,
-  `cone_beam.py`, `multiaxis_parallel.py`, and `translation_model.py` that all need the
-  same rewire.  Design is done; implementation awaits a maintainer discussion on the
-  precompute API.
+  for the full diagnosis, the rewire plan (kept ready, covering ~11 sites across
+  `parallel_beam.py`, `cone_beam.py`, `multiaxis_parallel.py`, `translation_model.py`),
+  the decision rationale (§6), and a possible future preflight-warning diagnostic (§5).
 * **qggmrf** is sharded but needs to be tested in the full VCD context (Step 5).
 * **fbp_recon** (Step 4) needs to be tested once back projection is verified.
 * **vcd_subset_updater** (Step 6) needs to be made sharding-agnostic and tested thoroughly.
@@ -45,20 +46,21 @@
 
 ## Active Investigations
 
-### 1. Forward projection correctness vs. prerelease baseline — **root-caused, awaiting rewire**
+### 1. Forward projection correctness vs. prerelease baseline — **diagnosed; rewire deferred**
 
 **Symptom:** When the prerelease branch output of `sparse_forward_project` is saved and
 compared to the current branch on the same input, differences appear at specific
 (view, channel) pairs (the 3-pixel +x/0/−x horizontal structure, magnitude ~0–1).
 
-**Root cause:** XLA-level bug triggered when an integer scatter destination derived
-via `jnp.round(n_p)` on a continuous in-jit `n_p` is consumed inside a
-`vmap → lax.map → scatter-add` chain.  The precise XLA failure mechanism is **not** the
-"CSE-failed round" story we initially hypothesized — direct probes ruled that out, and
-`jax.lax.optimization_barrier(n_pc)` does not fix the bug.  What we know with certainty:
-remove `jnp.round` from inside the chain (precompute the integer outside and pass it
-in) and the bug vanishes.  Float64 promotion, `safe_round`-style perturbation, and
-optimization barriers all fail to fix it or merely shift it to a different pixel batch.
+**Trigger (precondition; precise XLA mechanism undetermined):** A JAX/XLA-level bug
+appears when an integer scatter destination derived via `jnp.round(n_p)` on a continuous
+in-jit `n_p` is consumed inside a `vmap → lax.map → scatter-add` chain.  We did **not**
+establish the underlying mechanism — the "CSE-failed round" story we initially
+hypothesized was ruled out by direct probes, and `jax.lax.optimization_barrier(n_pc)`
+does not fix the bug.  What we know with certainty: remove `jnp.round` from inside the
+chain (precompute the integer outside and pass it in) and the bug vanishes.  Float64
+promotion, `safe_round`-style perturbation, and optimization barriers all fail to fix it
+or merely shift it to a different pixel batch.
 
 **Minimal reproducer:**  `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.py`
 (no mbirjax dependency) fires the bug with `max|diff| ≈ 0.5` using only the ROR-masked
@@ -80,10 +82,15 @@ site triggers individually — the precondition is in the same family and the pr
 costs nothing at runtime.  Full plan and inventory in
 [`experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/jax_rounding_bug.md).
 
-**Status:** Design done.  Implementation work is scoped but not started; awaits a
-maintainer discussion on the geometry-specific precompute API
-(`precompute_scatter_indices` on `TomographyModel`, overridden per subclass, returning
-a geometry-specific container of integer arrays).
+**Status:** Diagnosed, documented, and **rewire deferred** (decision 2026-05-26).  The
+trigger is rare (one pixel cloud at one or two view angles, requiring an exact
+half-integer `n_p`) and the practical impact on a real reconstruction is expected to be
+negligible (localized, near-antisymmetric, averages out across views).  Given that, the
+multi-file precompute rewire is not the best use of current resources.  The plan is kept
+ready to implement if the bug ever proves to matter.  A non-mutating half-integer
+preflight *warning* is recorded as a possible future diagnostic.  We continue to watch
+for other code structures where the bug may appear.  Full decision and rationale in
+`jax_rounding_bug.md` §6.
 
 ---
 
