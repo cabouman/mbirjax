@@ -30,7 +30,7 @@
   The forward-projection correctness investigation (Investigation 1 below) is now
   **root-caused** as an XLA bug in `lax.scan` + scatter-add; a one-line workaround is
   ready to apply in `parallel_beam.py`.  See
-  [`experiments/sharding/minimal_lax_map_repro.md`](../experiments/bugs_and_artifacts/lax_map_scatter_bug/minimal_lax_map_repro.md)
+  [`experiments/sharding/minimal_lax_map_repro.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/lax_map_scatter_bug/minimal_lax_map_repro.md)
   for the full write-up.
 * **qggmrf** is sharded but needs to be tested in the full VCD context (Step 5).
 * **fbp_recon** (Step 4) needs to be tested once back projection is verified.

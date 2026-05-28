@@ -44,11 +44,42 @@ lowering) and operates on a `[2, 16, 256]` per-batch slab instead of the
 reference's `[2, 128, 256]` whole-view buffer.  We did not find a smoking
 gun in the HLO or LLVM IR.
 
-**Working hypothesis:** XLA's CPU scatter codegen for `lax.scan`-wrapped
-scatter-add miscompiles for *some* combinations of float32 `n_p` /
-int32 `n_pc` data, in a way that depends on the specific bit patterns
-of the closed-over arrays.  Not on the value of `n_p` per se, and not
-on the integer scatter-index pattern alone — see §6.
+**The algorithm is continuous in `n_p`.** For an `n_p` exactly at a
+half-integer, the PSF clipping makes the result independent of which
+side `round()` picks — both `n_pc = round_up` and `n_pc = round_down`
+deposit the same total energy into the same two adjacent channels.
+So the observed ~1.7-magnitude output difference is *not* a sensitivity
+artifact at a discontinuous boundary; it is a real bug.
+
+**The observed error signature** — excess at `n_pc − 1`, zero at
+`n_pc`, deficit at `n_pc + 1`, with magnitude consistent with one
+pixel's L-weight (~0.5) per affected pixel — is what you would see if
+the integer scatter destination `n = n_pc + offset` and the float
+`abs_d = |n_p − n|` (which feeds the L-weight) were computed against
+**different copies of `n_pc`** that disagree by 1.  That can happen
+when XLA fails to deduplicate `jnp.round(n_p)` and the duplicate
+chains' upstream float arithmetic produces last-bit-different results
+that flip the rounding at exact half-integers.  A similar JAX bug was
+observed in this codebase in the past (now resolved by upstream
+changes); the symptom matches.
+
+**What we directly verified vs. what we did not.**  `jax_rounding_bug_v2.py`
+(in the `jax rounding bug/` subdir) reproduces the bug in this setup
+(`max|diff| ≈ 0.5`) and additionally returns the three offset destinations
+`n_pc − 1`, `n_pc`, `n_pc + 1` from inside the `lax.map` body.  Those three
+arrays differ from each other by exactly 1 everywhere — so within a single
+offset block, the three offset-additions of `n_pc` are mutually consistent.
+That rules out the most aggressive form of the CSE-failure story
+(separately-rounded `n_pc` per offset block) but is compatible with a
+narrower form: the integer path that produces the scatter index and the
+float path that produces the L-weight could still draw from different
+`n_pc` copies inside a single offset block.  We did not find a way to
+directly probe that without modifying the buggy chain itself, and we
+stopped digging at that point.
+
+**Status of the root-cause claim:** the empirical signature and the
+mechanism are consistent, but our probe is suggestive rather than
+conclusive.  The fix below works regardless.
 
 ---
 

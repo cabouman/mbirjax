@@ -58,7 +58,7 @@ Run:
 import os, sys
 os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=1")
 _sd = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.abspath(os.path.join(_sd, '../..', '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(_sd, '../../..', '..')))
 
 import numpy as np
 import jax
@@ -306,7 +306,7 @@ print(f"  fixed vs reference : max|diff| = {fix_max:.4e}  "
       f"{'✓ FIX CONFIRMED' if fix_max < 1e-5 else '✗'}")
 
 # Show the antisymmetric error pattern at the worst view
-for worst_view in [12, 134]:
+for worst_view in bad_views:
     # worst_view = int(np.argmax(np.asarray(diff_br).max(axis=(1, 2))))
     signed_err = (buggy_out[worst_view] - ref_out[worst_view]).sum(axis=0)   # sum over slices
     err_ch     = int(jnp.argmax(jnp.abs(signed_err)))
@@ -324,6 +324,7 @@ for worst_view in [12, 134]:
     print("  The error is antisymmetric: energy swapped between n_pc-1 and")
     print("  n_pc+1 channels.  Both offsets +1 and -1 are independently buggy.")
 
+    a = forward_ref(angles_jax[worst_view])
     n_p, n_pc, W_pc, cos_a, L_mx = _geom(angles_jax[worst_view])
     print('Projections of centers of pixels')
     for j in range(3):

@@ -31,6 +31,9 @@ import os, sys
 import numpy as np
 import jax
 import jax.numpy as jnp
+# Enable float64 so safe_round_f64 variants below can actually use it.
+# All existing tests are explicit float32, so this is benign for them.
+jax.config.update("jax_enable_x64", True)
 
 print("=" * 70)
 print("  minimal_lax_map_repro.py")
@@ -621,6 +624,435 @@ for B in range(0, n_total_batches):
     tag = "✗ BUG" if md > 1e-3 else "✓ ok "
     print(f"    BAD={B:>2d}  rows={ri_b.min():>3d}..{ri_b.max():>3d}  "
           f"max|diff|={md:.4e}  {tag}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+print()
+print("─" * 70)
+print("T15: does safe_round() perturbation kill the bug?")
+print("─" * 70)
+print()
+print("  safe_round(x, scale=1e-4):")
+print("    snapped = round(x / scale) * scale     # snap to 1e-4 grid")
+print("    return  round(snapped + 0.5*scale)     # nudge past half-integer")
+print()
+
+
+def safe_round(x, scale=1e-4):
+    """Round x to int32, robust to last-bit-different recomputations of x.
+
+    The first round snaps any x that lives within scale/2 of a 1e-4 grid
+    point to that grid point.  Two upstream chains that compute x to
+    last-bit-different float values both land on the same grid point.
+    The +0.5*scale nudge then guarantees the final round() never sees an
+    exact half-integer tie, so its result is independent of any CSE-
+    duplicate chain's floating-point ordering.
+    """
+    snapped = jnp.round(x / scale) * scale
+    return jnp.round(snapped + 0.5 * scale).astype(jnp.int32)
+
+
+def make_pair_safe(xt_np, yt_np):
+    """Same as make_pair, but uses safe_round in place of jnp.round for n_pc."""
+    xt_j = jnp.array(xt_np.astype(np.float32))
+    yt_j = jnp.array(yt_np.astype(np.float32))
+    NP_local = xt_j.shape[0]
+    np.random.seed(0)
+    vox = jnp.array(np.random.rand(NP_local, N_ROWS).astype(np.float32))
+
+    def geom(angle):
+        ct = jnp.cos(angle); st = jnp.sin(angle)
+        x_p   = ct * xt_j - st * yt_j
+        n_p   = (x_p + OFF_prod) / DDC_prod + DCC_prod
+        n_pc  = safe_round(n_p)                  # ← only change vs make_pair
+        cos_a = jnp.maximum(jnp.abs(ct), jnp.abs(st))
+        W_pc  = (DV_prod / DDC_prod) * cos_a
+        L_mx  = jnp.minimum(1.0, W_pc)
+        return n_p, n_pc, W_pc, cos_a, L_mx
+
+    def fwd_ref(angle):
+        n_p, n_pc, W_pc, cos_a, L_mx = geom(angle)
+        sino = jnp.zeros((N_ROWS, ND), dtype=jnp.float32)
+        for no in (-1, 0, 1):
+            n     = n_pc + no
+            abs_d = jnp.abs(n_p - n)
+            L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+            A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+            sino  = sino.at[:, n].add(A * vox.T)
+        return sino
+
+    def fwd_buggy(angle):
+        n_p, n_pc, W_pc, cos_a, L_mx = geom(angle)
+        vb_batched = vox.T.reshape(_NB, _B, NP_local)
+        def body(vb):
+            sb = jnp.zeros((_B, ND), dtype=jnp.float32)
+            for no in (-1, 0, 1):
+                n     = n_pc + no
+                abs_d = jnp.abs(n_p - n)
+                L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+                A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+                sb    = sb.at[:, n].add(A * vb)
+            return sb
+        return jax.lax.map(body, vb_batched).reshape(N_ROWS, ND)
+
+    return fwd_ref, fwd_buggy
+
+
+# T15a — does safe_round fix the original bug config (BAD=8, vmap[12])?
+pb_8 = all_indices[8 * NP : 9 * NP]
+ri_8, ci_8 = np.unravel_index(pb_8, recon_shape[:2])
+yt_8 = DV_prod * (ri_8 - (recon_shape[0] - 1) / 2.0)
+xt_8 = DV_prod * (ci_8 - (recon_shape[1] - 1) / 2.0)
+fr_safe, fb_safe  = make_pair_safe(xt_8, yt_8)
+fr_van,  fb_van   = make_pair(xt_8, yt_8)
+a12 = jnp.array(angles_full[[12]].astype(np.float32))
+
+# Baseline: confirm the bug is present without safe_round
+ref_van   = jax.jit(jax.vmap(fr_van))(a12)
+buggy_van = jax.jit(jax.vmap(fb_van))(a12)
+md_van = float(jnp.abs(ref_van - buggy_van).max())
+
+# With safe_round
+ref_safe   = jax.jit(jax.vmap(fr_safe))(a12)
+buggy_safe = jax.jit(jax.vmap(fb_safe))(a12)
+md_safe = float(jnp.abs(ref_safe - buggy_safe).max())
+
+print(f"  T15a  BAD=8  vmap[12]")
+print(f"        vanilla round:  max|diff|(buggy vs ref) = {md_van:.4e}  "
+      f"{'✗ BUG' if md_van > 1e-3 else '✓ ok '}  (expected: BUG)")
+print(f"        safe_round:     max|diff|(buggy vs ref) = {md_safe:.4e}  "
+      f"{'✗ BUG' if md_safe > 1e-3 else '✓ ok '}  (expected: ok)")
+
+# How different is safe_round's reference from vanilla round's reference?
+# (Only tie-pixels should differ; everywhere else float-noise.)
+md_refdiff = float(jnp.abs(ref_safe - ref_van).max())
+print(f"        ref_safe vs ref_vanilla:  max|diff| = {md_refdiff:.4e}  "
+      f"(non-tie pixels agree; small diff expected at any tie sites)")
+
+# T15b — BAD scan with safe_round (mirrors T14 but with the fix applied)
+print()
+print("  T15b: BAD scan with safe_round (expect all ✓ ok)")
+n_bug_safe = 0
+worst_safe = 0.0
+for B in range(0, n_total_batches):
+    pb_b = all_indices[B * NP : (B + 1) * NP]
+    ri_b, ci_b = np.unravel_index(pb_b, recon_shape[:2])
+    yt_b = DV_prod * (ri_b - (recon_shape[0] - 1) / 2.0)
+    xt_b = DV_prod * (ci_b - (recon_shape[1] - 1) / 2.0)
+    fr, fb = make_pair_safe(xt_b, yt_b)
+    a = jnp.array(angles_full[[12]].astype(np.float32))
+    ref_v   = jax.jit(jax.vmap(fr))(a)
+    buggy_v = jax.jit(jax.vmap(fb))(a)
+    md = float(jnp.abs(ref_v - buggy_v).max())
+    worst_safe = max(worst_safe, md)
+    if md > 1e-3:
+        n_bug_safe += 1
+        print(f"    BAD={B:>2d}  max|diff|={md:.4e}  ✗ BUG")
+print(f"  → with safe_round: {n_bug_safe} of {n_total_batches} batches bug "
+      f"(was 1 with vanilla round, see T14).  worst max|diff| = {worst_safe:.4e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+print()
+print("─" * 70)
+print("T15c–e: alternative round-function fixes — does any kill the bug everywhere?")
+print("─" * 70)
+
+
+def make_pair_with_round(xt_np, yt_np, round_fn):
+    """Parametric: replace jnp.round in geom with `round_fn`."""
+    xt_j = jnp.array(xt_np.astype(np.float32))
+    yt_j = jnp.array(yt_np.astype(np.float32))
+    NP_local = xt_j.shape[0]
+    np.random.seed(0)
+    vox = jnp.array(np.random.rand(NP_local, N_ROWS).astype(np.float32))
+
+    def geom(angle):
+        ct = jnp.cos(angle); st = jnp.sin(angle)
+        x_p   = ct * xt_j - st * yt_j
+        n_p   = (x_p + OFF_prod) / DDC_prod + DCC_prod
+        n_pc  = round_fn(n_p)
+        cos_a = jnp.maximum(jnp.abs(ct), jnp.abs(st))
+        W_pc  = (DV_prod / DDC_prod) * cos_a
+        L_mx  = jnp.minimum(1.0, W_pc)
+        return n_p, n_pc, W_pc, cos_a, L_mx
+
+    def fwd_ref(angle):
+        n_p, n_pc, W_pc, cos_a, L_mx = geom(angle)
+        sino = jnp.zeros((N_ROWS, ND), dtype=jnp.float32)
+        for no in (-1, 0, 1):
+            n     = n_pc + no
+            abs_d = jnp.abs(n_p - n)
+            L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+            A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+            sino  = sino.at[:, n].add(A * vox.T)
+        return sino
+
+    def fwd_buggy(angle):
+        n_p, n_pc, W_pc, cos_a, L_mx = geom(angle)
+        vb_batched = vox.T.reshape(_NB, _B, NP_local)
+        def body(vb):
+            sb = jnp.zeros((_B, ND), dtype=jnp.float32)
+            for no in (-1, 0, 1):
+                n     = n_pc + no
+                abs_d = jnp.abs(n_p - n)
+                L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+                A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+                sb    = sb.at[:, n].add(A * vb)
+            return sb
+        return jax.lax.map(body, vb_batched).reshape(N_ROWS, ND)
+
+    return fwd_ref, fwd_buggy
+
+
+def bad_scan_with(round_fn, label):
+    """Sweep BAD = 0..23 with the given round_fn, report any bugs."""
+    bad = []
+    worst = 0.0
+    for B in range(0, n_total_batches):
+        pb_b = all_indices[B * NP : (B + 1) * NP]
+        ri_b, ci_b = np.unravel_index(pb_b, recon_shape[:2])
+        yt_b = DV_prod * (ri_b - (recon_shape[0] - 1) / 2.0)
+        xt_b = DV_prod * (ci_b - (recon_shape[1] - 1) / 2.0)
+        fr, fb = make_pair_with_round(xt_b, yt_b, round_fn)
+        a = jnp.array(angles_full[[12]].astype(np.float32))
+        ref_v   = jax.jit(jax.vmap(fr))(a)
+        buggy_v = jax.jit(jax.vmap(fb))(a)
+        md = float(jnp.abs(ref_v - buggy_v).max())
+        worst = max(worst, md)
+        if md > 1e-3:
+            bad.append((B, md))
+    if not bad:
+        print(f"  {label:<55s}  ✓ all 24 batches clean (worst {worst:.2e})")
+    else:
+        details = ", ".join(f"BAD={B}({md:.3e})" for B, md in bad)
+        print(f"  {label:<55s}  ✗ {len(bad)} bad: {details}")
+    return len(bad), worst
+
+
+# ── Define variants ──────────────────────────────────────────────────────
+
+# Baseline (no fix): vanilla jnp.round
+def round_vanilla(x):
+    return jnp.round(x).astype(jnp.int32)
+
+# T15c: smaller scale safe_round.  At scale 1e-6, x / scale is ≈ 1.7e8;
+# float32 ULP at that magnitude (~16) is so much larger than 0.5 that the
+# first-round tie set is unrepresentable, so the first round can't break
+# ties inconsistently.  The quantization step then rounds to ~16-unit grid
+# (effectively a no-op for the scale-1e-6 perturbation), but the +0.5e-6
+# offset is still the perturbation that pushes past the FINAL round's tie.
+def round_safe_1e6(x):
+    scale = 1e-6
+    snapped = jnp.round(x / scale) * scale
+    return jnp.round(snapped + 0.5 * scale).astype(jnp.int32)
+
+# T15d: optimization_barrier alone — addresses the (hypothesized) root cause
+# directly by preventing XLA from CSE-duplicating the round computation.
+def round_barrier(x):
+    n_pc = jnp.round(x).astype(jnp.int32)
+    return jax.lax.optimization_barrier(n_pc)
+
+# T15e: safe_round (1e-4) + optimization_barrier — belt and suspenders.
+def round_safe_plus_barrier(x):
+    scale = 1e-4
+    snapped = jnp.round(x / scale) * scale
+    n_pc = jnp.round(snapped + 0.5 * scale).astype(jnp.int32)
+    return jax.lax.optimization_barrier(n_pc)
+
+
+# ── Run all variants over the 24-batch scan ──────────────────────────────
+print()
+print("  (worst max|diff| over all 24 batches; 'clean' threshold = 1e-3)")
+print()
+bad_scan_with(round_vanilla,           "T14 (vanilla, baseline)")
+bad_scan_with(safe_round,              "T15a/b (safe_round, scale=1e-4)")
+bad_scan_with(round_safe_1e6,          "T15c (safe_round, scale=1e-6)")
+bad_scan_with(round_barrier,           "T15d (jnp.round + optimization_barrier)")
+bad_scan_with(round_safe_plus_barrier, "T15e (safe_round + optimization_barrier)")
+
+
+# T15f: safe_round in float64.  Idea: cast to float64 internally, so the
+# arithmetic inside safe_round has ~16 digits of precision instead of ~7.
+# This won't add information to a float32 input (the value is the same after
+# cast) but it lets the snap-and-perturb steps avoid the float32 ULP issues
+# that turned T15c into a no-op, and it spreads any tie-condition on a
+# much finer grid.
+def round_safe_f64(scale):
+    def _r(x):
+        x64 = x.astype(jnp.float64)
+        snapped = jnp.round(x64 / scale) * scale
+        return jnp.round(snapped + 0.5 * scale).astype(jnp.int32)
+    return _r
+
+
+# Cast n_p input to float64 then do safe_round at three scales.
+bad_scan_with(round_safe_f64(1e-4),    "T15f safe_round_f64 (scale=1e-4)")
+bad_scan_with(round_safe_f64(1e-6),    "T15g safe_round_f64 (scale=1e-6)")
+bad_scan_with(round_safe_f64(1e-8),    "T15h safe_round_f64 (scale=1e-8)")
+
+
+# ── T15i: precompute geometry outside the jit ────────────────────────────
+# If this is clean across all batches, the bug requires `round` to live
+# inside the vmap+lax.map boundary, and the fix is to precompute the
+# (n_p, n_pc, W_pc, cos_a, L_mx) tuple in numpy and pass it in.
+
+def make_pair_precomputed():
+    """fwd_ref / fwd_buggy that take precomputed geometry as JAX inputs.
+    No cos/sin/round inside.  Voxel data is local because NP depends on
+    the pixel batch."""
+    def make(NP_local):
+        np.random.seed(0)
+        vox = jnp.array(np.random.rand(NP_local, N_ROWS).astype(np.float32))
+
+        def fwd_ref(n_p, n_pc, W_pc, cos_a, L_mx):
+            sino = jnp.zeros((N_ROWS, ND), dtype=jnp.float32)
+            for no in (-1, 0, 1):
+                n     = n_pc + no
+                abs_d = jnp.abs(n_p - n)
+                L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+                A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+                sino  = sino.at[:, n].add(A * vox.T)
+            return sino
+
+        def fwd_buggy(n_p, n_pc, W_pc, cos_a, L_mx):
+            vb_batched = vox.T.reshape(_NB, _B, NP_local)
+            def body(vb):
+                sb = jnp.zeros((_B, ND), dtype=jnp.float32)
+                for no in (-1, 0, 1):
+                    n     = n_pc + no
+                    abs_d = jnp.abs(n_p - n)
+                    L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+                    A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+                    sb    = sb.at[:, n].add(A * vb)
+                return sb
+            return jax.lax.map(body, vb_batched).reshape(N_ROWS, ND)
+
+        return fwd_ref, fwd_buggy
+    return make
+
+def bad_scan_precomputed(label, view_idx=12):
+    """Like bad_scan_with but with all geometry computed in numpy and
+    passed in as JAX arrays."""
+    make = make_pair_precomputed()
+    bad, worst = [], 0.0
+    angle = np.float32(angles_full[view_idx])
+    ct = np.cos(angle).astype(np.float32)
+    st = np.sin(angle).astype(np.float32)
+    cos_a_np = np.float32(max(abs(ct), abs(st)))
+    W_pc_np  = np.float32((DV_prod / DDC_prod) * cos_a_np)
+    L_mx_np  = np.float32(min(1.0, float(W_pc_np)))
+    for B in range(0, n_total_batches):
+        pb_b = all_indices[B * NP : (B + 1) * NP]
+        ri_b, ci_b = np.unravel_index(pb_b, recon_shape[:2])
+        yt_b = (DV_prod * (ri_b - (recon_shape[0] - 1) / 2.0)).astype(np.float32)
+        xt_b = (DV_prod * (ci_b - (recon_shape[1] - 1) / 2.0)).astype(np.float32)
+        x_p_np  = ct * xt_b - st * yt_b
+        n_p_np  = ((x_p_np + OFF_prod) / DDC_prod + DCC_prod).astype(np.float32)
+        n_pc_np = np.round(n_p_np).astype(np.int32)
+        # Build vmap-batched inputs (size-1 vmap, mirroring T11a)
+        n_p_v  = jnp.array(n_p_np[None, :])
+        n_pc_v = jnp.array(n_pc_np[None, :])
+        W_v    = jnp.array(np.array([W_pc_np]))
+        ca_v   = jnp.array(np.array([cos_a_np]))
+        L_v    = jnp.array(np.array([L_mx_np]))
+
+        fr, fb = make(NP)
+        ref_v   = jax.jit(jax.vmap(fr))(n_p_v, n_pc_v, W_v, ca_v, L_v)
+        buggy_v = jax.jit(jax.vmap(fb))(n_p_v, n_pc_v, W_v, ca_v, L_v)
+        md = float(jnp.abs(ref_v - buggy_v).max())
+        worst = max(worst, md)
+        if md > 1e-3:
+            bad.append((B, md))
+    if not bad:
+        print(f"  {label:<55s}  ✓ all 24 batches clean (worst {worst:.2e})")
+    else:
+        details = ", ".join(f"BAD={B}({md:.3e})" for B, md in bad)
+        print(f"  {label:<55s}  ✗ {len(bad)} bad: {details}")
+
+bad_scan_precomputed("T15i precomputed geom (round outside the jit)")
+
+
+# ── T15j: precompute n_pc only, leave the rest of geom in-jit ────────────
+# This tests whether the minimal change is sufficient: keep cos/sin/n_p/
+# W_pc/cos_alpha/L_max derivation inside the jit (as in the current
+# production code), and only move the integer scatter index n_pc out.
+
+def make_pair_npc_only(xt_np, yt_np):
+    xt_j = jnp.array(xt_np.astype(np.float32))
+    yt_j = jnp.array(yt_np.astype(np.float32))
+    NP_local = xt_j.shape[0]
+    np.random.seed(0)
+    vox = jnp.array(np.random.rand(NP_local, N_ROWS).astype(np.float32))
+
+    def _geom_inline_no_round(angle):
+        """Same as _geom_inline but n_pc is NOT computed here."""
+        ct = jnp.cos(angle); st = jnp.sin(angle)
+        x_p   = ct * xt_j - st * yt_j
+        n_p   = (x_p + OFF_prod) / DDC_prod + DCC_prod
+        cos_a = jnp.maximum(jnp.abs(ct), jnp.abs(st))
+        W_pc  = (DV_prod / DDC_prod) * cos_a
+        L_mx  = jnp.minimum(1.0, W_pc)
+        return n_p, W_pc, cos_a, L_mx
+
+    def fwd_ref(angle, n_pc):
+        n_p, W_pc, cos_a, L_mx = _geom_inline_no_round(angle)
+        sino = jnp.zeros((N_ROWS, ND), dtype=jnp.float32)
+        for no in (-1, 0, 1):
+            n     = n_pc + no
+            abs_d = jnp.abs(n_p - n)
+            L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+            A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+            sino  = sino.at[:, n].add(A * vox.T)
+        return sino
+
+    def fwd_buggy(angle, n_pc):
+        n_p, W_pc, cos_a, L_mx = _geom_inline_no_round(angle)
+        vb_batched = vox.T.reshape(_NB, _B, NP_local)
+        def body(vb):
+            sb = jnp.zeros((_B, ND), dtype=jnp.float32)
+            for no in (-1, 0, 1):
+                n     = n_pc + no
+                abs_d = jnp.abs(n_p - n)
+                L     = jnp.clip((W_pc + 1.0) / 2.0 - abs_d, 0.0, L_mx)
+                A     = DV_prod * L / cos_a * ((n >= 0) & (n < ND))
+                sb    = sb.at[:, n].add(A * vb)
+            return sb
+        return jax.lax.map(body, vb_batched).reshape(N_ROWS, ND)
+
+    return fwd_ref, fwd_buggy
+
+
+def bad_scan_npc_only(label, view_idx=12):
+    bad, worst = [], 0.0
+    angle = np.float32(angles_full[view_idx])
+    ct = np.cos(angle).astype(np.float32)
+    st = np.sin(angle).astype(np.float32)
+    for B in range(0, n_total_batches):
+        pb_b = all_indices[B * NP : (B + 1) * NP]
+        ri_b, ci_b = np.unravel_index(pb_b, recon_shape[:2])
+        yt_b = (DV_prod * (ri_b - (recon_shape[0] - 1) / 2.0)).astype(np.float32)
+        xt_b = (DV_prod * (ci_b - (recon_shape[1] - 1) / 2.0)).astype(np.float32)
+        x_p_np  = ct * xt_b - st * yt_b
+        n_p_np  = ((x_p_np + OFF_prod) / DDC_prod + DCC_prod).astype(np.float32)
+        n_pc_np = np.round(n_p_np).astype(np.int32)
+
+        fr, fb = make_pair_npc_only(xt_b, yt_b)
+        a_v   = jnp.array(np.array([angle]))
+        npc_v = jnp.array(n_pc_np[None, :])
+        ref_v   = jax.jit(jax.vmap(fr))(a_v, npc_v)
+        buggy_v = jax.jit(jax.vmap(fb))(a_v, npc_v)
+        md = float(jnp.abs(ref_v - buggy_v).max())
+        worst = max(worst, md)
+        if md > 1e-3:
+            bad.append((B, md))
+    if not bad:
+        print(f"  {label:<55s}  ✓ all 24 batches clean (worst {worst:.2e})")
+    else:
+        details = ", ".join(f"BAD={B}({md:.3e})" for B, md in bad)
+        print(f"  {label:<55s}  ✗ {len(bad)} bad: {details}")
+
+bad_scan_npc_only("T15j precompute n_pc only (rest of geom in-jit)")
 
 
 print()
