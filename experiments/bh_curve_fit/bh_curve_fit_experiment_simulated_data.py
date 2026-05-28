@@ -1,5 +1,6 @@
 import os
 import mbirjax as mj
+import mbirjax.preprocess as mjp
 import numpy as np
 from bh_curve_fit_utils import plot_bh_correction_curve
 
@@ -49,13 +50,13 @@ if __name__ == '__main__':
     linear_projection = training_linear_projection.ravel()
     target_projection = training_beam_hardened_projection.ravel()
 
-    best_bh_params = mj.fit_beam_hardening_curve(linear_projection, target_projection, N_bh_params)
+    best_bh_params = mjp.fit_beam_hardening_curve(linear_projection, target_projection, N_bh_params)
     print('Best BH parameters: {}'.format(best_bh_params))
 
     #####################
     # Apply BH curve
     #####################
-    fitted_nonlinear_projection = mj.apply_beam_hardening_curve(
+    fitted_nonlinear_projection = mjp.apply_beam_hardening_curve(
         test_linear_projection,
         best_bh_params,
     )

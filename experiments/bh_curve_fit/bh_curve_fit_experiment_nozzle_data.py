@@ -55,7 +55,7 @@ if __name__ == '__main__':
     target_projection = training_beam_hardened_projection.ravel()
 
     print('\nTraining forward BH curve')
-    best_bh_params = mj.fit_beam_hardening_curve(
+    best_bh_params = mjp.fit_beam_hardening_curve(
         linear_projection, target_projection, N_bh_params)
     print('Best BH parameters: {}'.format(best_bh_params))
     np.save(os.path.join(output_dir, 'forward_bh_params.npy'), best_bh_params)
@@ -90,7 +90,7 @@ if __name__ == '__main__':
         '  measured range: [{:.6g}, {:.6g}], input default: [{:.6g}, {:.6g}]'
         .format(measured_vmin, measured_vmax, input_vmin, input_vmax))
 
-    cheb_coeffs, y_domain = mj.fit_inverse_beam_hardening_curve(
+    cheb_coeffs, y_domain = mjp.fit_inverse_beam_hardening_curve(
         best_bh_params,
         vmin=inverse_vmin,
         vmax=inverse_vmax,
@@ -137,7 +137,7 @@ if __name__ == '__main__':
     baseline_corrected_projection = mjp.pymbir.apply_bh_correction(
         y_inverse_eval, BHCN_params)
     cheb_corrected_projection = (
-        mj.apply_inverse_beam_hardening_curve(
+        mjp.apply_inverse_beam_hardening_curve(
             y_inverse_eval, cheb_coeffs, y_domain)
     )
 
@@ -184,7 +184,7 @@ if __name__ == '__main__':
     for start in range(0, recon_sino_no_corr.shape[0], correction_batch_size):
         stop = min(start + correction_batch_size, recon_sino_no_corr.shape[0])
         recon_sino_cheb[start:stop] = (
-            mj.apply_inverse_beam_hardening_curve(
+            mjp.apply_inverse_beam_hardening_curve(
                 recon_sino_no_corr[start:stop],
                 cheb_coeffs,
                 y_domain,

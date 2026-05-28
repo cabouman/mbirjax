@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import mbirjax as mj
-
+import mbirjax.preprocess as mjp
 
 def plot_bh_correction_curve(x_path_length, fitted_bh_params, output_path=None, show=True):
     """
@@ -11,13 +11,13 @@ def plot_bh_correction_curve(x_path_length, fitted_bh_params, output_path=None, 
     """
     # Linear reference with slope equal to the gradient of the fitted curve at 0.
     epsilon = 1e-6
-    fitted_at_zero = mj.apply_beam_hardening_curve(0.0, fitted_bh_params)
-    fitted_at_epsilon = mj.apply_beam_hardening_curve(epsilon, fitted_bh_params)
+    fitted_at_zero = mjp.apply_beam_hardening_curve(0.0, fitted_bh_params)
+    fitted_at_epsilon = mjp.apply_beam_hardening_curve(epsilon, fitted_bh_params)
     slope_at_zero = (fitted_at_epsilon - fitted_at_zero) / epsilon
     projection_ideal = slope_at_zero * x_path_length
 
     # Fitted BH correction curve.
-    projection_fitted_bh = mj.apply_beam_hardening_curve(x_path_length, fitted_bh_params)
+    projection_fitted_bh = mjp.apply_beam_hardening_curve(x_path_length, fitted_bh_params)
 
     # ------------------------------------------
     # Plot
