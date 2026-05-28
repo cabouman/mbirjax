@@ -30,7 +30,7 @@ def main():
     num_materials = 3  # Number of materials
     verbose = 2  # Verbosity level
     learning_rate = 0.01  # Learning rate for Newton updates
-    N = 100  # Number of fine-tuning iterations
+    N = 300  # Number of fine-tuning iterations
 
     # Display parameters
     display_wave_idx = 200  # Wavelength index of displayed images
@@ -68,6 +68,9 @@ def main():
                         verbose=verbose)
     frob_hyper_projection = rehydrate([W, H, dataset_type])
 
+    frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum()
+    gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum() / frob_loss
+
     # Refine using nonnegative attenuation loss
     W_newt = W.copy().reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
     H_newt = H.copy().reshape(num_materials, gt_hyper_projection.shape[-1])
@@ -100,6 +103,9 @@ def main():
         newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
         mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
 
+        newton_loss = (np.exp(-newton_hyper_projection) + T.reshape(gt_hyper_projection.shape) * newton_hyper_projection).sum() / frob_loss
+        mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / frob_loss
+
         # Plot hyperspectral projections and spectra
         if verbose > 1:
             plot_images(images=[gt_hyper_projection[0, :, :, display_wave_idx],
@@ -107,11 +113,11 @@ def main():
                                 frob_hyper_projection[0, :, :, display_wave_idx],
                                 newton_hyper_projection[0, :, :, display_wave_idx],
                                 mult_hyper_projection[0, :, :, display_wave_idx]],
-                        titles=['Fig (a): Ground truth hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                                'Fig (b): Noisy hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                                'Fig (c): Frobenius hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                                'Fig (d): Newton hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                                'Fig (e): Multiplicative hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx)],
+                        titles=[f'Fig (a): Ground truth hyperspectral projection\nWavelength index: {display_wave_idx}\n',
+                                f'Fig (b): Noisy hyperspectral projection\nWavelength index: {display_wave_idx}\n',
+                                f'Fig (c): Frobenius hyperspectral projection\nWavelength index: {display_wave_idx}\n',
+                                f'Fig (d): Newton hyperspectral projection\nWavelength index: {display_wave_idx}\nIteration: {i+1}/{N}',
+                                f'Fig (e): Multiplicative hyperspectral projection\nWavelength index: {display_wave_idx}\nIteration: {i+1}/{N}'],
                         vmax=vmax, vmin=vmin,
                         filename=f'{output_path}/example_1_nonnegative_attenuation_loss_projection_{i}.png')
 
@@ -120,8 +126,12 @@ def main():
                                   newton_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :],
                                   mult_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :],
                                   gt_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :]],
-                        labels=['Noisy', 'Frobenius', 'Denoised Newton', 'Denoised MU', 'Ground Truth'],
-                        title='Single pixel spectra (attenuation) for noisy and denoised data',
+                        labels=[f'Noisy (Dosage: {dosage_rate})',
+                                f'Frobenius (Rel Loss: 1.00000)',
+                                f'Denoised Newton (Rel Loss: {newton_loss:.5f})',
+                                f'Denoised MU (Rel Loss: {mult_loss:.5f})',
+                                f'Ground Truth (Rel Loss: {gt_loss:.5f})'],
+                        title=f'Single pixel spectra (attenuation) for noisy and denoised data\nIteration: {i+1}/{N}',
                         x_label='wavelength index',
                         y_label='attenuation',
                         y_lim=y_lim_attenuation,
@@ -132,8 +142,12 @@ def main():
                                   np.exp(-newton_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :]),
                                   np.exp(-mult_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :]),
                                   np.exp(-gt_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :])],
-                        labels=['Noisy', 'Frobenius', 'Denoised Newton', 'Denoised MU', 'Ground Truth'],
-                        title='Single pixel spectra (transmission) for noisy and denoised data',
+                        labels=[f'Noisy (Dosage: {dosage_rate})',
+                                f'Frobenius (Rel Loss: 1.00000)',
+                                f'Denoised Newton (Rel Loss: {newton_loss:.5f})',
+                                f'Denoised MU (Rel Loss: {mult_loss:.5f})',
+                                f'Ground Truth (Rel Loss: {gt_loss:.5f})'],
+                        title=f'Single pixel spectra (transmission) for noisy and denoised data\nIteration: {i+1}/{N}',
                         x_label='wavelength index',
                         y_label='transmission',
                         y_lim=y_lim_transmission,
