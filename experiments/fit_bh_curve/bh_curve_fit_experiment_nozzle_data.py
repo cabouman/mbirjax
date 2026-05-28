@@ -231,7 +231,7 @@ if __name__ == '__main__':
         recons['No BH correction'],
         recons['Baseline correction'],
         recons['Chebyshev inverse correction'],
-        vmin=-0.10,
+        vmin=-0.05,
         vmax=0.10,
         slice_label=[
             'No BH correction',
