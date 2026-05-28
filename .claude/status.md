@@ -27,11 +27,16 @@
 
 * **Steps 0 and 1** (infrastructure fixes, FBP filter sharding) are complete.
 * **Steps 2 and 3** (sparse forward/back projection sharding) are partially implemented.
-  The forward-projection correctness investigation (Investigation 1 below) is now
-  **root-caused** as an XLA bug in `lax.scan` + scatter-add; a one-line workaround is
-  ready to apply in `parallel_beam.py`.  See
-  [`experiments/sharding/minimal_lax_map_repro.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/lax_map_scatter_bug/minimal_lax_map_repro.md)
-  for the full write-up.
+  The forward-projection correctness investigation (Investigation 1 below) is **root-caused
+  as a JAX/XLA-level bug** in the `vmap → lax.map → scatter-add` chain when an integer
+  scatter destination is derived in-jit via `jnp.round`.  Resolution: precompute the
+  integer scatter indices on the host (or as concrete JAX arrays) and pass them into the
+  jit'd projector kernels.  See
+  [`experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/jax_rounding_bug.md)
+  for the full plan, including the inventory of ~11 sites across `parallel_beam.py`,
+  `cone_beam.py`, `multiaxis_parallel.py`, and `translation_model.py` that all need the
+  same rewire.  Design is done; implementation awaits a maintainer discussion on the
+  precompute API.
 * **qggmrf** is sharded but needs to be tested in the full VCD context (Step 5).
 * **fbp_recon** (Step 4) needs to be tested once back projection is verified.
 * **vcd_subset_updater** (Step 6) needs to be made sharding-agnostic and tested thoroughly.
@@ -40,47 +45,59 @@
 
 ## Active Investigations
 
-### 1. Forward projection correctness vs. prerelease baseline — **root-caused**
+### 1. Forward projection correctness vs. prerelease baseline — **root-caused, awaiting rewire**
 
 **Symptom:** When the prerelease branch output of `sparse_forward_project` is saved and
 compared to the current branch on the same input, differences appear at specific
 (view, channel) pairs (the 3-pixel +x/0/−x horizontal structure, magnitude ~0–1).
 
-**Root cause:** XLA-level bug in `lax.scan` + scatter-add.  The slice-batch
-`jax.lax.map(project_slice_batch, voxel_batched)` introduced in
-`forward_project_pixel_batch_to_one_view` (line 541 of `parallel_beam.py`) lowers
-through a `while` loop whose scatter-add codegen miscompiles for specific closed-over
-`(n_p, n_pc)` arrays.  The bug is below the JAxPR level — scan-body JAxPRs are bitwise
-identical between buggy and clean variants.
+**Root cause:** XLA-level bug triggered when an integer scatter destination derived
+via `jnp.round(n_p)` on a continuous in-jit `n_p` is consumed inside a
+`vmap → lax.map → scatter-add` chain.  The precise XLA failure mechanism is **not** the
+"CSE-failed round" story we initially hypothesized — direct probes ruled that out, and
+`jax.lax.optimization_barrier(n_pc)` does not fix the bug.  What we know with certainty:
+remove `jnp.round` from inside the chain (precompute the integer outside and pass it
+in) and the bug vanishes.  Float64 promotion, `safe_round`-style perturbation, and
+optimization barriers all fail to fix it or merely shift it to a different pixel batch.
 
-**Minimal reproducer:**  `experiments/sharding/minimal_lax_map_repro.py` (no mbirjax
-dependency) fires the bug with `max|diff| ≈ 0.5` using only the ROR-masked pixel batch 8
-of a 256×256 recon, `vmap` of size 1 over a single view, `lax.map` over 8 slice batches,
-and the PSF kernel with offsets ±1.  Full investigation notes in
-`experiments/sharding/minimal_lax_map_repro.md`.
+**Minimal reproducer:**  `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.py`
+(no mbirjax dependency) fires the bug with `max|diff| ≈ 0.5` using only the ROR-masked
+pixel batch 8 of a 256×256 recon, `vmap` of size 1 over a single view, `lax.map` over 8
+slice batches, and the PSF kernel with offsets ±1.  Full investigation notes in the
+companion `minimal_lax_map_repro.md` in the same directory.
 
-**Workaround (one-line):** Replace `jax.lax.map(f, xs)` with `jax.vmap(f)(xs)` in
-`parallel_beam.py` line 541.  Both iterate `f` over the leading axis of `xs`; `vmap`
-lowers via a different XLA path that does not exhibit the bug.  Confirmed correct by
-`forward_fixed` in `vmap_lax_map_demo.py`.
+**Resolution:** Precompute the integer scatter index (`n_p_center` in parallel beam,
+plus `m_p_center` / `k_m_center` in the other geometries) on the host and pass it into
+the jit'd projector kernels as a new argument.  Leave the float geometry derivation
+(`cos`/`sin`/`n_p`/`W_pc`/`cos_alpha`/`L_max`) in-jit as before.  Test T15j in the
+minimization script confirms this gives bit-clean output across all 24 batches that
+previously hit the bug.
 
-**Status:** Ready to apply the workaround in production.  Filing an upstream bug
-report with the minimal reproducer is optional but recommended.
+**Scope of the rewire:** ~11 round-of-continuous-projection-coordinate sites across
+four geometry files (`parallel_beam.py`, `cone_beam.py`, `multiaxis_parallel.py`,
+`translation_model.py`).  Plan is to patch them uniformly rather than verifying each
+site triggers individually — the precondition is in the same family and the precompute
+costs nothing at runtime.  Full plan and inventory in
+[`experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`](../experiments/bugs_and_artifacts/jax%20rounding%20bug/jax_rounding_bug.md).
+
+**Status:** Design done.  Implementation work is scoped but not started; awaits a
+maintainer discussion on the geometry-specific precompute API
+(`precompute_scatter_indices` on `TomographyModel`, overridden per subclass, returning
+a geometry-specific container of integer arrays).
 
 ---
 
-### 2. Forward projection performance (`_B` lax.map experiment) — **unblocked**
+### 2. Forward projection performance (`_B` lax.map experiment) — **preserved by precompute fix**
 
 **Experiment:** Commit `0f85fa1` on HEAD introduces a slice-batch `lax.map` in
 `forward_project_pixel_batch_to_one_view` with a tunable constant `_B`. At `_B=16`,
 single-device CPU throughput improves ~27% vs. the prerelease. The code is in
 experimental state.
 
-**Status:** No longer blocked by Investigation 1.  Once the `lax.map → vmap` workaround
-is applied, the cache-locality benefit of `_B`-batching may or may not survive — `vmap`
-typically vectorizes across the batch axis rather than executing sequentially, which
-could lose the L1-residency win.  Worth re-benchmarking after the fix lands.  Whether a
-similar cache-aware batching could improve back projection is still an open question.
+**Status:** The precompute fix in Investigation 1 keeps `lax.map` in place, so the
+cache-locality benefit of `_B`-batching is preserved by construction (no `lax.map →
+vmap` swap as previously considered).  Whether a similar cache-aware batching could
+improve back projection is still an open question.
 
 ---
 

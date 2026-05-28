@@ -25,7 +25,7 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-model_type = 'parallel'  # 'cone' or 'parallel'
+model_type = 'cone'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -44,7 +44,7 @@ angles = params['angles']
 
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
-mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
+# mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
 
 """**Initialize for the reconstruction**"""
 
@@ -56,6 +56,8 @@ if model_type == 'cone':
     ct_model = mj.ConeBeamModel(sinogram.shape, angles, source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist)
 else:
     ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
+
+
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed to reduce the effect of possibly noisy sinogram entries.
 weights = None
@@ -84,7 +86,7 @@ time0 = time.time()
 # recon and recon_dict can be used together for viewing and saving to an hdf5 file.
 # Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
 # or to recreate the model if desired.
-recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=2)
 
 max_diff = np.amax(np.abs(phantom - recon))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
