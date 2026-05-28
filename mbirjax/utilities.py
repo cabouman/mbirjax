@@ -21,7 +21,6 @@ import h5py
 import re
 import warnings
 import subprocess
-import scipy
 
 
 def load_data_hdf5(file_path):

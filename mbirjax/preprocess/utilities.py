@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import jax
 import cv2
 import mbirjax as mj
+import scipy
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
