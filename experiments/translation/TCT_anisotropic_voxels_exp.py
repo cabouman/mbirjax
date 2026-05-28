@@ -25,7 +25,7 @@ def main():
     text_word = ['P']
 
     voxel_row_aspect = 8.0
-    voxel_slice_aspect = 1.0
+    voxel_slice_aspect = 0.5
 
     # Output path
     output_path = './output/'  # path to store output recon images
