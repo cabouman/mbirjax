@@ -75,7 +75,7 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
                                                                                 crop_pixels_top=crop_pixels_top,
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
-    weights = create_detector_weight_mask(obj_scan, threshold_ratio=0.35)
+    weights = create_detector_weight_mask(blank_scan, obj_scan, threshold_ratio=0.7)
 
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
@@ -883,13 +883,13 @@ def correct_sino_shifts(sino, zeiss_params):
 
     return corrected_sino
 
-
-def create_detector_weight_mask(obj_scan, threshold_ratio=0.05):
+def create_detector_weight_mask(blank_scan, obj_scan, threshold_ratio=0.05):
     """
-    Create a binary weight matrix to exclude black boundary regions.
+    Create a binary weight mask to exclude black boundary regions.
 
     Args:
-        obj_scan: array with shape (num_views, rows, cols)
+        blank_scan: A 3D blank scan of shape (num_blank_scans, num_det_rows, num_det_channels).
+        obj_scan: A 3D object scan of shape (num_views, num_det_rows, num_det_channels).
         threshold_ratio: threshold relative to mean intensity
 
     Returns:
@@ -897,7 +897,7 @@ def create_detector_weight_mask(obj_scan, threshold_ratio=0.05):
     """
 
     # Use first view because boundary is same for all views
-    img = obj_scan[0]
+    img = blank_scan[0]
 
     # Simple threshold
     threshold = threshold_ratio * np.mean(img)
