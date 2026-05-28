@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
     # channels, then the generated phantom may not have an interior.
-    num_views = 256
+    num_views = 128
     num_det_rows = 40
     num_det_channels = 128
 
@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     eigenmode = np.random.random(ct_model.get_params('recon_shape'))
     eigenmode *= eigenmode < 0.01
-    for j in range(10):
+    for j in range(20):
         sinogram = ct_model.forward_project(eigenmode)
         eigenmode = ct_model.back_project(sinogram)
         eigenmode /= hessian
