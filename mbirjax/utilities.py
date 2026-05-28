@@ -1518,25 +1518,20 @@ def estimate_background_cluster_boundaries(sinogram):
     return left_boundary, right_boundary
 
 
-def fit_beam_hardening_curve(linear_projection, target_projection, num_parameters=5):
+def fit_beam_hardening_curve(linear_projection, target_projection, num_parameters=5, zero_offset_normalized=True):
     """
-    Fit parametric beam-hardening function from paired samples.
-
-    This function fits the function
-
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p))
-
-    to paired ``(linear_projection, target_projection)`` samples using
-    nonlinear least squares.
+    Fit a parametric beam-hardening function from paired samples.
 
     Args:
-        linear_projection (np.ndarray): Ideal linear
-            projection or path-length samples.
-        target_projection (np.ndarray): Target
-            beam-hardened projection samples paired with
-            ``linear_projection``.
+        linear_projection (np.ndarray): Ideal linear projection or path-length
+            samples.
+        target_projection (np.ndarray): Target beam-hardened projection
+            samples paired with ``linear_projection``.
         num_parameters (int, optional): Total number of fitted parameters.
-                                        Defaults to 5.
+            Defaults to 5.
+        zero_offset_normalized (bool, optional): If True, use the normalized
+            forward model with ``h(0) = 0``. If False, use the
+            unnormalized log-sum-exp form. Defaults to True.
 
     Returns:
         ndarray: Optimized parameter vector
@@ -1562,11 +1557,9 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
         raise ValueError(
             'fit_beam_hardening_curve: Input and target projection arrays must contain the same number of samples.')
 
-    # Treat the inputs as paired samples even when they are not already 1D.
     linear_projection = linear_projection.ravel()
     target_projection = target_projection.ravel()
 
-    # Keep positive training pairs
     valid_mask = (
         np.isfinite(linear_projection) & np.isfinite(target_projection)
         & (linear_projection > 1e-6) & (target_projection > 1e-6)
@@ -1578,18 +1571,25 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
         raise ValueError(
             'fit_beam_hardening_curve: No valid training samples remain.')
 
-    # Default initialization: theta_0 = 1 and all exponential log-weights = 0.
     initial_params = np.zeros(num_parameters, dtype=np.float64)
     initial_params[0] = 1.0
 
-    # Fit the filtered projection pairs by nonlinear least squares.
+    max_nfev = 20 * num_parameters
+    solver_options = dict(
+        loss="linear",
+        method="trf",
+        max_nfev=max_nfev,
+        ftol=1e-5,
+        xtol=1e-5,
+        gtol=1e-5,
+        verbose=1,
+    )
+
     optimization_result = scipy.optimize.least_squares(
         _beam_hardening_curve_residuals,
         initial_params,
-        args=(linear_projection, target_projection),
-        loss='linear',
-        method='trf',
-        verbose=1,
+        args=(linear_projection, target_projection, zero_offset_normalized),
+        **solver_options,
     )
 
     if not optimization_result.success:
@@ -1597,27 +1597,28 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
             f'fit_beam_hardening_curve: Beam-hardening curve fit did not converge: {optimization_result.message}',
             RuntimeWarning)
 
-    optimized_params = optimization_result.x
-
-    return optimized_params
+    return optimization_result.x
 
 
-def apply_fitted_beam_hardening_curve(linear_projection, params):
+def apply_fitted_beam_hardening_curve(linear_projection, params, zero_offset_normalized=True):
     """
     Apply a fitted parametric beam-hardening function.
 
-    This is the inference step after :func:`fit_beam_hardening_curve`.
-    It maps a linear projection to the corresponding beam-hardened
-    projection using the fitted parameter vector:
+    If ``zero_offset_normalized`` is True, this uses
 
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p)).
+        f(p) = log(sum_i exp(theta_i))
+               - log(sum_i exp(theta_i - i * theta_0 * p)),
+
+    which forces ``f(0) = 0``. If False, this uses the form
+
+        f(p) = -log(sum_i exp(theta_i - i * theta_0 * p)).
 
     Args:
-        linear_projection (np.ndarray): Linear
-            projection values. Arrays of any shape are accepted and the output
-            preserves that shape.
+        linear_projection (np.ndarray): Linear projection values.
         params (np.ndarray): Parameter vector
             ``[theta_0, theta_1, ..., theta_N]``.
+        zero_offset_normalized (bool, optional): Select the zero-normalized
+            forward model. Defaults to True.
 
     Returns:
         ndarray: Beam-hardened projection values with the same shape as
@@ -1633,15 +1634,22 @@ def apply_fitted_beam_hardening_curve(linear_projection, params):
     theta_0 = params[0]
     theta_rest = params[1:]
 
-    log_sum_exp = np.full_like(linear_projection, -np.inf, dtype=np.float64)
+    log_sum_exp_p = np.full_like(linear_projection, -np.inf, dtype=np.float64)
     for i, theta_i in enumerate(theta_rest, start=1):
         exponent = theta_i - i * theta_0 * linear_projection
-        log_sum_exp = np.logaddexp(log_sum_exp, exponent)
+        log_sum_exp_p = np.logaddexp(log_sum_exp_p, exponent)
 
-    return -log_sum_exp
+    if not zero_offset_normalized:
+        return -log_sum_exp_p
+
+    log_sum_exp_0 = -np.inf
+    for theta_i in theta_rest:
+        log_sum_exp_0 = np.logaddexp(log_sum_exp_0, theta_i)
+
+    return log_sum_exp_0 - log_sum_exp_p
 
 
-def _beam_hardening_curve_residuals(params, linear_projection, target_projection):
+def _beam_hardening_curve_residuals(params, linear_projection, target_projection, zero_offset_normalized):
     """
     Return fitted-minus-target residuals for nonlinear least-squares fitting.
 
@@ -1650,11 +1658,184 @@ def _beam_hardening_curve_residuals(params, linear_projection, target_projection
             model parameters.
         linear_projection (np.ndarray): Filtered linear projection samples.
         target_projection (np.ndarray): Filtered target beam-hardened samples.
+        zero_offset_normalized (bool, optional): Select the zero-normalized forward model.
 
     Returns:
         ndarray: One-dimensional residual vector used by
             :func:`scipy.optimize.least_squares`.
     """
     fitted_projection = apply_fitted_beam_hardening_curve(
-        linear_projection, params)
+        linear_projection, params,
+        zero_offset_normalized=zero_offset_normalized)
+
     return fitted_projection.ravel() - target_projection.ravel()
+
+
+def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=10, num_samples=2000, zero_offset_normalized=True):
+    """
+    Fit a Chebyshev inverse that linearizes beam-hardened projections.
+
+    Args:
+        forward_params (np.ndarray): Forward beam-hardening parameters from
+            :func:`fit_beam_hardening_curve`.
+        vmin (float, optional): Minimum input projection value to correct.
+        vmax (float, optional): Maximum input projection value to correct.
+        degree (int, optional): Chebyshev polynomial degree. Defaults to 10.
+        num_samples (int, optional): Number of fitting samples.
+        zero_offset_normalized (bool, optional): Match the forward model
+            normalization used to fit ``forward_params``.
+
+    Returns:
+        tuple: ``(cheb_coeffs, y_domain)`` where ``cheb_coeffs`` is an
+            ndarray of length ``degree + 1`` and ``y_domain`` is ``(vmin,
+            vmax)`` for later inverse evaluation.
+
+    Example:
+        >>> forward_params = fit_beam_hardening_curve(
+        ...     sinogram.ravel(), sinogram_nonlinear.ravel(),
+        ...     num_parameters=5)
+        >>> cheb_coeffs, y_domain = fit_inverse_beam_hardening_curve(
+        ...     forward_params,
+        ...     vmin=0.0,
+        ...     vmax=float(sinogram_nonlinear.max()),
+        ...     degree=10)
+        >>> sinogram_linearized = apply_fitted_inverse_beam_hardening_curve(
+        ...     sinogram_nonlinear, cheb_coeffs, y_domain)
+    """
+    forward_params = np.asarray(forward_params, dtype=np.float64).reshape(-1)
+    vmin = float(vmin)
+    vmax = float(vmax)
+    degree = int(degree)
+    num_samples = int(num_samples)
+
+    if not (np.isfinite(vmin) and np.isfinite(vmax)) or vmax <= vmin:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: require finite vmin < vmax.')
+    if degree < 1:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: degree must be at least 1.')
+    if num_samples < degree + 1:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: num_samples must be at least '
+            'degree + 1.')
+
+    # estimate effective attenuation (h'(0))
+    epsilon = 1e-6
+    forward_at_zero = apply_fitted_beam_hardening_curve(
+        0.0, forward_params,
+        zero_offset_normalized=zero_offset_normalized)
+
+    forward_at_epsilon = apply_fitted_beam_hardening_curve(
+        epsilon, forward_params,
+        zero_offset_normalized=zero_offset_normalized)
+
+    effective_attenuation = float(
+        (forward_at_epsilon - forward_at_zero) / epsilon)
+
+    path_min = 0.0
+    path_max = max(path_min + 1.0, abs(vmax) + 1.0)
+    # Each pass doubles path_max; this guard prevents an infinite expansion loop.
+    max_expand_iterations = 64
+    for _ in range(max_expand_iterations):
+        y_at_path_max = apply_fitted_beam_hardening_curve(
+            path_max, forward_params,
+            zero_offset_normalized=zero_offset_normalized)
+        if np.isfinite(y_at_path_max) and y_at_path_max >= vmax:
+            break
+        path_max = path_min + 2.0 * (path_max - path_min)
+    else:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: could not expand the path '
+            'length grid enough to cover vmax.')
+
+    p_grid = np.linspace(
+        path_min, path_max, 4 * num_samples, dtype=np.float64)
+    y_grid = apply_fitted_beam_hardening_curve(
+        p_grid, forward_params,
+        zero_offset_normalized=zero_offset_normalized)
+
+    valid_mask = np.isfinite(p_grid) & np.isfinite(y_grid)
+    p_grid = p_grid[valid_mask]
+    y_grid = y_grid[valid_mask]
+    if p_grid.size < degree + 1:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: too few finite forward '
+            'samples.')
+
+    sort_idx = np.argsort(y_grid)
+    y_sorted = y_grid[sort_idx]
+    p_sorted = p_grid[sort_idx]
+    y_unique, unique_idx = np.unique(y_sorted, return_index=True)
+    p_unique = p_sorted[unique_idx]
+
+    if y_unique.size < degree + 1 or y_unique[-1] <= y_unique[0]:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: forward model is not '
+            'invertible on the sampled grid.')
+    if vmax > y_unique[-1]:
+        raise ValueError(
+            'fit_inverse_beam_hardening_curve: sampled forward '
+            f'model only reaches {y_unique[-1]:.6g}, below vmax={vmax:.6g}.')
+    if vmin < y_unique[0]:
+        warnings.warn(
+            'fit_inverse_beam_hardening_curve: vmin is below the forward '
+            'value at zero path length; low-end inverse samples will be '
+            'clamped to zero.',
+            RuntimeWarning)
+
+    y_samples = np.linspace(vmin, vmax, num_samples, dtype=np.float64)
+    p_samples = np.interp(
+        y_samples, y_unique, p_unique,
+        left=p_unique[0], right=p_unique[-1])
+    linearized_projection_samples = p_samples * effective_attenuation
+
+    y_scaled = 2.0 * (y_samples - vmin) / (vmax - vmin) - 1.0
+    cheb_coeffs = np.polynomial.chebyshev.chebfit(
+        y_scaled, linearized_projection_samples, deg=degree)
+
+    return cheb_coeffs, (vmin, vmax)
+
+
+def apply_fitted_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_domain, clip=False):
+    """
+    Apply a fitted Chebyshev inverse to linearize projection values.
+
+    Args:
+        beam_hardened_projection (np.ndarray): Beam-hardened projection
+            values. Arrays of any shape are accepted and the output preserves
+            that shape.
+        cheb_coeffs (np.ndarray): Coefficients returned by
+            :func:`fit_inverse_beam_hardening_curve`.
+        y_domain (tuple): ``(vmin, vmax)`` projection range used for fitting.
+        clip (bool, optional): If True, clip input values into ``y_domain``
+            before evaluation. If False, warn when extrapolating. Defaults to
+            False.
+
+    Returns:
+        ndarray: Linearized projection values with the same shape as
+            ``beam_hardened_projection``.
+    """
+    beam_hardened_projection = np.asarray(
+        beam_hardened_projection, dtype=np.float64)
+    cheb_coeffs = np.asarray(cheb_coeffs, dtype=np.float64).reshape(-1)
+    y_min, y_max = float(y_domain[0]), float(y_domain[1])
+
+    if y_max <= y_min:
+        raise ValueError(
+            'apply_fitted_inverse_beam_hardening_curve: y_domain must '
+            'satisfy y_max > y_min.')
+
+    if clip:
+        y_eval = np.clip(beam_hardened_projection, y_min, y_max)
+    else:
+        if (np.any(beam_hardened_projection < y_min)
+                or np.any(beam_hardened_projection > y_max)):
+            warnings.warn(
+                'apply_fitted_inverse_beam_hardening_curve: inputs lie '
+                'outside the fitted y_domain; extrapolated values may be '
+                'unreliable.',
+                RuntimeWarning)
+        y_eval = beam_hardened_projection
+
+    y_scaled = 2.0 * (y_eval - y_min) / (y_max - y_min) - 1.0
+    return np.polynomial.chebyshev.chebval(y_scaled, cheb_coeffs)
