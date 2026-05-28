@@ -136,7 +136,7 @@ if __name__ == '__main__':
     baseline_corrected_projection = mjp.pymbir.apply_bh_correction(
         y_inverse_eval, BHCN_params)
     cheb_corrected_projection = (
-        mj.apply_fitted_inverse_beam_hardening_curve(
+        mj.apply_inverse_beam_hardening_curve(
             y_inverse_eval, cheb_coeffs, y_domain)
     )
 
@@ -183,7 +183,7 @@ if __name__ == '__main__':
     for start in range(0, recon_sino_no_corr.shape[0], correction_batch_size):
         stop = min(start + correction_batch_size, recon_sino_no_corr.shape[0])
         recon_sino_cheb[start:stop] = (
-            mj.apply_fitted_inverse_beam_hardening_curve(
+            mj.apply_inverse_beam_hardening_curve(
                 recon_sino_no_corr[start:stop],
                 cheb_coeffs,
                 y_domain,

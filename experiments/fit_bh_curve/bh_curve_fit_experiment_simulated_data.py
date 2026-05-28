@@ -55,7 +55,7 @@ if __name__ == '__main__':
     #####################
     # Apply BH curve
     #####################
-    fitted_nonlinear_projection = mj.apply_fitted_beam_hardening_curve(
+    fitted_nonlinear_projection = mj.apply_beam_hardening_curve(
         test_linear_projection,
         best_bh_params,
     )

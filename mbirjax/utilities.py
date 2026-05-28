@@ -1542,7 +1542,7 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
         >>> target_projection = sinogram_nonlinear.ravel()
         >>> fitted_params = fit_beam_hardening_curve(
         ...     linear_projection, target_projection, num_parameters=5)
-        >>> y_pred = apply_fitted_beam_hardening_curve(
+        >>> y_pred = apply_beam_hardening_curve(
         ...     sinogram_test, fitted_params)
     """
     num_parameters = int(num_parameters)
@@ -1600,7 +1600,7 @@ def fit_beam_hardening_curve(linear_projection, target_projection, num_parameter
     return optimization_result.x
 
 
-def apply_fitted_beam_hardening_curve(linear_projection, params, zero_offset_normalized=True):
+def apply_beam_hardening_curve(linear_projection, params, zero_offset_normalized=True):
     """
     Apply a fitted parametric beam-hardening function.
 
@@ -1664,7 +1664,7 @@ def _beam_hardening_curve_residuals(params, linear_projection, target_projection
         ndarray: One-dimensional residual vector used by
             :func:`scipy.optimize.least_squares`.
     """
-    fitted_projection = apply_fitted_beam_hardening_curve(
+    fitted_projection = apply_beam_hardening_curve(
         linear_projection, params,
         zero_offset_normalized=zero_offset_normalized)
 
@@ -1699,7 +1699,7 @@ def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=
         ...     vmin=0.0,
         ...     vmax=float(sinogram_nonlinear.max()),
         ...     degree=10)
-        >>> sinogram_linearized = apply_fitted_inverse_beam_hardening_curve(
+        >>> sinogram_linearized = apply_inverse_beam_hardening_curve(
         ...     sinogram_nonlinear, cheb_coeffs, y_domain)
     """
     forward_params = np.asarray(forward_params, dtype=np.float64).reshape(-1)
@@ -1721,11 +1721,11 @@ def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=
 
     # estimate effective attenuation (h'(0))
     epsilon = 1e-6
-    forward_at_zero = apply_fitted_beam_hardening_curve(
+    forward_at_zero = apply_beam_hardening_curve(
         0.0, forward_params,
         zero_offset_normalized=zero_offset_normalized)
 
-    forward_at_epsilon = apply_fitted_beam_hardening_curve(
+    forward_at_epsilon = apply_beam_hardening_curve(
         epsilon, forward_params,
         zero_offset_normalized=zero_offset_normalized)
 
@@ -1737,7 +1737,7 @@ def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=
     # Each pass doubles path_max; this guard prevents an infinite expansion loop.
     max_expand_iterations = 64
     for _ in range(max_expand_iterations):
-        y_at_path_max = apply_fitted_beam_hardening_curve(
+        y_at_path_max = apply_beam_hardening_curve(
             path_max, forward_params,
             zero_offset_normalized=zero_offset_normalized)
         if np.isfinite(y_at_path_max) and y_at_path_max >= vmax:
@@ -1750,7 +1750,7 @@ def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=
 
     p_grid = np.linspace(
         path_min, path_max, 4 * num_samples, dtype=np.float64)
-    y_grid = apply_fitted_beam_hardening_curve(
+    y_grid = apply_beam_hardening_curve(
         p_grid, forward_params,
         zero_offset_normalized=zero_offset_normalized)
 
@@ -1796,7 +1796,7 @@ def fit_inverse_beam_hardening_curve(forward_params, vmin=0.0, vmax=5.0, degree=
     return cheb_coeffs, (vmin, vmax)
 
 
-def apply_fitted_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_domain, clip=False):
+def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_domain, clip=False):
     """
     Apply a fitted Chebyshev inverse to linearize projection values.
 
@@ -1822,7 +1822,7 @@ def apply_fitted_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coe
 
     if y_max <= y_min:
         raise ValueError(
-            'apply_fitted_inverse_beam_hardening_curve: y_domain must '
+            'apply_inverse_beam_hardening_curve: y_domain must '
             'satisfy y_max > y_min.')
 
     if clip:
@@ -1831,7 +1831,7 @@ def apply_fitted_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coe
         if (np.any(beam_hardened_projection < y_min)
                 or np.any(beam_hardened_projection > y_max)):
             warnings.warn(
-                'apply_fitted_inverse_beam_hardening_curve: inputs lie '
+                'apply_inverse_beam_hardening_curve: inputs lie '
                 'outside the fitted y_domain; extrapolated values may be '
                 'unreliable.',
                 RuntimeWarning)
