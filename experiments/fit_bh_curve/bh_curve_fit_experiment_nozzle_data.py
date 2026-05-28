@@ -15,7 +15,8 @@ if __name__ == '__main__':
     #####################
     # Configuration
     #####################
-    dataset_url = '/depot/bouman/data/ORNL/fit_bh_curve_nozzle_data.tgz'
+    dataset_url_training = (
+        'https://www.datadepot.rcac.purdue.edu/bouman/data/fit_bh_curve_nozzle_data.tgz')
     dataset_url_scan = (
         'https://www.datadepot.rcac.purdue.edu/bouman/data/hfn_scan.tgz')
     download_dir = './demo_data/'
@@ -35,7 +36,7 @@ if __name__ == '__main__':
     ###############
     # Load data
     ###############
-    dataset_dir = mj.download_and_extract(dataset_url, download_dir)
+    dataset_dir = mj.download_and_extract(dataset_url_training, download_dir)
 
     print('Loading training beam-hardened projection')
     training_beam_hardened_projection = np.load(os.path.join(
