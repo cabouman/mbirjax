@@ -7,6 +7,7 @@ A simulated hyperspectral neutron dataset containing three materials (Ni, Cu, an
 """
 
 import os
+import shutil
 import numpy as np
 import time
 import matplotlib.pyplot as plt
@@ -40,7 +41,11 @@ def main():
     y_lim_attenuation = (1, 2.7)  # (y_min, y_max) to set y-axis range for attenuation spectra
     y_lim_transmission = (0, 0.35)  # (y_min, y_max) to set y-axis range for transmission spectra
     output_path = './output_plots/'  # path to export output plots
-    os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
+
+    # Delete old output plots if they exist
+    if os.path.exists(output_path):
+        shutil.rmtree(output_path)
+    os.makedirs(output_path, exist_ok=True)
 
     # Fix seed for random number generation
     np.random.seed(129)
