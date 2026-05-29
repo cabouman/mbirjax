@@ -58,14 +58,14 @@ class TranslationModel(mj.TomographyModel):
 
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
-        self.use_ror_mask = False
         self.entries_per_cylinder_batch = 128
         translation_vectors = jnp.asarray(translation_vectors)
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,))
-
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,), ror_mask_option=None)
+        
+        # self.set_params(ror_mask_option = None)
         self.set_params(max_overrelaxation=1.3)  # We override this value due to observed instabilities with larger values
 
     def get_magnification(self):

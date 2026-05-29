@@ -913,8 +913,6 @@ class ConeBeamModel(TomographyModel):
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
-        view_params_array = self.get_params('view_params_array')
-        helical_z_shifts = view_params_array[:, 1]
         
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
@@ -969,14 +967,41 @@ class ConeBeamModel(TomographyModel):
             filtered_sinogram_batch.block_until_ready()
             filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
-        if num_views > 1 and z_range > 0:
-            det_height_iso = num_rows * delta_det_row / M_0
-            z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
-            filtered_sinogram *= jnp.pi * z_range / (det_height_iso * num_views)
-        else:
-            filtered_sinogram *= jnp.pi / num_views
+        filtered_sinogram *= jnp.pi / num_views
         return filtered_sinogram
+
+    def helical_fdk_z_weight(self, recon, sinogram):
+        """
+        Scale each helical FDK slice by the inverse of the fraction of the scan that the slice is in view of the detector.
+
+        Args:
+            recon (jax array): The initial FDK reconstruction.
+            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+
+        Returns:
+            recon (jax array): The helical FDK reconstruction with correctly weighted slice intensity.
+        """
+        
+        num_views, num_rows, num_channels = sinogram.shape
+        view_params_array = self.get_params('view_params_array')
+        helical_z_shifts = view_params_array[:, 1]
+        delta_voxel, voxel_slice_aspect, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
+            ['delta_voxel', 'voxel_slice_aspect', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
+        )
+        M_0 = self.get_magnification()
+        num_rows = self.get_params('sinogram_shape')[1]
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+        num_slices = recon_shape[2]
+        
+        k = jnp.arange(num_slices)
+        z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+        det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
+        visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
+        coverage = jnp.sum(visible, axis=1)
+        z_weight = num_views / coverage
+        recon = recon * z_weight[None, None, :]
+        
+        return recon
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
         """
@@ -1000,6 +1025,14 @@ class ConeBeamModel(TomographyModel):
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
+        
+        # Slice dependent filtering for helical recon
+        view_params_array = self.get_params('view_params_array')
+        helical_z_shifts = view_params_array[:, 1]
+        z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
+        if z_range > 0:
+            warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
+            recon = self.helical_fdk_z_weight(recon, sinogram)
 
         return recon
 

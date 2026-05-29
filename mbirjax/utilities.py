@@ -957,6 +957,68 @@ class ModelType(str, Enum):
     TRANSLATION = 'translation'
 
 
+def get_helical_half_rotation_slice_range(
+    ct_model,
+    helical_pitch,
+    helical_z_shifts,
+):
+    """
+    Return the contiguous slice range whose z positions are visible for at least
+    half a rotation.
+
+    Assumes helical_z_shifts are monotone and uniformly sampled.
+    
+    Returns:
+        start_slice, stop_slice, valid_slice_mask
+        where stop_slice is exclusive.
+    """
+    recon_shape = ct_model.get_params('recon_shape')
+    delta_voxel, voxel_slice_aspect, recon_slice_offset = ct_model.get_params(
+        ['delta_voxel', 'voxel_slice_aspect', 'recon_slice_offset']
+    )
+    sinogram_shape = ct_model.get_params('sinogram_shape')
+    delta_det_row = ct_model.get_params('delta_det_row')
+    magnification = ct_model.get_magnification()
+
+    num_slices = recon_shape[2]
+    num_det_rows = sinogram_shape[1]
+
+    delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+    # Slice-center z locations in reconstruction coordinates.
+    k = jnp.arange(num_slices)
+    z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+
+    # Detector height mapped to isocenter.
+    det_height_iso = num_det_rows * delta_det_row / magnification
+
+    # Table travel range.
+    z_shift_min = jnp.min(helical_z_shifts)
+    z_shift_max = jnp.max(helical_z_shifts)
+
+    # Extra interior trim needed when pitch > 1.
+    # For pitch <= 1, the table-travel endpoints already have at least
+    # half-rotation visibility, so no trim is needed.
+    trim = 0.5 * det_height_iso * jnp.maximum(float(helical_pitch) - 1.0, 0.0)
+
+    z_min = z_shift_min + trim
+    z_max = z_shift_max - trim
+
+    valid_slice_mask = (z_k >= z_min) & (z_k <= z_max)
+
+    valid_indices = np.where(np.asarray(valid_slice_mask))[0]
+    if len(valid_indices) == 0:
+        raise ValueError(
+            "No slices are visible for at least half a rotation. "
+            "Check helical_pitch, helical_z_range, num_views, and detector height."
+        )
+
+    start_slice = int(valid_indices[0])
+    stop_slice = int(valid_indices[-1] + 1)
+
+    return start_slice, stop_slice
+
+
 def generate_demo_data(
     object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
     model_type: Union[ModelType, str] = ModelType.CONE,
@@ -1035,7 +1097,7 @@ def generate_demo_data(
         # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         source_detector_dist = 4 * num_det_channels
-        source_iso_dist = source_detector_dist
+        source_iso_dist = source_detector_dist/2
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
@@ -1123,12 +1185,31 @@ def generate_demo_data(
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     device = ct_model_for_generation.main_device
+    phantom_shape = recon_shape
+    embed_slice_start = 0
+    embed_slice_stop = recon_shape[2]
+    if model_type == ModelType.CONE and use_helical:
+        embed_slice_start, embed_slice_stop = get_helical_half_rotation_slice_range(
+            ct_model_for_generation,
+            helical_pitch,
+            helical_z_shifts
+        )
+        phantom_shape = (
+            recon_shape[0],
+            recon_shape[1],
+            embed_slice_stop - embed_slice_start,
+        )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom = generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device)
     elif object_type == ObjectType.CUBE:
-        phantom = gen_cube_phantom(recon_shape, device=device)
+        phantom_core = gen_cube_phantom(phantom_shape, device=device)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
+    if model_type == ModelType.CONE and use_helical:
+        phantom = jnp.zeros(recon_shape, device=device)
+        phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+    else:
+        phantom = phantom_core
     
     # Generate synthetic sinogram data
     print('Creating sinogram')
