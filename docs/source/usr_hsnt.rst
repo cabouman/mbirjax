@@ -18,7 +18,6 @@ Dehydration/Rehydration
 Import/Export
 -------------
 
-.. autofunction:: mbirjax.hsnt.import_hsnt_list_hdf5
 .. autofunction:: mbirjax.hsnt.import_hsnt_data_hdf5
 .. autofunction:: mbirjax.hsnt.create_hsnt_metadata
 .. autofunction:: mbirjax.hsnt.export_hsnt_data_hdf5

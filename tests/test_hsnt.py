@@ -96,10 +96,7 @@ class TestHSNT(unittest.TestCase):
 
         hsnt.export_hsnt_data_hdf5(self.h5file, self.clean, metadata_dict)
 
-        dataset_names = hsnt.import_hsnt_list_hdf5(self.h5file)
-        self.assertIn("synthetic_test", dataset_names)
-
-        imported_data, imported_metadata_dict = hsnt.import_hsnt_data_hdf5(self.h5file, "synthetic_test")
+        imported_data, imported_metadata_dict = hsnt.import_hsnt_data_hdf5(self.h5file)
         self.assertEqual(imported_data.shape, self.clean.shape)
         diff = np.linalg.norm(imported_data - self.clean)
         self.assertLess(diff, 1e-6, f"HDF5 round trip data mismatch (diff={diff})")

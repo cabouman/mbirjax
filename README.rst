@@ -48,6 +48,34 @@ Installing from Source
             pip install -r requirements.txt
             pip install .
 
+Optional Pixi Development Environment
+-------------------------------------
+
+For contributors who use `Pixi <https://pixi.sh>`__, MBIRJAX also provides an optional reproducible development environment.
+This does not replace the conda installation workflow above.
+
+For the default CPU environment on Linux or Apple Silicon macOS:
+
+    .. code-block::
+
+        pixi run smoke
+        pixi run test-fast
+
+For a CUDA-enabled Linux system:
+
+    .. code-block::
+
+        pixi run -e cuda smoke-jax
+        pixi run -e cuda test-fast
+
+Additional useful tasks include:
+
+    .. code-block::
+
+        pixi run test
+        pixi run test-data
+        pixi run docs
+
 Running Demo(s)
 ---------------
 
@@ -56,4 +84,3 @@ Run any of the available demo scripts with something like the following:
     .. code-block::
 
         python demo/<demo_file>.py
-
