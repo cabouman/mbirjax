@@ -18,7 +18,7 @@ import mbirjax as mj
 # -------------------------
 object_type = "shepp-logan"   # "shepp-logan" or "cube"
 model_type = "cone"
-use_curved_detector = False
+use_curved_detector = True
 
 num_views = 360   # total number of views in the sinogram
 num_det_rows = 40

@@ -8,15 +8,7 @@ import mbirjax as mj
 
 class TestFBPReconstruction(unittest.TestCase):
     """
-    Unit test for FBP reconstruction.
-    Specifically tests FBP for:
-        - FBP 1: parallel beam geometry
-        - FBP 2: parallel beam geometry with anisotropic (non-cubic) voxels
-        - FDK 1: circular cone-beam geometry
-        - FDK 2: circular cone-beam geometry with a curved detector panel
-        - FDK 3: circular cone-beam geometry with anisotropic (non-cubic) voxels
-        - FDK 4: helical cone-beam geometry
-    Tests the accuracy of the reconstruction against the 3 metrics: NRMSE, max_diff, and pct_95.
+    Unit tests for verifying the reconstruction accuracy of the FBP and FDK algorithms in MBIRJAX.
     """
     
     def setUp(self):
