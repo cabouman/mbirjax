@@ -30,7 +30,7 @@ def main():
     # Denoiser parameters
     num_materials = 3  # Number of materials
     verbose = 2  # Verbosity level
-    N = 300  # Number of fine-tuning iterations
+    N = 1000  # Number of fine-tuning iterations
 
     # Display parameters
     display_wave_idx = 200  # Wavelength index of displayed images
@@ -76,11 +76,11 @@ def main():
 
     frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum()
     gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum() / frob_loss
-    newton_loss = 1  # Initialize to 1 since we will be comparing to the Frobenius loss
+    newton_loss = np.inf
 
     # Refine using nonnegative attenuation loss
-    W_newt = W.copy()
-    H_newt = H.copy()
+    W_newt = np.random.rand(*W.shape)
+    H_newt = np.random.rand(*H.shape)
     W_mu = W_newt.copy()
     H_mu = H_newt.copy()
     for i in range(N):  # Run for a fixed number of iterations
@@ -99,7 +99,7 @@ def main():
         dH = dL_dB / (d2L_dB2 + 1e-10)
 
         # Compute learning rate using line search
-        for learning_rate in np.logspace(-3, 0, 20):
+        for learning_rate in np.logspace(-2, 0, 5):
             W_temp = np.maximum(W_newt - learning_rate * dW, 1e-10)
             H_temp = np.maximum(H_newt - learning_rate * dH, 1e-10)
             proj = W_temp @ H_temp
@@ -125,7 +125,7 @@ def main():
         mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / frob_loss
 
         # Plot hyperspectral projections and spectra
-        if verbose > 1:
+        if verbose > 1 and (i % 20 == 0 or i == N - 1):  # Plot at regular intervals and the last iteration
             plot_images(images=[gt_hyper_projection[0, :, :, display_wave_idx],
                                 noisy_hyper_projection[0, :, :, display_wave_idx],
                                 frob_hyper_projection[0, :, :, display_wave_idx],
@@ -177,15 +177,18 @@ def main():
     if verbose > 1:
         images = []
         for i in range(N):
-            images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_projection_{i}.png'))
+            if os.path.exists(f'{output_path}/example_1_nonnegative_attenuation_loss_projection_{i}.png'):
+                images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_projection_{i}.png'))
         images[0].save('example_1_nonnegative_attenuation_loss_projection.gif', save_all=True, append_images=images[1:], delay=0.01, loop=0)
         images = []
         for i in range(N):
-            images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_{i}.png'))
+            if os.path.exists(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_{i}.png'):
+                images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_{i}.png'))
         images[0].save('example_1_nonnegative_attenuation_loss_spectra.gif', save_all=True, append_images=images[1:], delay=0.01, loop=0)
         images = []
         for i in range(N):
-            images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_transmission_{i}.png'))
+            if os.path.exists(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_transmission_{i}.png'):
+                images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_transmission_{i}.png'))
         images[0].save('example_1_nonnegative_attenuation_loss_spectra_transmission.gif', save_all=True, append_images=images[1:], delay=0.01, loop=0)
 
 if __name__ == "__main__":
