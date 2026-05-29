@@ -1,5 +1,5 @@
 # Multi-GPU Sharding: Status and Implementation Plan
-*Last updated: 2026-05-26 (brief status update at beginning of file)*
+*Last updated: 2026-05-29 (brief status update at beginning of file)*
 
 ---
 
@@ -94,17 +94,19 @@ for other code structures where the bug may appear.  Full decision and rationale
 
 ---
 
-### 2. Forward projection performance (`_B` lax.map experiment) — **preserved by precompute fix**
+### 2. Forward projection performance (`_B` lax.map experiment) — **kept; carries the Investigation-1 bug**
 
 **Experiment:** Commit `0f85fa1` on HEAD introduces a slice-batch `lax.map` in
 `forward_project_pixel_batch_to_one_view` with a tunable constant `_B`. At `_B=16`,
 single-device CPU throughput improves ~27% vs. the prerelease. The code is in
 experimental state.
 
-**Status:** The precompute fix in Investigation 1 keeps `lax.map` in place, so the
-cache-locality benefit of `_B`-batching is preserved by construction (no `lax.map →
-vmap` swap as previously considered).  Whether a similar cache-aware batching could
-improve back projection is still an open question.
+**Status:** The `lax.map` batching stays as-is.  Because the Investigation-1 rewire is
+**deferred**, this code still carries the rare rounding/scatter bug (accepted as
+low-practical-risk per the 2026-05-26 decision).  If/when the precompute rewire lands,
+it keeps `lax.map` in place, so the cache-locality benefit of `_B`-batching is preserved
+— no `lax.map → vmap` swap.  Whether a similar cache-aware batching could improve back
+projection is still an open question.
 
 ---
 
