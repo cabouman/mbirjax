@@ -30,7 +30,6 @@ def main():
     # Denoiser parameters
     num_materials = 3  # Number of materials
     verbose = 2  # Verbosity level
-    learning_rate = 0.01  # Learning rate for Newton updates
     N = 300  # Number of fine-tuning iterations
 
     # Display parameters
@@ -72,13 +71,16 @@ def main():
                         safety_factor=1,
                         verbose=verbose)
     frob_hyper_projection = rehydrate([W, H, dataset_type])
+    W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
+    H = H.reshape(num_materials, gt_hyper_projection.shape[-1])
 
     frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum()
     gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum() / frob_loss
+    newton_loss = 1  # Initialize to 1 since we will be comparing to the Frobenius loss
 
     # Refine using nonnegative attenuation loss
-    W_newt = W.copy().reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
-    H_newt = H.copy().reshape(num_materials, gt_hyper_projection.shape[-1])
+    W_newt = W.copy()
+    H_newt = H.copy()
     W_mu = W_newt.copy()
     H_mu = H_newt.copy()
     for i in range(N):  # Run for a fixed number of iterations
@@ -93,8 +95,20 @@ def main():
         d2L_dA2 = Z_newt @ H_newt.T**2
         d2L_dB2 = W_newt.T**2 @ Z_newt
 
-        W_newt = np.maximum(W_newt - learning_rate * dL_dA / (d2L_dA2 + 1e-10), 1e-10)
-        H_newt = np.maximum(H_newt - learning_rate * dL_dB / (d2L_dB2 + 1e-10), 1e-10)
+        dW = dL_dA / (d2L_dA2 + 1e-10)
+        dH = dL_dB / (d2L_dB2 + 1e-10)
+
+        # Compute learning rate using line search
+        for learning_rate in np.logspace(-3, 0, 20):
+            W_temp = np.maximum(W_newt - learning_rate * dW, 1e-10)
+            H_temp = np.maximum(H_newt - learning_rate * dH, 1e-10)
+            proj = W_temp @ H_temp
+            temp_loss = (np.exp(-proj) + T * proj).sum() / frob_loss
+            if temp_loss > newton_loss:
+                break
+            W_newt = W_temp
+            H_newt = H_temp
+            newton_loss = temp_loss
 
         # Multiplicative update
         Z_mu = np.exp(-W_mu @ H_mu)
@@ -108,7 +122,6 @@ def main():
         newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
         mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
 
-        newton_loss = (np.exp(-newton_hyper_projection) + T.reshape(gt_hyper_projection.shape) * newton_hyper_projection).sum() / frob_loss
         mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / frob_loss
 
         # Plot hyperspectral projections and spectra
