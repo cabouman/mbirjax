@@ -86,7 +86,7 @@ time0 = time.time()
 # recon and recon_dict can be used together for viewing and saving to an hdf5 file.
 # Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
 # or to recreate the model if desired.
-recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=2)
+recon, recon_dict = ct_model.recon(sinogram, weights=weights, max_iterations=15)
 
 max_diff = np.amax(np.abs(phantom - recon))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
