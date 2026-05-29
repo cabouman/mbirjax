@@ -12,6 +12,11 @@ experiments/split_sino_recon/output/*
 experiments/zeiss/output
 experiments/zeiss/output/*
 
+experiments/bh_curve_fit/demo_data
+experiments/bh_curve_fit/demo_data/*
+experiments/bh_curve_fit/results
+experiments/bh_curve_fit/results/*
+
 experiments/hsnt/input_data/
 experiments/hsnt/input_data/*
 experiments/hsnt/processed_data/
