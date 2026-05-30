@@ -30,7 +30,7 @@ def main():
     # Denoiser parameters
     num_materials = 3  # Number of materials
     verbose = 2  # Verbosity level
-    N = 1000  # Number of fine-tuning iterations
+    N = 500  # Number of fine-tuning iterations
 
     # Display parameters
     display_wave_idx = 200  # Wavelength index of displayed images
@@ -83,6 +83,8 @@ def main():
     H_newt = np.random.rand(*H.shape)
     W_mu = W_newt.copy()
     H_mu = H_newt.copy()
+    D_newt = []
+    D_mu = []
     for i in range(N):  # Run for a fixed number of iterations
         print(f'Iteration {i + 1}/{N}')
 
@@ -108,6 +110,7 @@ def main():
                 break
             W_newt = W_temp
             H_newt = H_temp
+            newton_hyper_projection = proj.reshape(gt_hyper_projection.shape)
             newton_loss = temp_loss
 
         # Multiplicative update
@@ -118,11 +121,16 @@ def main():
 
         W_mu = W_mu * W_mult
         H_mu = H_mu * H_mult
-
-        newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
         mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
-
         mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / frob_loss
+
+        # Compute least squares estimate of material coefficients for current projections
+        theta_newt = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
+        theta_mu = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
+
+        # Compute MSE of material spectra
+        D_newt.append(np.linalg.norm(theta_newt @ H_newt - material_basis) ** 2 / material_basis.size)
+        D_mu.append(np.linalg.norm(theta_mu @ H_mu - material_basis) ** 2 / material_basis.size)
 
         # Plot hyperspectral projections and spectra
         if verbose > 1 and (i % 20 == 0 or i == N - 1):  # Plot at regular intervals and the last iteration
@@ -173,6 +181,16 @@ def main():
 
             plt.close('all')
 
+    plt.figure(figsize=(10, 6))
+    plt.plot(D_newt, label='Newton')
+    plt.plot(D_mu, label='Multiplicative')
+    plt.xlabel('Iteration')
+    plt.ylabel('MSE')
+    plt.title('Mean Squared Error of Spectra Reconstructions')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'example_1_nonnegative_attenuation_loss_distance_to_material_basis_{gt_hyper_projection.shape[-1]}.png')
+
     # Save GIFs of projections and spectra across iterations
     if verbose > 1:
         images = []
@@ -190,6 +208,8 @@ def main():
             if os.path.exists(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_transmission_{i}.png'):
                 images.append(Image.open(f'{output_path}/example_1_nonnegative_attenuation_loss_spectra_transmission_{i}.png'))
         images[0].save('example_1_nonnegative_attenuation_loss_spectra_transmission.gif', save_all=True, append_images=images[1:], delay=0.01, loop=0)
+
+    plt.show()
 
 if __name__ == "__main__":
     main()
