@@ -141,15 +141,21 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertEqual(model.mesh.devices.size, 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
-    def test_divisibility_error_views(self):
-        """A device count that doesn't divide num_views raises clearly."""
+    def test_divisibility_error(self):
+        """A device count that doesn't divide a sharded axis raises clearly.
+
+        With num_views=8 (sinogram view axis) and 3 devices, the sinogram-axis
+        divisibility check fires first; the message names the sharded axis.
+        """
         devs = preferred_devices(3)
         if devs is None:
             self.skipTest("need >= 3 devices")
         model = self._make_model()  # num_views = 8, not divisible by 3
         with self.assertRaises(ValueError) as ctx:
             model.configure_sharding(devs)
-        self.assertIn("num_views", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("divisible", msg)
+        self.assertIn("sinogram axis", msg)
 
 
 if __name__ == "__main__":

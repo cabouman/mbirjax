@@ -202,29 +202,35 @@ as the projectors are ported (Phases C–F).  Tests in
 
 ---
 
-## Step 3 — Phase B: Sharding hooks under the new axes (parallel beam)
+## Step 3 — Phase B: Sharding hooks under the new axes (parallel beam)  ✅ COMPLETE (2026-05-30)
 
 **Goal:** geometry hooks that place objects on the correct axes, with the axis
 choice declared in one overridable place rather than hardcoded throughout.
 
-- [ ] **Axis-declaration hooks** on `TomographyModel` (simple ints, overridable
+All hooks implemented in the **base class** `TomographyModel` (uniform scheme;
+parallel beam inherits with no overrides).  Additive — no existing path changed.
+`tests/test_sharding_hooks.py` (8) pass; full sharding suite 22/22; projectors
+regression unchanged.
+
+- [x] **Axis-declaration hooks** on `TomographyModel` (simple ints, overridable
       per geometry): `sinogram_shard_axis()` → 0 (view); `recon_shard_axis()` →
-      slice axis (2 for the 3D recon, 1 for the flat recon — handle both, e.g.
-      a shape-aware helper or a small constant pair).  These are the single
-      source of truth for the sharded axis; everything below derives from them.
-- [ ] Retrofit `configure_sharding`'s divisibility asserts to read these hooks
-      instead of hardcoding views/slices (keeps asserts and specs consistent).
-- [ ] `_shard_sinogram` → builds its PartitionSpec from `sinogram_shard_axis()`.
-- [ ] `_shard_recon` → builds its PartitionSpec from `recon_shard_axis()`
-      (3D vs flat recon).
-- [ ] `_gather_sinogram` / `_gather_recon` inverses (host/plain output).
-- [ ] `_extract_halos` (slice-boundary; unchanged in spirit from research since
-      recon is still slice-sharded — confirm it ports cleanly).
-- [ ] Native-sharding contract table for the new axes (forward: recon in →
-      sinogram out; back: sinogram in → recon out), written into the docstrings.
-- **Test:** [ ] hook round-trips (`_shard_*` then `_gather_*` == identity to
-      float noise); halos match `np.asarray(recon)[:, boundary]`.  Fold into a
-      single `test_sharding_hooks.py` rather than one file per hook.
+      **-1** (last axis = slices; one value works for both 3-D `(rows,cols,
+      slices)` and flat `(rows*cols, slices)` recon).  Single source of truth.
+- [x] Retrofit `configure_sharding`'s divisibility asserts to read these hooks
+      (`shape[axis % ndim]`) instead of hardcoding views/slices.
+- [x] `_shard_sinogram` / `_shard_recon` build their PartitionSpec from the axis
+      hooks via the shared `_shard_on_axis(x, axis)` helper.
+- [x] `_gather_sinogram` / `_gather_recon` inverses via `_gather_to_host`
+      (uncommitted single-device output).
+- [x] `_shard_on_axis` uses the `dev2dev_safe` probe through `move_shard`, so the
+      numpy host-bounce is paid only on hardware that needs it (was unconditional
+      on the research branch).  Re-sharding an already-correct array is a no-op.
+- [x] `_extract_halos` (slice-boundary; ports cleanly — recon still
+      slice-sharded; uses `[..., -1]`/`[..., 0]` so it is rank-agnostic).
+- [x] Native-sharding contract documented in the hook docstrings.
+- **Test:** [x] `test_sharding_hooks.py` — axis hooks, no-mesh no-ops, shard/
+      gather round-trips (sino view-axis, flat + 3-D recon slice-axis), reshard
+      no-op, halos match known boundary slices.  Single file.
 
 ---
 

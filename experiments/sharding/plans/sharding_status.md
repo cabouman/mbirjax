@@ -22,10 +22,17 @@
   `TomographyModel.configure_sharding(devices=None)` (1-D mesh axis `'devices'`,
   empirical `dev2dev_safe` probe, O4 divisibility assert on views+slices).
   Fully additive — `main_device`/`sinogram_device` untouched.
-  `test_sharding_primitives.py` 10/10.  **Next: Phase B (sharding hooks on the
-  new view/slice axes).**  **Next: Phase A
-  (primitives — transfer helper + `_d2d_safe` probe, threading helper,
-  `configure_sharding` + trivial-sharding).**
+  `test_sharding_primitives.py` 10/10.
+- **2026-05-30:** **Phase B (sharding hooks) complete.**  Base-class hooks on
+  `TomographyModel`: axis declarations `sinogram_shard_axis()`→0,
+  `recon_shard_axis()`→-1 (last axis = slices, works for 3-D and flat recon);
+  `_shard_on_axis`/`_gather_to_host` mechanism (uses the `dev2dev_safe` probe so
+  the host-bounce is only paid where needed); `_shard_sinogram`/`_gather_sinogram`/
+  `_shard_recon`/`_gather_recon`; `_extract_halos` (rank-agnostic). Divisibility
+  asserts now read the axis hooks. Parallel beam inherits with no overrides;
+  fully additive. `test_sharding_hooks.py` 8/8; full sharding suite 22/22;
+  projectors regression unchanged.  **Next: Phase F1 (FBP filter — view-sharded,
+  zero cross-device comms).**
 
 ## Worktrees
 
@@ -54,7 +61,7 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 
 - [x] Step 1 — Phase 0: scaffolding migration
 - [x] Step 2 — Phase A: primitives (transfer, threading, mesh/trivial-sharding)
-- [ ] Step 3 — Phase B: sharding hooks (new view/slice axes)
+- [x] Step 3 — Phase B: sharding hooks (new view/slice axes)
 - [ ] Step 4 — Phase F1: FBP filter (view-sharded, zero comms — low-hanging)
 - [ ] Step 5 — Phase D: back projection (reduce-scatter)
 - [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test)

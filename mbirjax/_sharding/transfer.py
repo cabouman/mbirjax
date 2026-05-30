@@ -58,25 +58,35 @@ def is_dev2dev_safe(devices) -> bool:
     return bool(np.array_equal(np.asarray(dst), probe))
 
 
-def move_shard(x, target_device, dev2dev_safe=True):
-    """Place array x on target_device, choosing a hardware-safe path.
+def move_shard(x, target, dev2dev_safe=True):
+    """Place array x at ``target``, choosing a hardware-safe path.
+
+    This is the single cross-device transfer primitive.  ``target`` is anything
+    ``jax.device_put`` accepts as a destination: a single ``Device`` (point-to-
+    point move, e.g. in the all-gather/reduce-scatter hot loop) or a
+    ``Sharding`` such as a ``NamedSharding`` (scatter a whole array across the
+    mesh, e.g. entry-point sharding).  Both destinations hit the same
+    hardware-dependent corruption when the source is device-resident, and both
+    are fixed by the same host-bounce, so they share this one code path.
 
     Args:
         x: a JAX array (possibly resident on another device) or a numpy array.
-        target_device: the device to place x on.
+        target: a ``jax.Device`` or a ``jax.sharding.Sharding`` to place x at.
         dev2dev_safe (bool): the cached result of is_dev2dev_safe() for this
             mesh.  When True we copy directly; when False we route through host
             memory (read to numpy, then device_put), which is always correct but
             costs a host round-trip.
 
     Returns:
-        A JAX array resident on target_device.
+        A JAX array placed at ``target``.
     """
     if dev2dev_safe:
-        return jax.device_put(x, target_device)
+        return jax.device_put(x, target)
 
-    # Host-bounce fallback.  Reading a shard to host is always safe; device_put
-    # of a host array is always safe.  Warn once so the degraded path is visible.
+    # Host-bounce fallback.  Reading to host is always safe; device_put of a
+    # host (numpy) source is always safe.  Warn once so the degraded path is
+    # visible (verified: device-resident source corrupts on L40S, both for a
+    # single-device target and for a NamedSharding target).
     global _warned_host_bounce
     if not _warned_host_bounce:
         _warned_host_bounce = True
@@ -87,4 +97,4 @@ def move_shard(x, target_device, dev2dev_safe=True):
             "mbirjax._sharding.transfer for details.",
             stacklevel=2,
         )
-    return jax.device_put(np.asarray(x), target_device)
+    return jax.device_put(np.asarray(x), target)
