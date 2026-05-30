@@ -72,6 +72,12 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = None
         self.prox_data = None
 
+        # Multi-device sharding (opt-in via configure_sharding).  Until then,
+        # mesh is None and the existing single-device code paths are unchanged.
+        self.mesh = None
+        self.shard_devices = None
+        self.dev2dev_safe = True   # set empirically in configure_sharding
+
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
         self.pixel_batch_size_for_vmap = 2048
@@ -124,6 +130,67 @@ class TomographyModel(ParameterHandler):
 
     def get_params(self, parameter_names):
         return super().get_params(parameter_names)
+
+    def configure_sharding(self, devices=None):
+        """
+        Configure multi-device sharding over the given devices (opt-in).
+
+        This is additive: it sets up a device mesh and an empirical
+        device-to-device safety flag, but does NOT modify ``main_device`` /
+        ``sinogram_device`` or the existing single-device code paths.  The
+        projector phases consume this configuration as they are ported to
+        sharding; until then a configured mesh has no effect on existing flows.
+
+        Sharding scheme (uniform across geometries): sinogram-like objects are
+        sharded by **view** (axis 0) and recon-like objects by **slice**, so the
+        device count must evenly divide both ``num_views`` and ``num_slices``.
+
+        Passing ``devices=None`` (or a single device) sets up a trivial 1-device
+        mesh, so single-device operation is just the degenerate sharded case and
+        the same code path can be used throughout.
+
+        Args:
+            devices (sequence of jax devices, or None): devices to shard across.
+                None uses a single device (trivial sharding).
+
+        Returns:
+            Nothing; sets ``self.mesh``, ``self.shard_devices``,
+            ``self.dev2dev_safe``, and ``self.use_gpu = 'sharded'``.
+        """
+        from jax.sharding import Mesh
+        from mbirjax._sharding import is_dev2dev_safe
+
+        if devices is None:
+            devices = jax.devices()[:1]
+        devices = list(devices)
+        n_devices = len(devices)
+        if n_devices < 1:
+            raise ValueError("configure_sharding requires at least one device.")
+
+        # O4 divisibility: both sharded axes must divide the device count.
+        sinogram_shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
+        num_views = sinogram_shape[0]
+        num_slices = recon_shape[2]
+        if num_views % n_devices != 0:
+            raise ValueError(
+                f"Sharding requires num_views ({num_views}) to be divisible by "
+                f"the number of devices ({n_devices}); sinograms are sharded by "
+                f"view.  Pad/crop the views or choose a compatible device count."
+            )
+        if num_slices % n_devices != 0:
+            raise ValueError(
+                f"Sharding requires num_slices ({num_slices}) to be divisible by "
+                f"the number of devices ({n_devices}); recons are sharded by "
+                f"slice.  Pad/crop the slices or choose a compatible device count."
+            )
+
+        # 1-D mesh; the axis name 'devices' is referenced by the PartitionSpecs
+        # used when sharding sinogram (view axis) and recon (slice axis).
+        self.mesh = Mesh(np.array(devices), ('devices',))
+        self.shard_devices = devices
+        self.dev2dev_safe = is_dev2dev_safe(devices)
+        self.use_gpu = 'sharded'
 
     def set_devices_and_batch_sizes(self):
         """

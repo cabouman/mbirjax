@@ -15,7 +15,15 @@
   affinity → fallback, capped at 8); `_device_setup` wired as first import in
   `__init__.py`; `device_put_check.py` recreated under `parallel_performance/`;
   `test_sharding_scaffolding.py` passes 4/4 (8 virtual CPU devices on M3 Max,
-  env override honored, existing suite still collects).  **Next: Phase A
+  env override honored, existing suite still collects).
+- **2026-05-29:** **Phase A (primitives) complete.**  New subpackage
+  `mbirjax/_sharding/` (`transfer.py`: `is_dev2dev_safe`, `move_shard`;
+  `thread_execution.py`: `run_per_device`, `assemble_sharded`) +
+  `TomographyModel.configure_sharding(devices=None)` (1-D mesh axis `'devices'`,
+  empirical `dev2dev_safe` probe, O4 divisibility assert on views+slices).
+  Fully additive — `main_device`/`sinogram_device` untouched.
+  `test_sharding_primitives.py` 10/10.  **Next: Phase B (sharding hooks on the
+  new view/slice axes).**  **Next: Phase A
   (primitives — transfer helper + `_d2d_safe` probe, threading helper,
   `configure_sharding` + trivial-sharding).**
 
@@ -45,7 +53,7 @@ direct_recon is pulled early (depends on filter + back, not forward) to reach a
 usable, stress-testable FBP pipeline before forward projection / VCD.
 
 - [x] Step 1 — Phase 0: scaffolding migration
-- [ ] Step 2 — Phase A: primitives (transfer, threading, mesh/trivial-sharding)
+- [x] Step 2 — Phase A: primitives (transfer, threading, mesh/trivial-sharding)
 - [ ] Step 3 — Phase B: sharding hooks (new view/slice axes)
 - [ ] Step 4 — Phase F1: FBP filter (view-sharded, zero comms — low-hanging)
 - [ ] Step 5 — Phase D: back projection (reduce-scatter)

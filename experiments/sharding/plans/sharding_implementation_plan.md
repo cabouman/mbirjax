@@ -21,10 +21,13 @@ multi-device sharding, built fresh on `prerelease`.*
 ## 0. Design summary (the scheme we are building)
 
 - **Uniform sharding across geometries:** sinogram-like objects sharded **by
-  view** (axis 0); recon-like objects sharded **by slice**.  Parallel beam loses
-  its slice↔det-row embarrassing parallelism but gains a uniform scheme that
-  suits cone beam.  Parallel beam is the training ground; slice-sharding for it
-  is a later optimization.
+  view** (axis 0); recon-like objects sharded **by slice**.  This uniform scheme
+  is simple to maintain and suits cone beam.  The axis choice for each array type
+  is not hardcoded throughout the code: it is declared in one place per geometry
+  (see the axis-declaration hooks in Phase B) and everything axis-dependent
+  (divisibility checks, PartitionSpecs, shard/gather) derives from it.  Keeping
+  the choice **explicit and located** means a geometry could, in principle,
+  declare a different axis later without hunting down scattered assumptions.
 - **Sinogram stationary, recon moves.**  In the VCD loop the sinogram, weights,
   and error-sinogram stay view-sharded and never re-shard.  Forward projection
   **all-gathers** voxel cylinders (recon slices) so each device has the full
@@ -97,6 +100,16 @@ projection and VCD.
    **return gathered (host/plain) arrays**.  Internal `sparse_forward_project` /
    `sparse_back_project` **expect sharded input and return sharded output** — no
    gather inside.
+6. **Sharding primitives are internal, accessed with a prefix.**  The
+   `mbirjax._sharding` subpackage is internal (leading underscore; not part of
+   the public API and not re-exported at the top level).  Follow the codebase's
+   prefix convention rather than bare `from ... import name`:
+     - **Consumers** (tests, examples, experiment scripts):
+       `import mbirjax._sharding as mjs`, then call `mjs.move_shard(...)`.
+     - **In-package modules** (`tomography_model.py`, projector code): aliasing
+       mbirjax would be circular mid-import, so use
+       `from mbirjax._sharding import move_shard, ...` (direct import is the only
+       option inside the package).
 
 ---
 
@@ -138,58 +151,72 @@ have diverged in ways that need small adjustments; do not copy blindly.
 
 ---
 
-## Step 2 — Phase A: Foundations (primitives, no projector changes)
+## Step 2 — Phase A: Foundations (primitives, no projector changes)  ✅ COMPLETE (2026-05-29)
 
-**Goal:** the two reusable primitives + mesh setup + trivial-sharding unify,
-each unit-tested in isolation with tiny arrays.
+**Goal:** the two reusable primitives + mesh setup, each unit-tested in
+isolation with tiny arrays.
+
+Implemented additively in a new subpackage `mbirjax/_sharding/`
+(`transfer.py`, `thread_execution.py`, `__init__.py`) plus
+`TomographyModel.configure_sharding`.  Existing single-device code paths
+(`main_device`/`sinogram_device`) were left untouched — they retire per-piece
+as the projectors are ported (Phases C–F).  Tests in
+`tests/test_sharding_primitives.py` (10) pass; scaffolding still green.
 
 ### A.1 Transfer helper (the one cross-device primitive)
-- [ ] Startup probe at `configure_sharding`: run a Test-C-equivalent (move a
-      known nonzero array dev0→dev1, read back) and cache `self._d2d_safe`.
-- [ ] `move_shard(array_or_shard, target_device)` chooses:
-      - `_d2d_safe` → direct `device_put(x, target_device)`.
+- [x] Empirical probe `is_dev2dev_safe(devices)` (move known array dev0→dev1,
+      verify readback); cached as `self.dev2dev_safe` in `configure_sharding`.
+- [x] `move_shard(x, target_device, dev2dev_safe=True)` chooses:
+      - safe → direct `device_put(x, target_device)`.
       - not safe → host bounce `device_put(np.asarray(x), target_device)`.
-      Log once (principle 4) when the host-bounce path is selected.
-- [ ] Designed so endpoints are **arbitrary devices** (GPU/GPU *and* CPU/GPU) —
-      do not bake in a two-GPU assumption (feeds Open Question O1).
-- **Test:** [ ] unit test on whatever devices are present (virtual CPU on
-      laptop, real GPUs on cluster): round-trip values preserved; both branches
-      exercised by forcing `_d2d_safe` True/False.
+      Warns once when the host-bounce path is first taken (principle 4).
+- [x] Endpoints are **arbitrary devices** (GPU/GPU *and* CPU/GPU) — no two-GPU
+      assumption (feeds Open Question O1).
+- **Test:** [x] both branches exercised (force `dev2dev_safe` True/False);
+      round-trip values preserved; warning asserted on host-bounce.
 
 ### A.2 Threading / per-device execution helper
-- [ ] `run_per_device(mesh, worker_fn) -> assembled` — one thread per device,
-      each under `jax.default_device(device)`, returns an on-device result;
-      assemble via `make_array_from_single_device_arrays`.
-- [ ] Block discipline: avoid premature `block_until_ready` so the next batch's
-      transfer overlaps current compute (call this out in the docstring).
-- [ ] Workers obtain peer shards via the §A.1 transfer helper (the two compose;
-      threading owns fan-out, transfer owns placement).
-- **Test:** [ ] unit test: fan out a trivial per-shard op across N devices,
-      assemble, compare to single-device reference.
+- [x] `run_per_device(devices, worker_fn)` — one thread per device, each under
+      `jax.default_device(device)`, returns on-device results in device order.
+- [x] `assemble_sharded(per_device_arrays, global_shape, sharding)` — wraps
+      `make_array_from_single_device_arrays` (kept separate so fan-out and
+      assembly compose).
+- [x] Block discipline: `run_per_device` does NOT `block_until_ready`, so the
+      next batch's transfer can overlap current compute (documented).
+- **Test:** [x] fan a trivial op across N devices, check device-order results,
+      results land on correct devices, assembly matches reference.
 
 ### A.3 Mesh + `configure_sharding` + trivial-sharding unification
-- [ ] `configure_sharding(devices)` builds the mesh, runs the §A.1 probe, sets
-      `use_gpu='sharded'`.
-- [ ] Single-device path = trivial `NamedSharding` over a 1-device mesh (no
-      `mesh is None` branches).
+- [x] `configure_sharding(devices=None)` builds a 1-D `Mesh` (axis `'devices'`),
+      runs the probe, sets `use_gpu='sharded'`.  Additive: does not alter
+      `main_device`/`sinogram_device` or `set_devices_and_batch_sizes`.
+- [x] Single-device = trivial mesh (`devices=None` → 1 device); same code path.
 - [ ] Decide & document the trivial-vs-gathered boundary (Open Question O2):
-      internal stays trivially-sharded, user-facing gathers.
-- [ ] Divisibility assert (Open Question O4): both `num_views % n_devices == 0`
-      and `num_slices % n_devices == 0`, with a clear error.  (Pad/crop is a
-      later usability layer.)
-- **Test:** [ ] `configure_sharding` with 1 and 2 (virtual CPU) devices; mesh
-      shape, `_d2d_safe` cached, trivial sharding is a no-op round-trip;
-      non-divisible view or slice count raises a clear error.
+      internal stays trivially-sharded, user-facing gathers.  *(Deferred to the
+      first projector phase that returns to a user — Phase F1/D — where the
+      gather actually happens; the mesh plumbing is in place now.)*
+- [x] Divisibility assert (Open Question O4): both `num_views % n_devices == 0`
+      and `num_slices % n_devices == 0`, with a clear error.
+- **Test:** [x] `configure_sharding` with 1 and 2 (virtual CPU) devices; mesh
+      size, `dev2dev_safe` cached; non-divisible view count raises clearly.
 
 ---
 
 ## Step 3 — Phase B: Sharding hooks under the new axes (parallel beam)
 
-**Goal:** geometry hooks that place objects on the correct (new) axes.
+**Goal:** geometry hooks that place objects on the correct axes, with the axis
+choice declared in one overridable place rather than hardcoded throughout.
 
-- [ ] `_shard_sinogram` → **view** axis (axis 0).  (Research used slice/det-row;
-      this is the key change.)
-- [ ] `_shard_recon` → **slice** axis (axis 2 of 3D, axis 1 of flat).
+- [ ] **Axis-declaration hooks** on `TomographyModel` (simple ints, overridable
+      per geometry): `sinogram_shard_axis()` → 0 (view); `recon_shard_axis()` →
+      slice axis (2 for the 3D recon, 1 for the flat recon — handle both, e.g.
+      a shape-aware helper or a small constant pair).  These are the single
+      source of truth for the sharded axis; everything below derives from them.
+- [ ] Retrofit `configure_sharding`'s divisibility asserts to read these hooks
+      instead of hardcoding views/slices (keeps asserts and specs consistent).
+- [ ] `_shard_sinogram` → builds its PartitionSpec from `sinogram_shard_axis()`.
+- [ ] `_shard_recon` → builds its PartitionSpec from `recon_shard_axis()`
+      (3D vs flat recon).
 - [ ] `_gather_sinogram` / `_gather_recon` inverses (host/plain output).
 - [ ] `_extract_halos` (slice-boundary; unchanged in spirit from research since
       recon is still slice-sharded — confirm it ports cleanly).
@@ -373,6 +400,25 @@ beam: geometry-specific `_shard_*`/`_extract_halos` overrides, the additional
 integer scatter indices, and larger per-device partial buffers.  The Phase A
 primitives (transfer, threading) and the view/slice axis scheme are shared
 unchanged — that uniformity is the whole point of the new design.
+
+---
+
+## Final cleanup sweep (do near the end, before merge)
+
+- [ ] **Import-order sweep: `import mbirjax` before `jax`** in all user-facing
+      files (tests, examples, demos, experiment scripts) so
+      `mbirjax._device_setup` runs before JAX initializes its backends.  We
+      follow this in every new file we create; this sweep catches pre-existing
+      files and any that slipped through.
+      Exemptions (do NOT change these):
+        - Files *inside* the `mbirjax` package (e.g. `_sharding/*.py`,
+          `tomography_model.py`) — they execute mid-`import mbirjax`, so they
+          just `import jax`; importing mbirjax there would be circular.
+        - `tests/conftest.py` — deliberately sets `XLA_FLAGS` itself before its
+          own `import jax`, independent of mbirjax import resolution.
+        - `experiments/.../device_put_check.py` — intentionally mbirjax-free
+          standalone probe.
+- [ ] (add other end-of-project cleanups as discovered)
 
 ---
 
