@@ -14,6 +14,9 @@ from ruamel.yaml import YAML
 import numpy as np
 from jax.errors import JaxRuntimeError
 
+# Virtual CPU device setup now lives in mbirjax/_device_setup.py, which runs as
+# the first import in mbirjax/__init__.py (before JAX initializes its backends).
+# These lines are kept commented as a historical pointer; do not re-enable.
 # num_cpus = 3 * os.cpu_count() // 4
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
