@@ -2,12 +2,62 @@ from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
+import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
+
+
+def _apply_fbp_filter_to_views(views, filter_arr, *, body_views, tail_views, view_batch_size):
+    """Apply the FBP filter to a (views, rows, channels) block on the current device.
+
+    This is the per-device work kernel.  Under the view-sharding scheme each
+    device owns a contiguous block of whole views, so the FFT runs along the
+    (untouched) channel axis and rows are vmapped — no cross-device data is
+    needed, which is what makes FBP filtering embarrassingly parallel here.
+
+    Defined at module level (not as a closure inside fbp_filter) so JAX's JIT
+    cache is shared across all threads and all fbp_filter calls.  The cache is
+    keyed on this function's Python identity (stable), the static args
+    (body_views, tail_views, view_batch_size), and the abstract types of the
+    array args, so compilation happens once per unique (size, view_batch_size).
+
+    The body/tail split exists because jax.lax.map pads the final batch when the
+    number of views is not divisible by view_batch_size, and that padding
+    contaminates the cuFFT outputs.  Splitting into a body (an exact multiple of
+    view_batch_size) plus a tail (processed without a fixed batch size) avoids
+    any padding.
+
+    Args:
+        views (jax array):      Shape (views, rows, channels), contiguous.
+        filter_arr (jax array): Shape (2*channels - 1,), the FBP recon filter.
+        body_views (int):       Largest prefix of views divisible by view_batch_size.
+        tail_views (int):       Remaining views (0 <= tail_views < view_batch_size).
+        view_batch_size (int):  Batch size for lax.map over views.
+
+    Returns:
+        jax array of shape (views, rows, channels).
+    """
+    def _convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
+
+    def _apply_conv_to_view(view):
+        # view: (rows, channels) — contiguous; vmap the convolution over rows.
+        return jax.vmap(_convolve_row)(view)
+
+    parts = []
+    if body_views > 0:
+        parts.append(jax.lax.map(_apply_conv_to_view, views[:body_views],
+                                 batch_size=view_batch_size))
+    if tail_views > 0:
+        # tail < view_batch_size — process without a fixed batch size to avoid
+        # cuFFT-contaminating padding.
+        parts.append(jax.lax.map(_apply_conv_to_view, views[body_views:]))
+    return jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
 
 
 class ParallelBeamModel(TomographyModel):
@@ -306,9 +356,18 @@ class ParallelBeamModel(TomographyModel):
         """
         return self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=100):
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform FBP filtering on the given sinogram.
+
+        This is an internal sharded-contract method: it shards the sinogram on
+        the view axis at entry (a no-op when no mesh is configured or when the
+        input is already correctly sharded) and returns the filtered sinogram in
+        that same view-native sharding.  It does NOT gather at exit, so pipelined
+        callers (e.g. ``fbp_recon``/``direct_recon`` followed by back projection)
+        keep the data on-device with zero host transfer.  Under the view-sharding
+        scheme the ramp filter is per-view, so each device filters its own views
+        with no cross-device communication.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -316,41 +375,84 @@ class ParallelBeamModel(TomographyModel):
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (jax array): The sinogram after FBP filtering, in
+            view-native sharding (or a plain array when no mesh is configured).
         """
+        # Shard on the view axis.  No-op when no mesh is configured (single
+        # device) or when the input already carries this sharding.
+        sinogram = self._shard_sinogram(sinogram)
+
         num_views, _, num_channels = sinogram.shape
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
             max_view_batch_size = 128  # Limit the view batch size here and ConeBeam due to https://github.com/jax-ml/jax/issues/27591
             view_batch_size = min(view_batch_size, max_view_batch_size)
 
-        # Generate the reconstruction filter with appropriate scaling
+        # Generate the reconstruction filter with appropriate scaling.
         delta_voxel = self.get_params('delta_voxel')
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        scaling_factor = 1 / (delta_voxel**2)
+        scaling_factor = 1 / (delta_voxel ** 2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         recon_filter *= scaling_factor
+        # Materialize the filter once as numpy; each device uploads its own copy.
+        # (The in-place *= above keeps float32; an out-of-place multiply would
+        # promote to float64, which is much slower on GPU.)
+        filter_np = np.asarray(recon_filter)
 
-        # Define convolution for a single row (across its channels)
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+        # Helper: split a per-array view count into a body (largest multiple of
+        # view_batch_size) plus a tail, so lax.map never pads the final batch
+        # (padding contaminates the cuFFT output).  See _apply_fbp_filter_to_views.
+        # NOTE: the split must be computed against the LOCAL (per-device) view
+        # count, not the global num_views — each device's shard holds only
+        # num_views / n_devices views.  Computing it globally would index past
+        # the end of each shard and break scaling.
+        def split(local_views):
+            body = (local_views // view_batch_size) * view_batch_size
+            return body, local_views - body
 
-        # Apply above convolve func across each row of a view
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
+        if self.mesh is not None:
+            # Multi-device: one thread per device, each filtering its own view
+            # shard locally (no cross-device data movement).
 
-        # Apply convolution across the channels of the sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views  # scaling term
+            # Map each device to the local sinogram shard already resident on it.
+            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
+
+            def worker_process(i, device):
+                # Per-device work: filter this device's contiguous block of views.
+                # Runs inside run_per_device under jax.default_device(device), so
+                # the small filter upload and the FFT all happen on `device` and
+                # the result stays there (zero host transfer).
+                shard = dev_to_shard[device]
+                body_views, tail_views = split(shard.shape[0])
+                filter_jax = jnp.array(filter_np)   # tiny upload: 2*channels-1 floats
+                return _apply_fbp_filter_to_views(
+                    shard, filter_jax,
+                    body_views=body_views, tail_views=tail_views,
+                    view_batch_size=view_batch_size)
+
+            # run_per_device fans worker_process out across the mesh devices (one
+            # thread each) and returns the per-device results in device order,
+            # each still resident on its own device.
+            results = mjs.run_per_device(self.shard_devices, worker_process)
+
+            # assemble_sharded stitches the per-device results back into one
+            # logically-global NamedSharding array with no data movement (the
+            # filtered shard for view-block i is already on device i).
+            filtered_sinogram = mjs.assemble_sharded(
+                results, sinogram.shape, sinogram.sharding)
+        else:
+            # Single-device path (no mesh configured): filter directly.
+            body_views, tail_views = split(num_views)
+            filter_jax = jnp.array(filter_np)
+            filtered_sinogram = _apply_fbp_filter_to_views(
+                sinogram, filter_jax,
+                body_views=body_views, tail_views=tail_views,
+                view_batch_size=view_batch_size)
+
+        # Scaling term (applies to both sharded and plain arrays).
+        filtered_sinogram = filtered_sinogram * (jnp.pi / num_views)
         return filtered_sinogram
 
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):

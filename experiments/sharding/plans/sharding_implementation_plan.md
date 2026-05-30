@@ -424,6 +424,20 @@ unchanged — that uniformity is the whole point of the new design.
           own `import jax`, independent of mbirjax import resolution.
         - `experiments/.../device_put_check.py` — intentionally mbirjax-free
           standalone probe.
+- [ ] **Collapse the single-device (mesh-None) code paths.**  Once every
+      projector/recon method is ported, single-device should be just the
+      trivial-1-device-mesh case, so the `if self.mesh is None: ...` fallbacks
+      (e.g. in `fbp_filter`) and the old `main_device`/`sinogram_device`
+      machinery can be removed, leaving one sharded path.  Deferred until enough
+      methods are ported that always-on trivial sharding is safe end-to-end
+      (needs the auto-configure-trivial-mesh decision settled — see below).
+      Requires deciding where the trivial mesh gets configured by default
+      (constructor? first use?).
+- [ ] **Public shard/gather utilities.**  Add thin public wrappers
+      (`shard_sinogram`, `shard_recon`, `gather_sinogram`, `gather_recon`) over
+      the `_shard_*`/`_gather_*` hooks so callers/tests can pre-shard inputs to
+      internal sharded-contract functions (like `fbp_filter`) directly, without
+      reaching into private methods.
 - [ ] (add other end-of-project cleanups as discovered)
 
 ---
