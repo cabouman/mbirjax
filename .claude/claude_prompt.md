@@ -52,6 +52,22 @@ Scripts and reproducibility:
   exactly one thing and hold the rest identical.  Take the extra few minutes to
   do it properly rather than moving quickly on improper evidence.
 
+Performance and measurement (jax/GPU — learned on this project; full playbook
+with the F1 case study in `.claude/lessons.md`):
+
+* Per-worker compute must be jitted — eager, op-by-op dispatch silently kills
+  multi-device scaling.
+* For honest GPU memory: measure each config in an isolated subprocess, keep the
+  orchestrator JAX-free (so it holds no device memory while a worker measures),
+  and free the previous result before the next allocation (`peak_bytes_in_use`
+  is a process-cumulative high-water mark).
+* Fold scalars into a small operand (e.g. an f32 filter), never as an
+  out-of-place full-array multiply — a float64 scalar like `np.pi` silently
+  promotes the whole array to f64, doubling memory.
+* The general measurement principles (suspect the ruler before the code;
+  single-variable ablations; name+verify the assumption a fix rests on; sweep,
+  don't guess) live in global memory and apply everywhere.
+
 For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, and computational efficiency over stylistic changes.
 
 Remember, we're in the curiosity business, so a little bit of exploration and a lot of understanding are much better than a quick fix.

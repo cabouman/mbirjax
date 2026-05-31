@@ -45,7 +45,13 @@ class TestShardingScaffolding(unittest.TestCase):
         self.assertEqual(len(devs), 2)
 
     def test_preferred_devices_too_many_returns_none(self):
-        """Requesting more devices than exist returns None (caller skips)."""
+        """Requesting more devices than the active pool has returns None.
+
+        preferred_devices uses ONE pool — the GPUs on a GPU machine, the virtual
+        CPUs otherwise — which is exactly `jax.devices()` (the default backend).
+        One more than that must return None so the caller skips (no silent CPU
+        fallback when GPUs are present but too few).
+        """
         too_many = len(jax.devices()) + 1
         self.assertIsNone(preferred_devices(too_many))
 
