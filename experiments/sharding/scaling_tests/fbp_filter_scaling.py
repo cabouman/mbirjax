@@ -254,15 +254,19 @@ def main():
 
     # Force the beta worktree onto each worker's PYTHONPATH so `import mbirjax`
     # resolves to beta regardless of how the orchestrator was launched (PyCharm
-    # or CLI) — removes the sys.path footgun for the subprocesses.  Never
-    # preallocate the whole GPU, so peak_bytes_in_use reflects true usage.
+    # or CLI) — removes the sys.path footgun for the subprocesses.  Preallocate
+    # the pool up front (no per-call cudaMalloc growth → clean timing), with
+    # MEM_FRACTION raised so the largest configs don't OOM on the cap;
+    # peak_bytes_in_use still tracks in-use tensors, so memory stays accurate
+    # (verified by the row_batch sweep's preallocate sanity check).
     beta_root = _beta_root()
     if not os.path.isdir(os.path.join(beta_root, "mbirjax")):
         print(f"  WARNING: no mbirjax/ under derived beta root {beta_root}")
     existing_pp = os.environ.get("PYTHONPATH", "")
     worker_env = {
         "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
     }
 
     print("=" * 72)

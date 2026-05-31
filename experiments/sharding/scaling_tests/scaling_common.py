@@ -566,6 +566,12 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
     ax2.legend(title="size (v×r×c)")
     ax2.grid(True, alpha=0.3)
 
+    # Tick only at the integer device counts present in the data (1, 2, 4, …),
+    # not matplotlib's auto 1.0/1.5/2.0/… floats.
+    for ax in (ax1, ax2):
+        ax.set_xticks(device_counts)
+        ax.set_xticklabels([str(n) for n in device_counts])
+
     fig.suptitle(f"{op_name} — device sweep — {dev_label}", fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(out_path, dpi=120)

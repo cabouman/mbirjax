@@ -202,9 +202,15 @@ def main():
     script = os.path.abspath(__file__)
     beta_root = ffs._beta_root()
     existing_pp = os.environ.get("PYTHONPATH", "")
+    # Preallocate the pool up front so there's no per-call cudaMalloc heap growth
+    # → clean timing; MEM_FRACTION raised from the 0.75 default so the largest
+    # configs don't OOM on the cap rather than on real usage.  peak_bytes_in_use
+    # tracks in-use tensors (not the preallocated pool), so memory should stay
+    # accurate — the sanity check below verifies true == false on one config.
     worker_env = {
         "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
     }
     print("=" * 72)
     print("  fbp_filter row_batch B-sweep (orchestrator)")
@@ -234,6 +240,25 @@ def main():
     device_counts = [n for n in DEVICE_COUNTS[plat] if n <= max_dev]
     row_batches = sorted(ROW_BATCHES)
     print(f"  sizes: {size_labels}   device counts: {device_counts}   B: {row_batches}")
+
+    # ── Preallocate sanity: does peak_bytes_in_use under preallocate=true match
+    # the =false value?  If yes, this one (true) run gives clean timing AND
+    # accurate memory; if =true reports ~the pool instead, memory needs =false.
+    s_size, s_nd = size_labels[0], device_counts[-1]
+    s_B = row_batches[len(row_batches) // 2]
+    print(f"\n[preallocate sanity] {s_size} ndev={s_nd} B={s_B}: peak true vs false")
+    for pre in ("true", "false"):
+        env = dict(worker_env)
+        env["XLA_PYTHON_CLIENT_PREALLOCATE"] = pre
+        res, _ = sc.run_worker(
+            script, ["--worker", "--mode", "measure", "--size", s_size,
+                     "--n-devices", str(s_nd), "--row-batch", str(s_B),
+                     "--warmup", "1", "--trials", "1"], extra_env=env)
+        if res and "mem_mb" in res:
+            print(f"  preallocate={pre:5s}: peak={res['mem_mb']:9.1f} MB  "
+                  f"min={res['min_ms']:7.1f} ms")
+        else:
+            print(f"  preallocate={pre:5s}: no result ({res})")
 
     grid = {}   # grid[n][size_label] = [rows over B]
     for n in device_counts:
