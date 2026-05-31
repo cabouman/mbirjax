@@ -40,25 +40,33 @@ class TestFbpFilterSingleDevice(unittest.TestCase):
 
     def test_filter_runs_and_preserves_shape(self):
         model, sino = _make_model_and_sino()
-        out = model.fbp_filter(sino, view_batch_size=4)
+        out = model.fbp_filter(sino)
         self.assertEqual(out.shape, sino.shape)
         # No mesh -> output is a plain (unsharded) array.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
 
-    def test_body_tail_split_matches_single_batch(self):
-        """num_views not divisible by view_batch_size still filters every view.
+    def test_row_batch_non_divisible_matches(self):
+        """A row count not divisible by the row-filter batch still filters every
+        row correctly.
 
-        Compares a batch size that splits into body+tail (5 -> body 4 + tail 4
-        for 8 views... here use 3 so 8 = body 6 + tail 2) against a batch size
-        that covers all views at once; the two must agree (the split is only a
-        memory/padding device, not a math change).
+        The kernel (tomography_utils.apply_row_filter) scans overlapping B-row
+        windows; when B does not divide views*rows the last window overlaps and
+        recomputes a few rows (idempotent for a per-row filter).  A tiny,
+        non-dividing batch must therefore match the default single-window result.
         """
+        import mbirjax.tomography_utils as tu
         model, sino = _make_model_and_sino(num_views=8)
-        out_split = model.fbp_filter(sino, view_batch_size=3)   # 8 = 6 + 2
-        out_whole = model.fbp_filter(sino, view_batch_size=8)   # single batch
-        np.testing.assert_allclose(np.asarray(out_split), np.asarray(out_whole),
-                                   rtol=1e-5, atol=1e-5)
+        ref = np.asarray(model.fbp_filter(sino))     # default batch (one window here)
+        saved = tu.ROW_FILTER_BATCH
+        try:
+            tu.ROW_FILTER_BATCH = 7                   # won't divide views*rows
+            jax.clear_caches()                        # force a re-trace at the new batch
+            out = np.asarray(model.fbp_filter(sino))
+        finally:
+            tu.ROW_FILTER_BATCH = saved
+            jax.clear_caches()
+        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
 
 
 class TestFbpFilterSharded(unittest.TestCase):
@@ -75,11 +83,11 @@ class TestFbpFilterSharded(unittest.TestCase):
             self.skipTest("num_slices not divisible by 2")
 
         # Single-device reference (no mesh).
-        ref = np.asarray(model.fbp_filter(sino, view_batch_size=4))
+        ref = np.asarray(model.fbp_filter(sino))
 
         # Sharded run.
         model.configure_sharding(self.devs)
-        out = model.fbp_filter(sino, view_batch_size=4)
+        out = model.fbp_filter(sino)
 
         # Sharded-contract: output is view-sharded (axis 0), not gathered.
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
@@ -92,11 +100,11 @@ class TestFbpFilterSharded(unittest.TestCase):
         model, sino = _make_model_and_sino(num_views=8)
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
-        ref = np.asarray(model.fbp_filter(sino, view_batch_size=4))
+        ref = np.asarray(model.fbp_filter(sino))
 
         model.configure_sharding(self.devs)
         sharded_in = model._shard_sinogram(sino)
-        out = model.fbp_filter(sharded_in, view_batch_size=4)
+        out = model.fbp_filter(sharded_in)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 

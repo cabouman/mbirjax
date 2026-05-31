@@ -4,59 +4,52 @@
 
 ---
 
-## HANDOFF (2026-05-30) — read first
+## HANDOFF (2026-05-31) — Phase F1 COMPLETE
 
-**Phase F1 (sharded fbp_filter) is essentially done and working.**  The big
-investigation this session: beta fbp_filter scaled ~2× on CPU vs research's
-~6.5×.  ROOT CAUSE: the beta per-device kernels lost the `@jax.jit` that
-research had → eager dispatch.  FIX APPLIED: `@partial(jax.jit,
-static_argnames='view_batch_size')` on both `_apply_fbp_filter_per_view` and
-`_apply_fbp_filter_flat` in `mbirjax/parallel_beam.py`.  After the fix beta
-matches/beats research at every config (~6.5× scaling); flat is ~4–9% faster
-than per_view.  Full evidence + numbers in "Scaling notes" below.
+**The sharded FBP filter is done, promoted, and validated on the H100.**  The
+per-device kernel is now `tomography_utils.apply_row_filter(block, filter_arr)`
+— a geometry-neutral `lax.scan` over overlapping B-row windows
+(`ROW_FILTER_BATCH = 1024`) that any geometry can call.  Under view-sharding the
+ramp filter is per-row, so each device filters its own view-shard locally with
+zero cross-device communication.
 
-**State of the code (UNCOMMITTED — please review/commit):**
-- `mbirjax/parallel_beam.py`: two switchable fbp_filter kernels
-  (`_FBP_FILTER_KERNEL = "per_view"` default | "flat"), both now jitted; flat
-  caps its lax.map batch at `_FLAT_MAP_BATCH=128` for jax bug #27591.
-- Tests pass: `test_sharding_fbp.py`, `test_fbp_fdk.py` (6/6), full sharding
-  suite green.
-- New harnesses in `experiments/sharding/scaling_tests/`:
-  `fbp_filter_research_vs_beta.py` (3-way, env `MBIRJAX_BENCH_LABEL`),
-  `fbp_filter_kernel_comparison.py` (per_view vs flat), plus `scaling_common.py`,
-  `fbp_filter_scaling.py`, `fbp_filter_capture_baseline.py`.
-- `.claude/claude_prompt.md`: added scripting prefs (no CLI args; config at top
-  of file; apples-to-apples evidence).
+**Measured on H100 (honest harness):**
+- Memory at the **2× (input+output) floor**, scaling ~1/n across devices, and
+  divisibility-agnostic (the overlapping-window scan needs no padding/concat).
+- **~10× faster** than a small batch; **B=1024** is the throughput knee (benefit
+  past it shrinks as channels grow while the work area grows — hence the c-aware
+  note on `ROW_FILTER_BATCH`).
+- **1624³ runs on a single H100**; cross-platform correctness (GPU vs CPU
+  prerelease baseline) = 5.6e-9.
 
-**Open decisions (NOT blocking, deferred to GPU):**
-1. per_view vs flat: both jitted, both ≈ research on CPU; flat marginally fastest
-   + cleaner + axis-agnostic.  Default stays "per_view" (proven, == research)
-   until (a) the flat batch-sizing for arbitrary (rows, channels) is designed
-   deliberately around #27591, and (b) GPU confirms.  Then pick one and remove
-   the switch.
-2. Run all the scaling harnesses on the H100 cluster (CPU numbers are only
-   suggestive; H100 is the target).  device_put d2d already verified on H100.
+**How we got here (highlights):** jit fix (kernels had lost `@jax.jit`) → the
+memory blowup root cause was per_view's FFT work area = `view_batch_size *
+n_rows` (geometry-bound; OOM'd at 1624³) → replaced with the row-batched scan and
+folded `pi/num_views` into the f32 filter (killed an f64 2× OOM) → found the
+harness over-reported memory by one shard (it held the prior result in the timing
+loop) → GPU B-sweep picked B=1024.
 
-**jax bug to respect everywhere we use lax.map:** #27591
-(https://github.com/jax-ml/jax/issues/27591) — lax.map gives WRONG results for
-large batch_size.  Keep map batch ≈128.
+**Cleanup done:** removed the `_FBP_FILTER_KERNEL` switch and the per_view/flat
+kernels; moved the single kernel to `tomography_utils`; `view_batch_size` is gone
+from internals and **deprecated** (DeprecationWarning) on the user-facing
+`direct_recon`/`direct_filter`/`fbp_recon`/`fbp_filter`.  Tests: `test_sharding_*`
++ `test_fbp_fdk` 28/28.
 
-**Next steps (finish F1 before moving on):**
-1. **Test fbp_filter on the H100 cluster** — run the scaling harnesses (esp.
-   `fbp_filter_research_vs_beta.py` and `fbp_filter_kernel_comparison.py`) on
-   real GPUs.  CPU numbers are only suggestive; GPU is the target and decides
-   per_view vs flat (and gives real per-device memory).
-2. **Decide the reshaping plan for the parallel convolves.**  The filter is
-   purely per-row, so each device's `(v, r, c)` shard can reshape to `(v·r, c)`
-   and be factored as `(M, B, c)` with the lax.map batch `B ≈ 128` (safe for
-   #27591) and `M = v·r/B` map steps — decoupling the safe batch size from the
-   geometry (no dependence on how many views/rows a device holds).  Concretely:
-   pad `v·r` to a multiple of ~128, reshape to `(v·r/128, 128, c)`, lax.map over
-   axis 0 with vmap over the 128.  Settle this (it supersedes both the current
-   per_view and the bluntly-capped flat kernel), confirm correctness + #27591
-   safety, then pick the single kernel and remove the `_FBP_FILTER_KERNEL` switch.
-3. **THEN** move to Step 5 = Phase D (sharded back projection, reduce-scatter).
-   See implementation plan.
+**Next: Step 5 = Phase D** (sharded back projection, reduce-scatter) — see the
+implementation plan.
+
+**Deferred (noted, not blocking):**
+- cone_beam / translation_model / multiaxis_parallel still use `view_batch_size`
+  functionally — migrate them to `apply_row_filter` later (then drop
+  `view_batch_size` from `vcls.py:167`).
+- A c-aware `ROW_FILTER_BATCH ≈ budget / fft_len(c)` could reclaim small-c
+  throughput; fixed 1024 is the pragmatic default for now.
+- `tomography_model.py:473` "not enough GPU memory" warning (a TomographyModel
+  heuristic, noisy under preallocate=true) — clean up later.
+
+**jax bug still respected:** #27591 (lax.map wrong for large `batch_size`).  The
+kernel uses vmap for the B-way parallelism and scan with no `batch_size`, so it
+is immune.
 
 ---
 
@@ -118,7 +111,8 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 - [x] Step 1 — Phase 0: scaffolding migration
 - [x] Step 2 — Phase A: primitives (transfer, threading, mesh/trivial-sharding)
 - [x] Step 3 — Phase B: sharding hooks (new view/slice axes)
-- [ ] Step 4 — Phase F1: FBP filter (view-sharded, zero comms — low-hanging)
+- [x] Step 4 — Phase F1: FBP filter (view-sharded, zero comms) — DONE; kernel is
+      `tomography_utils.apply_row_filter`, 2× memory floor, B=1024, H100-validated
 - [ ] Step 5 — Phase D: back projection (reduce-scatter)
 - [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test)
 - [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test

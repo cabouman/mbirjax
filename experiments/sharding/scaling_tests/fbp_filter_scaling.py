@@ -62,11 +62,6 @@ WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
 
-# Which fbp_filter kernel to measure: "per_view" | "flat" | "row_batch".  The
-# worker applies this to mbirjax.parallel_beam._FBP_FILTER_KERNEL before timing,
-# so the harness can compare kernels without editing the library.
-FBP_KERNEL = "row_batch"
-
 CORRECTNESS_SIZE = (64, 64, 64)   # small, fixed; comparison is size-independent
 CORRECTNESS_SEED = 1234
 
@@ -117,18 +112,11 @@ def parse_size_label(label):
     return tuple(int(x) for x in label.split("x"))
 
 
-def _select_kernel(kernel):
-    """Apply the chosen fbp_filter kernel to the library before measuring."""
-    import mbirjax.parallel_beam as pb
-    pb._FBP_FILTER_KERNEL = kernel
-
-
 # ── Worker side (runs in an isolated subprocess) ──────────────────────────────
-def worker_setup(out_file, fbp_kernel):
+def worker_setup(out_file):
     """Report platform, device count/label, and the single-device correctness
     check against the prerelease baseline.  One launch, before sizes are known."""
     import mbirjax  # device-setup-first: before any jax import (via sc below)
-    _select_kernel(fbp_kernel)
     plat, max_dev = sc.detect_platform()
     dev_label = sc.device_label()
 
@@ -155,12 +143,12 @@ def worker_setup(out_file, fbp_kernel):
     beta_state, branch = sc.beta_status(pkg_path)   # by git branch, not dir name
     result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
               "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
-              "fbp_kernel": fbp_kernel, "correctness": corr}
+              "correctness": corr}
     sc.write_worker_result(out_file, result)
     print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
 
 
-def worker_measure(size_label, device_counts, warmup, trials, out_file, fbp_kernel):
+def worker_measure(size_label, device_counts, warmup, trials, out_file):
     """Time + measure memory for one size, device counts DESCENDING.
 
     Descending order (8→4→2→1) makes per-device allocation ascending within this
@@ -171,7 +159,6 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file, fbp_kern
     incrementally so even a hard crash returns the completed configs.
     """
     import mbirjax  # device-setup-first
-    _select_kernel(fbp_kernel)
     size = parse_size_label(size_label)
     desc = sorted(set(device_counts), reverse=True)
     print(f"\n[measure {size_label}]  device counts (descending): {desc}")
@@ -228,14 +215,12 @@ def run_worker(argv):
     p.add_argument("--device-counts", type=int, nargs="+", default=None)
     p.add_argument("--warmup", type=int, default=WARMUP)
     p.add_argument("--trials", type=int, default=TRIALS)
-    p.add_argument("--fbp-kernel", default=FBP_KERNEL)
     p.add_argument("--out-file", required=True)
     a = p.parse_args(argv)
     if a.mode == "setup":
-        worker_setup(a.out_file, a.fbp_kernel)
+        worker_setup(a.out_file)
     else:
-        worker_measure(a.size, a.device_counts, a.warmup, a.trials, a.out_file,
-                       a.fbp_kernel)
+        worker_measure(a.size, a.device_counts, a.warmup, a.trials, a.out_file)
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
@@ -276,8 +261,7 @@ def main():
 
     # 1. Setup worker: platform, device count/label, correctness.
     setup, rc = sc.run_worker(
-        script, ["--worker", "--mode", "setup", "--fbp-kernel", FBP_KERNEL],
-        extra_env=worker_env)
+        script, ["--worker", "--mode", "setup"], extra_env=worker_env)
     if setup is None:
         print(f"  ERROR: setup worker produced no result (rc={rc}); aborting.")
         return
@@ -296,7 +280,6 @@ def main():
         label = "(branch undetermined — verify path manually)"
     print(f"  mbirjax: {label}   {mpath}")
     print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
-    print(f"  fbp kernel: {setup.get('fbp_kernel', '?')}")
     if corr.get("baseline_present"):
         print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
               f"pct_above={corr['pct_above_threshold']:.6f}%"
@@ -320,8 +303,7 @@ def main():
     for label in size_labels:
         args = ["--worker", "--mode", "measure", "--size", label,
                 "--device-counts", *[str(n) for n in device_counts],
-                "--warmup", str(WARMUP), "--trials", str(TRIALS),
-                "--fbp-kernel", FBP_KERNEL]
+                "--warmup", str(WARMUP), "--trials", str(TRIALS)]
         res, rc = sc.run_worker(script, args, extra_env=worker_env)
         rows = (res or {}).get("rows") or []
         fails = (res or {}).get("failures") or []
@@ -348,7 +330,6 @@ def main():
         "op": OP_NAME,
         "platform": plat,
         "device_label": dev_label,
-        "fbp_kernel": FBP_KERNEL,
         "mbirjax_path": mpath,
         "warmup": WARMUP, "trials": TRIALS,
         "device_counts": device_counts,

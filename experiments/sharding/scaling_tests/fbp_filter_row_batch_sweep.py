@@ -1,10 +1,10 @@
 """
 experiments/sharding/scaling_tests/fbp_filter_row_batch_sweep.py
 ─────────────────────────────────────────────────────────────────
-Sweep the row_batch fbp_filter kernel's batch B (_FBP_ROW_BATCH) at a fixed
-large problem size, across device counts, to find the throughput/memory sweet
-spot and inform the B(c) memory budget.  The cuFFT work area is ~ B * fft_len(c),
-so B trades per-device memory against parallel width.
+Sweep the FBP row-filter kernel's batch B (tomography_utils.ROW_FILTER_BATCH) at
+a fixed large problem size, across device counts, to find the throughput/memory
+sweet spot and inform the B(c) memory budget.  The cuFFT work area is
+~ B * fft_len(c), so B trades per-device memory against parallel width.
 
 ISOLATED-SUBPROCESS HARNESS (same pattern as fbp_filter_scaling.py): the
 orchestrator touches no JAX; one FRESH worker per (device_count, B) config, so
@@ -65,9 +65,8 @@ def worker_probe(out_file):
 def worker_measure_one(size_label, n_devices, row_batch, warmup, trials, out_file):
     """Measure time + peak memory for one (size, n_devices, B) config."""
     import mbirjax  # device-setup-first
-    import mbirjax.parallel_beam as pb
-    pb._FBP_FILTER_KERNEL = "row_batch"
-    pb._FBP_ROW_BATCH = row_batch          # picked up at first (fresh) trace
+    import mbirjax.tomography_utils as tu
+    tu.ROW_FILTER_BATCH = row_batch         # picked up at first (fresh) trace
     size = ffs.parse_size_label(size_label)
     devs = sc.pick_devices(n_devices)
     res = {"n_devices": n_devices, "row_batch": row_batch, "size": size_label}
@@ -166,7 +165,7 @@ def plot_b_sweep_for_device(per_size, sizes, row_batches, n_devices, dev_label,
         ax.set_xticks(row_batches)                          # ticks only at the B values
         ax.set_xticklabels([str(b) for b in row_batches])   # decimal labels (64, 256, …)
         ax.xaxis.set_minor_locator(NullLocator())           # no extra log minor ticks
-        ax.set_xlabel("row batch B (_FBP_ROW_BATCH)")
+        ax.set_xlabel("row batch B (ROW_FILTER_BATCH)")
         ax.grid(True, alpha=0.3)
         ax.legend(title="size (v×r×c)")
     ax1.set_ylabel("min time (ms)")
@@ -281,7 +280,7 @@ def main():
 
     results = {
         "op": OP_NAME, "platform": plat, "device_label": dev_label,
-        "fbp_kernel": "row_batch", "sizes": size_labels,
+        "sizes": size_labels,
         "device_counts": device_counts, "row_batches": row_batches,
         "mbirjax_path": probe.get("mbirjax_path"),
         "warmup": WARMUP, "trials": TRIALS,

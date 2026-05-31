@@ -1,3 +1,4 @@
+import warnings
 from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
@@ -12,212 +13,21 @@ from mbirjax import TomographyModel, tomography_utils
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
 
 
-# ── FBP-filter kernel selection (Phase F1 experiment switch) ──────────────────
-# fbp_filter applies a per-detector-row convolution to each device's sinogram
-# block.  Three kernel structures are under evaluation:
-#   "per_view"  : lax.map over views, vmap the row convolution within each view.
-#                 FFT batch = view_batch_size * n_rows → memory scales with
-#                 geometry (the H100 1624^3 OOM).
-#   "flat"      : reshape (views, rows, channels) -> (views*rows, channels) and
-#                 lax.map(batch_size=128) the row convolution — bounded batch but
-#                 via the jax#27591-unsafe path, plus a body/tail padding hack.
-#   "row_batch" : reshape to (M, B, c) and lax.map (no batch_size) with vmap over
-#                 B — FFT work area ~ B*fft_len(c), bounded by B alone, #27591-free
-#                 (see _apply_fbp_filter_row_batch).  Intended replacement for the
-#                 other two; default-to-be after the GPU B-sweep.
-# This constant selects which kernel fbp_filter uses; the comparison harness
-# toggles it to measure time/memory/correctness.  TEMPORARY: once row_batch is
-# confirmed on GPU, keep it and remove this switch and the other two.
-_FBP_FILTER_KERNEL = "per_view"
+def _warn_view_batch_size_deprecated(view_batch_size):
+    """Warn (only on explicit use) that view_batch_size is deprecated/ignored.
 
-
-def _split_body_tail(n, batch):
-    """Split count n into (body, tail) where body is the largest multiple of batch.
-
-    jax.lax.map pads the final batch when n is not divisible by the batch size,
-    and that padding contaminates the cuFFT output, so we run an exact-multiple
-    body (batched) plus a remainder tail (mapped without a fixed batch size).
-    batch is capped to n so a small n never degenerates to an all-tail (slow,
-    unbatched) pass.
+    The row filter kernel (tomography_utils.apply_row_filter) chooses its own
+    batch (tomography_utils.ROW_FILTER_BATCH), so view_batch_size no longer
+    affects parallel-beam FBP filtering.  Kept on the user-facing methods for
+    back-compat; this fires only when a caller passes a non-None value.
     """
-    batch = min(batch, n)
-    body = (n // batch) * batch
-    return body, n - body, batch
-
-
-@partial(jax.jit, static_argnames='view_batch_size')
-def _apply_fbp_filter_per_view(block, filter_arr, *, view_batch_size):
-    """per_view kernel: lax.map over views, vmap the row convolution per view.
-
-    Defined at module level and @jax.jit'd (view_batch_size static; block/filter
-    shapes are static under jit) so the whole per-device kernel compiles to one
-    fused executable.  This jit is load-bearing for multi-device scaling: without
-    it the lax.map / fftconvolve / reshape run eagerly (op-by-op via Python),
-    which on the CPU backend barely scales (~2x at 8 devices vs ~6.5x jitted —
-    measured 2026-05-30, root cause of the research-vs-beta gap).  The JIT cache
-    is keyed on this function's identity (stable, module-level) + static args +
-    abstract input types, so compilation happens once per (shape, view_batch_size)
-    and is shared across all threads and all fbp_filter calls.
-
-    Args:
-        block (jax array):      Shape (views, rows, channels), contiguous.
-        filter_arr (jax array): Shape (2*channels - 1,), the FBP recon filter.
-        view_batch_size (int):  Number of views per lax.map step.
-
-    Returns:
-        jax array of shape (views, rows, channels).
-    """
-    n_views = block.shape[0]
-    body, tail, vbs = _split_body_tail(n_views, view_batch_size)
-
-    def _convolve_row(row):
-        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
-
-    def _apply_conv_to_view(view):
-        # view: (rows, channels) — contiguous; vmap the convolution over rows.
-        return jax.vmap(_convolve_row)(view)
-
-    parts = []
-    if body > 0:
-        parts.append(jax.lax.map(_apply_conv_to_view, block[:body], batch_size=vbs))
-    if tail > 0:
-        parts.append(jax.lax.map(_apply_conv_to_view, block[body:]))
-    return jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-
-
-# Cap for the flat kernel's lax.map batch size.  jax-ml/jax#27591: lax.map can
-# produce WRONG results for large batch sizes (their repro: batch 128 correct,
-# batch 512 garbage), so keep the flattened-row batch small.  128 is the value
-# used elsewhere (fbp_filter's view_batch_size cap) and is on the safe side of
-# the reported failure.
-_FLAT_MAP_BATCH = 128
-
-
-@partial(jax.jit, static_argnames='view_batch_size')
-def _apply_fbp_filter_flat(block, filter_arr, *, view_batch_size):
-    """flat kernel: reshape to (views*rows, channels), lax.map the per-row conv.
-
-    The FBP filter is per detector row, so flattening the (views, rows) axes
-    exposes views*rows independent rows — full parallel work regardless of how
-    few views a device holds.  @jax.jit'd for the same reason as the per_view
-    kernel (eager dispatch barely scales on CPU).
-
-    Batch-size safety (jax-ml/jax#27591): lax.map can return wrong results for
-    large batch sizes, so the flattened-row batch is capped at _FLAT_MAP_BATCH
-    (128), NOT view_batch_size*n_rows (which could be tens of thousands).
-    view_batch_size is accepted for signature parity with the per_view kernel but
-    does not set the flat batch (the cap governs).
-
-    Args:
-        block (jax array):      Shape (views, rows, channels), contiguous.
-        filter_arr (jax array): Shape (2*channels - 1,), the FBP recon filter.
-        view_batch_size (int):  Accepted for parity; flat batch uses _FLAT_MAP_BATCH.
-
-    Returns:
-        jax array of shape (views, rows, channels).
-    """
-    n_views, n_rows, n_channels = block.shape
-    rows = block.reshape(n_views * n_rows, n_channels)
-    total_rows = n_views * n_rows
-    body, tail, rbs = _split_body_tail(total_rows, _FLAT_MAP_BATCH)
-
-    def _convolve_row(row):
-        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
-
-    parts = []
-    if body > 0:
-        parts.append(jax.lax.map(_convolve_row, rows[:body], batch_size=rbs))
-    if tail > 0:
-        parts.append(jax.lax.map(_convolve_row, rows[body:]))
-    filtered = jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-    return filtered.reshape(n_views, n_rows, n_channels)
-
-
-# Row batch (B) for the row_batch kernel: rows convolved per lax.map step.  The
-# cuFFT work area is ~ B * fft_len(c), so B bounds the per-device filter memory
-# independent of geometry (v, r) and device count.  Because work area also grows
-# with c (fft_len(c) >~ 3c-2), B will likely need to become c-aware (B ~ budget /
-# fft_len(c)); for now it is a fixed default, to be tuned by the GPU B-sweep.
-_FBP_ROW_BATCH = 256
-
-
-@partial(jax.jit, static_argnames='view_batch_size')
-def _apply_fbp_filter_row_batch(block, filter_arr, *, view_batch_size):
-    """row_batch kernel: reshape (v,r,c)->(v*r,c), batch B rows per lax.map step.
-
-    The FBP filter is per detector row, so we flatten (views, rows) into one row
-    axis and convolve B rows per scan step (vmap over the B).  A `lax.scan` walks
-    overlapping B-row windows and writes each window's result straight into a
-    preallocated output buffer, so the cuFFT work area is ~ B * fft_len(c),
-    bounded by B alone (independent of how many views/rows a device holds or how
-    many devices there are), and the only full-size arrays are the input shard (a
-    view of `block`) and the output.
-
-    Why a scan over clamped windows, not a padded reshape or a body/tail split:
-      - No `lax.map(batch_size=...)`: vmap supplies the B-way parallelism, so
-        jax-ml/jax#27591 (wrong results for large lax.map batch_size) does NOT
-        apply and B is a free knob.
-      - No whole-array zero-pad and no output concatenate.  Both of those
-        materialized a FULL extra shard whenever B does not divide v*r (the
-        common case for a large B) — a ~2x per-device memory penalty measured on
-        the H100.  Clamping the last window in-bounds (it overlaps and recomputes
-        a few rows, which is exact for a per-row filter) and updating the output
-        in place keeps the peak at the input+output floor (~3x shard, vs ~5x).
-
-    @jax.jit'd (view_batch_size static; block/filter shapes static) — the jit is
-    load-bearing for multi-device scaling (eager dispatch barely scales).
-
-    Args:
-        block (jax array):      Shape (views, rows, channels), contiguous.
-        filter_arr (jax array): Shape (2*channels - 1,), the FBP recon filter.
-        view_batch_size (int):  Accepted for parity (and soon-deprecated); the
-                                row batch B (_FBP_ROW_BATCH) governs the FFT batch.
-
-    Returns:
-        jax array of shape (views, rows, channels).
-    """
-    n_views, n_rows, n_channels = block.shape
-    total_rows = n_views * n_rows
-    batch = min(_FBP_ROW_BATCH, total_rows)         # don't batch past a tiny shard
-    n_steps = (total_rows + batch - 1) // batch      # ceil → number of windows
-    rows = block.reshape(total_rows, n_channels)
-    c_out = n_channels                               # mode='valid': out length == c
-
-    # Start row of each B-row window.  The last start is clamped to
-    # total_rows - batch so the final window stays in-bounds; when batch does not
-    # divide total_rows it overlaps the previous window by (batch - rem) rows,
-    # which are recomputed and rewritten with identical values (the filter is
-    # per-row → idempotent), so the result is exact.  When batch divides
-    # total_rows the clamp is a no-op (no overlap).
-    starts = jnp.array(
-        [min(i * batch, total_rows - batch) for i in range(n_steps)],
-        dtype=jnp.int32)
-
-    def _convolve_row(row):
-        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
-
-    def _filter_window(out, start):
-        # Slice a (batch, c) window, convolve its rows, and write the result
-        # straight into the preallocated output buffer (the scan carry).  No
-        # padding copy and no concat: the only full-size arrays are `rows` (a
-        # view of `block`) and `out`, so the peak stays near the input+output
-        # floor regardless of whether batch divides total_rows.
-        window = jax.lax.dynamic_slice(rows, (start, 0), (batch, n_channels))
-        filtered = jax.vmap(_convolve_row)(window)               # (batch, c_out)
-        return jax.lax.dynamic_update_slice(out, filtered, (start, 0)), None
-
-    out = jnp.zeros((total_rows, c_out), dtype=rows.dtype)
-    out, _ = jax.lax.scan(_filter_window, out, starts)
-    return out.reshape(n_views, n_rows, c_out)
-
-
-def _apply_fbp_filter(block, filter_arr, *, view_batch_size):
-    """Dispatch to the FBP-filter kernel selected by _FBP_FILTER_KERNEL."""
-    if _FBP_FILTER_KERNEL == "row_batch":
-        return _apply_fbp_filter_row_batch(block, filter_arr, view_batch_size=view_batch_size)
-    if _FBP_FILTER_KERNEL == "flat":
-        return _apply_fbp_filter_flat(block, filter_arr, view_batch_size=view_batch_size)
-    return _apply_fbp_filter_per_view(block, filter_arr, view_batch_size=view_batch_size)
+    if view_batch_size is not None:
+        warnings.warn(
+            "view_batch_size is deprecated and ignored for ParallelBeamModel FBP "
+            "filtering; the row filter kernel "
+            "(mbirjax.tomography_utils.apply_row_filter) sets its own batch "
+            "(tomography_utils.ROW_FILTER_BATCH).",
+            DeprecationWarning, stacklevel=3)
 
 
 class ParallelBeamModel(TomographyModel):
@@ -499,22 +309,24 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
-        return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        _warn_view_batch_size_deprecated(view_batch_size)
+        return self.fbp_recon(sinogram, filter_name=filter_name)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
-        return self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+        _warn_view_batch_size_deprecated(view_batch_size)
+        return self.fbp_filter(sinogram, filter_name=filter_name)
 
     def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
@@ -532,21 +344,20 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored — the row
+                filter kernel (tomography_utils.apply_row_filter) sets its own
+                batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering, in
             view-native sharding (or a plain array when no mesh is configured).
         """
+        _warn_view_batch_size_deprecated(view_batch_size)
         # Shard on the view axis.  No-op when no mesh is configured (single
         # device) or when the input already carries this sharding.
         sinogram = self._shard_sinogram(sinogram)
 
         num_views, _, num_channels = sinogram.shape
-        if view_batch_size is None:
-            view_batch_size = self.view_batch_size_for_vmap
-            max_view_batch_size = 128  # Limit the view batch size here and ConeBeam due to https://github.com/jax-ml/jax/issues/27591
-            view_batch_size = min(view_batch_size, max_view_batch_size)
 
         # Generate the reconstruction filter with appropriate scaling.
         delta_voxel = self.get_params('delta_voxel')
@@ -567,10 +378,9 @@ class ParallelBeamModel(TomographyModel):
         # Materialize the filter once as numpy; each device uploads its own copy.
         filter_np = np.asarray(recon_filter)
 
-        # Each kernel computes its own (per-shard) body/tail batching internally
-        # via _split_body_tail, so the split is always against the LOCAL
-        # (per-device) view count — each device's shard holds only
-        # num_views / n_devices views.  See _apply_fbp_filter and the kernels.
+        # apply_row_filter batches rows internally (ROW_FILTER_BATCH), so each
+        # device filters only its LOCAL view-shard's rows — no dependence on how
+        # many views a device holds.  See tomography_utils.apply_row_filter.
 
         if self.mesh is not None:
             # Multi-device: one thread per device, each filtering its own view
@@ -586,8 +396,7 @@ class ParallelBeamModel(TomographyModel):
                 # the result stays there (zero host transfer).
                 shard = dev_to_shard[device]
                 filter_jax = jnp.array(filter_np)   # tiny upload: 2*channels-1 floats
-                return _apply_fbp_filter(
-                    shard, filter_jax, view_batch_size=view_batch_size)
+                return tomography_utils.apply_row_filter(shard, filter_jax)
 
             # run_per_device fans worker_process out across the mesh devices (one
             # thread each) and returns the per-device results in device order,
@@ -602,14 +411,13 @@ class ParallelBeamModel(TomographyModel):
         else:
             # Single-device path (no mesh configured): filter directly.
             filter_jax = jnp.array(filter_np)
-            filtered_sinogram = _apply_fbp_filter(
-                sinogram, filter_jax, view_batch_size=view_batch_size)
+            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax)
 
         # No post-scaling: the voxel factor and pi/num_views were folded into the
         # filter above, so each device's kernel output is already fully scaled.
         return filtered_sinogram
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -621,13 +429,13 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
-
-        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+        _warn_view_batch_size_deprecated(view_batch_size)
+        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)
