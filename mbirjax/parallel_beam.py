@@ -14,16 +14,20 @@ ParallelBeamParamNames = mj.ParamNames | Literal['angles']
 
 # ── FBP-filter kernel selection (Phase F1 experiment switch) ──────────────────
 # fbp_filter applies a per-detector-row convolution to each device's sinogram
-# block.  Two kernel structures are under evaluation:
-#   "per_view" : lax.map over views, vmap the row convolution within each view.
-#   "flat"     : reshape (views, rows, channels) -> (views*rows, channels) and
-#                lax.map the row convolution over the single flattened row axis.
-# The flat form exposes views*rows independent rows regardless of how few views
-# a device holds, and uses a simpler single-level map.  This constant selects
-# which kernel fbp_filter uses; the comparison harness
-# (experiments/sharding/scaling_tests/fbp_filter_kernel_comparison.py) toggles
-# it to measure time/memory/correctness.  TEMPORARY: once a winner is chosen,
-# keep that kernel and remove this switch and the loser.
+# block.  Three kernel structures are under evaluation:
+#   "per_view"  : lax.map over views, vmap the row convolution within each view.
+#                 FFT batch = view_batch_size * n_rows → memory scales with
+#                 geometry (the H100 1624^3 OOM).
+#   "flat"      : reshape (views, rows, channels) -> (views*rows, channels) and
+#                 lax.map(batch_size=128) the row convolution — bounded batch but
+#                 via the jax#27591-unsafe path, plus a body/tail padding hack.
+#   "row_batch" : reshape to (M, B, c) and lax.map (no batch_size) with vmap over
+#                 B — FFT work area ~ B*fft_len(c), bounded by B alone, #27591-free
+#                 (see _apply_fbp_filter_row_batch).  Intended replacement for the
+#                 other two; default-to-be after the GPU B-sweep.
+# This constant selects which kernel fbp_filter uses; the comparison harness
+# toggles it to measure time/memory/correctness.  TEMPORARY: once row_batch is
+# confirmed on GPU, keep it and remove this switch and the other two.
 _FBP_FILTER_KERNEL = "per_view"
 
 
@@ -129,8 +133,75 @@ def _apply_fbp_filter_flat(block, filter_arr, *, view_batch_size):
     return filtered.reshape(n_views, n_rows, n_channels)
 
 
+# Row batch (B) for the row_batch kernel: rows convolved per lax.map step.  The
+# cuFFT work area is ~ B * fft_len(c), so B bounds the per-device filter memory
+# independent of geometry (v, r) and device count.  Because work area also grows
+# with c (fft_len(c) >~ 3c-2), B will likely need to become c-aware (B ~ budget /
+# fft_len(c)); for now it is a fixed default, to be tuned by the GPU B-sweep.
+_FBP_ROW_BATCH = 256
+
+
+@partial(jax.jit, static_argnames='view_batch_size')
+def _apply_fbp_filter_row_batch(block, filter_arr, *, view_batch_size):
+    """row_batch kernel: reshape (v,r,c)->(v*r,c), batch B rows per lax.map step.
+
+    The FBP filter is per detector row, so we flatten (views, rows) into one row
+    axis, pad it up to a multiple of B, and fold it to (M, B, c) with M = v*r/B
+    map steps.  Each step convolves B rows (vmap over the B), and lax.map scans
+    the M steps WITHOUT a batch_size argument — so the cuFFT work area is
+    ~ B * fft_len(c), bounded by B alone, independent of how many views/rows a
+    device holds or how many devices there are.
+
+    Two deliberate choices vs the `flat` kernel:
+      - No `lax.map(batch_size=...)`: the scan processes one (B, c) chunk at a
+        time and vmap supplies the B-way parallelism, so jax-ml/jax#27591 (wrong
+        results for large lax.map batch_size) does NOT apply and B is a free knob.
+      - Our own zero-pad + crop replaces the body/tail split: each row convolves
+        independently, so the zero-padded rows produce benign output that is
+        cropped away (no cuFFT-padding contamination).
+
+    @jax.jit'd (view_batch_size static; block/filter shapes static) — the jit is
+    load-bearing for multi-device scaling (eager dispatch barely scales).
+
+    Args:
+        block (jax array):      Shape (views, rows, channels), contiguous.
+        filter_arr (jax array): Shape (2*channels - 1,), the FBP recon filter.
+        view_batch_size (int):  Accepted for parity (and soon-deprecated); the
+                                row batch B (_FBP_ROW_BATCH) governs the FFT batch.
+
+    Returns:
+        jax array of shape (views, rows, channels).
+    """
+    n_views, n_rows, n_channels = block.shape
+    total_rows = n_views * n_rows
+    batch = min(_FBP_ROW_BATCH, total_rows)        # don't pad past a tiny shard
+    n_steps = (total_rows + batch - 1) // batch     # ceil → M
+    padded = n_steps * batch
+
+    rows = block.reshape(total_rows, n_channels)
+    if padded > total_rows:
+        # Append zero rows so the row axis is an exact multiple of batch; they
+        # convolve to benign values and are cropped after the map.
+        pad = jnp.zeros((padded - total_rows, n_channels), dtype=rows.dtype)
+        rows = jnp.concatenate([rows, pad], axis=0)
+    row_batches = rows.reshape(n_steps, batch, n_channels)
+
+    def _convolve_row(row):
+        return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
+
+    def _convolve_row_batch(row_batch):    # row_batch: (batch, channels)
+        return jax.vmap(_convolve_row)(row_batch)
+
+    filtered = jax.lax.map(_convolve_row_batch, row_batches)   # (n_steps, batch, c_out)
+    c_out = filtered.shape[-1]                         # == n_channels for 'valid'
+    filtered = filtered.reshape(n_steps * batch, c_out)[:total_rows]
+    return filtered.reshape(n_views, n_rows, c_out)
+
+
 def _apply_fbp_filter(block, filter_arr, *, view_batch_size):
     """Dispatch to the FBP-filter kernel selected by _FBP_FILTER_KERNEL."""
+    if _FBP_FILTER_KERNEL == "row_batch":
+        return _apply_fbp_filter_row_batch(block, filter_arr, view_batch_size=view_batch_size)
     if _FBP_FILTER_KERNEL == "flat":
         return _apply_fbp_filter_flat(block, filter_arr, view_batch_size=view_batch_size)
     return _apply_fbp_filter_per_view(block, filter_arr, view_batch_size=view_batch_size)

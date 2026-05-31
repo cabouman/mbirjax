@@ -500,7 +500,6 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
         dev_label (str): device type for the suptitle (see device_label()).
     """
     device_counts = list(device_counts)
-    nominal_base = device_counts[0]   # nominal 1-device baseline (for the mem label)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
     oom_notes = []
@@ -518,7 +517,12 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
         # add an OOM note rather than a misleading "1.0x at 2 devices".
         ax1.plot(xs, [rows[n]["speedup"] * size_base for n in xs], "o-",
                  label=size_label)
-        ax2.plot(xs, [rows[n].get("mem_frac", float("nan")) for n in xs],
+        # Memory as a multiple of the per-device data shard: peak / shard, where
+        # shard = float32 sinogram bytes / n_devices.  This shows the filter's
+        # memory overhead above the data it holds (ideal ≈ a small constant — the
+        # input + output shards + bounded FFT work area), independent of size.
+        vol_bytes = _label_volume(size_label) * 4   # float32 sinogram, total bytes
+        ax2.plot(xs, [rows[n]["mem_mb"] / (vol_bytes / n / (1024 ** 2)) for n in xs],
                  "s-", label=size_label)
         if size_base > 1:
             oom_notes.append(f"{size_label}: 1-device OOM "
@@ -536,15 +540,18 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
                  bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.85))
 
     ax2.set_xlabel("number of devices")
+    # Ideal is a flat ~2× (input shard + output shard, negligible work area),
+    # independent of device count; a kernel whose work area is geometry-bound
+    # (per_view) rises above it as the shard shrinks.  Shown on both platforms.
+    ax2.axhline(2.0, ls="--", color="gray", alpha=0.7,
+                label="ideal (2× = read+write)")
+    ax2.set_title("per-device memory ÷ shard size")
     if mem_kind == "gpu_peak_per_device":
-        # GPU peak_bytes_in_use is per-device → fraction is physically meaningful.
-        ax2.set_ylabel(f"peak mem/device ÷ {nominal_base}-device")
-        ax2.set_title("per-device memory vs devices (fraction of 1-device)")
+        ax2.set_ylabel("peak mem/device ÷ shard")
     else:
-        # CPU RSS is whole-process and shares one RAM pool across virtual
-        # devices, so this fraction is NOT per-device savings — label honestly.
-        ax2.set_ylabel(f"process RSS ÷ {nominal_base}-device  [{mem_kind}]")
-        ax2.set_title("memory vs devices (process RSS — not per-device)")
+        # CPU RSS is whole-process / shared RAM, so the ratio is not truly
+        # per-device — the y-label flags the metric (the title is kept uniform).
+        ax2.set_ylabel(f"process RSS ÷ shard  [{mem_kind}]")
     ax2.legend(title="size (v×r×c)")
     ax2.grid(True, alpha=0.3)
 
@@ -581,6 +588,20 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
             mem.append(row["mem_mb"] if row else float("nan"))
         ax1.plot(vols, tms, "o-", label=f"{n} dev")
         ax2.plot(vols, mem, "s-", label=f"{n} dev")
+
+    # Ideal linear-in-size references (time and memory ∝ voxels v·r·c), each
+    # anchored at the average of the smallest size across device counts.
+    base_rows = _grid_lookup(grid, sizes[0])
+    base_times = [base_rows[n]["min_ms"] for n in device_counts if n in base_rows]
+    if base_times:
+        base = sum(base_times) / len(base_times)
+        ax1.plot(vols, [base * v / vols[0] for v in vols], "k--", alpha=0.5,
+                 label="ideal (∝ size)")
+    base_mems = [base_rows[n]["mem_mb"] for n in device_counts if n in base_rows]
+    if base_mems:
+        bm = sum(base_mems) / len(base_mems)
+        ax2.plot(vols, [bm * v / vols[0] for v in vols], "k--", alpha=0.5,
+                 label="ideal (∝ size)")
 
     for ax in (ax1, ax2):
         ax.set_xscale("log")

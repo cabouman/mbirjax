@@ -250,6 +250,61 @@ primitives.  Background: `parallel_performance/fbp_parallel_options.md`.
   - [ ] confirm (instrument/grep) no cross-device transfer occurs in the
         view-sharded path.
 
+### F1 follow-up: row-batched fbp_filter kernel (settles the reshaping item)
+
+**Status (2026-05-30):** jit fix landed; the per-device kernel scales (~6.5×).
+The remaining F1 item is the per-device kernel's **memory**.  GPU evidence (H100,
+`fbp_filter_scaling.py`): the default `per_view` kernel's FFT batch is
+`view_batch_size × n_rows` rows simultaneously, so at 1624³/4-dev it allocated a
+**~27–35 GB cuFFT work area** (vs a ~4 GB shard) and **OOM'd at 1 device**.  The
+batch — and thus the work area — scales with geometry.
+
+**Design (the reshape that decouples memory from geometry):**
+```
+reshape (v_local, r, c) → (v_local·r, c)
+pad rows up to a multiple of B → (M·B, c),  M = ceil(v·r / B)
+reshape → (M, B, c)
+lax.map(lambda chunk: vmap(convolve_row)(chunk), axis 0)   # NO batch_size arg
+reshape → (M·B, c), crop to (v·r, c), reshape → (v_local, r, c)
+```
+- **Why not the existing `flat` kernel:** it bounds the batch via
+  `lax.map(batch_size=128)`, which is the jax#27591-unsafe path (hence the 128
+  cap) and needs the `_split_body_tail` hack for `lax.map`'s contaminating
+  internal padding.  The reshape above uses `lax.map` with **no `batch_size`**
+  (scan over `M`, `vmap` supplies the `B`-way parallelism), so **#27591 does not
+  apply** and `B` is a free knob.  Our **own zero-pad + crop** replaces body/tail
+  (each row convolves independently; zero rows give benign, cropped output).
+- **Memory:** FFT work area `≈ B × fft_len(c)`, **bounded by `B` alone** —
+  independent of `v`, `r`, and device count.  Concrete win to verify: B=256 →
+  ~tens of MB work area, so **1624³ should run on a SINGLE H100** (no OOM).
+
+**Decisions (Greg, 2026-05-30):**
+- Keep the public `view_batch_size` arg **for now, mark deprecated soon**; it no
+  longer governs the FFT batch.  A module constant `_FBP_ROW_BATCH` (the `B`)
+  does; **default B = 256**.
+- **B must become c-aware:** the work area is `~B × fft_len(c)` where
+  `fft_len(c) ≳ 3c−2`, so to hold a fixed per-device memory budget, `B` should
+  **decrease as `c` grows** (`B ≈ budget / fft_len(c)`).  Start with the fixed
+  default; the GPU sweep sets the budget / the `B(c)` relationship.
+
+**Step sequence:**
+1. Implement `"row_batch"` as a third option behind `_FBP_FILTER_KERNEL` (jitted,
+   `B` static).  Keep per_view/flat for A/B.
+2. CPU correctness: single-device == prerelease baseline (bit-exact); 2-dev ==
+   1-dev; non-divisible `v·r` clean (zero-pad/crop).  Adapt
+   `tests/test_sharding_fbp.py` + `test_fbp_fdk.py`.
+3. GPU (Greg runs): (a) confirm **1624³ no longer OOMs at 1 device**; (b) **sweep
+   B** (now free of #27591) for the throughput/memory sweet spot + the `B(c)`
+   budget; (c) confirm the memory-fraction curve moves toward ideal.
+4. Make `row_batch` the default; **remove the `_FBP_FILTER_KERNEL` switch, the
+   losing kernels, and the `_split_body_tail`/`_FLAT_MAP_BATCH` machinery**.
+5. Update `sharding_status.md` (close the reshaping item) → then Phase D.
+
+**Risks:** per-`B`/shape cuFFT plan compilation (fine for a sweep); ≤`B−1` padded
+rows wasted per shard (negligible when `v·r ≫ B`); small `B` may underfill a GPU
+(the sweep + #27591-freedom let us go bigger); assert `mode='valid'` keeps output
+length `c`.
+
 ---
 
 ## Step 5 — Phase D: Back projection (reduce-scatter)
