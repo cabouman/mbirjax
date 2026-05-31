@@ -66,32 +66,62 @@ def _ensure_dirs():
 
 
 # ── Which mbirjax am I running? ───────────────────────────────────────────────
-def which_mbirjax(beta_substr="mbirjax_sharding"):
-    """Print a clear beta/RESEARCH banner for the resolved mbirjax.
+def mbirjax_git_branch(pkg_path):
+    """Git branch of the checkout containing pkg_path, or None if undetermined.
 
-    Both worktrees share one conda env and one editable install, so the working
-    directory / sys.path decides which code is loaded.  This prints an
-    unmissable role label ('beta' or 'RESEARCH') plus a loud warning when the
-    research code is loaded, so a mis-set working directory can't silently give
-    wrong results.
+    Returns None when pkg_path is not a git checkout, git is unavailable, or HEAD
+    is detached (rev-parse returns 'HEAD').
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", pkg_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            branch = out.stdout.strip()
+            return branch if branch and branch != "HEAD" else None
+    except Exception:
+        pass
+    return None
 
-    Args:
-        beta_substr (str): substring identifying the beta worktree path.
+
+def beta_status(pkg_path):
+    """Identify whether the loaded mbirjax is the beta sharding code.
+
+    Detection is by GIT BRANCH, not directory name, so it works regardless of
+    where the worktree lives — locally the beta worktree is 'mbirjax_sharding',
+    but on the cluster the beta branch may be checked out into a plain 'mbirjax'
+    directory.  Beta == a branch whose name contains 'sharding' (the beta branch
+    is greg/parallel_sharding; research is greg/parallel_tests; prerelease is
+    'prerelease').
+
+    Returns:
+        (state, branch): state is 'beta', 'not-beta', or 'unknown' (branch could
+        not be determined — e.g. detached HEAD or no git).
+    """
+    branch = mbirjax_git_branch(pkg_path)
+    if branch is None:
+        return "unknown", None
+    return ("beta" if "sharding" in branch else "not-beta"), branch
+
+
+def which_mbirjax():
+    """Print a clear beta/not-beta banner for the resolved mbirjax (by branch).
 
     Returns:
         str: the mbirjax package path.
     """
     import mbirjax
     path = os.path.dirname(mbirjax.__file__)
-    is_beta = beta_substr in path
+    state, branch = beta_status(path)
     print("=" * 72)
-    if is_beta:
-        print("  mbirjax code in use:  *** beta ***  (mbirjax_sharding)")
+    if state == "beta":
+        print(f"  mbirjax code in use:  *** beta ***  (branch {branch})")
+    elif state == "not-beta":
+        print(f"  mbirjax code in use:  ### NOT beta ###  (branch {branch})")
+        print("  !! WARNING: results will reflect NON-beta code.  Check PYTHONPATH /")
+        print("  !! working directory so the beta sharding branch is loaded.")
     else:
-        print("  mbirjax code in use:  ###  RESEARCH  ###   <-- NOT the beta code")
-        print("  !! WARNING: scaling/correctness results will reflect RESEARCH code,")
-        print("  !! not the beta sharding code.  Fix the working directory / PYTHONPATH")
-        print("  !! so the beta worktree is on sys.path before running.")
+        print("  mbirjax code in use:  (branch undetermined — verify path manually)")
     print(f"  path: {path}")
     print("=" * 72)
     return path
@@ -444,6 +474,13 @@ def _grid_lookup(grid, size_label):
     return {r["n_devices"]: r for r in grid.get(size_label, [])}
 
 
+def _label_volume(size_label):
+    """Total voxels (v·r·c) for a 'VxRxC' size label — the cost variable that
+    fbp_filter time and memory scale with, used as the size-sweep x-axis."""
+    v, r, c = (int(x) for x in size_label.split("x"))
+    return v * r * c
+
+
 def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
                       mem_kind, out_path):
     """Device sweep: speedup and fractional memory vs device count, per size.
@@ -463,32 +500,50 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
         dev_label (str): device type for the suptitle (see device_label()).
     """
     device_counts = list(device_counts)
-    base_dev = device_counts[0]
+    nominal_base = device_counts[0]   # nominal 1-device baseline (for the mem label)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
+    oom_notes = []
     for size_label in sizes:
         rows = _grid_lookup(grid, size_label)
         xs = [n for n in device_counts if n in rows]
-        ax1.plot(xs, [rows[n]["speedup"] for n in xs], "o-", label=size_label)
+        if not xs:
+            continue
+        size_base = xs[0]   # smallest device count measured for THIS size
+        # Anchor each curve so its first measured point sits on the ideal line.
+        # The stored speedup is 1.0 at size_base, so ×size_base puts it at
+        # (size_base, size_base).  For size_base==1 this is the ordinary speedup
+        # vs 1 device; for size_base>1 (1-device OOM'd) the curve starts on the
+        # ideal line — clearer than implying 2 devices gave no speedup — and we
+        # add an OOM note rather than a misleading "1.0x at 2 devices".
+        ax1.plot(xs, [rows[n]["speedup"] * size_base for n in xs], "o-",
+                 label=size_label)
         ax2.plot(xs, [rows[n].get("mem_frac", float("nan")) for n in xs],
                  "s-", label=size_label)
+        if size_base > 1:
+            oom_notes.append(f"{size_label}: 1-device OOM "
+                             f"(anchored to ideal at {size_base} dev)")
     ax1.plot(device_counts, device_counts, "k--", alpha=0.5, label="ideal linear")
 
     ax1.set_xlabel("number of devices")
-    ax1.set_ylabel(f"speedup vs {base_dev} device" + ("s" if base_dev != 1 else ""))
+    ax1.set_ylabel("speedup vs 1 device")
     ax1.set_title("speedup vs devices")
-    ax1.legend(title="size (v×r×c)")
+    ax1.legend(title="size (v×r×c)", loc="upper left")
     ax1.grid(True, alpha=0.3)
+    if oom_notes:
+        ax1.text(0.98, 0.02, "\n".join(oom_notes), transform=ax1.transAxes,
+                 va="bottom", ha="right", fontsize=7.5, color="dimgray",
+                 bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.85))
 
     ax2.set_xlabel("number of devices")
     if mem_kind == "gpu_peak_per_device":
         # GPU peak_bytes_in_use is per-device → fraction is physically meaningful.
-        ax2.set_ylabel(f"peak mem/device ÷ {base_dev}-device")
+        ax2.set_ylabel(f"peak mem/device ÷ {nominal_base}-device")
         ax2.set_title("per-device memory vs devices (fraction of 1-device)")
     else:
         # CPU RSS is whole-process and shares one RAM pool across virtual
         # devices, so this fraction is NOT per-device savings — label honestly.
-        ax2.set_ylabel(f"process RSS ÷ {base_dev}-device  [{mem_kind}]")
+        ax2.set_ylabel(f"process RSS ÷ {nominal_base}-device  [{mem_kind}]")
         ax2.set_title("memory vs devices (process RSS — not per-device)")
     ax2.legend(title="size (v×r×c)")
     ax2.grid(True, alpha=0.3)
@@ -504,15 +559,18 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
                     mem_kind, out_path):
     """Size sweep: time and peak memory vs problem size, one curve per device count.
 
-    Left: min time vs size (log-y).  Right: peak memory vs size.
+    The x-axis is the true problem size in voxels (v·r·c) on a LOG scale, so the
+    spacing reflects the real size ratios (e.g. ×8 then ×4) instead of equal
+    categorical steps; both panels are then log-log and the scaling slope is
+    readable.  Ticks are labeled with the size strings at their true positions.
 
     Args:
         grid (dict): size_label -> list of row dicts, as produced by the driver.
         device_counts (list[int]): one curve per count.
-        sizes (list[str]): size labels along the x-axis, in order.
+        sizes (list[str]): size labels, in order.
         dev_label (str): device type for the suptitle.
     """
-    x = list(range(len(sizes)))
+    vols = [_label_volume(s) for s in sizes]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
     for n in device_counts:
@@ -521,22 +579,24 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
             row = _grid_lookup(grid, size_label).get(n)
             tms.append(row["min_ms"] if row else float("nan"))
             mem.append(row["mem_mb"] if row else float("nan"))
-        ax1.plot(x, tms, "o-", label=f"{n} dev")
-        ax2.plot(x, mem, "s-", label=f"{n} dev")
+        ax1.plot(vols, tms, "o-", label=f"{n} dev")
+        ax2.plot(vols, mem, "s-", label=f"{n} dev")
 
-    ax1.set_xticks(x); ax1.set_xticklabels(sizes, rotation=30, ha="right")
+    for ax in (ax1, ax2):
+        ax.set_xscale("log")
+        ax.set_xticks(vols)
+        ax.set_xticklabels(sizes, rotation=30, ha="right")
+        ax.set_xlabel("problem size (voxels v·r·c, log scale)")
+        ax.set_yscale("log")
+        ax.grid(True, alpha=0.3)
+
     ax1.set_ylabel("min time (ms)")
-    ax1.set_yscale("log")
     ax1.set_title("time vs size")
     ax1.legend(title="devices")
-    ax1.grid(True, alpha=0.3)
 
-    ax2.set_xticks(x); ax2.set_xticklabels(sizes, rotation=30, ha="right")
     ax2.set_ylabel(f"peak memory (MB) [{mem_kind}]")
-    ax2.set_yscale("log")
     ax2.set_title("memory vs size")
     ax2.legend(title="devices")
-    ax2.grid(True, alpha=0.3)
 
     fig.suptitle(f"{op_name} — size sweep — {dev_label}", fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.95))

@@ -65,6 +65,15 @@ CORRECTNESS_THRESHOLD = 1e-4
 CORRECTNESS_SIZE = (64, 64, 64)   # small, fixed; comparison is size-independent
 CORRECTNESS_SEED = 1234
 
+# Substrings (upper-cased) that mark a caught failure as memory exhaustion.
+# Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces
+# as "INTERNAL: RET_CHECK ... Failed to create cuFFT batched plan with scratch
+# allocator" / "Failed to allocate work area" — none of the usual OOM tokens.
+# (Confirmed on H100 at 1624^3 / 1 device.)
+_OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
+                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
+                "FAILED TO CREATE CUFFT")
+
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
 def make_model(size, devices=None):
@@ -130,8 +139,11 @@ def worker_setup(out_file):
               f"pct_above={m['pct_above_threshold']:.6f}%"
               + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
+    pkg_path = os.path.dirname(mbirjax.__file__)
+    beta_state, branch = sc.beta_status(pkg_path)   # by git branch, not dir name
     result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
-              "mbirjax_path": os.path.dirname(mbirjax.__file__), "correctness": corr}
+              "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
+              "correctness": corr}
     sc.write_worker_result(out_file, result)
     print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
 
@@ -174,8 +186,7 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
             mem_mb, mem_kind = sc.peak_memory_mb(devs)
         except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
             msg = str(e).replace("\n", " ")
-            is_oom = any(k in msg.upper() for k in
-                         ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC"))
+            is_oom = any(k in msg.upper() for k in _OOM_MARKERS)
             failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300]})
             print(f"  n_devices={n:2d}  {'OOM' if is_oom else 'ERROR'}: {msg[:120]}")
             _publish()
@@ -255,9 +266,15 @@ def main():
     dev_label = setup["device_label"]
     corr = setup["correctness"]
     mpath = setup.get("mbirjax_path", "?")
-    is_beta = "mbirjax_sharding" in mpath
-    print(f"  mbirjax: {'*** beta ***' if is_beta else '### NOT beta — check PYTHONPATH ###'}"
-          f"   {mpath}")
+    beta_state = setup.get("beta_state", "unknown")
+    branch = setup.get("branch")
+    if beta_state == "beta":
+        label = f"*** beta ***  (branch {branch})"
+    elif beta_state == "not-beta":
+        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
+    else:
+        label = "(branch undetermined — verify path manually)"
+    print(f"  mbirjax: {label}   {mpath}")
     print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
     if corr.get("baseline_present"):
         print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
