@@ -21,7 +21,6 @@ import h5py
 import re
 import warnings
 import subprocess
-import scipy
 
 
 def load_data_hdf5(file_path):
@@ -973,6 +972,68 @@ class ModelType(str, Enum):
     TRANSLATION = 'translation'
 
 
+def get_helical_half_rotation_slice_range(
+    ct_model,
+    helical_pitch,
+    helical_z_shifts,
+):
+    """
+    Return the contiguous slice range whose z positions are visible for at least
+    half a rotation.
+
+    Assumes helical_z_shifts are monotone and uniformly sampled.
+    
+    Returns:
+        start_slice, stop_slice, valid_slice_mask
+        where stop_slice is exclusive.
+    """
+    recon_shape = ct_model.get_params('recon_shape')
+    delta_voxel, voxel_slice_aspect, recon_slice_offset = ct_model.get_params(
+        ['delta_voxel', 'voxel_slice_aspect', 'recon_slice_offset']
+    )
+    sinogram_shape = ct_model.get_params('sinogram_shape')
+    delta_det_row = ct_model.get_params('delta_det_row')
+    magnification = ct_model.get_magnification()
+
+    num_slices = recon_shape[2]
+    num_det_rows = sinogram_shape[1]
+
+    delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+    # Slice-center z locations in reconstruction coordinates.
+    k = jnp.arange(num_slices)
+    z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+
+    # Detector height mapped to isocenter.
+    det_height_iso = num_det_rows * delta_det_row / magnification
+
+    # Table travel range.
+    z_shift_min = jnp.min(helical_z_shifts)
+    z_shift_max = jnp.max(helical_z_shifts)
+
+    # Extra interior trim needed when pitch > 1.
+    # For pitch <= 1, the table-travel endpoints already have at least
+    # half-rotation visibility, so no trim is needed.
+    trim = 0.5 * det_height_iso * jnp.maximum(float(helical_pitch) - 1.0, 0.0)
+
+    z_min = z_shift_min + trim
+    z_max = z_shift_max - trim
+
+    valid_slice_mask = (z_k >= z_min) & (z_k <= z_max)
+
+    valid_indices = np.where(np.asarray(valid_slice_mask))[0]
+    if len(valid_indices) == 0:
+        raise ValueError(
+            "No slices are visible for at least half a rotation. "
+            "Check helical_pitch, helical_z_range, num_views, and detector height."
+        )
+
+    start_slice = int(valid_indices[0])
+    stop_slice = int(valid_indices[-1] + 1)
+
+    return start_slice, stop_slice
+
+
 def generate_demo_data(
     object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
     model_type: Union[ModelType, str] = ModelType.CONE,
@@ -1051,7 +1112,7 @@ def generate_demo_data(
         # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         source_detector_dist = 4 * num_det_channels
-        source_iso_dist = source_detector_dist
+        source_iso_dist = source_detector_dist/2
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
@@ -1139,12 +1200,31 @@ def generate_demo_data(
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     device = ct_model_for_generation.main_device
+    phantom_shape = recon_shape
+    embed_slice_start = 0
+    embed_slice_stop = recon_shape[2]
+    if model_type == ModelType.CONE and use_helical:
+        embed_slice_start, embed_slice_stop = get_helical_half_rotation_slice_range(
+            ct_model_for_generation,
+            helical_pitch,
+            helical_z_shifts
+        )
+        phantom_shape = (
+            recon_shape[0],
+            recon_shape[1],
+            embed_slice_stop - embed_slice_start,
+        )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom = generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device)
     elif object_type == ObjectType.CUBE:
-        phantom = gen_cube_phantom(recon_shape, device=device)
+        phantom_core = gen_cube_phantom(phantom_shape, device=device)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
+    if model_type == ModelType.CONE and use_helical:
+        phantom = jnp.zeros(recon_shape, device=device)
+        phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+    else:
+        phantom = phantom_core
     
     # Generate synthetic sinogram data
     print('Creating sinogram')
@@ -1564,145 +1644,3 @@ def estimate_background_cluster_boundaries(sinogram):
     right_boundary = centers[right_boundary_idx]
 
     return left_boundary, right_boundary
-
-
-def fit_beam_hardening_curve(linear_projection, target_projection, num_parameters=5):
-    """
-    Fit parametric beam-hardening function from paired samples.
-
-    This function fits the function
-
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p))
-
-    to paired ``(linear_projection, target_projection)`` samples using
-    nonlinear least squares.
-
-    Args:
-        linear_projection (np.ndarray): Ideal linear
-            projection or path-length samples.
-        target_projection (np.ndarray): Target
-            beam-hardened projection samples paired with
-            ``linear_projection``.
-        num_parameters (int, optional): Total number of fitted parameters.
-                                        Defaults to 5.
-
-    Returns:
-        ndarray: Optimized parameter vector
-            ``[theta_0, theta_1, ..., theta_{num_parameters-1}]``.
-
-    Example:
-        >>> linear_projection = sinogram.ravel()
-        >>> target_projection = sinogram_nonlinear.ravel()
-        >>> fitted_params = fit_beam_hardening_curve(
-        ...     linear_projection, target_projection, num_parameters=5)
-        >>> y_pred = apply_fitted_beam_hardening_curve(
-        ...     sinogram_test, fitted_params)
-    """
-    num_parameters = int(num_parameters)
-    if num_parameters < 2:
-        raise ValueError(
-            'fit_beam_hardening_curve: num_parameters must be at least 2.')
-
-    linear_projection = np.asarray(linear_projection, dtype=np.float64)
-    target_projection = np.asarray(target_projection, dtype=np.float64)
-
-    if linear_projection.size != target_projection.size:
-        raise ValueError(
-            'fit_beam_hardening_curve: Input and target projection arrays must contain the same number of samples.')
-
-    # Treat the inputs as paired samples even when they are not already 1D.
-    linear_projection = linear_projection.ravel()
-    target_projection = target_projection.ravel()
-
-    # Keep positive training pairs
-    valid_mask = (
-        np.isfinite(linear_projection) & np.isfinite(target_projection)
-        & (linear_projection > 1e-6) & (target_projection > 1e-6)
-    )
-    linear_projection = linear_projection[valid_mask]
-    target_projection = target_projection[valid_mask]
-
-    if linear_projection.size == 0:
-        raise ValueError(
-            'fit_beam_hardening_curve: No valid training samples remain.')
-
-    # Default initialization: theta_0 = 1 and all exponential log-weights = 0.
-    initial_params = np.zeros(num_parameters, dtype=np.float64)
-    initial_params[0] = 1.0
-
-    # Fit the filtered projection pairs by nonlinear least squares.
-    optimization_result = scipy.optimize.least_squares(
-        _beam_hardening_curve_residuals,
-        initial_params,
-        args=(linear_projection, target_projection),
-        loss='linear',
-        method='trf',
-        verbose=1,
-    )
-
-    if not optimization_result.success:
-        warnings.warn(
-            f'fit_beam_hardening_curve: Beam-hardening curve fit did not converge: {optimization_result.message}',
-            RuntimeWarning)
-
-    optimized_params = optimization_result.x
-
-    return optimized_params
-
-
-def apply_fitted_beam_hardening_curve(linear_projection, params):
-    """
-    Apply a fitted parametric beam-hardening function.
-
-    This is the inference step after :func:`fit_beam_hardening_curve`.
-    It maps a linear projection to the corresponding beam-hardened
-    projection using the fitted parameter vector:
-
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p)).
-
-    Args:
-        linear_projection (np.ndarray): Linear
-            projection values. Arrays of any shape are accepted and the output
-            preserves that shape.
-        params (np.ndarray): Parameter vector
-            ``[theta_0, theta_1, ..., theta_N]``.
-
-    Returns:
-        ndarray: Beam-hardened projection values with the same shape as
-            ``linear_projection``.
-    """
-    linear_projection = np.asarray(linear_projection, dtype=np.float64)
-    params = np.asarray(params, dtype=np.float64).reshape(-1)
-
-    if params.size < 2:
-        raise ValueError(
-            'Expected at least 2 parameters: theta_0 and one log-weight.')
-
-    theta_0 = params[0]
-    theta_rest = params[1:]
-
-    log_sum_exp = np.full_like(linear_projection, -np.inf, dtype=np.float64)
-    for i, theta_i in enumerate(theta_rest, start=1):
-        exponent = theta_i - i * theta_0 * linear_projection
-        log_sum_exp = np.logaddexp(log_sum_exp, exponent)
-
-    return -log_sum_exp
-
-
-def _beam_hardening_curve_residuals(params, linear_projection, target_projection):
-    """
-    Return fitted-minus-target residuals for nonlinear least-squares fitting.
-
-    Args:
-        params (np.ndarray): Current beam-hardening
-            model parameters.
-        linear_projection (np.ndarray): Filtered linear projection samples.
-        target_projection (np.ndarray): Filtered target beam-hardened samples.
-
-    Returns:
-        ndarray: One-dimensional residual vector used by
-            :func:`scipy.optimize.least_squares`.
-    """
-    fitted_projection = apply_fitted_beam_hardening_curve(
-        linear_projection, params)
-    return fitted_projection.ravel() - target_projection.ravel()

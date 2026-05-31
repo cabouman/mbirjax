@@ -67,9 +67,12 @@ MAR utilities
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: gen_huber_weights
-.. autofunction:: BH_correction
 .. autofunction:: recon_plastic_metal
-
+.. autofunction:: BH_correction
+.. autofunction:: fit_beam_hardening_curve
+.. autofunction:: fit_inverse_beam_hardening_curve
+.. autofunction:: apply_beam_hardening_curve
+.. autofunction:: apply_inverse_beam_hardening_curve
 
 Stripe/Ring/Offset Removal
 --------------------------

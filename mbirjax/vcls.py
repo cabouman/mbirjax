@@ -149,9 +149,10 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     # Forward project the reference object
     print('Creating sinogram for reference object of shape {}'.format(ref_object.shape))
     ref_sino = ct_model.forward_project(ref_object)
+    delta_voxel, ref_voxel_row_aspect = ct_model.get_params(['delta_voxel', 'voxel_row_aspect'])
 
     # Create ROI mask and subsample the indices
-    mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
+    mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape, delta_voxel=delta_voxel, voxel_row_aspect=ref_voxel_row_aspect)
     sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
     ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
     sparse_ref_object = jnp.asarray(ref_object_flat[sparse_indices, :])
