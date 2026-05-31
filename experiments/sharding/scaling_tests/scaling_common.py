@@ -253,11 +253,22 @@ def time_op(run_fn, warmup=1, trials=3):
     Returns:
         (stats, last_result): stats is a dict of min/mean/std in ms; last_result
         is the final returned value (for correctness checking).
+
+    Memory note: we drop the PREVIOUS iteration's result before allocating the
+    next one, so the device peak reflects a single call (input + output), not two
+    outputs alive at once.  Without this, peak_bytes_in_use over-reports by a full
+    output (one shard): the loop holds the prior result while the next run_fn
+    allocates its output, on top of the persistent input.  Freeing is by refcount
+    when the name is dropped; gc.collect() is belt-and-suspenders and sits outside
+    the timed region so it cannot perturb the timing.
     """
+    import gc
     import jax
     result = None
     times = []
     for i in range(warmup + trials):
+        result = None      # free the prior output before the next allocation
+        gc.collect()       # insurance for any lingering ref; outside the timed region
         t0 = time.perf_counter()
         result = run_fn()
         jax.block_until_ready(result)
