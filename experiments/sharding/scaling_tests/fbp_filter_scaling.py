@@ -138,7 +138,7 @@ def main():
     plat, max_dev = sc.detect_platform()
     parser = argparse.ArgumentParser(description="fbp_filter scaling + correctness")
     parser.add_argument("--size-set", choices=["quick", "medium", "large"],
-                        default="quick")
+                        default="medium")
     parser.add_argument("--device-counts", type=int, nargs="+", default=None,
                         help="device counts for the device sweep (default: ladder)")
     parser.add_argument("--sweep-device-count", type=int, default=None,
@@ -155,7 +155,7 @@ def main():
                      else sc.default_device_counts(max_dev))
     sizes = sc.SIZE_PRESETS[plat][args.size_set]
     # Device sweep uses the first preset size (kept fixed); size sweep uses all.
-    device_sweep_size = sizes[0]
+    device_sweep_size = sizes[1]
     sweep_dev_count = args.sweep_device_count or max_dev
 
     corr = check_correctness(args.threshold)

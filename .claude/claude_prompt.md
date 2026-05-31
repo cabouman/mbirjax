@@ -42,6 +42,16 @@ When implementing:
 * Avoid speculative cleanup or unrelated refactors.
 * When possible, suggest ways to test or validate correctness and performance.
 
+Scripts and reproducibility:
+
+* I almost never run scripts with command-line arguments, and prefer not to add
+  them.  Instead, put run parameters either in a checked-in config file (YAML) or
+  as clearly-labeled values at the top of the script that are easy to find and
+  edit.  Either way the configuration is versioned, so runs are reproducible.
+* Favor evidence that is apples-to-apples: when comparing implementations, vary
+  exactly one thing and hold the rest identical.  Take the extra few minutes to
+  do it properly rather than moving quickly on improper evidence.
+
 For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, and computational efficiency over stylistic changes.
 
 Remember, we're in the curiosity business, so a little bit of exploration and a lot of understanding are much better than a quick fix.
