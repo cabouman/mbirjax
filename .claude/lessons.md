@@ -54,6 +54,18 @@ version, with the worked example.
   idempotent for a per-row op) avoids both — hitting the input+output floor.
 - **`lax.map(batch_size=…)` is unsafe for large batches (jax#27591).**  Supply the
   parallelism with `vmap` and scan with no `batch_size` to stay immune.
+- **CPU sharding is a REAL speedup — take it seriously (users run on CPU).**
+  Measured ~5.4–6.5× at 8 virtual CPU devices (device sweep).  The filter is
+  embarrassingly parallel across views, and `run_per_device` runs one thread per
+  virtual CPU device with the GIL released during XLA execution, so N independent
+  shard-streams genuinely spread across cores — extracting parallelism a single
+  CPU device's intra-op threading does not fully get for this scan/FFT workload.
+  (Don't assert "CPU sharding won't help" from a model — the data says it does;
+  this is the ruler-vs-measured lesson, self-inflicted.)  Caveats: on CPU the
+  memory metric is whole-process RSS, not the per-device 2× floor, and RSS grows
+  with device count — CPU sharding trades some memory for speed.  This is all
+  SINGLE-PROCESS (the cores of one machine); spanning multiple nodes still needs
+  multi-host JAX (`jax.distributed`).
 
 ## Phase F1 case study (the arc)
 

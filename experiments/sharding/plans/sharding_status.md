@@ -96,12 +96,27 @@ Sinogram sharded by **view** (stationary); recon by **slice** (moves as voxel
 batches: all-gather forward / reduce-scatter back, pipelined).  Threading + one
 probed transfer primitive.  Trivial-sharding unifies single/multi-device.
 
+## Targets (scope)
+
+**CPU is a first-class target, not just dev/CI.**  Users run on CPU, and CPU
+sharding is a *real* performance path — the view-sharded fbp_filter measured
+~5.4–6.5× at 8 virtual CPU devices (the per-device threading spreads the
+embarrassingly-parallel view-shards across cores; the GIL is released during XLA
+execution).  So **every phase (back projection, VCD, …) should be validated and
+tuned on CPU as well as GPU**, not GPU-only.  Caveats: CPU memory is
+whole-process RSS (not the per-device floor) and grows with device count, so CPU
+sharding trades some memory for speed.  Multi-**node** scaling is out of scope —
+all sharding here is single-process (one machine's devices); spanning nodes would
+need multi-host JAX (`jax.distributed`).
+
 ## Verified hardware facts (2026-05-29, JAX 0.10.1)
 
 - **H100 2×:** direct device-to-device `device_put` correct → no host bounce.
 - **L40S 2×:** device-resident cross-device transfer **silently zeros** the
   non-default shard → host-bounce required.  Hence the empirical `_d2d_safe`
   probe in the transfer helper.
+- **CPU (virtual devices):** view-sharded fbp_filter scales ~5.4–6.5× at 8
+  devices — CPU sharding is a genuine speedup, not just a test path (see Targets).
 
 ## Phase tracker (execution order)
 
@@ -119,74 +134,7 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 - [ ] Step 8 — Phase E: VCD integration + halos
 - [ ] (later) cone beam
 
-## Scaling notes (IN PROGRESS — 2026-05-30, M3 Max virtual CPU)
-
-All numbers below are CPU/virtual-device on one M3 Max and are PRELIMINARY.
-Authoritative perf data will come from the H100 cluster.  Treat single sweeps
-with caution: run-to-run variability here has been large.
-
-**Reference points**
-- User's own `sharding_scaling` run, research branch, size 180×128×256:
-  fbp_filter 1.0 / 1.87 / 3.37 / 5.81× at 1/2/4/8 devices.
-
-**ROOT CAUSE FOUND (2026-05-30): the beta fbp_filter kernel lost `@jax.jit`.**
-Research's per-device kernel `_apply_fbp_filter_to_shard` is decorated
-`@partial(jax.jit, static_argnames=(...))`; the beta kernels
-`_apply_fbp_filter_per_view` / `_apply_fbp_filter_flat` I wrote during the port
-have **no jit** → they run eager (each lax.map/fftconvolve/reshape dispatched
-op-by-op through Python), which on the CPU backend is far slower and barely
-scales.
-
-How we got here (each step ruled something out, cleanly):
-- 3-way A/B (research vs beta per_view vs beta flat), same harness/sizes/seed:
-  research scaled ~6.5×, both beta kernels ~2× — so NOT the kernel structure.
-- view_batch_size sweep on beta: flat across vbs — NOT the lax.map batching.
-- block-in-thread probe: ≤3% — NOT where we block (Greg predicted this).
-- shard-axis microbench (pure JAX, no mbirjax, view vs row axis, same per-row
-  conv): view and row IDENTICAL to ~2% — **shard axis is NOT the cause.**  But
-  this isolated test only scaled ~2× too (it had no jit either), which pointed
-  the finger at the one thing it shared with beta and not research: no jit.
-- jit toggle in that same pure-JAX probe (eager vs jitted kernel, both axes):
-
-    256×256×256  1→8 dev:  eager ~2.5× (200 ms)   jitted ~6.8× (66 ms)
-    512×128×128  1→8 dev:  eager ~1.3× (187 ms)   jitted ~5.5–6.7× (31 ms)
-
-  Jitted matches research's numbers (research was 69 ms / 32 ms at 8 dev); eager
-  matches beta's.  Shard axis irrelevant in both eager and jitted columns.
-
-**Conclusion:** add `@jax.jit` (static `view_batch_size`) to the beta kernel(s)
-and the gap closes — independent of per_view-vs-flat and independent of shard
-axis.  This is a one-decorator fix, confirmed in isolation before touching the
-library.
-
-**FIX APPLIED + CONFIRMED IN THE LIBRARY (2026-05-30).**  Added
-`@partial(jax.jit, static_argnames='view_batch_size')` to both
-`_apply_fbp_filter_per_view` and `_apply_fbp_filter_flat`.  Re-ran the real
-3-way (`fbp_filter_research_vs_beta.py`).  **MEASURED min ms** (read from the
-harness's merged combined table — these are the real numbers):
-
-  size ndev      research  per_view     flat
-  256³   1        462.57    461.19   445.60
-  256³   2        208.01    235.98   229.22
-  256³   4        124.30    123.17   120.16
-  256³   8         70.01     67.46    62.53
-  512×128 1       204.58    200.30   177.04
-  512×128 2       107.02    105.54   108.44
-  512×128 4        56.38     56.28    56.34
-  512×128 8        31.98     31.23    30.03
-
-- **The jit fix works.**  per_view at 256³/8-dev went from ~190 ms (eager, before
-  the fix) to 67 ms — now matches research (70) and scales ~6.8×.  This is the
-  whole win; the eager→jit change was the entire research-vs-beta gap.
-- **All three are within a few % at every config now.**  flat is marginally
-  fastest at most points (e.g. 256³/8: flat 62.5 vs per_view 67.5 vs research
-  70; 512×128/1: flat 177 vs ~200); per_view ≈ research.  No regressions.
-- **flat lean is supported but NOT yet locked.**  flat is fastest-or-tied here
-  AND cleaner/axis-agnostic, but (a) its lax.map batch is capped at 128 rows for
-  #27591 — the batch-sizing for arbitrary (rows, channels) still wants the
-  deliberate design noted in the handoff, and (b) GPU is the deciding hardware.
-  Default stays "per_view" (proven, == research) until GPU confirms flat.
-- Tests: `test_sharding_fbp.py` + `test_fbp_fdk.py` pass 6/6 with the jit.
+## Jax lax.map bug note
 
 **flat kernel + jax bug #27591 (https://github.com/jax-ml/jax/issues/27591):**
 `lax.map` can return WRONG results for large `batch_size` (their repro: 128 OK,
@@ -198,20 +146,6 @@ parallel convolves (see handoff):** flattening gives freedom to choose ANY 2-D
 (rows, channels) decomposition for the vmap+lax.map; pick row-batch ≈128 to stay
 clear of #27591 while keeping good parallel width.
 
-**Implications now settled:**
-- View-axis sharding is NOT inherently slow — the earlier "view-sharding has a
-  CPU scaling cost" worry is withdrawn; it was the missing jit.
-- per_view vs flat remains genuinely close (~7%); decide it later (GPU + memory),
-  but it is a minor optimization, not the scaling lever.
-
-**Next steps:**
-1. Add `@partial(jax.jit, static_argnames='view_batch_size')` to the beta
-   kernels; re-run `fbp_filter_research_vs_beta.py` to confirm beta now matches
-   research; ensure `test_sharding_fbp.py` / `test_fbp_fdk.py` still pass.
-2. Then take the (now-jitted) comparison to the H100 cluster.
-3. per_view-vs-flat decision after that.
-
-Library default remains `_FBP_FILTER_KERNEL = "per_view"`.
 
 ## Blocked / open
 
