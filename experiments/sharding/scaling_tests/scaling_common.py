@@ -26,21 +26,32 @@ Design notes
 """
 
 import os
+import sys
+import json
 import time
 import resource
+import tempfile
+import subprocess
 import platform as _platform
 
-# Import mbirjax before jax so _device_setup configures virtual devices first.
-import mbirjax
-
 import numpy as np
-import jax
 
 from ruamel.yaml import YAML
 
 import matplotlib
 matplotlib.use("Agg")   # file output only; no interactive backend needed
 import matplotlib.pyplot as plt
+
+# NOTE: jax and mbirjax are imported LAZILY, inside the functions that need them
+# (gpus / detect_platform / pick_devices / time_op / which_mbirjax).  This keeps
+# `import scaling_common` JAX-free so the orchestrator (see the op driver) can
+# use the pure helpers — paths, YAML, plots, annotate_*, size_label,
+# default_device_counts, run_worker — WITHOUT initializing a JAX backend.  That
+# matters on GPU: only the isolated worker subprocesses touch JAX, so the
+# orchestrator never holds GPU memory while a worker measures peak usage.
+# Workers still import mbirjax before jax (device-setup-first) — they do
+# `import mbirjax` at the top of the worker entry, before any sc call that
+# triggers the lazy `import jax`.
 
 
 # ── Paths ───────────────────────────────────────────────────────────────────
@@ -70,6 +81,7 @@ def which_mbirjax(beta_substr="mbirjax_sharding"):
     Returns:
         str: the mbirjax package path.
     """
+    import mbirjax
     path = os.path.dirname(mbirjax.__file__)
     is_beta = beta_substr in path
     print("=" * 72)
@@ -85,9 +97,69 @@ def which_mbirjax(beta_substr="mbirjax_sharding"):
     return path
 
 
+# ── Subprocess orchestration (worker isolation) ───────────────────────────────
+def run_worker(script_path, worker_args, extra_env=None):
+    """Run an op driver in --worker mode as an isolated subprocess.
+
+    Each JAX-touching task (device probe, correctness, one size's measurement)
+    runs in its own fresh process so the orchestrator never holds a JAX backend
+    while a worker measures peak memory.  The worker writes its result as JSON to
+    a temp file (passed via --out-file) and may rewrite it incrementally, so a
+    worker that dies partway (e.g. GPU OOM at the largest config) still returns
+    whatever it completed.  The child inherits the current environment plus
+    extra_env; the caller is responsible for putting the beta worktree on
+    PYTHONPATH so the worker's `import mbirjax` resolves to beta.
+
+    Args:
+        script_path (str): absolute path to the op driver (its own __file__).
+        worker_args (list[str]): args after the script, e.g.
+            ['--worker', '--mode', 'measure', '--size', '256x256x256', ...].
+            '--out-file <tmp>' is appended automatically.
+        extra_env (dict|None): environment overrides for the child.
+
+    Returns:
+        (result, returncode): result is the parsed JSON (or None if the worker
+        wrote nothing parseable); returncode is the subprocess exit status.
+    """
+    # Flush any pending orchestrator output first so the worker's live stdout
+    # interleaves in the right order even when stdout is a pipe (PyCharm console).
+    sys.stdout.flush()
+    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="scaling_worker_")
+    os.close(fd)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    cmd = [sys.executable, script_path, *worker_args, "--out-file", out_path]
+    proc = subprocess.run(cmd, env=env)
+    result = None
+    try:
+        with open(out_path) as f:
+            result = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        result = None
+    finally:
+        if os.path.exists(out_path):
+            os.remove(out_path)
+    return result, proc.returncode
+
+
+def write_worker_result(out_file, data):
+    """Worker side: atomically (re)write a JSON result to out_file.
+
+    Written via a temp file + os.replace so a reader (the orchestrator) never
+    sees a half-written file even if the worker is killed mid-write.  Safe to
+    call repeatedly to publish partial progress.
+    """
+    tmp = out_file + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, out_file)
+
+
 # ── Device / platform detection ───────────────────────────────────────────────
 def gpus():
     """List of GPU devices, or [] if no GPU backend."""
+    import jax
     try:
         return jax.devices("gpu")
     except RuntimeError:
@@ -96,6 +168,7 @@ def gpus():
 
 def detect_platform():
     """Return (platform_str, max_devices) where platform_str is 'gpu' or 'cpu'."""
+    import jax
     g = gpus()
     if g:
         return "gpu", len(g)
@@ -104,6 +177,7 @@ def detect_platform():
 
 def pick_devices(n):
     """Return n devices (GPUs preferred, virtual CPUs otherwise), or None."""
+    import jax
     g = gpus()
     if len(g) >= n:
         return g[:n]
@@ -111,6 +185,18 @@ def pick_devices(n):
     if len(c) >= n:
         return c[:n]
     return None
+
+
+def device_label():
+    """Human-readable device label for plot titles.
+
+    Returns e.g. 'CPU (cpu)' on a CPU backend or 'GPU (NVIDIA H100 80GB HBM3)'
+    on a GPU backend, using the first available device's reported kind.
+    """
+    plat, _ = detect_platform()
+    devs = pick_devices(1)
+    kind = devs[0].device_kind if devs else "?"
+    return f"{plat.upper()} ({kind})"
 
 
 def default_device_counts(max_devices):
@@ -138,6 +224,7 @@ def time_op(run_fn, warmup=1, trials=3):
         (stats, last_result): stats is a dict of min/mean/std in ms; last_result
         is the final returned value (for correctness checking).
     """
+    import jax
     result = None
     times = []
     for i in range(warmup + trials):
@@ -152,6 +239,64 @@ def time_op(run_fn, warmup=1, trials=3):
              "mean_ms": float(arr.mean()),
              "std_ms": float(arr.std())}
     return stats, result
+
+
+# ── Speedup / scaling ─────────────────────────────────────────────────────────
+def annotate_speedups(rows, time_key="min_ms", base_key="n_devices", base_val=1):
+    """Add a 'speedup' field to each row, relative to the 1-device run.
+
+    speedup = base_time / row_time, where the baseline is the row whose
+    base_key equals base_val (the 1-device run by default).  If no such row is
+    present (e.g. a custom device sweep that omits 1 device), fall back to the
+    row with the smallest base_key value and print a one-line note, so the
+    reported factor is never silently mislabeled as "vs 1 device".
+
+    Args:
+        rows (list[dict]): sweep rows, each containing base_key and time_key.
+        time_key (str): timing field to ratio (default 'min_ms', the best time).
+        base_key (str): field identifying the baseline row (default 'n_devices').
+        base_val: baseline value to look for (default 1 = single device).
+
+    Returns:
+        The base_key value actually used as the reference (base_val, or the
+        smallest present if base_val is absent), or None if rows is empty.
+    """
+    if not rows:
+        return None
+    base_row = next((r for r in rows if r.get(base_key) == base_val), None)
+    if base_row is None:
+        base_row = min(rows, key=lambda r: r[base_key])
+        print(f"  (note: no {base_key}={base_val} run; reporting speedup "
+              f"relative to {base_key}={base_row[base_key]})")
+    base_time = base_row[time_key]
+    for r in rows:
+        r["speedup"] = base_time / r[time_key]
+    return base_row[base_key]
+
+
+def annotate_mem_fraction(rows, mem_key="mem_mb", base_key="n_devices", base_val=1):
+    """Add a 'mem_frac' field: peak memory relative to the 1-device run.
+
+    mem_frac = row_mem / base_mem, same baseline-selection rule as
+    annotate_speedups (fall back to the smallest device count if base_val is
+    absent).
+
+    CAVEAT: the underlying peak is a *process-cumulative high-water mark* (CPU
+    RSS via getrusage; single-process GPU peak_bytes_in_use), so within one
+    process it does not reset between configs — device 0 participates in every
+    run, so its lifetime peak tends to equal the largest (1-device) run.  This
+    fraction is therefore only a rough indicator and will often read ~1.0/flat;
+    a faithful per-device measurement needs a fresh subprocess per config.
+    """
+    if not rows:
+        return None
+    base_row = next((r for r in rows if r.get(base_key) == base_val), None)
+    if base_row is None:
+        base_row = min(rows, key=lambda r: r[base_key])
+    base_mem = base_row[mem_key]
+    for r in rows:
+        r["mem_frac"] = (r[mem_key] / base_mem) if base_mem else float("nan")
+    return base_row[base_key]
 
 
 # ── Memory ────────────────────────────────────────────────────────────────────
@@ -243,76 +388,166 @@ def _to_plain(obj):
     return obj
 
 
-# ── Plotting ──────────────────────────────────────────────────────────────────
-def plot_device_sweep(op_name, device_counts, min_ms, mem_mb, mem_kind, out_path):
-    """Strong-scaling plot: speedup vs devices, and memory vs devices."""
-    device_counts = list(device_counts)
-    base = min_ms[0]
-    speedup = [base / t for t in min_ms]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2))
+# ── Baselines (reference output: array → .npy, metadata → .yaml) ──────────────
+def save_baseline(op_name, array, meta):
+    """Store a single reference output for op_name.
 
-    ax1.plot(device_counts, speedup, "o-", label="measured")
+    The numeric array goes to ``<op>.npy`` (compact, exact binary); human-
+    readable metadata (capture platform, prerelease path, size, seed, shape,
+    dtype, timing) goes to ``<op>.yaml``.  There is ONE baseline per op, not one
+    per platform: every beta run (CPU or GPU) compares against this same
+    reference, so a significant CPU/GPU divergence shows up as a real difference
+    instead of being hidden by per-platform self-comparison.  The capture
+    platform is kept in the metadata so cross-platform comparisons are labeled.
+
+    Args:
+        op_name (str): operation name, used for the file stem.
+        array: the reference output (JAX or numpy); stored at its own dtype.
+        meta (dict): metadata to record alongside (platform, seed, size, ...).
+
+    Returns:
+        (npy_path, yaml_path)
+    """
+    _ensure_dirs()
+    arr = np.asarray(array)
+    npy_path = os.path.join(BASELINES_DIR, f"{op_name}.npy")
+    yaml_path = os.path.join(BASELINES_DIR, f"{op_name}.yaml")
+    np.save(npy_path, arr)
+    full = {**meta,
+            "npy_file": os.path.basename(npy_path),
+            "output_shape": list(arr.shape),
+            "output_dtype": str(arr.dtype)}
+    save_yaml(yaml_path, full)
+    print(f"  wrote baseline array {npy_path}  shape={arr.shape} dtype={arr.dtype}")
+    return npy_path, yaml_path
+
+
+def load_baseline(op_name):
+    """Load the reference output saved by save_baseline.
+
+    Returns:
+        (array, meta): array is a numpy ndarray, meta is the YAML metadata dict.
+        Returns (None, None) if either file is missing.
+    """
+    npy_path = os.path.join(BASELINES_DIR, f"{op_name}.npy")
+    yaml_path = os.path.join(BASELINES_DIR, f"{op_name}.yaml")
+    if not (os.path.exists(npy_path) and os.path.exists(yaml_path)):
+        return None, None
+    meta = load_yaml(yaml_path)
+    arr = np.load(npy_path)
+    return arr, meta
+
+
+# ── Plotting ──────────────────────────────────────────────────────────────────
+def _grid_lookup(grid, size_label):
+    """Return {n_devices: row} for one size from the measurement grid."""
+    return {r["n_devices"]: r for r in grid.get(size_label, [])}
+
+
+def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
+                      mem_kind, out_path):
+    """Device sweep: speedup and fractional memory vs device count, per size.
+
+    One curve per problem size.  Left: speedup vs devices (with the ideal-linear
+    reference).  Right: peak memory as a FRACTION of the 1-device value (ideal
+    sharding drives per-device memory toward 1/n).  See annotate_mem_fraction's
+    caveat: the underlying peak is a process-cumulative high-water mark, so this
+    fraction is only a rough indicator (often ~1.0) until measured with
+    per-config subprocess isolation.
+
+    Args:
+        grid (dict): size_label -> list of row dicts (n_devices, speedup,
+            mem_frac, ...), as produced by the driver.
+        device_counts (list[int]): x-axis device counts (ascending).
+        sizes (list[str]): size labels, in legend order.
+        dev_label (str): device type for the suptitle (see device_label()).
+    """
+    device_counts = list(device_counts)
+    base_dev = device_counts[0]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
+
+    for size_label in sizes:
+        rows = _grid_lookup(grid, size_label)
+        xs = [n for n in device_counts if n in rows]
+        ax1.plot(xs, [rows[n]["speedup"] for n in xs], "o-", label=size_label)
+        ax2.plot(xs, [rows[n].get("mem_frac", float("nan")) for n in xs],
+                 "s-", label=size_label)
     ax1.plot(device_counts, device_counts, "k--", alpha=0.5, label="ideal linear")
+
     ax1.set_xlabel("number of devices")
-    ax1.set_ylabel("speedup vs 1 device")
-    ax1.set_title(f"{op_name}: strong scaling")
-    ax1.legend()
+    ax1.set_ylabel(f"speedup vs {base_dev} device" + ("s" if base_dev != 1 else ""))
+    ax1.set_title("speedup vs devices")
+    ax1.legend(title="size (v×r×c)")
     ax1.grid(True, alpha=0.3)
 
-    ax2.plot(device_counts, mem_mb, "s-", color="tab:red")
     ax2.set_xlabel("number of devices")
-    ax2.set_ylabel(f"peak memory (MB) [{mem_kind}]")
-    ax2.set_title(f"{op_name}: memory vs devices")
+    if mem_kind == "gpu_peak_per_device":
+        # GPU peak_bytes_in_use is per-device → fraction is physically meaningful.
+        ax2.set_ylabel(f"peak mem/device ÷ {base_dev}-device")
+        ax2.set_title("per-device memory vs devices (fraction of 1-device)")
+    else:
+        # CPU RSS is whole-process and shares one RAM pool across virtual
+        # devices, so this fraction is NOT per-device savings — label honestly.
+        ax2.set_ylabel(f"process RSS ÷ {base_dev}-device  [{mem_kind}]")
+        ax2.set_title("memory vs devices (process RSS — not per-device)")
+    ax2.legend(title="size (v×r×c)")
     ax2.grid(True, alpha=0.3)
 
-    fig.tight_layout()
+    fig.suptitle(f"{op_name} — device sweep — {dev_label}", fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     print(f"  wrote {out_path}")
 
 
-def plot_size_sweep(op_name, sizes_label, min_ms, mem_mb, mem_kind, out_path):
-    """Fixed-device plot: time vs size and peak memory vs size (log-y)."""
-    x = list(range(len(sizes_label)))
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2))
+def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
+                    mem_kind, out_path):
+    """Size sweep: time and peak memory vs problem size, one curve per device count.
 
-    ax1.plot(x, min_ms, "o-")
-    ax1.set_xticks(x); ax1.set_xticklabels(sizes_label, rotation=30, ha="right")
+    Left: min time vs size (log-y).  Right: peak memory vs size.
+
+    Args:
+        grid (dict): size_label -> list of row dicts, as produced by the driver.
+        device_counts (list[int]): one curve per count.
+        sizes (list[str]): size labels along the x-axis, in order.
+        dev_label (str): device type for the suptitle.
+    """
+    x = list(range(len(sizes)))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
+
+    for n in device_counts:
+        tms, mem = [], []
+        for size_label in sizes:
+            row = _grid_lookup(grid, size_label).get(n)
+            tms.append(row["min_ms"] if row else float("nan"))
+            mem.append(row["mem_mb"] if row else float("nan"))
+        ax1.plot(x, tms, "o-", label=f"{n} dev")
+        ax2.plot(x, mem, "s-", label=f"{n} dev")
+
+    ax1.set_xticks(x); ax1.set_xticklabels(sizes, rotation=30, ha="right")
     ax1.set_ylabel("min time (ms)")
     ax1.set_yscale("log")
-    ax1.set_title(f"{op_name}: time vs size")
+    ax1.set_title("time vs size")
+    ax1.legend(title="devices")
     ax1.grid(True, alpha=0.3)
 
-    ax2.plot(x, mem_mb, "s-", color="tab:red")
-    ax2.set_xticks(x); ax2.set_xticklabels(sizes_label, rotation=30, ha="right")
+    ax2.set_xticks(x); ax2.set_xticklabels(sizes, rotation=30, ha="right")
     ax2.set_ylabel(f"peak memory (MB) [{mem_kind}]")
-    ax2.set_title(f"{op_name}: memory vs size")
+    ax2.set_yscale("log")
+    ax2.set_title("memory vs size")
+    ax2.legend(title="devices")
     ax2.grid(True, alpha=0.3)
 
-    fig.tight_layout()
+    fig.suptitle(f"{op_name} — size sweep — {dev_label}", fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     print(f"  wrote {out_path}")
 
 
-# ── Problem-size presets ──────────────────────────────────────────────────────
-# (n_views, n_rows, n_channels).  n_views and n_rows must be divisible by the
-# device counts used.  'quick' keeps a default run short; bigger sets probe
-# limits and are opt-in.
-SIZE_PRESETS = {
-    "cpu": {
-        "quick":  [(64, 64, 64), (64, 128, 128)],
-        "medium": [(128, 128, 128), (128, 256, 256)],
-        "large":  [(180, 512, 512)],
-    },
-    "gpu": {
-        "quick":  [(256, 256, 256), (512, 512, 512)],
-        "medium": [(512, 512, 512), (1024, 1024, 1024)],
-        "large":  [(1024, 1024, 1024), (2048, 2048, 2048)],
-    },
-}
-
-
+# ── Problem-size label ────────────────────────────────────────────────────────
+# Problem-size *sets* now live at the top of each op driver (different ops want
+# different sizes); scaling_common only provides the shared label formatter.
 def size_label(size):
     v, r, c = size
     return f"{v}x{r}x{c}"
