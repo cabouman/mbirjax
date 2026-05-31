@@ -542,10 +542,16 @@ class ParallelBeamModel(TomographyModel):
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1 / (delta_voxel ** 2)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        recon_filter *= scaling_factor
+        # Fold BOTH scalars — the voxel-size factor and the FBP weight pi/num_views
+        # — into the filter, in place, so they cost nothing and each per-row
+        # convolution output is already fully scaled.  Convolution is linear in
+        # the filter, so scaling the filter scales every output row identically.
+        # This replaces a post-kernel `filtered_sinogram * (pi/num_views)`, which
+        # was an out-of-place, full-array multiply that promoted f32 -> f64 (np.pi
+        # is float64), ~doubling peak memory and causing the 1-device GPU OOMs at
+        # large sizes.  The in-place *= keeps the filter float32 (a tiny array).
+        recon_filter *= scaling_factor * (np.pi / num_views)
         # Materialize the filter once as numpy; each device uploads its own copy.
-        # (The in-place *= above keeps float32; an out-of-place multiply would
-        # promote to float64, which is much slower on GPU.)
         filter_np = np.asarray(recon_filter)
 
         # Each kernel computes its own (per-shard) body/tail batching internally
@@ -586,8 +592,8 @@ class ParallelBeamModel(TomographyModel):
             filtered_sinogram = _apply_fbp_filter(
                 sinogram, filter_jax, view_batch_size=view_batch_size)
 
-        # Scaling term (applies to both sharded and plain arrays).
-        filtered_sinogram = filtered_sinogram * (jnp.pi / num_views)
+        # No post-scaling: the voxel factor and pi/num_views were folded into the
+        # filter above, so each device's kernel output is already fully scaled.
         return filtered_sinogram
 
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
