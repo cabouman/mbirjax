@@ -17,6 +17,7 @@ class TestFBPReconstruction(unittest.TestCase):
         # Choose the geometry types
         self.geometry_types = mj._utils._geometry_types_for_tests.copy()
         self.geometry_types.remove("translation")
+        self.geometry_types.remove("anisotropic_translation")
         
         # Set tolerances for the metrics - FBP is deterministic, so results should never go above these.
         self.parallel_tolerances = {'nrmse': 0.25, 'max_diff': 0.43, 'pct_95': 0.091}
