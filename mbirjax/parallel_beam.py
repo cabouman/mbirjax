@@ -146,19 +146,23 @@ def _apply_fbp_filter_row_batch(block, filter_arr, *, view_batch_size):
     """row_batch kernel: reshape (v,r,c)->(v*r,c), batch B rows per lax.map step.
 
     The FBP filter is per detector row, so we flatten (views, rows) into one row
-    axis, pad it up to a multiple of B, and fold it to (M, B, c) with M = v*r/B
-    map steps.  Each step convolves B rows (vmap over the B), and lax.map scans
-    the M steps WITHOUT a batch_size argument — so the cuFFT work area is
-    ~ B * fft_len(c), bounded by B alone, independent of how many views/rows a
-    device holds or how many devices there are.
+    axis and convolve B rows per scan step (vmap over the B).  A `lax.scan` walks
+    overlapping B-row windows and writes each window's result straight into a
+    preallocated output buffer, so the cuFFT work area is ~ B * fft_len(c),
+    bounded by B alone (independent of how many views/rows a device holds or how
+    many devices there are), and the only full-size arrays are the input shard (a
+    view of `block`) and the output.
 
-    Two deliberate choices vs the `flat` kernel:
-      - No `lax.map(batch_size=...)`: the scan processes one (B, c) chunk at a
-        time and vmap supplies the B-way parallelism, so jax-ml/jax#27591 (wrong
-        results for large lax.map batch_size) does NOT apply and B is a free knob.
-      - Our own zero-pad + crop replaces the body/tail split: each row convolves
-        independently, so the zero-padded rows produce benign output that is
-        cropped away (no cuFFT-padding contamination).
+    Why a scan over clamped windows, not a padded reshape or a body/tail split:
+      - No `lax.map(batch_size=...)`: vmap supplies the B-way parallelism, so
+        jax-ml/jax#27591 (wrong results for large lax.map batch_size) does NOT
+        apply and B is a free knob.
+      - No whole-array zero-pad and no output concatenate.  Both of those
+        materialized a FULL extra shard whenever B does not divide v*r (the
+        common case for a large B) — a ~2x per-device memory penalty measured on
+        the H100.  Clamping the last window in-bounds (it overlaps and recomputes
+        a few rows, which is exact for a per-row filter) and updating the output
+        in place keeps the peak at the input+output floor (~3x shard, vs ~5x).
 
     @jax.jit'd (view_batch_size static; block/filter shapes static) — the jit is
     load-bearing for multi-device scaling (eager dispatch barely scales).
@@ -174,28 +178,37 @@ def _apply_fbp_filter_row_batch(block, filter_arr, *, view_batch_size):
     """
     n_views, n_rows, n_channels = block.shape
     total_rows = n_views * n_rows
-    batch = min(_FBP_ROW_BATCH, total_rows)        # don't pad past a tiny shard
-    n_steps = (total_rows + batch - 1) // batch     # ceil → M
-    padded = n_steps * batch
-
+    batch = min(_FBP_ROW_BATCH, total_rows)         # don't batch past a tiny shard
+    n_steps = (total_rows + batch - 1) // batch      # ceil → number of windows
     rows = block.reshape(total_rows, n_channels)
-    if padded > total_rows:
-        # Append zero rows so the row axis is an exact multiple of batch; they
-        # convolve to benign values and are cropped after the map.
-        pad = jnp.zeros((padded - total_rows, n_channels), dtype=rows.dtype)
-        rows = jnp.concatenate([rows, pad], axis=0)
-    row_batches = rows.reshape(n_steps, batch, n_channels)
+    c_out = n_channels                               # mode='valid': out length == c
+
+    # Start row of each B-row window.  The last start is clamped to
+    # total_rows - batch so the final window stays in-bounds; when batch does not
+    # divide total_rows it overlaps the previous window by (batch - rem) rows,
+    # which are recomputed and rewritten with identical values (the filter is
+    # per-row → idempotent), so the result is exact.  When batch divides
+    # total_rows the clamp is a no-op (no overlap).
+    starts = jnp.array(
+        [min(i * batch, total_rows - batch) for i in range(n_steps)],
+        dtype=jnp.int32)
 
     def _convolve_row(row):
         return jax.scipy.signal.fftconvolve(row, filter_arr, mode='valid')
 
-    def _convolve_row_batch(row_batch):    # row_batch: (batch, channels)
-        return jax.vmap(_convolve_row)(row_batch)
+    def _filter_window(out, start):
+        # Slice a (batch, c) window, convolve its rows, and write the result
+        # straight into the preallocated output buffer (the scan carry).  No
+        # padding copy and no concat: the only full-size arrays are `rows` (a
+        # view of `block`) and `out`, so the peak stays near the input+output
+        # floor regardless of whether batch divides total_rows.
+        window = jax.lax.dynamic_slice(rows, (start, 0), (batch, n_channels))
+        filtered = jax.vmap(_convolve_row)(window)               # (batch, c_out)
+        return jax.lax.dynamic_update_slice(out, filtered, (start, 0)), None
 
-    filtered = jax.lax.map(_convolve_row_batch, row_batches)   # (n_steps, batch, c_out)
-    c_out = filtered.shape[-1]                         # == n_channels for 'valid'
-    filtered = filtered.reshape(n_steps * batch, c_out)[:total_rows]
-    return filtered.reshape(n_views, n_rows, c_out)
+    out = jnp.zeros((total_rows, c_out), dtype=rows.dtype)
+    out, _ = jax.lax.scan(_filter_window, out, starts)
+    return out.reshape(n_views, n_rows, c_out)
 
 
 def _apply_fbp_filter(block, filter_arr, *, view_batch_size):
