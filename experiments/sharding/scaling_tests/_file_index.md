@@ -49,6 +49,17 @@
   `move_shard` calls); single-process (timing, not memory); self-resolves to the
   beta worktree via a `sys.path` prepend.  Finding (CPU): the cap is Phase 1
   (bandwidth-bound), Phase 2 is ≤9% — see `plans/sharding_status.md`.
+- `sparse_back_project_memory_attribution.py` — GPU diagnostic at a fixed (size,
+  device count).  Part A: exact per-device buffer breakdown (sino shard, recon
+  output, full-cylinder partial, vmap buffer).  Part C: slice-band sweep —
+  `back_project_slice_band` vs peak/shard + time, to find the memory/throughput
+  knee.  (A "Part B" view/pixel batch sweep was removed — batch tuning leaves the
+  peak flat.)  Isolated-subprocess harness.
+- `sparse_back_project_single_device_sweep.py` — GPU single-device (n_dev=1)
+  slice-band sweep: how far streaming cuts peak on ONE GPU (the "stretch the recon
+  per GPU" measurement) and the sino+recon floor it can't beat without host
+  streaming.  Sweeps band full→small, continues past OOM, reports peak / vs_full /
+  peak-over-floor.
 - `results/` (gitignored) — generated YAML tables (timing + speedup + correctness
   metrics) and plots.
 - `baselines/` (gitignored) — single prerelease reference: `<op>.npy` (array) +

@@ -95,3 +95,43 @@ fast, then honest":
 7. **Consolidate.**  One kernel (`tomography_utils.apply_row_filter`); the switch
    and losing kernels removed; `view_batch_size` deprecated on user-facing
    methods.
+
+## Phase D case study (back projection — reduce-scatter + streaming)
+
+1. **View-sharding makes back projection a reduce-scatter, and it's
+   memory-bandwidth-bound.**  Each device back-projects its views onto the full
+   slice range; partials are summed to the slice owners.  On CPU it caps at
+   ~1.5× (the virtual devices share one memory bus — a bandwidth limit, not a
+   core limit), while the *same harness* scales `fbp_filter` ~7× (compute-bound).
+   On GPU, where each device has its own HBM, it scales near-ideal (3.92× on 4).
+   **Bandwidth-bound ops scale on real per-device hardware, not virtual CPU
+   devices** — don't chase CPU scaling for them.
+2. **Attribute the bottleneck with a phase ablation.**  Timing the per-device
+   compute vs the reduce-scatter *separately* showed the cap was the compute
+   (bandwidth); the reduce-scatter was ≤9%, so comms optimizations were a dead
+   end.  A single-variable ablation beats guessing (cf. F1's jit-toggle).
+3. **Balanced tiling, NOT the F1 overlapping tail.**  F1's overlapping-window
+   tail is right when the per-unit work is a cheap, idempotent row filter.  A
+   back-projection band is an *expensive projector call*, so an overlapping tail
+   nearly doubles a band's compute (130 slices, B=128 → recompute 126).  Use
+   balanced equal bands (zero recompute).  Same ragged-tail problem, opposite
+   answer, because the cost structure flipped.
+4. **The band length must be device- AND compute-aware.**  The owner's reduce
+   gather is `n_dev × num_pixels × band`, so band must shrink with `n_dev` (a
+   per-owner-sized band re-gathers the whole cylinder).  A separate *compute*
+   working-set bound (n_dev-independent) is what makes a **single** device
+   stream; plus a per-band-work floor so small recons don't over-split into tiny
+   dispatches.  On GPU, time was flat across band sizes → **smaller band = free
+   memory** (single-GPU 1024³: 28 → ~12 GB at no time cost).
+5. **Don't port a trick without confirming the *cause* — the in-place-assembly
+   miss.**  We assumed the single-device memory plateau (~1.44× the sino+recon
+   floor) was the per-owner `jnp.concatenate(band_list)` doubling, and ported the
+   F1 in-place donated `dynamic_update_slice`.  Measurement showed peak got
+   *worse* everywhere (1024³/4-dev +41%): the concatenate was never the binding
+   peak (it runs after the compute phase).  **Reverted.**  Corollaries: a clean
+   CPU "no donation warning" did NOT predict the GPU memory result — measure on
+   the target; confirm a plateau's cause before optimizing it.
+6. **Reuse what the kernel already does.**  Parallel-beam back projection needed
+   only a one-line kernel fix (size the voxel cylinder from the *input* rows, not
+   `projector_params`) so a row-sliced view yields just those slices — the whole
+   streaming scheme then reused the existing jitted projector unchanged.

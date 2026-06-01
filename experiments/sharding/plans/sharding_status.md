@@ -2,9 +2,39 @@
 
 *Short living status. Detailed checklist: `sharding_implementation_plan.md`.*
 
+**New-session reading guide** (these docs have grown — read selectively):
+1. `.claude/claude_prompt.md` — collaboration style + workflow (read).
+2. **This file, the TOP handoff only** (current phase + next step) — read.  The
+   older handoffs and the "Where we are" history below are **skim/reference**.
+3. `sharding_implementation_plan.md` — read §0 Design summary, the Execution-order
+   table, §Cross-cutting principles, and the **current/next Step** section.
+   **Skim** the completed Steps (0/A/B/F1/D) and the appendices; jump to a Step
+   when you work on it.
+4. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
+   with a past one).
+5. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
 ---
 
-## HANDOFF (2026-05-31) — Phase D (back projection) CORE COMPLETE, CPU-validated
+## HANDOFF (2026-06-01) — Phase D (back projection) COMPLETE, GPU-validated
+
+**Phase D is done.**  Sharded back projection (reduce-scatter) with slice-band
+**streaming**: correct (CPU bit-exact at n=1, float noise at n>1; cross-platform
+GPU 3e-5), memory-efficient (peak/shard **11× → 3.2×** at 1024³/4-dev; single GPU
+1024³ **28 → ~12 GB** — streams by default), near-ideal GPU scaling (3.92× on 4),
+time-clean.  Default band is device+compute-bounded (`_slice_band_length`),
+overridable via `back_project_slice_band`.  One reused thread pool spans the
+per-band fan-outs.  Characterized as **memory-bandwidth-bound** (GPU is the
+scaling target; CPU caps ~1.5× by the shared bus, not a defect).  Remaining
+memory frontier = the sino+recon floor (host↔device streaming — deferred; an
+in-place-assembly attempt to beat it was measured-worse and reverted).
+**Next: Step 6 = Phase F2 (`direct_recon`)** — shard → fbp_filter (done) →
+back_project (done) → gather; first usable end-to-end sharded FBP pipeline.
+Details below.
+
+---
+
+## (earlier) HANDOFF (2026-05-31) — Phase D core complete
 
 **Sharded back projection works end-to-end on CPU (8 virtual devices); GPU run
 is the open item for Greg.**  Back projection is a **reduce-scatter**: the
@@ -254,9 +284,10 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 - [x] Step 3 — Phase B: sharding hooks (new view/slice axes)
 - [x] Step 4 — Phase F1: FBP filter (view-sharded, zero comms) — DONE; kernel is
       `tomography_utils.apply_row_filter`, 2× memory floor, B=1024, H100-validated
-- [x] Step 5 — Phase D: back projection (reduce-scatter) — core DONE, CPU-validated
-      (1/2/4/8 virtual devices); **GPU run pending**. See handoff below.
-- [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test)
+- [x] Step 5 — Phase D: back projection (reduce-scatter) — **DONE, GPU-validated**;
+      slice-band streaming (11×→3.2× shard, single GPU 28→12 GB), device+compute
+      band default, memory-bandwidth-bound.  See handoff at top.
+- [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test) ← NEXT
 - [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test
 - [ ] Step 8 — Phase E: VCD integration + halos
 - [ ] (later) cone beam

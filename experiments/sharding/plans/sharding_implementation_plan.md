@@ -282,7 +282,15 @@ real speedup (see `sharding_status.md` §Targets).  Tests: `test_sharding_*` +
 
 ---
 
-## Step 5 — Phase D: Back projection (reduce-scatter)  ✅ CORE COMPLETE (2026-05-31, CPU-validated)
+## Step 5 — Phase D: Back projection (reduce-scatter)  ✅ COMPLETE (2026-06-01, GPU-validated)
+
+**Done.**  Reduce-scatter back projection with slice-band **streaming** (no
+full-cylinder partial): peak/shard 11×→3.2× at 1024³/4-dev, single GPU 1024³
+28→~12 GB (streams by default), near-ideal scaling (3.92× on 4), no time cost.
+Device+compute-bounded band default (`_slice_band_length`); reused thread pool;
+memory-bandwidth-bound.  Remaining frontier = sino+recon floor (host streaming,
+deferred).  Detail below + in `sharding_status.md`.
+
 
 **Goal:** `sparse_back_project` with the harder collective — sum partial
 cylinders across devices, scatter to slice owners.  This is where
@@ -540,7 +548,40 @@ unchanged — that uniformity is the whole point of the new design.
 
 ---
 
-## Note: research-branch content to migrate before `greg/parallel_tests` is deleted
+## Future project: simplify the sparse-projector batching machinery
+
+*(Separate, deliberately-scoped refactor — NOT part of the sharding work; tracked
+here so it isn't lost.  Greg has wanted this for a while.)*
+
+The geometry-agnostic projector core in `projectors.py` layers several batching/
+mapping helpers that are hard to follow: `sum_function_in_batches` (lax.scan over
+view batches), `concatenate_function_in_batches` (lax.map over pixel batches),
+and a `vmap` over the per-view geometry kernel — see `back_project_one_view_to_
+pixel_batch` and the forward analogue (`.claude/back_projection_overview.md`
+walks the chain).  Goals of a rewrite:
+- **Clarity** — collapse the nested scan/map/vmap layers into something
+  readable (the F1 `apply_row_filter` single-`lax.scan`-with-`vmap` is the
+  template).
+- **Remove lax.map fragility** — `concatenate_function_in_batches` uses
+  `lax.map`, which has the jax#27591 large-`batch_size` bug; a scan + vmap avoids
+  it.
+- **Possible memory win for forward / single-device** — the
+  `concatenate_function_in_batches` assembles results into a list then
+  concatenates (a transient doubling); a preallocated in-place write could help
+  *those* paths (note: it did **not** help the sharded back-projection peak —
+  measured worse, reverted — because there the concat is not the binding peak).
+
+**Development note:** This would be started with a prototype in ParallelBeam
+only by overriding the default projector functions to a class-specific
+function that would generalize to all geometries.
+
+**Why it's a separate project, not bundled:** this core is shared by forward +
+back projection, every geometry, and the single-device path, so it is
+high-blast-radius and needs full re-validation (bit-exact across both directions
+and all geometries).  Do it on its own, motivated by clarity + the jax#27591
+removal, with the projector regression suite as the gate.
+
+## Other notes
 
 Track here anything we still want off the research branch (beyond the §Migration
 table above), so nothing is lost when it is deleted:
