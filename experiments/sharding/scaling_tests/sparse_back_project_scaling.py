@@ -1,36 +1,35 @@
 """
-experiments/sharding/scaling_tests/fbp_filter_scaling.py
-─────────────────────────────────────────────────────────
-Scaling + correctness driver for ParallelBeamModel.fbp_filter under sharding.
+experiments/sharding/scaling_tests/sparse_back_project_scaling.py
+─────────────────────────────────────────────────────────────────
+Scaling + correctness driver for sharded back projection
+(TomographyModel.sparse_back_project) under the view/slice sharding scheme.
 
-Measures one grid over (problem size × device count) and writes a text table,
-YAML, and two plots to results/ — two views of the same grid:
-  - device sweep: speedup & per-device memory vs device count, one curve per size;
-  - size sweep:   time & memory vs size, one curve per device count.
+Back projection is a reduce-scatter: the sinogram is view-sharded, so each device
+back-projects ITS views onto the full voxel cylinders (Phase 1), then for each
+slice-owner the per-device partials are summed over that owner's slice band
+(Phase 2).  The timed unit is the INTERNAL ``sparse_back_project`` on a
+PRE-SHARDED sinogram, returning the slice-sharded recon-at-indices (no gather) —
+the analogue of how fbp_filter is timed on pre-sharded input.  This isolates the
+reduce-scatter + compute and, importantly, the **transient per-device partial
+buffer** ``(num_pixels, num_slices)`` whose memory is the open question for the
+"do we need slice sub-tiling" decision (see the sharding implementation plan).
 
-ISOLATED-SUBPROCESS HARNESS
-───────────────────────────
-Memory (peak per-device) can only be measured reliably if each configuration
-runs in a *fresh* process: JAX's peak_bytes_in_use / CPU RSS are cumulative
-high-water marks that never reset within a process.  So this script is an
-ORCHESTRATOR that spawns isolated WORKER subprocesses and never touches JAX
-itself (otherwise it would hold GPU memory while a worker measures peak usage):
+This mirrors fbp_filter_scaling.py: same isolated-subprocess harness (an
+orchestrator that touches no JAX spawns fresh worker subprocesses so per-device
+peak memory reads correctly), same two plotted views of one (size × device-count)
+grid, same top-of-file run configuration (no CLI args for the human).
 
   - orchestrator (default, no args)  : spawns workers, collects YAML, plots.
-  - worker --mode setup              : reports platform/devices + correctness.
+  - worker --mode setup              : reports platform/devices + single-device
+                                       correctness vs the prerelease baseline.
   - worker --mode measure --size ... : times + measures memory for one size,
-                                       running device counts DESCENDING (8→4→2→1)
-                                       so per-device allocation is ascending in
-                                       the fresh process and peak reads correctly.
+                                       device counts DESCENDING (8→4→2→1) so
+                                       per-device allocation is ascending in the
+                                       fresh process and peak reads correctly.
 
-You never pass --worker yourself; the orchestrator passes it to its own
-subprocesses.  Run configuration lives in the labeled constants below (no CLI
-args for the human) so runs are reproducible and PyCharm-friendly.
+Run from the BETA worktree root:
 
-Run from the BETA worktree root (the orchestrator forces the beta worktree onto
-each worker's PYTHONPATH, and the setup worker prints the resolved mbirjax path):
-
-    python experiments/sharding/scaling_tests/fbp_filter_scaling.py
+    python experiments/sharding/scaling_tests/sparse_back_project_scaling.py
 """
 import os
 import gc
@@ -56,34 +55,33 @@ import numpy as np
 # import site in worker_measure.)
 
 
-OP_NAME = "fbp_filter"
+OP_NAME = "sparse_back_project"
 
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
-# Problem sizes (n_views, n_rows, n_channels) PER OP — different ops want
-# different sizes.  Both sweeps share these sizes and the device-count ladder
-# (powers of two up to the available max, e.g. 1,2,4,8).  n_views must be
-# divisible by every device count in the ladder, so the sizes below use powers
-# of two that are multiples of the max (128/256/512 all divide 8/4/2/1).
-# fbp_filter is cheap per element (a 1-device 256^3 run was ~0.2 s), so we use
-# fairly large sizes to make the scaling visible.
-# The GPU top size is 1624^3 (not 2048^3): 1624 ≈ 1024·4^(1/3), a ~4× volume
-# step over 1024^3 rather than 8×, and 1624 is divisible by 8/4/2/1.
+# Problem sizes (n_views, n_rows, n_channels).  Back projection is MUCH heavier
+# per element than fbp_filter (it is the projector: cost ~ views × pixels × psf ×
+# slices), so the sizes here are smaller than the fbp ones — tune freely.
+# Divisibility: the view axis (n_views) and the slice axis (≈ n_rows for parallel
+# beam) must both be divisible by every device count in the ladder; powers of two
+# that are multiples of the max device count are safe (configure_sharding raises
+# otherwise and the point is skipped).
 SIZES = {
-    "cpu": [(128, 128, 128), (256, 256, 256), (512, 512, 512)],
-    "gpu": [(512, 512, 512), (1024, 1024, 1024), (1624, 1624, 1624)],
+    "cpu": [(64, 64, 64), (128, 128, 128), (256, 256, 256), (400, 400, 400)],
+    "gpu": [(256, 256, 256), (512, 512, 512), (1024, 1024, 1024)],
 }
 WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
 
-CORRECTNESS_SIZE = (64, 64, 64)   # small, fixed; comparison is size-independent
+CORRECTNESS_SIZE = (80, 48, 64)   # small, fixed, NON-symmetric (distinct views/
+                                  # rows/channels) so shape/axis bugs surface;
+                                  # comparison is size-independent
 CORRECTNESS_SEED = 1234
 
 # Substrings (upper-cased) that mark a caught failure as memory exhaustion.
-# Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces
-# as "INTERNAL: RET_CHECK ... Failed to create cuFFT batched plan with scratch
-# allocator" / "Failed to allocate work area" — none of the usual OOM tokens.
-# (Confirmed on H100 at 1624^3 / 1 device.)
+# Back projection allocates via the projector / scatter-add path (not cuFFT), so
+# the cuFFT-specific markers are not needed here — but they are harmless to keep
+# and make this list reusable across ops.
 _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
                 "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
                 "FAILED TO CREATE CUFFT")
@@ -111,14 +109,29 @@ def make_model(size, devices=None):
 
 
 def make_input(size, seed=0):
-    """Deterministic random sinogram of the given shape (numpy float32)."""
+    """Deterministic random sinogram of the given shape (numpy float32).
+
+    Back projection is linear, so a random sinogram is a valid input for both
+    timing and cross-mode/cross-platform correctness comparison.
+    """
     rng = np.random.default_rng(seed)
     return rng.random(size, dtype=np.float32)
 
 
-def run_fbp_filter(model, sino):
-    """The timed op: filter a (pre-sharded if mesh) sinogram."""
-    return model.fbp_filter(sino)
+def make_indices(model):
+    """Full field-of-view pixel indices for the model (deterministic per size)."""
+    import mbirjax
+    recon_shape = model.get_params('recon_shape')
+    return mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+
+
+def run_back_project(model, sino, pixel_indices):
+    """The timed op: reduce-scatter back projection of a (pre-sharded) sinogram.
+
+    Returns the slice-sharded recon-at-indices (num_pixels, num_slices); no
+    gather, so this measures the reduce-scatter + compute, not the host transfer.
+    """
+    return model.sparse_back_project(sino, pixel_indices)
 
 
 def parse_size_label(label):
@@ -135,14 +148,16 @@ def worker_setup(out_file):
     dev_label = sc.device_label()
 
     ref, meta = sc.load_baseline(OP_NAME)
+    # Single-device (no mesh) == the unchanged prerelease back-projection body.
     model = make_model(CORRECTNESS_SIZE, devices=None)
     sino = make_input(CORRECTNESS_SIZE, seed=CORRECTNESS_SEED)
-    beta_out = np.asarray(run_fbp_filter(model, sino))
+    idx = make_indices(model)
+    beta_out = np.asarray(run_back_project(model, sino, idx))
 
     if ref is None:
         corr = {"baseline_present": False}
         print("[setup] no prerelease baseline; correctness skipped "
-              "(run fbp_filter_capture_baseline.py from a prerelease checkout)")
+              "(run sparse_back_project_capture_baseline.py from a prerelease checkout)")
     else:
         captured_on = meta.get("captured_on_platform", "unknown")
         m = sc.correctness_metrics(ref, beta_out, threshold=CORRECTNESS_THRESHOLD)
@@ -167,9 +182,9 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
 
     Descending order (8→4→2→1) makes per-device allocation ascending within this
     fresh process, so the cumulative peak_bytes_in_use equals each config's own
-    allocation when read right after it.  It also means once a config OOMs, every
-    later (fewer-device) config needs MORE per-device memory and would OOM too —
-    so we catch the OOM, record it, and stop the descent.  Results are written
+    allocation when read right after it.  Once a config OOMs, every later
+    (fewer-device) config needs MORE per-device memory and would OOM too — so we
+    catch the OOM, record it, and stop the descent.  Results are written
     incrementally so even a hard crash returns the completed configs.
     """
     # Imported for its IMPORT SIDE EFFECT, not its API (mbirjax is not used by
@@ -205,9 +220,12 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
         if model is None:
             continue
         try:
-            # Pre-shard outside the timing loop: measure the op, not the scatter.
+            # Pre-shard the sinogram and precompute indices OUTSIDE the timing
+            # loop: measure the reduce-scatter + compute, not the entry scatter.
             sino = model._shard_sinogram(sino_np)
-            stats, _ = sc.time_op(lambda: run_fbp_filter(model, sino), warmup, trials)
+            idx = make_indices(model)
+            stats, _ = sc.time_op(lambda: run_back_project(model, sino, idx),
+                                  warmup, trials)
             mem_mb, mem_kind = sc.peak_memory_mb(devs)
         except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
             msg = str(e).replace("\n", " ")
@@ -233,7 +251,7 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
 
 def run_worker(argv):
     """Dispatch a --worker invocation (internal; the orchestrator builds argv)."""
-    p = argparse.ArgumentParser(description="fbp_filter scaling worker (internal)")
+    p = argparse.ArgumentParser(description="sparse_back_project scaling worker (internal)")
     p.add_argument("--worker", action="store_true")
     p.add_argument("--mode", choices=["setup", "measure"], required=True)
     p.add_argument("--size", default=None, help="LxRxC, for --mode measure")
@@ -263,12 +281,10 @@ def main():
     script = os.path.abspath(__file__)
 
     # Force the beta worktree onto each worker's PYTHONPATH so `import mbirjax`
-    # resolves to beta regardless of how the orchestrator was launched (PyCharm
-    # or CLI) — removes the sys.path footgun for the subprocesses.  Preallocate
-    # the pool up front (no per-call cudaMalloc growth → clean timing), with
+    # resolves to beta regardless of how the orchestrator was launched.
+    # Preallocate the pool up front (no per-call growth → clean timing), with
     # MEM_FRACTION raised so the largest configs don't OOM on the cap;
-    # peak_bytes_in_use still tracks in-use tensors, so memory stays accurate
-    # (verified by the row_batch sweep's preallocate sanity check).
+    # peak_bytes_in_use still tracks in-use tensors, so memory stays accurate.
     beta_root = _beta_root()
     if not os.path.isdir(os.path.join(beta_root, "mbirjax")):
         print(f"  WARNING: no mbirjax/ under derived beta root {beta_root}")
@@ -280,7 +296,7 @@ def main():
     }
 
     print("=" * 72)
-    print("  fbp_filter scaling — isolated-subprocess harness (orchestrator)")
+    print("  sparse_back_project scaling — isolated-subprocess harness (orchestrator)")
     print(f"  beta root: {beta_root}")
     print("=" * 72)
 

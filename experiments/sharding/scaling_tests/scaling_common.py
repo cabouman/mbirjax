@@ -27,7 +27,6 @@ Design notes
 
 import os
 import sys
-import json
 import time
 import resource
 import tempfile
@@ -36,7 +35,7 @@ import platform as _platform
 
 import numpy as np
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 import matplotlib
 matplotlib.use("Agg")   # file output only; no interactive backend needed
@@ -133,7 +132,7 @@ def run_worker(script_path, worker_args, extra_env=None):
 
     Each JAX-touching task (device probe, correctness, one size's measurement)
     runs in its own fresh process so the orchestrator never holds a JAX backend
-    while a worker measures peak memory.  The worker writes its result as JSON to
+    while a worker measures peak memory.  The worker writes its result as YAML to
     a temp file (passed via --out-file) and may rewrite it incrementally, so a
     worker that dies partway (e.g. GPU OOM at the largest config) still returns
     whatever it completed.  The child inherits the current environment plus
@@ -148,13 +147,13 @@ def run_worker(script_path, worker_args, extra_env=None):
         extra_env (dict|None): environment overrides for the child.
 
     Returns:
-        (result, returncode): result is the parsed JSON (or None if the worker
+        (result, returncode): result is the parsed YAML (or None if the worker
         wrote nothing parseable); returncode is the subprocess exit status.
     """
     # Flush any pending orchestrator output first so the worker's live stdout
     # interleaves in the right order even when stdout is a pipe (PyCharm console).
     sys.stdout.flush()
-    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="scaling_worker_")
+    fd, out_path = tempfile.mkstemp(suffix=".yaml", prefix="scaling_worker_")
     os.close(fd)
     env = os.environ.copy()
     if extra_env:
@@ -164,8 +163,8 @@ def run_worker(script_path, worker_args, extra_env=None):
     result = None
     try:
         with open(out_path) as f:
-            result = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            result = _yaml.load(f)   # None for an empty/never-written file
+    except (FileNotFoundError, YAMLError, ValueError):
         result = None
     finally:
         if os.path.exists(out_path):
@@ -174,15 +173,19 @@ def run_worker(script_path, worker_args, extra_env=None):
 
 
 def write_worker_result(out_file, data):
-    """Worker side: atomically (re)write a JSON result to out_file.
+    """Worker side: atomically (re)write a YAML result to out_file.
 
     Written via a temp file + os.replace so a reader (the orchestrator) never
     sees a half-written file even if the worker is killed mid-write.  Safe to
-    call repeatedly to publish partial progress.
+    call repeatedly to publish partial progress.  Uses the same ruamel YAML
+    instance as the rest of the harness (readability + consistency); numpy
+    scalars are converted to plain Python first via _to_plain so they serialize
+    cleanly.  (_yaml and _to_plain are module-level, defined below and resolved
+    at call time.)
     """
     tmp = out_file + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(data, f)
+        _yaml.dump(_to_plain(data), f)
     os.replace(tmp, out_file)
 
 

@@ -24,10 +24,13 @@ import jax.numpy as jnp
 
 import mbirjax as mj
 from mbirjax import ParameterHandler
-# In-package access to the internal sharding primitives (see _sharding).  Direct
-# import (not the `mjs` alias used by consumers) because aliasing mbirjax
-# mid-import would be circular.
-from mbirjax._sharding import is_dev2dev_safe, move_shard
+# Internal sharding primitives (see _sharding), accessed with the `mjs` prefix.
+# Importing the SUBMODULE directly (not aliasing the top-level `mbirjax` and
+# reaching submodules as attributes) is safe even mid-import of mbirjax: it
+# forces `mbirjax._sharding` to load, and that subpackage pulls in only
+# jax/numpy/warnings, nothing that loops back into the partially-initialized
+# mbirjax package.
+import mbirjax._sharding as mjs
 
 from importlib.metadata import version, PackageNotFoundError
 
@@ -170,8 +173,9 @@ class TomographyModel(ParameterHandler):
         if n_devices < 1:
             raise ValueError("configure_sharding requires at least one device.")
 
-        # O4 divisibility: the sharded axis of each array type must divide the
-        # device count.  Which axis that is comes from the axis-declaration
+        # Divisibility requirement: the sharded axis of each array type must be
+        # evenly divisible by the device count (each device owns an equal,
+        # contiguous block).  Which axis that is comes from the axis-declaration
         # hooks (single source of truth), not hardcoded here, so a geometry that
         # overrides the hooks gets the matching check for free.
         sinogram_shape = self.get_params('sinogram_shape')
@@ -199,7 +203,7 @@ class TomographyModel(ParameterHandler):
         # used when sharding sinogram (view axis) and recon (slice axis).
         self.mesh = Mesh(np.array(devices), ('devices',))
         self.shard_devices = devices
-        self.dev2dev_safe = is_dev2dev_safe(devices)
+        self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
         self.use_gpu = 'sharded'
 
     # ------------------------------------------------------------------
@@ -264,7 +268,7 @@ class TomographyModel(ParameterHandler):
         if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
             if x.sharding == sharding:
                 return x
-        return move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
+        return mjs.move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
 
     def _gather_to_host(self, x):
         """Gather a sharded array to a single uncommitted JAX array (no-op if no mesh).
@@ -729,9 +733,22 @@ class TomographyModel(ParameterHandler):
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
+
+        if self.mesh is not None:
+            # Sharded path: ensure the sinogram is view-sharded at entry, run the
+            # reduce-scatter back projection (returns a slice-sharded cylinder),
+            # then gather to a plain array (contract: user-facing methods gather
+            # at exit) and scatter the cylinders into the 3-D recon volume.
+            sinogram = self._shard_sinogram(sinogram)
+            recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+            recon_cylinder = self._gather_recon(recon_cylinder)
+            recon = jnp.zeros(recon_shape)
+            recon = recon.at[row_index, col_index].set(recon_cylinder)
+            return recon
+
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
-        row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
         with jax.default_device(output_device):
             recon = jnp.zeros(recon_shape, device=output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
@@ -803,6 +820,27 @@ class TomographyModel(ParameterHandler):
         Returns:
             A jax array of shape (len(indices), num_slices)
         """
+        # When a mesh is configured, take the sharded path: the
+        # sinogram is expected view-sharded and the result is returned
+        # slice-sharded (no gather here; the user-facing back_project gathers).
+        # Otherwise the single-device path runs unchanged.
+        if self.mesh is not None:
+            return self._sparse_back_project_sharded(
+                sinogram, pixel_indices, view_indices=view_indices,
+                coeff_power=coeff_power)
+        return self._sparse_back_project_single_device(
+            sinogram, pixel_indices, view_indices=view_indices,
+            coeff_power=coeff_power, output_device=output_device)
+
+    def _sparse_back_project_single_device(self, sinogram, pixel_indices, view_indices=None,
+                                           coeff_power=1, output_device=None):
+        """
+        Single-device back projection (the original prerelease implementation).
+
+        See :meth:`sparse_back_project` for the full argument description.  This
+        method carries the unchanged single-device body so the sharded
+        path can be added alongside it without disturbing single-device behavior.
+        """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -839,6 +877,124 @@ class TomographyModel(ParameterHandler):
             recon_at_indices = recon_at_indices + jnp.concatenate(voxel_batch_list, axis=0)
 
         return recon_at_indices
+
+    def _sparse_back_project_sharded(self, sinogram, pixel_indices, view_indices=None,
+                                     coeff_power=1):
+        """
+        Sharded back projection: view-sharded sinogram -> slice-sharded recon.
+
+        This implements the back-projection reduce-scatter for the view/slice
+        sharding scheme:
+
+          * The sinogram is sharded by **view**: device d holds a contiguous
+            block of views (all detector rows, all channels).
+          * The recon is sharded by **slice**: device t owns a contiguous block
+            of slices ``S_t``.
+
+        Because back projection sums each voxel's contribution over all views,
+        and the views are split across devices, the result is a *reduce-scatter*:
+
+          Phase 1 (per-device partial): each device back-projects its own views
+            onto the **full** voxel cylinders (all slices) for every pixel.  This
+            reuses the existing jitted projector unchanged (for parallel beam,
+            detector row r maps only to slice r, so a device producing all slices
+            from its local views needs nothing from any other device).
+
+          Phase 2 (reduce-scatter): for each slice-owner device t, the partials
+            from all devices are summed over their ``S_t`` band on device t.  The
+            summed band is the complete back projection for those slices (sum over
+            all views), so it is the final value for that owner — no double count.
+
+        The per-device owned bands are assembled into a single slice-sharded
+        array with no data movement.  No gather is performed here (contract: the
+        user-facing ``back_project`` gathers at exit).
+
+        Args:
+            sinogram (jax array): view-sharded sinogram (NamedSharding on axis 0).
+            pixel_indices (jax array): 1D indices into the flattened (rows, cols).
+            view_indices: must be None in sharded mode (the full view-sharded
+                sinogram is expected).  A view subset would require per-shard
+                filtering and is deferred.
+            coeff_power (int): 1 normally, 2 for the Hessian diagonal.
+
+        Returns:
+            jax array of shape (len(pixel_indices), num_slices), slice-sharded
+            across the mesh.
+        """
+        if view_indices is not None:
+            # The sharded contract takes the full view-sharded sinogram.  A view
+            # subset would mean filtering each device's shard to the requested
+            # views and adjusting the angle lookup per shard; not needed by the
+            # user-facing consumers (back_project / direct_recon pass all views).
+            raise NotImplementedError(
+                "Sharded back projection currently requires view_indices=None "
+                "(the full view-sharded sinogram).")
+
+        # Contract: callers pass a view-sharded sinogram.  We defensively run the
+        # (idempotent, no-op-when-already-sharded) shard here so internal callers
+        # that have not yet been ported to shard at entry (e.g.
+        # compute_hessian_diagonal passing plain weights) still work correctly.
+        sinogram = self._shard_sinogram(sinogram)
+
+        devices = self.shard_devices
+        n_dev = len(devices)
+        num_views = sinogram.shape[0]
+        num_slices = self.get_params('recon_shape')[2]
+        num_pixels = len(pixel_indices)
+
+        # Owner slice band for device t: a contiguous range, matching how
+        # PartitionSpec('devices') splits the slice axis, so assemble_sharded can
+        # wrap the per-owner results with no movement.  The division is exact
+        # because configure_sharding requires num_slices to be divisible by n_dev.
+        slices_per_dev = num_slices // n_dev
+        bands = [slice(t * slices_per_dev, (t + 1) * slices_per_dev) for t in range(n_dev)]
+
+        # Map each device to (its local view-shard, the global view-index slice
+        # it covers).  Using the shard's own .index is robust to shard ordering;
+        # verified that axis-0 sharding yields contiguous equal blocks.
+        shard_info = {s.device: (s.data, s.index[0])
+                      for s in sinogram.addressable_shards}
+
+        # ---- Phase 1: each device back-projects ITS views -> full partial -----
+        # partial_d : (num_pixels, num_slices) on device d, summed over d's views.
+        # The jitted projector does its own internal view/pixel batching, so no
+        # outer pixel loop is added here (no sub-tiling for now -- revisit only if
+        # the scaling tests show the transient partial is a memory problem).
+        # run_per_device does not block_until_ready, so the Phase-2 transfers can
+        # overlap this compute.
+        def _partial(i, device):
+            local_views, vslice = shard_info[device]
+            # vslice may be a full slice(None, None, None) (single-device shard);
+            # .indices(num_views) normalizes it to concrete (start, stop, step).
+            start, stop, step = vslice.indices(num_views)
+            global_view_idx = jnp.arange(start, stop, step)
+            local_pixels = jax.device_put(pixel_indices, device)
+            return self.projector_functions.sparse_back_project(
+                local_views, local_pixels,
+                view_indices=global_view_idx, coeff_power=coeff_power)
+
+        partials = mjs.run_per_device(devices, _partial)
+
+        # ---- Phase 2: reduce-scatter -- owner t sums everyone's S_t band ------
+        # The reduce (sum over devices' views) and the scatter (result placed on
+        # the slice owner) happen together.  Each summed band is the complete
+        # value for those slices, so writing it as the owner's shard is correct.
+        def _reduce_band(t, owner):
+            band = bands[t]
+            contribs = [mjs.move_shard(partials[d][:, band], owner,
+                                       dev2dev_safe=self.dev2dev_safe)
+                        for d in range(n_dev)]
+            owned = contribs[0]
+            for c in contribs[1:]:
+                owned = owned + c
+            return owned                       # (num_pixels, slices_per_dev) on owner
+
+        owned_bands = mjs.run_per_device(devices, _reduce_band)
+
+        # ---- Assemble the slice-sharded result (no gather) --------------------
+        recon_sharding = jax.sharding.NamedSharding(
+            self.mesh, jax.sharding.PartitionSpec(None, 'devices'))
+        return mjs.assemble_sharded(owned_bands, (num_pixels, num_slices), recon_sharding)
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
         """

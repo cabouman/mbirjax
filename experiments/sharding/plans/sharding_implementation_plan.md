@@ -100,16 +100,18 @@ projection and VCD.
    **return gathered (host/plain) arrays**.  Internal `sparse_forward_project` /
    `sparse_back_project` **expect sharded input and return sharded output** — no
    gather inside.
-6. **Sharding primitives are internal, accessed with a prefix.**  The
+6. **Sharding primitives are internal, accessed with the `mjs` prefix.**  The
    `mbirjax._sharding` subpackage is internal (leading underscore; not part of
-   the public API and not re-exported at the top level).  Follow the codebase's
-   prefix convention rather than bare `from ... import name`:
-     - **Consumers** (tests, examples, experiment scripts):
-       `import mbirjax._sharding as mjs`, then call `mjs.move_shard(...)`.
-     - **In-package modules** (`tomography_model.py`, projector code): aliasing
-       mbirjax would be circular mid-import, so use
-       `from mbirjax._sharding import move_shard, ...` (direct import is the only
-       option inside the package).
+   the public API and not re-exported at the top level).  Everywhere — consumers
+   *and* in-package modules — use `import mbirjax._sharding as mjs`, then call
+   `mjs.move_shard(...)`.  Importing the **submodule directly** is safe even
+   mid-import of `mbirjax`: it forces `mbirjax._sharding` to load, and that
+   subpackage pulls in only jax/numpy/warnings, nothing that loops back into the
+   partially-initialized `mbirjax`.  (The thing that *would* be fragile mid-import
+   is aliasing the *top-level* package — `import mbirjax as mj` then reaching
+   `mj._sharding.move_shard` as an attribute before `__init__` has bound it; the
+   submodule alias avoids that.)  Verified: `import mbirjax` succeeds with
+   `tomography_model.py` using the `mjs` alias.
 
 ---
 
@@ -280,26 +282,59 @@ real speedup (see `sharding_status.md` §Targets).  Tests: `test_sharding_*` +
 
 ---
 
-## Step 5 — Phase D: Back projection (reduce-scatter)
+## Step 5 — Phase D: Back projection (reduce-scatter)  ✅ CORE COMPLETE (2026-05-31, CPU-validated)
 
 **Goal:** `sparse_back_project` with the harder collective — sum partial
 cylinders across devices, scatter to slice owners.  This is where
 summation-order and (later) adjoint-correctness live, so we tackle it before
 forward.
 
-- [ ] Per device: back-project local views into partial cylinders spanning all
+**Design (settled with Greg):** the reduce-scatter splits into a geometry-neutral
+communication pattern + a per-device compute that *can* restrict to a slice band.
+Key realization (Greg): each device holds **complete views**, so it can
+back-project **any** output slice band from purely local data — true for any
+geometry.  Partitioning the **output** cylinder means each voxel is computed
+once (no redundant compute, parallel *or* cone beam).  The memory win (your
+point #2) comes from *streaming* slice bands and freeing — deferred (see below).
+Overlapping-tail trick (F1) is reusable for slice sub-tiling *only* where the
+combine is SET (the complete reduced value), never ADD; deferred with sub-tiling.
+
+- [x] Per device: back-project local views into partial cylinders spanning all
       slices; reduce-scatter partials to slice owners (via §A.1/§A.2).
+      Two-phase: Phase 1 `run_per_device` per-device partials (reuse the existing
+      jitted projector unchanged — **no kernel edit for parallel beam**); Phase 2
+      naive all-to-all (`move_shard` each owner's band to it, owner sums).
+      `_sparse_back_project_sharded` in `tomography_model.py`; single-device body
+      extracted to `_sparse_back_project_single_device`.  Loops over the mesh —
+      not hardcoded to 2 (validated 1/2/4/8 virtual CPU).
 - [ ] Budget the transient full-cylinder partial buffer (per device, per
       pixel-batch) — note memory cost, larger for cone beam later.
-- [ ] `back_project` (user-facing): gather recon at exit.
-- **Tests:**
-  - [ ] single-device trivial-sharding == plain prerelease, bit-exact
-        (standalone gate — no forward projector exists yet to pair with).
-  - [ ] 2-device == single-device to float noise.
-  - [ ] adapt the existing back-projection tests in `tests/test_projectors.py`
-        to run in both modes rather than adding a parallel file.
+      **Deferred** (Greg): no sub-tiling now; the full-partial transient is the
+      same order as the single-device working set.  Revisit via scaling tests;
+      the streaming/overlap-tail seam (1/n transient) is the obvious next layer.
+- [x] `back_project` (user-facing): shard sinogram at entry, gather recon at exit.
+- **Tests:** (`tests/test_sharding_back_projection.py`, 7/7)
+  - [x] single-device trivial-sharding == plain prerelease, bit-exact (n_dev=1).
+  - [x] 2-device == single-device to float noise (~1e-7 rel); also 4/8.
+  - [x] internal `sparse_back_project` returns slice-sharded (no gather); public
+        `back_project` returns gathered/plain; coeff_power=2 (Hessian) matches;
+        view subset rejected (NotImplementedError) in sharded mode.
+  - **Deviation from plan:** added a dedicated `test_sharding_back_projection.py`
+    (matching the `test_sharding_fbp.py` precedent) rather than threading
+    sharded mode into `test_projectors.py` — that file is multi-geometry
+    (cone/helical/translation), and Phase D sharding is parallel-beam-only.
   - *(The `back(forward(x))` adjoint round-trip is a **Phase C** gate, when the
     sharded forward projector exists.)*
+
+**Open notes carried forward:**
+- `compute_hessian_diagonal` now returns a **slice-sharded** (recon-native)
+  array in sharded mode (the reshape preserves the slice sharding) — correct
+  values, and arguably the right sharding for VCD.  Whether it should gather
+  is a Phase-E contract decision; left sharded for now.
+- `_sparse_back_project_sharded` defensively `_shard_sinogram`s its input (a
+  no-op when already sharded) so un-ported callers (e.g. `compute_hessian_diagonal`
+  passing plain weights) work; revisit when callers shard at entry uniformly.
+- **Not yet GPU-validated** — CPU (8 virtual devices) only; Greg to run on 1–4 GPUs.
 
 ---
 

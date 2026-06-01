@@ -1,5 +1,5 @@
 """
-Phase F1 tests for sharded FBP filtering (ParallelBeamModel.fbp_filter).
+Tests for sharded FBP filtering (ParallelBeamModel.fbp_filter).
 
 fbp_filter is an internal sharded-contract method: it shards the sinogram on the
 view axis at entry and returns the filtered sinogram in that same sharding (no

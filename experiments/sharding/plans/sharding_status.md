@@ -4,6 +4,85 @@
 
 ---
 
+## HANDOFF (2026-05-31) — Phase D (back projection) CORE COMPLETE, CPU-validated
+
+**Sharded back projection works end-to-end on CPU (8 virtual devices); GPU run
+is the open item for Greg.**  Back projection is a **reduce-scatter**: the
+sinogram is view-sharded, so each device back-projects *its* views onto the full
+voxel cylinders (Phase 1), then for each slice-owner the per-device partials are
+summed over that owner's slice band (Phase 2, naive all-to-all via `move_shard`).
+The result is slice-sharded; `back_project` gathers at exit.
+
+**Code (`mbirjax/tomography_model.py`):**
+- `sparse_back_project` now dispatches: `mesh is None` → extracted
+  `_sparse_back_project_single_device` (unchanged prerelease body);
+  `mesh` set → new `_sparse_back_project_sharded`.
+- Parallel beam reuses the **existing jitted projector unchanged** — because
+  det-row r ↔ slice r, "a device's partial over its views" is just the normal
+  back projection of its view-shard; no kernel edit.
+- `back_project` shards the sinogram at entry, gathers at exit.
+- Loops over the mesh — **not hardcoded to 2 devices**.
+
+**Validated (CPU, `tests/test_sharding_back_projection.py` 7/7):** trivial
+n_dev=1 **bit-exact** vs prerelease; n_dev=2/4/8 match single-device to ~1e-7
+rel (float noise); internal method returns slice-sharded (no gather), public
+gathers; coeff_power=2 (Hessian diagonal) matches; view-subset rejected.
+Full sharding suite + `test_projectors` + `test_fbp_fdk`: all green.
+
+**Key design point (settled with Greg):** each device holds *complete views*, so
+it can back-project **any** output slice band from local data — geometry-neutral.
+Partitioning the *output* cylinder ⇒ each voxel computed once (no redundant
+compute, parallel or cone).  The 1/n transient-memory win comes from *streaming*
+slice bands (compute band k+1 while band k transfers) + the F1 overlapping-tail
+for sub-tiling (SET semantics only) — **deferred**; current cut materializes the
+full per-device partial (same order as single-device working set).
+
+**Next:**
+- **GPU validation (Greg):** run `tests/test_sharding_back_projection.py` on 1–4
+  GPUs; watch H100 (d2d-safe) vs L40S (host-bounce) and the partial buffer.
+- Then **Step 6 = Phase F2** (`direct_recon`): filter (F1) → back_project (D) →
+  gather; first usable end-to-end FBP pipeline + stress test.
+
+**Deferred/notes:** transient-buffer budgeting → scaling tests; streaming +
+overlap-tail sub-tiling is the next memory layer; `compute_hessian_diagonal`
+returns slice-sharded in sharded mode (Phase-E contract decision);
+`_sparse_back_project_sharded` defensively shards plain input (un-ported callers).
+
+### CPU scaling finding (2026-06-01) — memory-bandwidth-bound, not comms
+
+First CPU sweep (`sparse_back_project_scaling.py`) and a phase-split ablation
+(`sparse_back_project_phase_ablation.py`) explain the CPU curves:
+
+- **Speedup caps ~1.4–1.5× and regresses at 8 devices** (e.g. 256³: 1d/2d/4d/8d
+  = 1.0/1.34/1.44/1.39×).  Absolute times are good (beta 1-device ~528 ms beats
+  the research branch's ~1022 ms; beta 8-dev ~384 ms ≈ research 8-dev ~328 ms).
+- **The cap is Phase 1 (per-device compute), not the reduce-scatter.**  Ablation
+  at 256³: phase1 caps at 1.54× (flat 4→8), phase2 (reduce-scatter) is ≤9% of
+  total but grows with n_dev and is what tips 8 devices into regression.
+- **Mechanism = memory bandwidth, NOT core contention.**  Back projection is a
+  gather/scatter accumulation (low arithmetic intensity) → bandwidth-bound; the
+  8 virtual CPU devices add cores but share one memory bus.  The clean control:
+  the SAME harness scales `fbp_filter` ~7× on 8 CPU devices because it is
+  compute-bound (FFT) — so virtual-device sharding *does* add real parallelism;
+  back projection just can't use it.  (Earlier "cores already saturated" guess
+  was wrong — the fbp 7× disproves it.)
+- **Beta's view-sharding compounds it:** each device writes a FULL cylinder
+  (`pixels × num_slices`, n× the output traffic), vs the research slice-sharded
+  scheme that wrote only 1/n and got ~3.1×.  So memory-boundness caps everyone
+  (research 3.1×); beta's extra write traffic + reduce-scatter caps it further.
+- **Implications:** reduce-scatter optimizations (tree/pipeline) and the deferred
+  streaming/sub-tiling won't move the CPU curve (phase2 too small; sub-tiling is
+  memory-only).  Do NOT chase CPU scaling — the times are good and the limit is a
+  shared-bus property of virtual CPU devices.
+- **Sharpened GPU prediction:** a bandwidth-bound op is exactly what benefits from
+  real per-device hardware — each GPU brings its own HBM (~2 TB/s), so sharding
+  adds bandwidth, not just cores.  Back projection should scale *well* on GPU even
+  though it caps on CPU; the full-cylinder write (~52 MB) is microseconds at HBM
+  rates.  If GPU *also* caps ~1.5×, the limiter is something portable (reduce-
+  scatter / a serialization), not the shared bus — a sharp test either way.
+
+---
+
 ## HANDOFF (2026-05-31) — Phase F1 COMPLETE
 
 **The sharded FBP filter is done, promoted, and validated on the H100.**  The
@@ -98,8 +177,10 @@ probed transfer primitive.  Trivial-sharding unifies single/multi-device.
 
 ## Targets (scope)
 
-**CPU is a first-class target, not just dev/CI.**  Users run on CPU, and CPU
-sharding is a *real* performance path — the view-sharded fbp_filter measured
+**CPU and GPU are both first-class targets.**  We develop on CPU for convenience, 
+but design with both in mind and then verify and tune for performance on both
+(although memory scaling on CPU is primarily for catching red flags, less for tuning).
+CPU sharding is a *real* performance path — the view-sharded fbp_filter measured
 ~5.4–6.5× at 8 virtual CPU devices (the per-device threading spreads the
 embarrassingly-parallel view-shards across cores; the GIL is released during XLA
 execution).  So **every phase (back projection, VCD, …) should be validated and
@@ -128,7 +209,8 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 - [x] Step 3 — Phase B: sharding hooks (new view/slice axes)
 - [x] Step 4 — Phase F1: FBP filter (view-sharded, zero comms) — DONE; kernel is
       `tomography_utils.apply_row_filter`, 2× memory floor, B=1024, H100-validated
-- [ ] Step 5 — Phase D: back projection (reduce-scatter)
+- [x] Step 5 — Phase D: back projection (reduce-scatter) — core DONE, CPU-validated
+      (1/2/4/8 virtual devices); **GPU run pending**. See handoff below.
 - [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test)
 - [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test
 - [ ] Step 8 — Phase E: VCD integration + halos

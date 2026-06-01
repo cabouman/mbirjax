@@ -15,9 +15,8 @@ It serves two roles here:
   2. Shared helpers for test files — `preferred_devices(n)` is importable from
      any test via `from conftest import preferred_devices`.
 
-Every sharding test file (Phases A–F of the implementation plan) relies on this
-file; none of them needs to repeat the device-flag setup or the device-pick
-logic.
+Every sharding test file relies on this file; none of them needs to repeat
+the device-flag setup or the device-pick logic.
 
 XLA device flag
 ───────────────

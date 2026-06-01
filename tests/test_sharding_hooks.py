@@ -1,5 +1,5 @@
 """
-Phase B tests for the geometry sharding hooks on TomographyModel.
+Tests for the geometry sharding hooks on TomographyModel.
 
 Covers the axis-declaration hooks, the shard/gather round-trips for sinogram and
 recon (both 3-D and flat), the _extract_halos boundary-slice logic, and the

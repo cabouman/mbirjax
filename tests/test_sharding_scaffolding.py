@@ -1,5 +1,5 @@
 """
-Phase 0 scaffolding test for the sharding work.
+Scaffolding test for the sharding work.
 
 Confirms that the device-setup machinery actually produces multiple devices to
 shard across, and that the conftest `preferred_devices` helper works.  This is

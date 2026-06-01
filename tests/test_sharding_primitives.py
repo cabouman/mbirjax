@@ -1,5 +1,5 @@
 """
-Phase A unit tests for the sharding primitives.
+Tests for the sharding primitives.
 
 Covers the model-agnostic helpers in mbirjax._sharding (transfer +
 thread_execution) and TomographyModel.configure_sharding.  Runs on whatever
