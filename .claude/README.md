@@ -5,6 +5,7 @@ fresh from `prerelease`. Multi-device sharding is being reimplemented here under
 a new view-sharded design.
 
 **Read these first (in order):**
+1. `claude_prompt.md` — guidelines for collaboration.
 1. `../experiments/sharding/plans/sharding_status.md` — current phase, blockers,
    verified hardware facts.
 2. `../experiments/sharding/plans/sharding_implementation_plan.md` — the detailed
