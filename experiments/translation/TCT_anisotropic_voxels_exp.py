@@ -102,7 +102,7 @@ def main():
 
     # Save reconstruction results
     os.makedirs(output_path, exist_ok=True)
-    output_path = os.path.join(output_path, f'TCT_demo_recon.h5')
+    output_path = os.path.join(output_path, f'TCT_anisotropic_voxel_recon.h5')
     mj.export_recon_hdf5(output_path, mbir_recon, recon_dict=mbir_dict, top_margin=0, bottom_margin=0)
 
     # Display results
