@@ -28,12 +28,6 @@ class TranslationModel(mj.TomographyModel):
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
-    Note:
-        Additional parameter:
-
-        **delta_recon_row** (float, default=0) -
-        This parameter controls the row spacing in ALU, while the base parameter `delta_voxel` controls the voxel column and slice spacing.
-
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
 
@@ -51,7 +45,6 @@ class TranslationModel(mj.TomographyModel):
                 source_detector_dist=500.0,
                 source_iso_dist=500.0
             )
-            model.set_params(delta_recon_row=2.0)
             model.auto_set_recon_geometry()
     """
     DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
