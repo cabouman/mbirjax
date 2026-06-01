@@ -334,7 +334,26 @@ combine is SET (the complete reduced value), never ADD; deferred with sub-tiling
 - `_sparse_back_project_sharded` defensively `_shard_sinogram`s its input (a
   no-op when already sharded) so un-ported callers (e.g. `compute_hessian_diagonal`
   passing plain weights) work; revisit when callers shard at entry uniformly.
-- **Not yet GPU-validated** — CPU (8 virtual devices) only; Greg to run on 1–4 GPUs.
+- **GPU-validated (H100, 2026-06-01).** Slice-band **streaming** added (no
+  full-cylinder partial; row-sliced per-band reduce-scatter; balanced bands).
+  Multi-device peak/shard **11× → 3.2×** at 1024³/4-dev at no time cost;
+  near-ideal scaling (3.92× at 4 dev).  Default band is budget/compute-bounded
+  (`_slice_band_length`), and **single device streams by default** too (compute
+  cap) — 1024³ on one GPU 28 GB → 10.5 GB (0.37×), time flat.  Persistent thread
+  pool (`device_pool`) removes per-band pool churn.  See `sharding_status.md` for
+  the full findings.
+- **Next memory lever (back projection): preallocated-write assembly.** The
+  single-device sweep plateaus at ~**1.44× the sino+recon floor** for *all* small
+  bands — a band-independent transient that is the per-owner
+  `jnp.concatenate(band_list)` doubling a full recon shard during assembly.
+  Replacing it with a preallocated `dynamic_update_slice` write (the F1
+  `apply_row_filter` pattern, applied to the recon's slice axis) would drop peak
+  from ~1.44× → ~1.1× the floor (1024³: 10.5 → ~8 GB).  Deferred.
+- **Frontier (back projection): host↔device streaming of sino/recon.** Below the
+  ~7.3 GB floor (1024³) the full sinogram (input) and recon (output) are the
+  irreducible on-device residents; only loading per-band sino rows / evicting
+  written recon slices to host beats it.  Bigger change (overlaps the O1
+  heterogeneous-placement design); deferred.
 
 ---
 
@@ -487,15 +506,26 @@ unchanged — that uniformity is the whole point of the new design.
           own `import jax`, independent of mbirjax import resolution.
         - `experiments/.../device_put_check.py` — intentionally mbirjax-free
           standalone probe.
+- [ ] **Default single-device sharding (auto-configure a trivial 1-device mesh).**
+      *(Greg, 2026-06-01: leave for later, but tracked here.)*  Today the sharded
+      path — and therefore single-device **slice-band streaming** — only runs
+      after an explicit `configure_sharding(...)`; a plain single-GPU
+      `back_project` still uses the old non-streaming path.  Wiring a trivial
+      1-device mesh by default (constructor? first use?) would give every
+      single-GPU user the streaming memory win automatically (1024³: ~28 GB →
+      ~10 GB, no time cost — the "stretch the recon per GPU" lever), and is the
+      enabler for collapsing the mesh-None paths below.  **Motivation is now
+      concrete** (measured single-device benefit), not just cleanup.  Risks: it
+      routes all single-device projection through the sharded path, which does
+      not yet handle the O1 heterogeneous CPU-recon/GPU-sino placement
+      (`main_device`/`sinogram_device`), so that must be reconciled first.
 - [ ] **Collapse the single-device (mesh-None) code paths.**  Once every
-      projector/recon method is ported, single-device should be just the
-      trivial-1-device-mesh case, so the `if self.mesh is None: ...` fallbacks
-      (e.g. in `fbp_filter`) and the old `main_device`/`sinogram_device`
-      machinery can be removed, leaving one sharded path.  Deferred until enough
-      methods are ported that always-on trivial sharding is safe end-to-end
-      (needs the auto-configure-trivial-mesh decision settled — see below).
-      Requires deciding where the trivial mesh gets configured by default
-      (constructor? first use?).
+      projector/recon method is ported *and* the trivial mesh is auto-configured
+      (above), single-device becomes just the trivial-1-device-mesh case, so the
+      `if self.mesh is None: ...` fallbacks (e.g. in `fbp_filter`) and the old
+      `main_device`/`sinogram_device` machinery can be removed, leaving one
+      sharded path.  Deferred until enough methods are ported that always-on
+      trivial sharding is safe end-to-end.
 - [ ] **Public shard/gather utilities.**  Add thin public wrappers
       (`shard_sinogram`, `shard_recon`, `gather_sinogram`, `gather_recon`) over
       the `_shard_*`/`_gather_*` hooks so callers/tests can pre-shard inputs to

@@ -45,6 +45,22 @@ ReconParams = namedtuple('ReconParams', recon_param_names)
 TomographyParamNames = mj.ParamNames | Literal['view_params_name']
 
 
+def _write_slice_band_impl(buffer, band, start_col):
+    """Write ``band`` into ``buffer`` at column ``start_col`` along the slice axis."""
+    return jax.lax.dynamic_update_slice(buffer, band, (0, start_col))
+
+
+# Jitted with donate_argnums=0 so XLA updates ``buffer`` IN PLACE (aliases the
+# donated input to the output) instead of allocating a fresh full-shard copy per
+# write.  This is what lets sharded back projection assemble its per-owner recon
+# shard band-by-band without the transient doubling a list+concatenate would
+# incur (the F1 apply_row_filter trick, applied to the recon's slice axis).
+# ``start_col`` is a traced operand -> no recompile per band offset; the band
+# WIDTH is static -> at most two compiled variants (the balanced tail).  Defined
+# at module scope so the jit cache persists across calls.
+_write_slice_band = jax.jit(_write_slice_band_impl, donate_argnums=0)
+
+
 class TomographyModel(ParameterHandler):
     """
     Represents a general model for tomographic reconstruction using MBIRJAX. This class encapsulates the parameters and
@@ -976,10 +992,16 @@ class TomographyModel(ParameterHandler):
         band_len = self._slice_band_length(slices_per_dev, n_dev, num_pixels)
         local_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
-        # owner_bands[t] collects device t's owned slice-bands in slice order.
-        # One thread pool is reused across every band (there are up to ~n_dev^2 of
-        # them) instead of creating a fresh ThreadPoolExecutor per run_per_device.
-        owner_bands = [[] for _ in range(n_dev)]
+        # Each owner's recon shard is built band-by-band.  When there is more than
+        # one band we preallocate the owner shard and write each band into it IN
+        # PLACE (donated dynamic_update_slice), so we never hold the whole band
+        # list plus a concatenated copy -- that list+concatenate is the ~1.4x-floor
+        # assembly doubling the single-device sweep exposed.  A single-band owner
+        # skips the buffer (the band IS the shard).  One thread pool is reused
+        # across every band (there are up to ~n_dev^2 of them).
+        multi_band = len(local_bounds) > 1
+        owned = [jnp.zeros((num_pixels, slices_per_dev), device=devices[t])
+                 if multi_band else None for t in range(n_dev)]
         with mjs.device_pool(n_dev) as pool:
             for t in range(n_dev):
                 owner = devices[t]
@@ -1004,12 +1026,13 @@ class TomographyModel(ParameterHandler):
                     band_result = contribs[0]
                     for c in contribs[1:]:
                         band_result = band_result + c
-                    owner_bands[t].append(band_result)   # (num_pixels, l1-l0) on owner
 
-        # Assemble each owner's recon shard from its bands (along the slice axis),
-        # then wrap the per-owner shards as one slice-sharded array (no gather).
-        owned = [bands[0] if len(bands) == 1 else jnp.concatenate(bands, axis=1)
-                 for bands in owner_bands]
+                    if multi_band:                       # in-place write, no copy
+                        owned[t] = _write_slice_band(owned[t], band_result, l0)
+                    else:
+                        owned[t] = band_result           # (num_pixels, slices_per_dev)
+
+        # Wrap the per-owner shards as one slice-sharded array (no gather).
         recon_sharding = jax.sharding.NamedSharding(
             self.mesh, jax.sharding.PartitionSpec(None, 'devices'))
         return mjs.assemble_sharded(owned, (num_pixels, num_slices), recon_sharding)
