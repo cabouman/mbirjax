@@ -38,7 +38,6 @@ class TestVCD(unittest.TestCase):
         
         # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
         self.voxel_row_aspect = 1.9
-        # self.tct_voxel_row_aspect = 40.9
         self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
 
         # These can be adjusted to describe the geometry in the cone beam case.
@@ -166,7 +165,8 @@ class TestVCD(unittest.TestCase):
             ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
             ct_model.auto_set_recon_geometry()
         if geometry_type == 'anisotropic_translation':
-            # ct_model.set_params(voxel_row_aspect=self.tct_voxel_row_aspect)
+            # For TCT, keep voxel_row_aspect at the automatically computed default.
+            # Reconstruction quality is sensitive to row pitch, so only vary voxel_slice_aspect here.
             ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
             ct_model.auto_set_recon_geometry()
 
