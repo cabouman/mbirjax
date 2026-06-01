@@ -973,7 +973,7 @@ class TomographyModel(ParameterHandler):
         # zero recompute) rather than a fixed length with a wasteful tail, because
         # recomputing a band here reruns the projector (unlike the cheap per-row
         # FBP filter).
-        band_len = self._slice_band_length(slices_per_dev, n_dev)
+        band_len = self._slice_band_length(slices_per_dev, n_dev, num_pixels)
         local_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
         # owner_bands[t] collects device t's owned slice-bands in slice order.
@@ -1009,24 +1009,39 @@ class TomographyModel(ParameterHandler):
             self.mesh, jax.sharding.PartitionSpec(None, 'devices'))
         return mjs.assemble_sharded(owned, (num_pixels, num_slices), recon_sharding)
 
-    def _slice_band_length(self, slices_per_dev, n_dev):
+    # Floor on per-band work (num_pixels * band, in elements) for the default
+    # slice-band sizing in sharded back projection.  From the H100 band sweep
+    # (1024^3 vs 256^3): ~50M elements/band scaled fine and even sped up
+    # (smaller working set -> better locality on this bandwidth-bound op), while
+    # ~0.8M/band added dispatch overhead with no memory benefit (small recons are
+    # already tiny).  4M is a safe knee; tunable.
+    _BACK_PROJECT_MIN_BAND_WORK = 4_000_000
+
+    def _slice_band_length(self, slices_per_dev, n_dev, num_pixels):
         """Band length B for streaming the slice axis in sharded back projection.
 
         Streaming bounds the per-band reduce-scatter buffer: each band's owner
-        gathers n_dev contributions of (num_pixels x B), so the owner transient
-        is ~ n_dev * num_pixels * B.  A smaller B lowers peak memory, at the cost
-        of more (smaller) projector calls and reduce rounds.
+        gathers n_dev contributions of (num_pixels x B), so the owner transient is
+        ~ n_dev * num_pixels * B.  A smaller B lowers peak memory at the cost of
+        more (smaller) projector calls.
 
-        Default: ``B = max(1, slices_per_dev // n_dev)`` -- this bounds the owner's
-        reduce buffer to about one owner-shard (n_dev * B ~ slices_per_dev) rather
-        than the full cylinder.  Set ``self.back_project_slice_band`` to a fixed B
-        to tune (sweepable, like ``tomography_utils.ROW_FILTER_BATCH``); a
-        memory-budget-derived default is a planned refinement.  Capped at
-        slices_per_dev (a band never crosses an owner boundary).
+        Default (budget-based): bound the owner's reduce gather to about one
+        owner-shard, i.e. ``B ~ slices_per_dev / n_dev`` -- the memory knee from the
+        H100 sweep (~3.3x the data shard at 1024^3 / 4-device; the curve flattens
+        below it).  But never split so finely that a band's work
+        (num_pixels * B) falls below ``_BACK_PROJECT_MIN_BAND_WORK``: on small
+        recons memory is already small, so a bigger band avoids needless dispatch
+        overhead (the 256^3 small-size penalty).  Set
+        ``self.back_project_slice_band`` to a fixed B to override (sweepable, like
+        ``tomography_utils.ROW_FILTER_BATCH``).  Always capped at slices_per_dev,
+        so a band never crosses an owner boundary.
         """
         b = getattr(self, 'back_project_slice_band', None)
         if not b:
-            b = max(1, slices_per_dev // n_dev)
+            budget_band = max(1, slices_per_dev // n_dev)   # ~one owner-shard gather
+            work_floor_band = max(1, self._BACK_PROJECT_MIN_BAND_WORK //
+                                  max(1, num_pixels))
+            b = max(budget_band, work_floor_band)
         return min(int(b), slices_per_dev)
 
     @staticmethod

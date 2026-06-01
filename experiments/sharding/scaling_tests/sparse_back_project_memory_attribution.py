@@ -1,8 +1,8 @@
 """
 experiments/sharding/scaling_tests/sparse_back_project_memory_attribution.py
 ─────────────────────────────────────────────────────────────────────────────
-Attribute the high per-device peak memory of sharded back projection, and sweep
-the vmap batch knobs to see how much of it is reducible.
+Attribute the per-device peak memory of sharded back projection, and sweep the
+slice-band length to find the memory/throughput knee.
 
 Context: the GPU scaling run showed peak-per-device ÷ sinogram-shard ≈ 11× at
 1024³/4-device.  The necessary floor is only ~1.8× (sino view-shard + recon
@@ -17,13 +17,11 @@ This script does two things at a fixed (size, device count):
     does, report the batch sizes it actually ends up using (configure_sharding
     does NOT run set_devices_and_batch_sizes, so they are whatever the full-
     problem-on-one-GPU path left), and compute the exact byte size of each
-    buffer.  This decomposes the ~11×.
+    buffer.  This decomposes the peak.
 
-  PART B — batch-size sweep.  Recompile the projector with different
-    (view_batch_size_for_vmap, pixel_batch_size_for_vmap) and measure the actual
-    per-device peak (peak_bytes_in_use), each config in its own fresh subprocess
-    so the cumulative high-water mark reads cleanly.  Shows how much of the peak
-    is the vmap buffer and how far batch-tuning alone can move it (it barely does).
+  (A view/pixel batch-size sweep ("Part B") was here originally; it showed batch
+  tuning leaves the peak essentially flat, so it was removed.  See
+  sharding_status.md.  The vmap batch knobs are still measured/reported by Part A.)
 
   PART C — slice-band sweep (the structural lever).  Vary
     back_project_slice_band (how the slice axis is streamed in sharded back
@@ -58,16 +56,6 @@ OP_NAME = "sparse_back_project_mem_attr"
 # ── Run configuration (edit here) ─────────────────────────────────────────────
 SIZE = (1024, 1024, 1024)        # (views, rows, channels); the regime where 11× was seen
 N_DEVICES = 4
-# (view_batch_size_for_vmap, pixel_batch_size_for_vmap); -1 = leave the model's
-# configured value (the baseline that produced ~11×).  The sweep below varies the
-# view batch (with pixel batch pinned) and then the pixel batch, so the two
-# contributions to the vmap buffer separate.
-BASELINE = (-1, -1)
-BATCH_CONFIGS = [
-    BASELINE,
-    (256, 2048), (128, 2048), (64, 2048), (32, 2048), (16, 2048),
-    (64, 1024), (64, 512), (64, 256),
-]
 WARMUP = 1
 TRIALS = 3
 SEED = 0
@@ -152,15 +140,15 @@ def worker_attribute(out_file):
           f"{sum(bufs.values())/sino_shard:6.2f}× shard")
 
 
-# ── Worker: PART B (batch config) / PART C (slice-band config) ────────────────
+# ── Worker: PART C (slice-band config) ────────────────────────────────────────
 def worker_measure(view_batch, pixel_batch, out_file, slice_band=-1):
     """Measure peak per-device memory + time for one configuration.
 
-    PART B varies the vmap batch sizes (slice_band left at default).  PART C
-    varies the back-projection slice band (batch sizes left at default) by setting
-    model.back_project_slice_band, which controls how the slice axis is streamed
-    in sharded back projection.  Both run in their own fresh subprocess so the
-    cumulative peak reads cleanly.
+    PART C varies the back-projection slice band (batch sizes left at default) by
+    setting model.back_project_slice_band, which controls how the slice axis is
+    streamed in sharded back projection, in its own fresh subprocess so the
+    cumulative peak reads cleanly.  (view_batch/pixel_batch are retained so a
+    one-off batch override is still possible, but the batch sweep was removed.)
     """
     import mbirjax
     devs = sc.pick_devices(N_DEVICES)
@@ -249,32 +237,8 @@ def main():
         return
     sino_shard = attr["sino_shard_bytes"]
 
-    # PART B — batch-size sweep (one fresh subprocess per config).
-    print("\n--- PART B: batch-size sweep (per-device peak memory) ---")
-    print(f"{'view_batch':>10} {'pixel_batch':>11} | {'min_ms':>9} | "
-          f"{'peak_MB':>9} {'peak/shard':>10}")
-    print("-" * 60)
-    rows = []
-    for vb, pb in BATCH_CONFIGS:
-        res, rc = sc.run_worker(
-            script, ["--worker", "--mode", "measure",
-                     "--view-batch", str(vb), "--pixel-batch", str(pb)],
-            extra_env=worker_env)
-        if res is None:
-            print(f"{vb:>10} {pb:>11} | worker produced no result (rc={rc})")
-            continue
-        if res.get("error") and not res.get("oom"):
-            print(f"{vb:>10} {pb:>11} | ERROR: {str(res['error'])[:60]}")
-            continue
-        if res.get("oom"):
-            print(f"{vb:>10} {pb:>11} | OOM")
-            rows.append(res)
-            continue
-        ratio = res["mem_mb"] / (sino_shard / (1024 ** 2))
-        tag = "  (baseline)" if (vb, pb) == BASELINE else ""
-        print(f"{res['view_batch_actual']:>10} {res['pixel_batch_actual']:>11} | "
-              f"{res['min_ms']:>9.1f} | {res['mem_mb']:>9.1f} {ratio:>9.2f}×{tag}")
-        rows.append({**res, "peak_over_shard": ratio})
+    # (Part B, the view/pixel batch sweep, was removed: it confirmed batch tuning
+    # leaves the peak flat -- see sharding_status.md.  Part C is the real lever.)
 
     # PART C — slice-band sweep (the structural lever): vary
     # back_project_slice_band with default batch sizes.  Larger band -> fewer,
@@ -315,13 +279,14 @@ def main():
         band_rows.append({**res, "peak_over_shard": ratio})
 
     results = {"op": OP_NAME, "size": list(SIZE), "n_devices": N_DEVICES,
-               "attribution": attr, "batch_sweep": rows, "band_sweep": band_rows}
+               "attribution": attr, "band_sweep": band_rows}
     sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_gpu.yaml"), results)
-    print("\nReading: PART A names the buffers; PART B shows batch-tuning barely "
-          "moves\nthe peak; PART C is the lever — how far the slice-band streaming "
+    print("\nReading: PART A names the buffers (the full-cylinder partial + vmap "
+          "buffer\ndominate); PART C is the lever — how far the slice-band streaming "
           "drives\npeak/shard down, and the time cost of more, smaller bands.  Pick "
           "the band\nat the memory/throughput knee (the fbp ROW_FILTER_BATCH "
-          "analogue).")
+          "analogue).\n(Batch tuning was ruled out earlier — it left the peak flat — "
+          "so Part B is gone.)")
     print("\nDone.")
 
 

@@ -81,6 +81,38 @@ First CPU sweep (`sparse_back_project_scaling.py`) and a phase-split ablation
   rates.  If GPU *also* caps ~1.5×, the limiter is something portable (reduce-
   scatter / a serialization), not the shared bus — a sharp test either way.
 
+### Slice-band streaming landed (2026-06-01) — memory 11× → ~3.2×, free on GPU
+
+Back projection now **streams the slice axis in bands** (no full-cylinder partial
+is ever held): each device row-slices its sinogram to a band, projects, and the
+band is reduce-scattered to its owner.  Needed a 1-line kernel fix
+(`back_project_one_view_to_pixel_batch` sizes its output from the input rows, not
+`projector_params`) so a row-sliced view yields just those slices.  Committed.
+
+- **GPU memory (H100, the goal):** at 1024³/4-device peak/shard fell **11× →
+  3.2×** (11461 → 3435 MB, 0.30×), and per-device memory now drops *faster* than
+  1/n.  **Time is unchanged at real sizes** (512³/1024³: 0.99–1.02×) — the CPU
+  many-small-band penalty does NOT transfer to GPU (launch throughput hides it).
+  Only 256³ shows a time hit (tiny per-band work).  So streaming is a strict win
+  on GPU: ~3× less memory at the same speed.
+- **Band-length sweep (Part C):** the knee is ~`slices_per_dev/n_dev` (band 64 →
+  3.35× at 1024³/4d); below it strongly diminishing (band 8 → 2.67× for 8× the
+  bands).  Even band=256 (one band/owner, no sub-tiling) is 7.25×, so the *rewrite
+  itself* (sequential, row-sliced, no simultaneous full partials) bought 11→7.25×
+  and sub-tiling took it to 3.35×.
+- **Default band is now budget-based** (`_slice_band_length`): bound the owner's
+  reduce gather to ~one owner-shard (`slices_per_dev/n_dev`, the knee), with a
+  per-band-work floor (`_BACK_PROJECT_MIN_BAND_WORK = 4M` elements) so small
+  recons don't over-split into tiny dispatches (the 256³ penalty).  Override via
+  `back_project_slice_band` (sweepable like `ROW_FILTER_BATCH`).
+- **Batch tuning is irrelevant** (confirmed again on GPU: peak flat across all
+  view/pixel batch configs).  The attribution script's batch sweep ("Part B") was
+  **removed**; it now runs Part A (attribution) + Part C (band sweep) only.
+- **Open lever:** single-device (n=1) is NOT streamed by default (band=full), so
+  1024³ on one GPU is still ~29.7 GB.  An explicit `back_project_slice_band`
+  streams a single device too — the path to fitting larger-than-today recons on
+  one card.  Not yet wired into the default.
+
 ---
 
 ## HANDOFF (2026-05-31) — Phase F1 COMPLETE
