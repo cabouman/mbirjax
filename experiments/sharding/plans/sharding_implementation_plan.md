@@ -342,13 +342,18 @@ combine is SET (the complete reduced value), never ADD; deferred with sub-tiling
   cap) — 1024³ on one GPU 28 GB → 10.5 GB (0.37×), time flat.  Persistent thread
   pool (`device_pool`) removes per-band pool churn.  See `sharding_status.md` for
   the full findings.
-- **Next memory lever (back projection): preallocated-write assembly.** The
-  single-device sweep plateaus at ~**1.44× the sino+recon floor** for *all* small
-  bands — a band-independent transient that is the per-owner
-  `jnp.concatenate(band_list)` doubling a full recon shard during assembly.
-  Replacing it with a preallocated `dynamic_update_slice` write (the F1
-  `apply_row_filter` pattern, applied to the recon's slice axis) would drop peak
-  from ~1.44× → ~1.1× the floor (1024³: 10.5 → ~8 GB).  Deferred.
+- **Above-floor residual is compute/working-set, NOT assembly (tried & reverted,
+  2026-06-01).** The single-device sweep plateaus at ~**1.44× the sino+recon
+  floor** for all small bands — a band-independent ~3 GB transient.  We
+  hypothesized this was the per-owner `jnp.concatenate(band_list)` doubling a
+  recon shard during assembly, and replaced it with a preallocated, donated
+  `dynamic_update_slice` write (the F1 `apply_row_filter` pattern on the recon
+  slice axis).  **Measurement disproved it:** peak got *worse* everywhere
+  (1024³/4-dev 3435 → 4840 MB, +41%; n=1 also up slightly), so the concatenate
+  was never the binding peak — it happens after the compute phase, at a
+  lower-memory moment.  The residual is the live recon + per-band compute working
+  set, not assembly.  **Reverted** (`017e37c` undone).  Lesson: don't port the F1
+  trick without confirming the *cause* of the plateau by measurement.
 - **Frontier (back projection): host↔device streaming of sino/recon.** Below the
   ~7.3 GB floor (1024³) the full sinogram (input) and recon (output) are the
   irreducible on-device residents; only loading per-band sino rows / evicting
