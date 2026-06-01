@@ -977,29 +977,34 @@ class TomographyModel(ParameterHandler):
         local_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
         # owner_bands[t] collects device t's owned slice-bands in slice order.
+        # One thread pool is reused across every band (there are up to ~n_dev^2 of
+        # them) instead of creating a fresh ThreadPoolExecutor per run_per_device.
         owner_bands = [[] for _ in range(n_dev)]
-        for t in range(n_dev):
-            owner = devices[t]
-            for (l0, l1) in local_bounds:
-                g0, g1 = t * slices_per_dev + l0, t * slices_per_dev + l1
+        with mjs.device_pool(n_dev) as pool:
+            for t in range(n_dev):
+                owner = devices[t]
+                for (l0, l1) in local_bounds:
+                    g0, g1 = t * slices_per_dev + l0, t * slices_per_dev + l1
 
-                # Every device back-projects ITS views onto global slices [g0:g1).
-                # g0/g1 are bound as defaults so the closure is not captured late.
-                def _band_partial(i, device, g0=g0, g1=g1):
-                    data, global_view_idx = shard_info[device]
-                    return self.projector_functions.sparse_back_project(
-                        data[:, g0:g1, :], local_pixels[i],
-                        view_indices=global_view_idx, coeff_power=coeff_power)
-                partials = mjs.run_per_device(devices, _band_partial)
+                    # Every device back-projects ITS views onto global slices
+                    # [g0:g1).  g0/g1 bound as defaults so the closure is not
+                    # captured late.
+                    def _band_partial(i, device, g0=g0, g1=g1):
+                        data, global_view_idx = shard_info[device]
+                        return self.projector_functions.sparse_back_project(
+                            data[:, g0:g1, :], local_pixels[i],
+                            view_indices=global_view_idx, coeff_power=coeff_power)
+                    partials = mjs.run_per_device(devices, _band_partial,
+                                                  executor=pool)
 
-                # Reduce (sum over devices' views) and scatter (place on owner t).
-                contribs = [mjs.move_shard(partials[d], owner,
-                                           dev2dev_safe=self.dev2dev_safe)
-                            for d in range(n_dev)]
-                band_result = contribs[0]
-                for c in contribs[1:]:
-                    band_result = band_result + c
-                owner_bands[t].append(band_result)   # (num_pixels, l1-l0) on owner
+                    # Reduce (sum over devices' views) and scatter (to owner t).
+                    contribs = [mjs.move_shard(partials[d], owner,
+                                               dev2dev_safe=self.dev2dev_safe)
+                                for d in range(n_dev)]
+                    band_result = contribs[0]
+                    for c in contribs[1:]:
+                        band_result = band_result + c
+                    owner_bands[t].append(band_result)   # (num_pixels, l1-l0) on owner
 
         # Assemble each owner's recon shard from its bands (along the slice axis),
         # then wrap the per-owner shards as one slice-sharded array (no gather).

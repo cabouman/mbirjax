@@ -92,6 +92,29 @@ class TestExecution(unittest.TestCase):
         for i, r in enumerate(results):
             self.assertEqual(list(r.devices())[0], devs[i])
 
+    def test_device_pool_reuse_matches_per_call(self):
+        """A reused device_pool gives the same results, in device order, as the
+        default per-call pool -- across several calls (the streaming use case)."""
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+
+        def worker_process(i, device, k=0):
+            return jnp.asarray(i * 10.0) + k
+
+        # Per-call pools (executor=None) as the reference, over several "bands".
+        ref = [mjs.run_per_device(devs, lambda i, d, k=k: worker_process(i, d, k))
+               for k in range(3)]
+        # Same calls through one reused pool.
+        with mjs.device_pool(len(devs)) as pool:
+            got = [mjs.run_per_device(devs, lambda i, d, k=k: worker_process(i, d, k),
+                                      executor=pool)
+                   for k in range(3)]
+        self.assertEqual([[float(x) for x in row] for row in got],
+                         [[float(x) for x in row] for row in ref])
+        self.assertEqual([[float(x) for x in row] for row in ref],
+                         [[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
+
     def test_assemble_sharded_matches_reference(self):
         """Assembling per-device row-shards reproduces the global array."""
         devs = preferred_devices(2)

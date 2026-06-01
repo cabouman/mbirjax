@@ -17,11 +17,12 @@ phases) imports these via `from mbirjax._sharding import ...`.
 """
 
 from .transfer import is_dev2dev_safe, move_shard
-from .thread_execution import run_per_device, assemble_sharded
+from .thread_execution import run_per_device, assemble_sharded, device_pool
 
 __all__ = [
     "is_dev2dev_safe",
     "move_shard",
     "run_per_device",
     "assemble_sharded",
+    "device_pool",
 ]
