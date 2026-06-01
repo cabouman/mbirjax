@@ -1014,39 +1014,56 @@ class TomographyModel(ParameterHandler):
             self.mesh, jax.sharding.PartitionSpec(None, 'devices'))
         return mjs.assemble_sharded(owned, (num_pixels, num_slices), recon_sharding)
 
-    # Floor on per-band work (num_pixels * band, in elements) for the default
-    # slice-band sizing in sharded back projection.  From the H100 band sweep
-    # (1024^3 vs 256^3): ~50M elements/band scaled fine and even sped up
-    # (smaller working set -> better locality on this bandwidth-bound op), while
-    # ~0.8M/band added dispatch overhead with no memory benefit (small recons are
-    # already tiny).  4M is a safe knee; tunable.
+    # Lower floor on per-band work (num_pixels * band, in elements) for the
+    # default slice-band sizing.  From the H100 band sweep (1024^3 vs 256^3):
+    # ~50M elements/band scaled fine and even sped up (smaller working set ->
+    # better locality on this bandwidth-bound op), while ~0.8M/band added dispatch
+    # overhead with no memory benefit (small recons are already tiny).  4M is a
+    # safe knee; tunable.
     _BACK_PROJECT_MIN_BAND_WORK = 4_000_000
+    # Upper cap on per-band work for the default.  This is what makes a SINGLE
+    # device stream: the cross-device reduce-gather bound (slices_per_dev/n_dev)
+    # is vacuous at n_dev=1, so without this cap one device would use the full
+    # cylinder.  Capping the per-band partial bounds the compute working set
+    # (partial + vmap-over-views buffer, both ~ band) so the peak drops toward the
+    # sino+recon floor.  From the H100 single-device sweep at 1024^3: ~100M
+    # elements/band lands near band ~128 (peak ~0.37x of unstreamed) and time was
+    # FLAT across all bands, so this is free.  Tunable.
+    _BACK_PROJECT_MAX_BAND_WORK = 100_000_000
 
     def _slice_band_length(self, slices_per_dev, n_dev, num_pixels):
         """Band length B for streaming the slice axis in sharded back projection.
 
-        Streaming bounds the per-band reduce-scatter buffer: each band's owner
-        gathers n_dev contributions of (num_pixels x B), so the owner transient is
-        ~ n_dev * num_pixels * B.  A smaller B lowers peak memory at the cost of
-        more (smaller) projector calls.
+        A smaller B lowers peak memory (the per-band partial and the
+        vmap-over-views buffer both scale with B, and so does each owner's
+        reduce-scatter gather) at the cost of more, smaller projector calls -- but
+        the H100 sweeps showed time is essentially flat across B, so smaller B is
+        close to a free memory win.
 
-        Default (budget-based): bound the owner's reduce gather to about one
-        owner-shard, i.e. ``B ~ slices_per_dev / n_dev`` -- the memory knee from the
-        H100 sweep (~3.3x the data shard at 1024^3 / 4-device; the curve flattens
-        below it).  But never split so finely that a band's work
-        (num_pixels * B) falls below ``_BACK_PROJECT_MIN_BAND_WORK``: on small
-        recons memory is already small, so a bigger band avoids needless dispatch
-        overhead (the 256^3 small-size penalty).  Set
-        ``self.back_project_slice_band`` to a fixed B to override (sweepable, like
-        ``tomography_utils.ROW_FILTER_BATCH``).  Always capped at slices_per_dev,
-        so a band never crosses an owner boundary.
+        Default, two upper bounds (take the smaller) plus a lower floor:
+          * reduce-gather bound ``slices_per_dev / n_dev`` -- bounds each owner's
+            cross-device gather to ~one owner-shard (the multi-device knee, ~3.3x
+            the data shard at 1024^3/4-dev).  Vacuous at n_dev=1.
+          * compute bound ``_BACK_PROJECT_MAX_BAND_WORK / num_pixels`` -- bounds
+            the per-band compute working set; this is what makes a SINGLE device
+            stream (1024^3 on one GPU: ~28 GB -> ~10 GB, no time cost), driving the
+            peak toward the sino+recon floor.
+          * lower floor ``_BACK_PROJECT_MIN_BAND_WORK / num_pixels`` -- keep a
+            band's work above the dispatch floor so small recons aren't split into
+            many tiny projector calls (the 256^3 penalty).
+
+        Set ``self.back_project_slice_band`` to a fixed B to override (sweepable,
+        like ``tomography_utils.ROW_FILTER_BATCH``).  Always capped at
+        slices_per_dev, so a band never crosses an owner boundary.
         """
         b = getattr(self, 'back_project_slice_band', None)
         if not b:
-            budget_band = max(1, slices_per_dev // n_dev)   # ~one owner-shard gather
+            reduce_band = max(1, slices_per_dev // n_dev)      # cross-device gather
+            compute_band = max(1, self._BACK_PROJECT_MAX_BAND_WORK //
+                               max(1, num_pixels))             # makes n_dev=1 stream
             work_floor_band = max(1, self._BACK_PROJECT_MIN_BAND_WORK //
-                                  max(1, num_pixels))
-            b = max(budget_band, work_floor_band)
+                                  max(1, num_pixels))          # avoid over-split
+            b = max(min(reduce_band, compute_band), work_floor_band)
         return min(int(b), slices_per_dev)
 
     @staticmethod

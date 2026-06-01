@@ -206,6 +206,26 @@ class TestBackProjectSharded(unittest.TestCase):
             np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
                                        err_msg=f"mismatch at slice band {band}")
 
+    def test_single_device_streaming_matches(self):
+        """A 1-device mesh with an explicit small band streams the slice axis on
+        one device (the max-recon-per-GPU path) and must match the unstreamed
+        single-device result -- the default does NOT sub-tile one device, so this
+        exercises the explicit opt-in."""
+        single = preferred_devices(1)
+        if single is None:
+            self.skipTest("need >= 1 device")
+        ref_model = _make_model()
+        sino = _random_sino(ref_model)
+        ref = np.asarray(ref_model.back_project(sino))        # plain, unstreamed
+        num_slices = ref_model.get_params('recon_shape')[2]
+        for band in [1, 2, max(1, num_slices // 3)]:          # incl. a non-divisor
+            model = _make_model()
+            model.back_project_slice_band = band
+            model.configure_sharding(single)                  # 1-device mesh
+            out = np.asarray(model.back_project(sino))
+            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"single-device band {band} mismatch")
+
 
 class TestBalancedSliceBounds(unittest.TestCase):
     """Unit tests for the balanced slice-band tiling (no mesh needed)."""

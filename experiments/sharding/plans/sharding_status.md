@@ -108,10 +108,23 @@ band is reduce-scattered to its owner.  Needed a 1-line kernel fix
 - **Batch tuning is irrelevant** (confirmed again on GPU: peak flat across all
   view/pixel batch configs).  The attribution script's batch sweep ("Part B") was
   **removed**; it now runs Part A (attribution) + Part C (band sweep) only.
-- **Open lever:** single-device (n=1) is NOT streamed by default (band=full), so
-  1024³ on one GPU is still ~29.7 GB.  An explicit `back_project_slice_band`
-  streams a single device too — the path to fitting larger-than-today recons on
-  one card.  Not yet wired into the default.
+- **Single-device streaming is now the default (2026-06-01).**  `_slice_band_length`
+  gained a compute-band cap (`_BACK_PROJECT_MAX_BAND_WORK = 100M` elements): the
+  reduce-gather bound is vacuous at n_dev=1, so the cap is what makes one device
+  sub-tile.  H100 single-device sweep at 1024³: peak **28 GB → 10.5 GB (0.37×)**
+  at band 128, heading toward the ~7.3 GB sino+recon floor, and **time was FLAT
+  across all bands** — so it's a free ~3× memory win that stretches the max recon
+  per GPU (~1.5× larger linear dim).  Multi-device band choice is unchanged (its
+  reduce bound is smaller than the compute cap); small recons stay full.
+  Correctness covered by `test_single_device_streaming_matches`.
+  - **Caveat / next:** the benefit only applies on the *sharded* path — a plain
+    single-GPU `back_project` (no `configure_sharding`) still uses the old
+    non-streaming path.  To stream one GPU today: `model.configure_sharding(
+    jax.devices('gpu'))`.  Making it fully automatic = auto-configure a trivial
+    1-device mesh by default (the deferred "trivial-sharding unification"); a
+    separate, bigger change that retires the old single-device path.
+  - **Remaining frontier:** the ~7.3 GB floor (full sino + recon held on-device).
+    Beating it needs host↔device streaming of sino/recon (bigger change).
 
 ---
 
