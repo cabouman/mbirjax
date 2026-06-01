@@ -186,6 +186,46 @@ class TestBackProjectSharded(unittest.TestCase):
         if not ran_multi:
             self.skipTest("no usable device count > 1")
 
+    def test_slice_band_sweep_matches(self):
+        """Streaming the slice axis in bands is correct for every band length,
+        including a length that does NOT divide the owner's slice range (so the
+        balanced tiling produces unequal bands).  The band grouping must not
+        change the result -- each slice is back-projected once regardless."""
+        ref_model = _make_model()
+        self._check_divisible(ref_model, 2)
+        sino = _random_sino(ref_model)
+        ref = np.asarray(ref_model.back_project(sino))         # single-device
+        slices_per_dev = ref_model.get_params('recon_shape')[2] // 2
+        # default, then explicit band lengths incl. a non-divisor of slices_per_dev.
+        for band in [None, 1, 2, max(1, slices_per_dev - 1)]:
+            model = _make_model()
+            if band is not None:
+                model.back_project_slice_band = band
+            model.configure_sharding(self.devs)
+            out = np.asarray(model.back_project(sino))
+            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"mismatch at slice band {band}")
+
+
+class TestBalancedSliceBounds(unittest.TestCase):
+    """Unit tests for the balanced slice-band tiling (no mesh needed)."""
+
+    def test_balanced_no_overlap_covers_and_capped(self):
+        bounds_fn = mbirjax.ParallelBeamModel._balanced_slice_bounds
+        for extent, band_len in [(130, 128), (131, 128), (8, 2), (7, 3),
+                                 (256, 64), (10, 4), (5, 5), (5, 9)]:
+            bounds = bounds_fn(extent, band_len)
+            lengths = [s1 - s0 for s0, s1 in bounds]
+            # covers [0, extent) exactly, contiguous, no overlap
+            self.assertEqual(bounds[0][0], 0)
+            self.assertEqual(bounds[-1][1], extent)
+            for k in range(len(bounds) - 1):
+                self.assertEqual(bounds[k][1], bounds[k + 1][0])
+            # balanced (differ by <= 1), never exceeds band_len, fewest bands
+            self.assertLessEqual(max(lengths) - min(lengths), 1)
+            self.assertLessEqual(max(lengths), band_len)
+            self.assertEqual(len(bounds), -(-extent // band_len))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -231,8 +231,17 @@ class ParallelBeamModel(TomographyModel):
         n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
 
-        # Allocate the voxel cylinder array
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
+        # Allocate the voxel cylinder array.  Size the slice axis from the actual
+        # input view, not from projector_params.sinogram_shape, so that a caller
+        # may pass a row-sliced view (a contiguous subset of detector rows) and
+        # get back only the corresponding recon slices.  Detector row r maps only
+        # to slice r in parallel beam (the horizontal projection below mixes
+        # channels, never rows), so restricting the input rows restricts the
+        # output slices with no other change.  When the full view is passed this
+        # equals num_det_rows, so single-device behavior is unchanged.  This is
+        # what lets sharded back projection stream the slice axis in bands.
+        num_input_rows = sinogram_view.shape[0]
+        det_voxel_cylinder = jnp.zeros((num_pixels, num_input_rows))
         # jax.debug.breakpoint(num_frames=1)
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):

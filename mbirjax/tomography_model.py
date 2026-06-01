@@ -892,22 +892,24 @@ class TomographyModel(ParameterHandler):
             of slices ``S_t``.
 
         Because back projection sums each voxel's contribution over all views,
-        and the views are split across devices, the result is a *reduce-scatter*:
+        and the views are split across devices, the result is a *reduce-scatter*.
+        It is computed by **streaming the slice axis in bands** so no full-cylinder
+        partial is ever held:
 
-          Phase 1 (per-device partial): each device back-projects its own views
-            onto the **full** voxel cylinders (all slices) for every pixel.  This
-            reuses the existing jitted projector unchanged (for parallel beam,
-            detector row r maps only to slice r, so a device producing all slices
-            from its local views needs nothing from any other device).
+          For each band (a contiguous slice range owned by one device), every
+          device back-projects ITS views onto exactly those slices -- the
+          sinogram is row-sliced to the band, and the kernel sizes its output from
+          the input rows (parallel beam: detector row r maps only to slice r).
+          The n_dev contributions are then summed on the band's slice-owner; that
+          sum is the complete back projection for those slices (sum over all
+          views), so it is the owner's final value -- no double count.
 
-          Phase 2 (reduce-scatter): for each slice-owner device t, the partials
-            from all devices are summed over their ``S_t`` band on device t.  The
-            summed band is the complete back projection for those slices (sum over
-            all views), so it is the final value for that owner — no double count.
-
-        The per-device owned bands are assembled into a single slice-sharded
-        array with no data movement.  No gather is performed here (contract: the
-        user-facing ``back_project`` gathers at exit).
+        Band length shrinks with n_dev (the owner gathers n_dev contributions per
+        band), and bands tile each owner's range with a balanced, no-overlap split
+        (see ``_slice_band_length`` / ``_balanced_slice_bounds``).  The per-owner
+        bands are assembled into a single slice-sharded array with no data
+        movement.  No gather is performed here (contract: the user-facing
+        ``back_project`` gathers at exit).
 
         Args:
             sinogram (jax array): view-sharded sinogram (NamedSharding on axis 0).
@@ -942,59 +944,110 @@ class TomographyModel(ParameterHandler):
         num_slices = self.get_params('recon_shape')[2]
         num_pixels = len(pixel_indices)
 
-        # Owner slice band for device t: a contiguous range, matching how
-        # PartitionSpec('devices') splits the slice axis, so assemble_sharded can
-        # wrap the per-owner results with no movement.  The division is exact
-        # because configure_sharding requires num_slices to be divisible by n_dev.
+        # Each device owns a contiguous block of slices_per_dev slices (exact,
+        # since configure_sharding requires num_slices % n_dev == 0).
         slices_per_dev = num_slices // n_dev
-        bands = [slice(t * slices_per_dev, (t + 1) * slices_per_dev) for t in range(n_dev)]
 
-        # Map each device to (its local view-shard, the global view-index slice
-        # it covers).  Using the shard's own .index is robust to shard ordering;
-        # verified that axis-0 sharding yields contiguous equal blocks.
-        shard_info = {s.device: (s.data, s.index[0])
-                      for s in sinogram.addressable_shards}
+        # Per device: its local view-shard, the GLOBAL view indices it covers (so
+        # the projector picks the matching angles), and its pixel indices placed
+        # on-device once.  shard.index[0] may be a full slice(None, None, None) on
+        # a single-device shard; .indices() normalizes it to (start, stop, step).
+        shard_info = {}
+        for s in sinogram.addressable_shards:
+            start, stop, step = s.index[0].indices(num_views)
+            shard_info[s.device] = (s.data, jnp.arange(start, stop, step))
+        local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
 
-        # ---- Phase 1: each device back-projects ITS views -> full partial -----
-        # partial_d : (num_pixels, num_slices) on device d, summed over d's views.
-        # The jitted projector does its own internal view/pixel batching, so no
-        # outer pixel loop is added here (no sub-tiling for now -- revisit only if
-        # the scaling tests show the transient partial is a memory problem).
-        # run_per_device does not block_until_ready, so the Phase-2 transfers can
-        # overlap this compute.
-        def _partial(i, device):
-            local_views, vslice = shard_info[device]
-            # vslice may be a full slice(None, None, None) (single-device shard);
-            # .indices(num_views) normalizes it to concrete (start, stop, step).
-            start, stop, step = vslice.indices(num_views)
-            global_view_idx = jnp.arange(start, stop, step)
-            local_pixels = jax.device_put(pixel_indices, device)
-            return self.projector_functions.sparse_back_project(
-                local_views, local_pixels,
-                view_indices=global_view_idx, coeff_power=coeff_power)
+        # Stream the slice axis in BANDS to bound the transient memory.  No
+        # full-cylinder partial is ever materialized: because detector row r maps
+        # only to slice r in parallel beam, "device d's contribution to slices
+        # [g0:g1)" is just the back projection of d's views with the sinogram
+        # row-sliced to [g0:g1) (the kernel sizes its output from the input rows).
+        # For each band the n_dev contributions are summed on the band's owner.
+        #
+        # The binding transient is the owner's reduce buffer: gathering n_dev
+        # contributions of (num_pixels x band_len), i.e. ~ n_dev * num_pixels *
+        # band_len -- so band_len must shrink with n_dev (a per-owner-sized band
+        # would gather the whole cylinder again).  band_len tiles each owner's
+        # slices_per_dev range with a BALANCED split (equal lengths, no overlap,
+        # zero recompute) rather than a fixed length with a wasteful tail, because
+        # recomputing a band here reruns the projector (unlike the cheap per-row
+        # FBP filter).
+        band_len = self._slice_band_length(slices_per_dev, n_dev)
+        local_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
-        partials = mjs.run_per_device(devices, _partial)
+        # owner_bands[t] collects device t's owned slice-bands in slice order.
+        owner_bands = [[] for _ in range(n_dev)]
+        for t in range(n_dev):
+            owner = devices[t]
+            for (l0, l1) in local_bounds:
+                g0, g1 = t * slices_per_dev + l0, t * slices_per_dev + l1
 
-        # ---- Phase 2: reduce-scatter -- owner t sums everyone's S_t band ------
-        # The reduce (sum over devices' views) and the scatter (result placed on
-        # the slice owner) happen together.  Each summed band is the complete
-        # value for those slices, so writing it as the owner's shard is correct.
-        def _reduce_band(t, owner):
-            band = bands[t]
-            contribs = [mjs.move_shard(partials[d][:, band], owner,
-                                       dev2dev_safe=self.dev2dev_safe)
-                        for d in range(n_dev)]
-            owned = contribs[0]
-            for c in contribs[1:]:
-                owned = owned + c
-            return owned                       # (num_pixels, slices_per_dev) on owner
+                # Every device back-projects ITS views onto global slices [g0:g1).
+                # g0/g1 are bound as defaults so the closure is not captured late.
+                def _band_partial(i, device, g0=g0, g1=g1):
+                    data, global_view_idx = shard_info[device]
+                    return self.projector_functions.sparse_back_project(
+                        data[:, g0:g1, :], local_pixels[i],
+                        view_indices=global_view_idx, coeff_power=coeff_power)
+                partials = mjs.run_per_device(devices, _band_partial)
 
-        owned_bands = mjs.run_per_device(devices, _reduce_band)
+                # Reduce (sum over devices' views) and scatter (place on owner t).
+                contribs = [mjs.move_shard(partials[d], owner,
+                                           dev2dev_safe=self.dev2dev_safe)
+                            for d in range(n_dev)]
+                band_result = contribs[0]
+                for c in contribs[1:]:
+                    band_result = band_result + c
+                owner_bands[t].append(band_result)   # (num_pixels, l1-l0) on owner
 
-        # ---- Assemble the slice-sharded result (no gather) --------------------
+        # Assemble each owner's recon shard from its bands (along the slice axis),
+        # then wrap the per-owner shards as one slice-sharded array (no gather).
+        owned = [bands[0] if len(bands) == 1 else jnp.concatenate(bands, axis=1)
+                 for bands in owner_bands]
         recon_sharding = jax.sharding.NamedSharding(
             self.mesh, jax.sharding.PartitionSpec(None, 'devices'))
-        return mjs.assemble_sharded(owned_bands, (num_pixels, num_slices), recon_sharding)
+        return mjs.assemble_sharded(owned, (num_pixels, num_slices), recon_sharding)
+
+    def _slice_band_length(self, slices_per_dev, n_dev):
+        """Band length B for streaming the slice axis in sharded back projection.
+
+        Streaming bounds the per-band reduce-scatter buffer: each band's owner
+        gathers n_dev contributions of (num_pixels x B), so the owner transient
+        is ~ n_dev * num_pixels * B.  A smaller B lowers peak memory, at the cost
+        of more (smaller) projector calls and reduce rounds.
+
+        Default: ``B = max(1, slices_per_dev // n_dev)`` -- this bounds the owner's
+        reduce buffer to about one owner-shard (n_dev * B ~ slices_per_dev) rather
+        than the full cylinder.  Set ``self.back_project_slice_band`` to a fixed B
+        to tune (sweepable, like ``tomography_utils.ROW_FILTER_BATCH``); a
+        memory-budget-derived default is a planned refinement.  Capped at
+        slices_per_dev (a band never crosses an owner boundary).
+        """
+        b = getattr(self, 'back_project_slice_band', None)
+        if not b:
+            b = max(1, slices_per_dev // n_dev)
+        return min(int(b), slices_per_dev)
+
+    @staticmethod
+    def _balanced_slice_bounds(extent, band_len):
+        """Tile ``[0, extent)`` into balanced bands no longer than ``band_len``.
+
+        Uses the fewest bands (ceil(extent / band_len)) with lengths as equal as
+        possible (differing by at most 1), so bands never overlap and no slice is
+        recomputed -- the right tradeoff for back projection, where a band is an
+        expensive projector call (unlike the cheap per-row FBP filter, where a
+        fixed length with an overlapping tail is fine).  Returns (start, stop)
+        pairs covering [0, extent) exactly.
+        """
+        num_bands = -(-extent // band_len)            # ceil division
+        base, rem = divmod(extent, num_bands)
+        bounds, start = [], 0
+        for k in range(num_bands):
+            length = base + (1 if k < rem else 0)
+            bounds.append((start, start + length))
+            start += length
+        return bounds
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
         """
