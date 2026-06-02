@@ -8,9 +8,8 @@ This script demonstrates parallel beam or cone beam reconstruction with anisotro
 
 """
 
-import numpy as np
 import time
-import pprint
+import numpy as np
 import mbirjax as mj
 
 # -------------------------

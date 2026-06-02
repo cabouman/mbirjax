@@ -66,7 +66,6 @@ def generate_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, 
 
     mask = (col_grid_alu / col_radius_alu) ** 2 + (row_grid_alu / row_radius_alu) ** 2 <= 1.0
     mask = mask[:, :]
-    print(np.sum(mask))
     return mask
 
 def get_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto", crop_radius_pixels=0, crop_radius_fraction=0.0):
