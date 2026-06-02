@@ -29,7 +29,7 @@ class TestProjectors(unittest.TestCase):
         
         # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
         self.voxel_row_aspect = 1.9
-        self.voxel_slice_aspect = 2.9 # cone beam only
+        self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
 
         # These can be adjusted to describe the geometry in the cone beam case.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -72,7 +72,7 @@ class TestProjectors(unittest.TestCase):
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
     def set_translation_vectors(self, geometry_type):
-        if geometry_type == 'translation':
+        if geometry_type in ('translation', 'anisotropic_translation'):
             self.translation_vectors = np.zeros((self.num_views, 3))
             self.translation_vectors[:, 0] = np.random.uniform(-10, 10, self.num_views)
             self.translation_vectors[:, 1] = 0.0
@@ -107,6 +107,13 @@ class TestProjectors(unittest.TestCase):
             ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'anisotropic_translation':
+            ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                           source_detector_dist=self.source_detector_dist,
+                                           source_iso_dist=self.source_iso_dist)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
