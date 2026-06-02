@@ -60,6 +60,25 @@
   per GPU" measurement) and the sino+recon floor it can't beat without host
   streaming.  Sweeps band full→small, continues past OOM, reports peak / vs_full /
   peak-over-floor.
+- `direct_recon_scaling.py` — scaling + correctness driver for the **Phase F2**
+  end-to-end FBP pipeline (`direct_recon` / `fbp_recon`).  Same
+  isolated-subprocess harness as `sparse_back_project_scaling.py`.  The timed
+  unit is the on-device pipeline `fbp_filter -> sparse_back_project` on a
+  PRE-SHARDED sinogram (slice-sharded out, NO gather), so it isolates the
+  combined compute scaling and the combined transient memory (the filter FFT
+  work area PLUS the back-projection partial buffer); the user-facing
+  `direct_recon` additionally pays a non-scaling entry shard + exit gather, left
+  out of the timed region.  Correctness (setup worker) compares the FULL
+  single-device `direct_recon` volume vs the prerelease baseline.  Shares
+  `SIZES` with the back-projection driver (the projector dominates).  Run from
+  the beta worktree root.
+- `direct_recon_capture_baseline.py` — run ONCE from a prerelease checkout to
+  capture the prerelease `direct_recon` (FBP) volume for correctness comparison.
+  Writes `baselines/direct_recon.{npy,yaml}`.  NOT a bit-exact gate: the
+  back-projection single-device path is verbatim prerelease, but F1 rewrote the
+  filter (per-view -> `apply_row_filter`), so beta-vs-prerelease is a FLOAT-NOISE
+  comparison (~8e-8 on CPU, 0% above the 1e-4 threshold) that catches real
+  divergence and CPU/GPU drift above that floor.
 - `results/` (gitignored) — generated YAML tables (timing + speedup + correctness
   metrics) and plots.
 - `baselines/` (gitignored) — single prerelease reference: `<op>.npy` (array) +

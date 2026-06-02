@@ -116,9 +116,34 @@ class TestBackProjectSharded(unittest.TestCase):
         shard_model = _make_model()
         shard_model.configure_sharding(self.devs)
         out = shard_model.back_project(sino)
-        # User-facing: gathered (plain) output.
+        # User-facing, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+
+    def test_sharded_input_returns_sharded_recon(self):
+        """Match-input contract: back_project of a SHARDED sinogram returns a
+        slice-sharded 3-D recon (no gather) that matches the plain single-device
+        recon to float noise."""
+        model = _make_model()
+        self._check_divisible(model, 2)
+        sino = _random_sino(model)
+        ref = np.asarray(model.back_project(sino))     # single-device plain
+
+        shard_model = _make_model()
+        shard_model.configure_sharding(self.devs)
+        sharded_in = shard_model._shard_sinogram(sino)
+        out = shard_model.back_project(sharded_in)
+
+        # Sharded in -> sharded out: a slice-sharded 3-D recon volume.
+        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
+        self.assertEqual(tuple(out.shape),
+                         tuple(shard_model.get_params('recon_shape')))
+        recon_axis = shard_model.recon_shard_axis() % out.ndim
+        self.assertEqual(out.sharding.spec[recon_axis], 'devices')
+        for ax in range(out.ndim):
+            if ax != recon_axis:
+                self.assertIsNone(out.sharding.spec[ax])
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
     def test_internal_returns_slice_sharded(self):

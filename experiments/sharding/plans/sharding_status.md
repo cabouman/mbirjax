@@ -16,6 +16,56 @@
 
 ---
 
+## HANDOFF (2026-06-01) — Phase F2 (`direct_recon`) COMPLETE, CPU-validated
+
+**Phase F2 is done.**  The first **usable end-to-end sharded FBP pipeline** —
+`direct_recon`/`fbp_recon` = shard sinogram → `fbp_filter` (F1) → `back_project`
+(D) → recon — runs with **zero intermediate host transfer**.  F2 was a **contract
+refactor**, not new collectives.  Landed in two rounds: round 1 = boundary
+cleanup (user-facing always-gather); **round 2 = match-input** (see principle #5;
+O2 RESOLVED).
+
+**Contract (match-input):**
+- **User-facing = output matches input** (`direct_recon`, `fbp_recon`,
+  `back_project`): plain in → plain out (shard at entry, gather at exit); sharded
+  in → sharded out (no gather).  The check is `isinstance(x.sharding,
+  NamedSharding)` on the primary input, read before the entry shard.  *Why
+  match-input, not always-gather:* these are dual-use — `back_project` is called
+  from `fbp_recon`, and `direct_recon` is `vcd_recon`'s default init — so a
+  sharded caller (e.g. Phase E's sharded VCD computing a sharded FBP init) stays
+  on-device with no round-trip.
+- **Internal = pure sharded-contract** (`fbp_filter` + alias `direct_filter`,
+  `sparse_*`): sharded in → sharded out, **no transition code**.  Filtering is
+  not exposed as a standalone gathered op.
+- **Round-2 mechanism:** `back_project` gained `_assemble_recon_volume_sharded`
+  (`tomography_model.py`) — a per-device scatter of the slice-sharded cylinder
+  into a slice-sharded `(rows, cols, slices)` volume (`run_per_device` /
+  `assemble_sharded`); the scatter is identical across slices, so it is
+  embarrassingly parallel on the slice axis.  `fbp_recon` shards once, runs the
+  pipeline, and gathers at exit only if the original input was plain.
+- **Confined to `parallel_beam.py` + `tomography_model.py`** + tests; internal
+  `sparse_*` untouched.
+
+**Validated (CPU):** `tests/test_sharding_fbp_recon.py` + `test_sharding_back_projection.py`
++ `test_sharding_fbp.py`: no-mesh plain-in/out; `direct_recon`==`fbp_recon`;
+trivial 1-dev **bit-exact**; 2/4/8-dev plain-in float-noise match (plain out);
+**match-input sharded-in** → slice-sharded recon (back_project, fbp_recon,
+direct_recon) matching single-device to float noise; **no-intermediate-gather**
+invariant.  Full suite green: `test_sharding_*` + `test_fbp_fdk` +
+`test_projectors` (**50** + 12 subtests).
+
+**Deferred (not blocking):** GPU stress/scaling harness — driver `direct_recon_scaling.py`
+ready (CPU-validated: 256³ 2.56× @ 8 dev; SIZES["gpu"] = 256/512/1024³), baseline
+`direct_recon.{npy,yaml}` captured from prerelease (CPU diff ~8e-8, NOT bit-exact
+— F1 rewrote the filter).  Run on H100/L40S; watch the combined transient
+(filter FFT + back-projection partial).
+
+**Next: Step 7 = Phase C (forward projection, all-gather)** — design
+`forward_project` **match-input from the start** (mirror `back_project`'s round-2
+impl) + the forward/back adjoint test.
+
+---
+
 ## HANDOFF (2026-06-01) — Phase D (back projection) COMPLETE, GPU-validated
 
 **Phase D is done.**  Sharded back projection (reduce-scatter) with slice-band
@@ -287,8 +337,10 @@ usable, stress-testable FBP pipeline before forward projection / VCD.
 - [x] Step 5 — Phase D: back projection (reduce-scatter) — **DONE, GPU-validated**;
       slice-band streaming (11×→3.2× shard, single GPU 28→12 GB), device+compute
       band default, memory-bandwidth-bound.  See handoff at top.
-- [ ] Step 6 — Phase F2: direct_recon (first usable pipeline; stress test) ← NEXT
-- [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test
+- [x] Step 6 — Phase F2: direct_recon (first usable end-to-end FBP pipeline) —
+      **DONE (CPU-validated)**; boundary refactor (user-facing vs internal),
+      zero intermediate gather.  GPU stress harness deferred.  See handoff at top.
+- [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test ← NEXT
 - [ ] Step 8 — Phase E: VCD integration + halos
 - [ ] (later) cone beam
 

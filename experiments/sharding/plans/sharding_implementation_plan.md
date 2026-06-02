@@ -68,7 +68,7 @@ a usable, stress-testable `direct_recon` before forward projection / VCD.
 | 3 | **B** | Sharding hooks (new view/slice axes) | filter + projectors need them |
 | 4 | **F1** | FBP filter | low-hanging: view-sharded, **zero cross-device comms** |
 | 5 | **D** | Back projection (reduce-scatter) | the harder collective; needed for direct_recon |
-| 6 | **F2** | `direct_recon` (FBP recon) | **first usable, stress-testable pipeline**; prereq for VCD |
+| 6 | **F2** | `direct_recon` (FBP recon) ✅ | **first usable end-to-end pipeline**; prereq for VCD |
 | 7 | **C** | Forward projection (all-gather) | only needed by VCD; adjoint test lands here |
 | 8 | **E** | VCD integration + halos | needs C + D |
 
@@ -95,11 +95,40 @@ projection and VCD.
    piece.  Cheap because trivial sharding unifies the paths.
 4. **No silent fallbacks.**  When the L40S host-bounce path (or any degraded
    path) is taken, log it once so it is observable, not invisible.
-5. **Native-sharding / API contract:** user-facing `forward_project` /
-   `back_project` / `direct_recon` accept either plain or sharded input and
-   **return gathered (host/plain) arrays**.  Internal `sparse_forward_project` /
-   `sparse_back_project` **expect sharded input and return sharded output** — no
-   gather inside.
+5. **User-facing vs internal: output sharding matches input.**  Two layers:
+   - **User-facing methods match their input.**  `forward_project` /
+     `back_project` / `direct_recon` / `fbp_recon` (and, later, `recon` /
+     `vcd_recon`) accept **either** a plain or a sharded array:
+       - **plain in -> plain out:** shard once at entry, run the on-device
+         pipeline, gather to a plain array at exit.
+       - **sharded in -> sharded out:** the input is already sharded, so it runs
+         on-device and the result is returned **sharded, with no gather**.
+     So a user-facing method is a plain<->sharded boundary *only for plain
+     input*; for sharded input it is a pass-through, behaving like its internal
+     counterpart.  The decision is the single check `isinstance(getattr(x,
+     'sharding', None), jax.sharding.NamedSharding)` on the primary input, read
+     **before** the entry shard.
+   - **Internal methods are pure sharded-contract:** `sparse_forward_project` /
+     `sparse_back_project` / `fbp_filter` (and its thin alias `direct_filter`)
+     **expect sharded input and return sharded output**, with **no entry-shard
+     or exit-gather transition code**.  Filtering is not exposed as a standalone
+     gathered op — only on-device, as a stage of the recon pipeline.
+   - **Why match input, not always-gather (decided 2026-06-01; see O2):** these
+     user-facing methods are *dual-use* — `back_project` is called inside
+     `fbp_recon`, and `direct_recon` is `vcd_recon`'s default init
+     (`tomography_model.py`).  Match-input lets a sharded caller (e.g. a sharded
+     VCD computing a sharded FBP init) stay on-device with no host round-trip,
+     respects the caller's placement intent, and avoids materializing a whole
+     recon volume on one device just to re-shard it.  It also subsumes the old
+     `return_sharded=True` idea: want sharded out, hand it sharded in.
+   - When no mesh is configured, the entry-shard and exit-gather are no-ops, so
+     both layers behave exactly like the single-device prerelease.
+   - **Note (F2 cleanup):** `fbp_filter` previously carried an entry
+     `_shard_sinogram` "transition" line for back-compat; it was the internal
+     stage but also shard-tolerant.  In F2 that line was removed (`fbp_filter`
+     is now strictly internal); `direct_filter` stays a thin alias for it (also
+     internal).  The user-facing `fbp_recon` / `direct_recon` / `back_project`
+     own the match-input shard-at-entry / gather-at-exit boundary.
 6. **Sharding primitives are internal, accessed with the `mjs` prefix.**  The
    `mbirjax._sharding` subpackage is internal (leading underscore; not part of
    the public API and not re-exported at the top level).  Everywhere — consumers
@@ -370,29 +399,73 @@ combine is SET (the complete reduced value), never ADD; deferred with sub-tiling
 
 ---
 
-## Step 6 — Phase F2: `direct_recon` (FBP reconstruction)
+## Step 6 — Phase F2: `direct_recon` (FBP reconstruction)  ✅ COMPLETE (2026-06-01)
 
-**Goal:** first **usable, end-to-end, stress-testable** sharded pipeline:
+**Goal:** first **usable, end-to-end** sharded pipeline:
 shard sinogram → `fbp_filter` (F1) → `back_project` (D) → gather recon.
 Exercises the primitives and the back-projection reduce-scatter on a complete
 reconstruction with a prerelease baseline.
 
-- [ ] `direct_recon`: shard sinogram once at entry, pass through filter →
-      back_project, gather at exit.  No re-shard between filter and back_project
-      (both view-in / the back-projector owns the view→slice movement).
-- [ ] First cut is **homogeneous**: recon slice-sharded across the projection
+**What landed.**  F2 was primarily a **contract refactor**, not new collective
+machinery — `fbp_filter` (F1) and `back_project` (D) already do the on-device
+work; F2 made the user-facing/internal split (principle #5) crisp so the pieces
+chain with zero intermediate gather.  Landed in two rounds: round 1 made the
+user-facing methods always-gather; **round 2 refined the user-facing contract to
+match-input** (output sharding mirrors input — see O2) once the dual-use of
+`back_project`/`direct_recon` made on-device composition the right default.
+Changes confined to `parallel_beam.py` + `tomography_model.py` (`back_project`)
+plus tests; the internal `sparse_*` were untouched.
+
+- [x] `fbp_filter` made **strictly internal**: removed the entry
+      `_shard_sinogram` transition line (the exit had no gather to begin with).
+      Under a mesh it now *requires* view-sharded input and returns view-sharded
+      output.  No-mesh path filters the plain array directly, unchanged.
+- [x] `direct_filter` stays a thin **internal** alias for `fbp_filter` (same
+      sharded contract; not a boundary).  Filtering is not exposed as a
+      standalone gathered op — only as an on-device stage of the recon pipeline.
+- [x] `back_project` (user-facing) made **match-input** (round 2): a sharded
+      sinogram now returns a **slice-sharded 3-D recon** (no gather) via a new
+      `_assemble_recon_volume_sharded` helper — a per-device scatter of the
+      slice-sharded cylinder into a slice-sharded `(rows, cols, slices)` volume
+      using `run_per_device` / `assemble_sharded` (the scatter is identical
+      across slices, so it is embarrassingly parallel on the slice axis).  A
+      plain sinogram still gathers (plain out), unchanged.
+- [x] `fbp_recon` (user-facing) made **match-input** (round 2): shard once at
+      entry, `fbp_filter` (sharded → sharded) → `back_project` (sharded →
+      sharded), then gather at exit **only if the original input was plain**.
+      Data stays resident throughout; sharded in → sharded out with no gather.
+- [x] `direct_recon` unchanged — thin delegate to `fbp_recon`, inherits
+      match-input.
+- [x] **Homogeneous** first cut: recon slice-sharded across the projection
       devices (recon fits across the mesh).  Heterogeneous CPU-storage is O1,
       deferred.
-- **Test data note:** generate test sinograms with prerelease's **plain**
-  `forward_project` (the sharded forward projector C does not exist yet) or a
-  phantom, then shard and run.
-- **Tests:**
-  - [ ] single-device trivial-sharding == prerelease `direct_recon`, to
-        reconstruction tolerance.
-  - [ ] 2-device == single-device to reconstruction tolerance.
-  - [ ] adapt `tests/test_fbp_fdk.py` to both modes.
-  - [ ] **stress test:** larger phantom across 2 devices; confirm correctness +
-        watch memory (the back-projection partial buffer).
+- **Tests** (`tests/test_sharding_fbp_recon.py`, new; `tests/test_sharding_fbp.py`,
+  updated for the new contract):
+  - [x] single-device (no-mesh) plain-in / plain-out; `direct_recon` ==
+        `fbp_recon`.
+  - [x] trivial 1-device mesh **bit-exact** vs the unconfigured single-device
+        path (prerelease regression gate).
+  - [x] 2/4/8-device, PLAIN input == single-device to float noise, plain
+        (gathered) recon.
+  - [x] **match-input, SHARDED input** (round 2): `back_project`, `fbp_recon`,
+        and `direct_recon` of a sharded sinogram each return a **slice-sharded**
+        3-D recon (NamedSharding on the slice axis, correct shape) matching the
+        plain single-device recon to float noise.
+  - [x] **no-intermediate-gather invariant:** the sinogram `fbp_recon` hands to
+        `back_project` is still view-sharded (filter output never round-trips
+        through the host).
+  - [x] internal `fbp_filter` keeps a pre-sharded sinogram view-sharded; its
+        thin alias `direct_filter` gives the same result (same sharded contract).
+  - Suite green: `test_sharding_*` + `test_fbp_fdk` + `test_projectors` (50 +
+    12 subtests).
+- **Deferred (not blocking):**
+  - **GPU stress/scaling harness** — larger phantom across 2–4 GPUs; confirm
+    correctness + watch memory (the back-projection partial buffer).  Build as a
+    follow-up mirroring the Phase D scaling scripts; correctness landed on CPU
+    first.
+  - Adapt `tests/test_fbp_fdk.py` to run in sharded mode (it currently exercises
+    the single-device path and stays green); the new `test_sharding_fbp_recon.py`
+    covers the sharded pipeline directly.
 
 ---
 
@@ -408,8 +481,10 @@ Only needed for VCD, so it comes after the FBP pipeline is usable.
       project its local views, write its view-shard of the sinogram locally
       (sinogram never moves).
 - [ ] Pipeline: prefetch next pixel-batch's gather during current projection.
-- [ ] `forward_project` (user-facing): accept plain or sharded recon, gather
-      sinogram at exit (contract §5).
+- [ ] `forward_project` (user-facing): **match input** per contract §5 — a plain
+      recon in -> plain sinogram out (shard at entry, gather at exit); a sharded
+      recon in -> sharded sinogram out (no gather).  Design it match-input from
+      the start (mirror `back_project`'s round-2 implementation); no retrofit.
 - **Tests:**
   - [ ] single-device trivial-sharding == plain prerelease, bit-exact.
   - [ ] 2-device (virtual CPU) == single-device to float noise.
@@ -426,10 +501,17 @@ Only needed for VCD, so it comes after the FBP pipeline is usable.
 **Goal:** end-to-end VCD with sharded entry/exit and halo exchange.
 
 - [ ] Entry: shard sinogram (view) / recon (slice) / weights (view) once.
+- [ ] Default init: `vcd_recon` computes `init_recon = self.direct_recon(sinogram)`
+      when none is given (`tomography_model.py`).  With the match-input contract
+      (§5), pass it the **already-sharded** sinogram so `direct_recon` returns a
+      **sharded** init that flows straight into the loop — no gather/re-shard of
+      the recon volume.  (This is the concrete payoff that drove the match-input
+      decision; see O2.)
 - [ ] Halo exchange wired into the VCD loop using `_extract_halos` (recon is
       slice-sharded, so qggmrf halo logic from research should largely carry
       over — verify).
-- [ ] Exit: gather recon.
+- [ ] Exit: gather recon (match-input: plain in -> plain out for the typical
+      user; a sharded-in caller gets a sharded recon back).
 - [ ] Confirm no accidental re-shard or gather inside the loop body.
 - **Tests:**
   - [ ] single-device == prerelease VCD to reconstruction tolerance.
@@ -460,14 +542,32 @@ behind the same `move_shard`.  Keep §A.1's interface endpoint-agnostic now
 (already a checklist item); design the placement-policy object when a
 recon-too-big-for-GPU need forces it.
 
-**O2 — Trivially-sharded vs gathered return values (needed by Phase A.3).**
+**O2 — Trivially-sharded vs gathered return values — RESOLVED (2026-06-01, F2;
+refined to match-input in F2 round 2).**
 "Trivially sharded" = a `jax.Array` with a 1-device `NamedSharding` (still a
 device array carrying sharding metadata).  "Gathered" = a plain/uncommitted
-array (or numpy) with no sharding.  **Recommendation (per Greg, 2026-05-29):**
-user-facing `forward_project`/`back_project`/`direct_recon` return **gathered**
-arrays; internal `sparse_*` keep **trivial sharding** so the code paths unify.
-Confirm gathered output still behaves like a plain array for downstream user
-code.
+array (or numpy) with no sharding.  **Decision (Greg):** output sharding
+**matches input** for user-facing methods; internal methods are sharded-only —
+see principle #5:
+  - **User-facing methods** (`forward_project` / `back_project` / `direct_recon` /
+    `fbp_recon`) **match their input**: plain in -> plain out (shard at entry,
+    gather at exit); sharded in -> sharded out (no gather).  The single check is
+    `isinstance(x.sharding, NamedSharding)` on the primary input, read before the
+    entry shard.  (An interim F2 decision had user-facing *always* gather; round
+    2 refined it to match-input once it was clear these methods are dual-use —
+    `back_project` is called from `fbp_recon`, and `direct_recon` is
+    `vcd_recon`'s default init, so a sharded caller must be able to stay
+    on-device.)
+  - **Internal methods** (`sparse_forward_project` / `sparse_back_project` /
+    `fbp_filter`, and its thin alias `direct_filter`) are pure sharded-contract:
+    **sharded in → sharded out, no transition code.**  Advanced callers that
+    want to stay on-device call these directly.  (Filtering is not exposed as a
+    standalone gathered operation — it is only reachable on-device, as a stage
+    of the recon pipeline.)
+  This unifies the no-mesh and trivial-1-device paths (the entry-shard and
+  exit-gather are no-ops without a mesh).  Implemented and tested in F2;
+  match-input verified both directions (plain->plain, sharded->sharded), and
+  gathered output confirmed to behave as a plain array downstream.
 
 **O3 — Sparse-view regime (note only, no design now).**
 "Move the recon" is bandwidth-optimal only when views are many (recon < sino).

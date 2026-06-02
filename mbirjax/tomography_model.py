@@ -721,6 +721,15 @@ class TomographyModel(ParameterHandler):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
+        This is a **user-facing** method: its output sharding **matches its
+        input**.  A plain sinogram is sharded at entry, back-projected, and the
+        recon is gathered to a plain array at exit.  A sharded (NamedSharding)
+        sinogram stays on-device: the recon is returned as a slice-sharded 3-D
+        array with no gather, so callers composing on-device (e.g. a sharded FBP
+        init for the VCD loop) pay no host round-trip.  Internally the work is
+        the same reduce-scatter either way (see :meth:`sparse_back_project`); only
+        the exit handling differs.
+
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
@@ -729,19 +738,26 @@ class TomographyModel(ParameterHandler):
             sinogram (jnp array): 3D jax array containing sinogram.
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.
+            jnp array: The reconstructed 3D volume — plain if the input was plain,
+            slice-sharded if the input was a sharded array.
         """
         recon_shape = self.get_params('recon_shape')
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
 
         if self.mesh is not None:
-            # Sharded path: ensure the sinogram is view-sharded at entry, run the
-            # reduce-scatter back projection (returns a slice-sharded cylinder),
-            # then gather to a plain array (contract: user-facing methods gather
-            # at exit) and scatter the cylinders into the 3-D recon volume.
-            sinogram = self._shard_sinogram(sinogram)
+            # Decide the exit handling from the ORIGINAL input (before the entry
+            # shard, which would make any input look sharded).
+            input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
+                                          jax.sharding.NamedSharding)
+            sinogram = self._shard_sinogram(sinogram)   # no-op if already sharded
+            # Reduce-scatter back projection -> slice-sharded cylinder.
             recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+            if input_is_sharded:
+                # Match input: keep the recon sharded (no host round-trip).
+                return self._assemble_recon_volume_sharded(
+                    recon_cylinder, recon_shape, row_index, col_index)
+            # Plain input: gather the cylinder and scatter into a plain volume.
             recon_cylinder = self._gather_recon(recon_cylinder)
             recon = jnp.zeros(recon_shape)
             recon = recon.at[row_index, col_index].set(recon_cylinder)
@@ -753,6 +769,47 @@ class TomographyModel(ParameterHandler):
             recon = jnp.zeros(recon_shape, device=output_device)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
+
+    def _assemble_recon_volume_sharded(self, recon_cylinder, recon_shape,
+                                       row_index, col_index):
+        """Scatter a slice-sharded cylinder into a slice-sharded 3-D recon volume.
+
+        ``recon_cylinder`` is ``(num_pixels, num_slices)`` sharded along the slice
+        axis (each device owns a contiguous band of slices).  The scatter
+        ``recon[row_index, col_index, :] = cylinder`` is identical across slices,
+        so each device scatters its own band locally into a
+        ``(rows, cols, local_slices)`` zeros array — no cross-device movement —
+        and the per-device volumes are wrapped as one slice-sharded array.
+
+        Assumes the recon slice axis is the last axis (``recon_shard_axis() ==
+        -1``); a geometry whose recon shards on a different axis would override
+        this.
+
+        Args:
+            recon_cylinder (jax.Array): slice-sharded ``(num_pixels, num_slices)``.
+            recon_shape (tuple): the global recon shape ``(rows, cols, num_slices)``.
+            row_index, col_index (jax arrays): FOV pixel row/col indices (length
+                num_pixels), the same on every device.
+
+        Returns:
+            jax.Array: slice-sharded ``(rows, cols, num_slices)`` recon volume.
+        """
+        rows, cols = int(recon_shape[0]), int(recon_shape[1])
+        # Map each device to its local cylinder shard (already resident on it).
+        dev_to_shard = {s.device: s.data for s in recon_cylinder.addressable_shards}
+
+        def worker(i, device):
+            cyl = dev_to_shard[device]                  # (num_pixels, local_slices)
+            local = jnp.zeros((rows, cols, cyl.shape[1]))
+            return local.at[row_index, col_index, :].set(cyl)
+
+        results = mjs.run_per_device(self.shard_devices, worker)
+        axis = self.recon_shard_axis() % len(recon_shape)
+        spec = [None] * len(recon_shape)
+        spec[axis] = 'devices'
+        recon_sharding = jax.sharding.NamedSharding(
+            self.mesh, jax.sharding.PartitionSpec(*spec))
+        return mjs.assemble_sharded(results, tuple(recon_shape), recon_sharding)
 
     def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
         """

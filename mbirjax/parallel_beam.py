@@ -326,13 +326,23 @@ class ParallelBeamModel(TomographyModel):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
+        This is a thin **internal** alias for :meth:`fbp_filter` and shares its
+        sharded contract: it does NOT shard at entry or gather at exit.  Under a
+        mesh the input must already be view-sharded and the output stays
+        view-sharded; with no mesh the array is filtered directly.  The
+        plain<->sharded boundary lives in the user-facing reconstruction methods
+        (``fbp_recon`` / ``direct_recon``), not here.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+                Under a mesh it must already be view-sharded.
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (jax array): The sinogram after FBP filtering, in
+            the same (view) sharding as the input (or a plain array when no mesh
+            is configured).
         """
         _warn_view_batch_size_deprecated(view_batch_size)
         return self.fbp_filter(sinogram, filter_name=filter_name)
@@ -341,17 +351,23 @@ class ParallelBeamModel(TomographyModel):
         """
         Perform FBP filtering on the given sinogram.
 
-        This is an internal sharded-contract method: it shards the sinogram on
-        the view axis at entry (a no-op when no mesh is configured or when the
-        input is already correctly sharded) and returns the filtered sinogram in
-        that same view-native sharding.  It does NOT gather at exit, so pipelined
-        callers (e.g. ``fbp_recon``/``direct_recon`` followed by back projection)
-        keep the data on-device with zero host transfer.  Under the view-sharding
-        scheme the ramp filter is per-view, so each device filters its own views
-        with no cross-device communication.
+        This is an **internal** sharded-contract method.  It does NOT shard at
+        entry or gather at exit: when a mesh is configured the input is expected
+        to already be view-sharded (each device holds a contiguous block of
+        views), and the filtered sinogram is returned in that same view sharding.
+        Keeping the data on-device lets pipelined callers (``fbp_recon`` /
+        ``direct_recon`` followed by back projection) run with zero host
+        transfer.  The plain<->sharded boundary lives in the user-facing wrappers
+        (``direct_filter`` / ``fbp_recon`` / ``direct_recon``), which shard at
+        entry and unshard at exit.  Under the view-sharding scheme the ramp
+        filter is per-view, so each device filters its own views with no
+        cross-device communication.  When no mesh is configured this simply
+        filters the (single-device) array directly.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+                Under a mesh it must already be view-sharded (the user-facing
+                wrappers establish this).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored — the row
                 filter kernel (tomography_utils.apply_row_filter) sets its own
@@ -359,12 +375,10 @@ class ParallelBeamModel(TomographyModel):
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering, in
-            view-native sharding (or a plain array when no mesh is configured).
+            the same (view) sharding as the input (or a plain array when no mesh
+            is configured).
         """
         _warn_view_batch_size_deprecated(view_batch_size)
-        # Shard on the view axis.  No-op when no mesh is configured (single
-        # device) or when the input already carries this sharding.
-        sinogram = self._shard_sinogram(sinogram)
 
         num_views, _, num_channels = sinogram.shape
 
@@ -435,19 +449,43 @@ class ParallelBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
+        This is a **user-facing** method: its output sharding **matches its
+        input**.  When a mesh is configured it shards the sinogram on the view
+        axis once at entry, then runs the on-device pipeline — ``fbp_filter``
+        (internal: sharded view -> sharded view) followed by ``back_project``
+        (which, given sharded input, returns a slice-sharded recon).  The data
+        stays resident on its devices throughout (zero intermediate host
+        transfer).  If the original input was a plain array the recon is gathered
+        at exit (plain in -> plain out); if it was already sharded the recon is
+        returned slice-sharded (no host round-trip), so a sharded FBP result can
+        feed a sharded consumer (e.g. the VCD init).  With no mesh configured the
+        shard/gather are no-ops and the array flows through unchanged.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
-            recon (jax array): The reconstructed volume after FBP reconstruction.
+            recon (jax array): The reconstructed volume — plain if the input was
+            plain, slice-sharded if the input was a sharded array.
         """
         _warn_view_batch_size_deprecated(view_batch_size)
+        # Decide the exit handling from the ORIGINAL input (before the entry
+        # shard, which would make any input look sharded).
+        input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
+                                      jax.sharding.NamedSharding)
+
+        # Shard once at entry so the internal fbp_filter receives view-sharded
+        # data (no-op when no mesh is configured or already sharded).
+        sinogram = self._shard_sinogram(sinogram)
+
+        # Internal pipeline stage: sharded view -> sharded view, no host transfer.
         filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name)
 
-        # Apply backprojection
+        # back_project matches its input: the filtered sinogram is sharded, so it
+        # returns a slice-sharded recon (no gather inside).  Match fbp_recon's own
+        # input: gather to plain only if the original sinogram was plain.
         recon = self.back_project(filtered_sinogram)
-
-        return recon
+        return recon if input_is_sharded else self._gather_recon(recon)
 
