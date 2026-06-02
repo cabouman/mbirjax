@@ -1,18 +1,51 @@
 # Sharding status (beta branch `greg/parallel_sharding`)
 
-*Short living status. Detailed checklist: `sharding_implementation_plan.md`.*
+*Short living status. Forward plan: `sharding_implementation_plan_v2.md`.  Completed-work record +
+principles: `sharding_implementation_plan.md`.*
 
 **New-session reading guide** (these docs have grown — read selectively):
 1. `.claude/claude_prompt.md` — collaboration style + workflow (read).
 2. **This file, the TOP handoff only** (current phase + next step) — read.  The
    older handoffs and the "Where we are" history below are **skim/reference**.
-3. `sharding_implementation_plan.md` — read §0 Design summary, the Execution-order
-   table, §Cross-cutting principles, and the **current/next Step** section.
-   **Skim** the completed Steps (0/A/B/F1/D) and the appendices; jump to a Step
-   when you work on it.
-4. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
+3. **`sharding_implementation_plan_v2.md`** — the **current forward plan** (placement architecture
+   + phases P1–P6; Phase D re-opened).  Read §0 Design summary and the current
+   phase.
+4. `sharding_implementation_plan.md` — **completed-work record + principles**
+   (Phases 0/A/B/F1/D/F2, cross-cutting principles, hardware facts, O1–O4).  Read
+   §Cross-cutting principles; skim the rest for history.
+5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
-5. `.claude/back_projection_overview.md` — read only if touching projector internals.
+6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-02) — direction change: placement architecture; Phase D re-opened
+
+**F1 / D / F2 are done and GPU-validated.**  While designing the device-config UX
+we converged on a cleaner target and decided to **re-open back projection** to
+build on it rather than retrofit.  Two ideas (full design in `sharding_implementation_plan_v2.md`):
+
+- **Placements, not device scalars.**  `main_device`/`sinogram_device` →
+  `recon_placement`/`sino_placement` (each a `Sharding`).  Every mode is a
+  placement pair; single-device = trivial placement → **sharding always on, one
+  code path**.  Scope: homogeneous multi-GPU + recon-CPU/sino-GPU (big recon);
+  **not** sino-CPU/recon-GPU.
+- **One movement interface.**  `move_cylinders_to_sino` / `sum_cylinders_to_recon`
+  (adjoint pair, cylinders-direct, `move_shard`-based, `N×N`/`1×1` no mode
+  branch), with **uniform pixel-batched** streaming (`B_p` knob) — likely
+  replacing Phase D's slice-banding pending a side-by-side measurement.
+
+**Plan of attack:** build it **next to the existing code on ParallelBeam**
+(F1-style: parallel path → measure → promote → delete loser), then port.  Phases:
+P1 placement foundation (incl. early `device_put → move` migration) → P2 back
+projection on placements (re-opened D; compare vs slice-banding, retire band code
+if competitive) → P3 forward (C; adjoint test) → P4 VCD (E) → P5 device-config UX
+(`configure_devices`) → P6 port geometries + retire `main_device`/`sinogram_device`.
+
+**Unchanged:** F2's match-input contract + the `direct_recon` scaling driver
+(public-API layer; re-run against new internals).
+
+**Next: P1 — placement foundation.**
 
 ---
 
@@ -326,23 +359,30 @@ need multi-host JAX (`jax.distributed`).
 
 ## Phase tracker (execution order)
 
-direct_recon is pulled early (depends on filter + back, not forward) to reach a
-usable, stress-testable FBP pipeline before forward projection / VCD.
+**Re-sequenced 2026-06-02 onto the placement architecture (`sharding_implementation_plan_v2.md`).**
+Done work below (original Step numbering); forward work uses the P1–P6 numbering
+from `sharding_implementation_plan_v2.md`.  Phase D is re-opened on the new movement interface.
 
+Done (original sequence):
 - [x] Step 1 — Phase 0: scaffolding migration
 - [x] Step 2 — Phase A: primitives (transfer, threading, mesh/trivial-sharding)
 - [x] Step 3 — Phase B: sharding hooks (new view/slice axes)
 - [x] Step 4 — Phase F1: FBP filter (view-sharded, zero comms) — DONE; kernel is
       `tomography_utils.apply_row_filter`, 2× memory floor, B=1024, H100-validated
-- [x] Step 5 — Phase D: back projection (reduce-scatter) — **DONE, GPU-validated**;
-      slice-band streaming (11×→3.2× shard, single GPU 28→12 GB), device+compute
-      band default, memory-bandwidth-bound.  See handoff at top.
-- [x] Step 6 — Phase F2: direct_recon (first usable end-to-end FBP pipeline) —
-      **DONE (CPU-validated)**; boundary refactor (user-facing vs internal),
-      zero intermediate gather.  GPU stress harness deferred.  See handoff at top.
-- [ ] Step 7 — Phase C: forward projection (all-gather) + adjoint test ← NEXT
-- [ ] Step 8 — Phase E: VCD integration + halos
-- [ ] (later) cone beam
+- [x] Step 5 — Phase D: back projection (reduce-scatter) — DONE, GPU-validated
+      (slice-band streaming).  **Being re-opened in P2** on the placement/movement
+      interface; current code is the baseline to compare against.
+- [x] Step 6 — Phase F2: direct_recon (match-input pipeline) — DONE, GPU-validated;
+      baseline captured.  Public-API layer; survives the re-open.
+
+Forward (placement architecture — see `sharding_implementation_plan_v2.md`):
+- [ ] P1 — Placement foundation (placements, move_cylinders_to_sino /
+      sum_cylinders_to_recon, device_put→move migration) ← NEXT
+- [ ] P2 — Back projection on placements (re-opened D; compare vs slice-banding)
+- [ ] P3 — Forward projection on placements (C; adjoint test)
+- [ ] P4 — VCD on placements (E)
+- [ ] P5 — Device-config UX (`configure_devices`, auto-select, divisibility warnings)
+- [ ] P6 — Port geometries + retire `main_device`/`sinogram_device`
 
 ## Jax lax.map bug note
 

@@ -1,5 +1,14 @@
 # Sharding implementation plan (beta branch `greg/parallel_sharding`)
 
+> **SUPERSEDED FOR FORWARD PLANNING (2026-06-02).**  The current forward plan is
+> **`sharding_implementation_plan_v2.md`** (placement architecture + re-sequenced phases; Phase D
+> re-opened on the new movement interface).  **This doc is retained as the
+> completed-work record** — Phases 0/A/B/F1/D/F2 case studies — plus the
+> still-valid **cross-cutting principles, verified hardware facts, and resolved
+> open questions (O1–O4)**.  Read this for history and principles; read
+> `sharding_implementation_plan_v2.md` for what comes next.  (Note: O1 is reframed and O2 refined
+> in `sharding_implementation_plan_v2.md`.)
+
 *Created 2026-05-29.  Living checklist for the view-sharded reimplementation of
 multi-device sharding, built fresh on `prerelease`.*
 
