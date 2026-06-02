@@ -5,47 +5,141 @@ import jax
 import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
 
-
-def get_2d_ror_mask(recon_shape, *, crop_radius_pixels=0, crop_radius_fraction=0.0):
+def generate_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, radius_alu=None, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
-    Get a binary mask for the region of reconstruction.  By default, the mask is the largest possible circle
-    inscribed on the longest edge of the 2D recon_shape[0:2].  The radius of this circle can be reduced by
-    setting crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the radius.  Only one
-    of these can be nonzero. Negative values are clipped to 0.
-
+    Generate a binary mask for the region of reconstruction.
+    By default, the mask is the largest possible centered circle in ALU space that fits inside recon_shape[:2], unless radius_alu is provided.
+    The radius can be reduced by setting crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the radius.  Only one of
+    these can be nonzero. Negative values are clipped to 0.
+    
     Args:
-        recon_shape (tuple): Shape of recon in (rows, columns, slices)
-        crop_radius_pixels (int): Number of pixels to subtract from the radius before creating the mask.
-        crop_radius_fraction (float): Fraction to subtract from the radius before creating the mask.
+        recon_shape (tuple): Shape of recon in (rows, columns, slices), or just (rows, columns).
+        delta_voxel (float): Column voxel pitch in ALU.
+        voxel_row_aspect (float): Physical row voxel size relative to column voxel size.
+        radius_alu (float | None): Radius of mask in ALU. If None, use largest inscribed radius.
+        crop_radius_pixels (int): Number of column-pixel-equivalent pixels to subtract from radius.
+        crop_radius_fraction (float): Fraction to subtract from radius.
 
     Returns:
-        A binary mask for the region of reconstruction.
+        np.ndarray: Boolean 2D binary mask.
     """
     # Set up a mask to zero out points outside the ROR
     if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
-        raise ValueError('Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.')
+        raise ValueError("Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.")
+
+    if delta_voxel <= 0:
+        raise ValueError("delta_voxel must be positive.")
+
+    if voxel_row_aspect <= 0:
+        raise ValueError("voxel_row_aspect must be positive.")
 
     num_recon_rows, num_recon_cols = recon_shape[:2]
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
 
-    radius = max(row_center, col_center)
+    col_coords_alu = (np.arange(num_recon_cols) - col_center) * delta_voxel
+    row_coords_alu = (np.arange(num_recon_rows) - row_center) * voxel_row_aspect * delta_voxel
 
-    crop_radius = int(radius * crop_radius_fraction)
-    crop_radius = max(crop_radius, crop_radius_pixels)
-    crop_radius = max(crop_radius, 0)
-    radius -= crop_radius
+    col_grid_alu, row_grid_alu = np.meshgrid(col_coords_alu, row_coords_alu)
 
-    col_coords = np.arange(num_recon_cols) - col_center
-    row_coords = np.arange(num_recon_rows) - row_center
+    if radius_alu is None:
+        auto_num_recon_rows = int(np.round(num_recon_cols / voxel_row_aspect))
 
-    coords = np.meshgrid(col_coords, row_coords)  # Note the interchange of rows and columns for meshgrid
-    mask = coords[0]**2 + coords[1]**2 <= radius**2
+        col_radius_pixels = (num_recon_cols - 1) / 2
+        row_radius_pixels = (auto_num_recon_rows - 1) / 2
+
+        col_radius_alu = col_radius_pixels * delta_voxel
+        row_radius_alu = row_radius_pixels * voxel_row_aspect * delta_voxel
+    else:
+        if radius_alu <= 0:
+            raise ValueError("radius_alu must be positive.")
+        col_radius_alu = float(radius_alu)
+        row_radius_alu = float(radius_alu)
+
+    if crop_radius_fraction != 0.0:
+        col_radius_alu *= max(1.0 - crop_radius_fraction, 0.0)
+        row_radius_alu *= max(1.0 - crop_radius_fraction, 0.0)
+    else:
+        crop_radius_alu = max(crop_radius_pixels, 0) * delta_voxel
+        col_radius_alu -= crop_radius_alu
+        row_radius_alu -= crop_radius_alu
+
+    mask = (col_grid_alu / col_radius_alu) ** 2 + (row_grid_alu / row_radius_alu) ** 2 <= 1.0
     mask = mask[:, :]
     return mask
 
+def get_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto", crop_radius_pixels=0, crop_radius_fraction=0.0):
+    """
+    Resolve the selected binary mask for the region of reconstruction.
 
-def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, use_ror_mask=True):
+    Args:
+        recon_shape (tuple): Shape of recon in (rows, columns, slices), or just (rows, columns).
+        delta_voxel (float): Column voxel pitch in ALU.
+        voxel_row_aspect (float): Physical row voxel size relative to column voxel size.
+        ror_mask_option (default is 'auto'):
+            None:
+                No mask.
+            "auto":
+                The mask is the largest possible centered circle in ALU space that fits inside recon_shape[:2].
+            float:
+                The mask is a circle in ALU space with radius = ror_mask_option
+            2D array:
+                Use a custom binary mask. Must have shape recon_shape[:2].
+        crop_radius_pixels (int): Number of column-pixel-equivalent pixels to subtract from radius.
+        crop_radius_fraction (float): Fraction to subtract from radius.
+    
+    Returns:
+        np.ndarray: Boolean 2D binary mask.
+    """
+    if ror_mask_option is None:
+        return 1
+
+    elif isinstance(ror_mask_option, str):
+        if ror_mask_option != "auto":
+            raise ValueError(
+                "ror_mask_option must be None, 'auto', a nonnegative float radius in ALU, "
+                "or a 2D binary array."
+            )
+
+        return generate_2d_ror_mask(
+            recon_shape,
+            delta_voxel=delta_voxel,
+            voxel_row_aspect=voxel_row_aspect,
+            radius_alu=None,
+            crop_radius_pixels=crop_radius_pixels,
+            crop_radius_fraction=crop_radius_fraction
+        )
+
+    elif np.isscalar(ror_mask_option):
+        radius_alu = float(ror_mask_option)
+        if radius_alu <= 0:
+            raise ValueError("ror_mask_option radius must be positive.")
+
+        return generate_2d_ror_mask(
+            recon_shape,
+            delta_voxel=delta_voxel,
+            voxel_row_aspect=voxel_row_aspect,
+            radius_alu=radius_alu,
+            crop_radius_pixels=crop_radius_pixels,
+            crop_radius_fraction=crop_radius_fraction
+        )
+    
+    else: # user-provided mask
+        mask = np.asarray(ror_mask_option)
+    
+        if mask.shape != tuple(recon_shape[:2]):
+            raise ValueError(
+                "Custom ror_mask_option must have shape recon_shape[:2]. "
+                f"Got mask.shape={mask.shape}, expected {tuple(recon_shape[:2])}."
+            )
+    
+        if not np.all((mask == 0) | (mask == 1)):
+            raise ValueError("Custom ror_mask_option must contain only 0s and 1s.")
+    
+        return mask
+
+
+def gen_set_of_pixel_partitions(recon_shape, granularity, delta_voxel=1.0, voxel_row_aspect=1.0, output_device=None, ror_mask_option="auto"):
     """
     Generates a collection of voxel partitions for an array of specified partition sizes.
     This function creates a tuple of randomly generated 2D voxel partitions.
@@ -53,21 +147,23 @@ def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, us
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         granularity (list or tuple):  List of num_subsets to use for each partition
+        delta_voxel (float): Column voxel pitch in ALU.
+        voxel_row_aspect (float): Aspect ratio of recon voxel rows relative to columns
         output_device (jax device): Device on which to place the output of the partition
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        ror_mask_option: None, 'auto', float radius in ALU, or 2D binary mask.
 
     Returns:
         tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
     """
     partitions = []
     for num_subsets in granularity:
-        partition = gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
+        partition = gen_pixel_partition(recon_shape, num_subsets, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
         partitions += [jax.device_put(partition, output_device),]
 
     return partitions
 
 
-def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
+def gen_pixel_partition_grid(recon_shape, num_subsets, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto"):
 
     small_tile_side = np.ceil(np.sqrt(num_subsets)).astype(int)
     num_subsets = small_tile_side ** 2
@@ -77,8 +173,8 @@ def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
     subset_inds = np.tile(single_subset_inds, num_small_tiles)
     subset_inds = subset_inds[:recon_shape[0], :recon_shape[1]]
 
-    ror_mask = get_2d_ror_mask(recon_shape[:2]) if use_ror_mask else 1
-    subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a - at each location outside the mask, subset_ind at other points
+    ror_mask = get_2d_ror_mask(recon_shape, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
+    subset_inds = (subset_inds + 1) * ror_mask - 1 # Get a - at each location outside the mask, subset_ind at other points 
     subset_inds = subset_inds.flatten()
     num_inds = len(np.where(subset_inds > -1)[0])
 
@@ -116,7 +212,7 @@ def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
     return jnp.array(indices)
 
 
-def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
+def gen_pixel_partition(recon_shape, num_subsets, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto"):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
@@ -124,7 +220,9 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        delta_voxel (float): Column voxel pitch in ALU.
+        voxel_row_aspect (float): Aspect ratio of recon voxel rows relative to columns
+        ror_mask_option: None, 'auto', float radius in ALU, or 2D binary mask.
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -138,8 +236,8 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     indices = np.arange(max_index_val, dtype=np.int32)
 
     # Mask off indices that are outside the region of reconstruction
-    if use_ror_mask:
-        mask = get_2d_ror_mask(recon_shape)
+    if ror_mask_option is not None:
+        mask = get_2d_ror_mask(recon_shape, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
         mask = mask.flatten()
         indices = indices[mask == 1]
     if num_subsets > len(indices):
@@ -166,7 +264,7 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     return jnp.array(indices)
 
 
-def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
+def gen_pixel_partition_blue_noise(recon_shape, num_subsets, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto"):
     """
     Generates a partition of pixel indices into specified number of subsets for use in tomographic reconstruction algorithms.
     The function ensures that each subset contains an equal number of pixels, suitable for VCD reconstruction.
@@ -174,7 +272,9 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        delta_voxel (float): Column voxel pitch in ALU.
+        voxel_row_aspect (float): Aspect ratio of recon voxel rows relative to columns
+        ror_mask_option: None, 'auto', float radius in ALU, or 2D binary mask.
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -184,7 +284,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     """
     pattern = bn.bn256
     num_tiles = [np.ceil(recon_shape[k] / pattern.shape[k]).astype(int) for k in [0, 1]]
-    ror_mask = get_2d_ror_mask(recon_shape) if use_ror_mask else 1
+    ror_mask = get_2d_ror_mask(recon_shape, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
 
     single_subset_inds = np.floor(pattern / (2**16 / num_subsets)).astype(int)
 
@@ -195,7 +295,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     subset_inds = subset_inds.flatten()
     num_valid_inds = np.sum(subset_inds >= 0)
     if num_subsets > num_valid_inds:
-        return gen_pixel_partition(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
 
     flat_inds = []
     max_points = 0
@@ -207,7 +307,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
         min_points = min(min_points, cur_inds.size)
 
     if min_points == 0:
-        return gen_pixel_partition(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
 
     extra_point_inds = np.random.randint(low=0, high=min_points, size=(max_points - min_points + 1,))
 
@@ -250,12 +350,12 @@ def gen_partition_sequence(partition_sequence, max_iterations):
     return extended_partition_sequence
 
 
-def gen_full_indices(recon_shape, use_ror_mask=True):
+def gen_full_indices(recon_shape, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto"):
     """
     Generates a full array of voxels in the region of reconstruction.
     This is useful for computing forward projections.
     """
-    partition = gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)
+    partition = gen_pixel_partition(recon_shape, num_subsets=1, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
     full_indices = partition[0]
 
     return full_indices

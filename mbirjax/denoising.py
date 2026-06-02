@@ -23,7 +23,7 @@ class QGGMRFDenoiser(TomographyModel):
         if len(image_shape) != 3:
             raise ValueError('image_shape must be 3-dimensional. Got image_shape={}. To denoise a 2D image, use shape (1, m, n).'.format(image_shape))
         super().__init__(image_shape, view_params_name=view_params_name, sigma_noise=None)
-        self.use_ror_mask = False
+        self.ror_mask_option = None
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
@@ -143,7 +143,7 @@ class QGGMRFDenoiser(TomographyModel):
     def recon(self, *args, **kwargs):
         raise NotImplementedError('recon is not implemented for QGGMRFDenoiser.  Use `denoise` instead.')
 
-    def denoise(self, image, sigma_noise=None, use_ror_mask=False, init_image=None, max_iterations=15,
+    def denoise(self, image, sigma_noise=None, ror_mask_option=None, init_image=None, max_iterations=15,
                 stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
         """
         Compute the MAP denoiser assuming AWGN and the 3D qGGMRF prior.
@@ -160,7 +160,15 @@ class QGGMRFDenoiser(TomographyModel):
         Args:
             image (numpy or jax array):  The 3D volume to be denoised.
             sigma_noise (float, optional):  The estimated noise variance in the noisy image.  If None, then the noise level is estimated from the image.
-            use_ror_mask (bool, optional): Set true to restrict denoising to an inscribed circle in the image.  Defaults to False.
+            ror_mask_option (optional): Option to restrict denoising to a masked region in the image. Defaults to None.
+                None:
+                    No mask.
+                "auto":
+                    The mask is the largest possible centered circle in ALU space that fits inside recon_shape[:2].
+                float:
+                    The mask is a circle in ALU space with radius = ror_mask_option
+                2D array:
+                    Use a custom binary mask. Must have shape recon_shape[:2].
             init_image (numpy or jax array, optional):  An initial image for the minimization.  Defaults to image.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
@@ -187,7 +195,7 @@ class QGGMRFDenoiser(TomographyModel):
         --------
         TomographyModel : The base class from which this class inherits.
         """
-        self.use_ror_mask = use_ror_mask
+        self.ror_mask_option = ror_mask_option
         if sigma_noise is None:
             sigma_noise = self.estimate_image_noise_std(image)
         self.set_params(sigma_noise=sigma_noise)
@@ -198,10 +206,10 @@ class QGGMRFDenoiser(TomographyModel):
         regularization_params = self.auto_set_regularization_params(image)
 
         # Generate set of voxel partitions
-        image_shape, granularity = self.get_params(['recon_shape', 'granularity'])
+        image_shape, granularity, delta_voxel, voxel_row_aspect = self.get_params(['recon_shape', 'granularity', 'delta_voxel', 'voxel_row_aspect'])
         partition_sequence = self.get_params('partition_sequence')
         partition_index = partition_sequence[0]
-        partitions = mj.gen_set_of_pixel_partitions(image_shape, [granularity[partition_index]], use_ror_mask=self.use_ror_mask)
+        partitions = mj.gen_set_of_pixel_partitions(image_shape, [granularity[partition_index]], delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=self.ror_mask_option)
 
         # Generate sequence of partitions to use
         partition = partitions[0]
