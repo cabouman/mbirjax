@@ -36,7 +36,7 @@ from typing import Optional
 # Default upper bound on virtual CPU devices.  See module docstring: throughput
 # plateaus/regresses past this on tested hardware.  Override with the env var
 # MBIRJAX_NUM_CPU_DEVICES for deliberate performance tuning.
-DEFAULT_MAX_CPU_DEVICES = 8
+DEFAULT_MAX_CPU_DEVICES = 2
 
 
 def _performance_core_count() -> Optional[int]:
