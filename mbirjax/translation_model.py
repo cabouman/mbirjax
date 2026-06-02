@@ -28,12 +28,6 @@ class TranslationModel(mj.TomographyModel):
         source_detector_dist (float): Distance from the X-ray source to the detector.
         source_iso_dist (float): Distance from the X-ray source to the isocenter.
 
-    Note:
-        Additional parameter:
-
-        **delta_recon_row** (float, default=0) -
-        This parameter controls the row spacing in ALU, while the base parameter `delta_voxel` controls the voxel column and slice spacing.
-
     See Also:
         mbirjax.TomographyModel: Base class with standard methods like `set_params` and `reconstruct`.
 
@@ -51,7 +45,6 @@ class TranslationModel(mj.TomographyModel):
                 source_detector_dist=500.0,
                 source_iso_dist=500.0
             )
-            model.set_params(delta_recon_row=2.0)
             model.auto_set_recon_geometry()
     """
     DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
@@ -81,7 +74,7 @@ class TranslationModel(mj.TomographyModel):
         else:
             magnification = source_detector_dist / source_iso_dist
         return magnification
-    
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.
@@ -91,14 +84,14 @@ class TranslationModel(mj.TomographyModel):
         """
         super().verify_valid_params()
         voxel_row_aspect, voxel_slice_aspect = self.get_params(['voxel_row_aspect', 'voxel_slice_aspect'])
-        
-        if voxel_row_aspect != 1.0:
-            error_message = "Setting voxel_row_aspect is not currently supported for translation model. \n"
+
+        if voxel_row_aspect <= 0:
+            error_message = "Voxel row aspect ratio must be positive. \n"
             error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
             raise ValueError(error_message)
-            
-        if voxel_slice_aspect != 1.0:
-            error_message = "Setting voxel_slice_aspect is not currently supported for translation model. \n"
+
+        if voxel_slice_aspect <= 0:
+            error_message = "Voxel slice aspect ratio must be positive. \n"
             error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
             raise ValueError(error_message)
 
@@ -110,9 +103,16 @@ class TranslationModel(mj.TomographyModel):
             namedtuple of required geometry parameters.
         """
         # First get the parameters managed by ParameterHandler
-        geometry_param_names = \
-            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
-             'source_detector_dist', 'delta_voxel', 'delta_recon_row']
+        geometry_param_names = [
+            'delta_det_row',
+            'delta_det_channel',
+            'det_row_offset',
+            'det_channel_offset',
+            'source_detector_dist',
+            'delta_voxel',
+            'voxel_row_aspect',
+            'voxel_slice_aspect',
+        ]
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -132,9 +132,12 @@ class TranslationModel(mj.TomographyModel):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
         """
-        delta_det_row, delta_det_channel, source_iso_dist, source_detector_dist, recon_shape, delta_voxel, delta_recon_row, translation_vectors = self.get_params(
-            ['delta_det_row', 'delta_det_channel', 'source_iso_dist', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'delta_recon_row', 'translation_vectors'])
+        delta_det_row, delta_det_channel, source_iso_dist, source_detector_dist, recon_shape, delta_voxel, translation_vectors, voxel_row_aspect, voxel_slice_aspect = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_iso_dist', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'translation_vectors', 'voxel_row_aspect', 'voxel_slice_aspect'])
         magnification = self.get_magnification()
+
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
 
         # Compute minimum detector pitch
         delta_det = jnp.minimum(delta_det_row, delta_det_channel)
@@ -148,7 +151,7 @@ class TranslationModel(mj.TomographyModel):
             raise ValueError('Distance from source to detector is infinite, which means all translated projections have the same information.')
         else:
             # Determine the distance from the source to the closest voxel.
-            source_to_closest_pixel = source_iso_dist - (0.5 * recon_shape[0] * delta_recon_row) - max_translation[1]
+            source_to_closest_pixel = source_iso_dist - (0.5 * recon_shape[0] * delta_voxel_row) - max_translation[1]
             # Determine the maximum magnification.
             max_magnification = source_detector_dist / source_to_closest_pixel
 
@@ -156,7 +159,8 @@ class TranslationModel(mj.TomographyModel):
                 raise ValueError('Reconstruction volume extends into source - no valid projection in this case.')
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
+        max_voxel_pitch = jnp.maximum(delta_voxel, delta_voxel_slice)
+        psf_radius = int(jnp.ceil(jnp.ceil((max_voxel_pitch * max_magnification / delta_det)) / 2))
         if psf_radius > 4:
             warnings.warn('A single voxel may project onto 100 or more detector elements, which may lead to artifacts. Consider using smaller voxels.')
         return psf_radius
@@ -169,16 +173,19 @@ class TranslationModel(mj.TomographyModel):
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
         translation_vectors = self.get_params('translation_vectors')
+        voxel_row_aspect, voxel_slice_aspect = self.get_params(['voxel_row_aspect', 'voxel_slice_aspect'])
 
         # Calculate the reconstruction geometry parameters
-        recon_shape, delta_voxel, delta_recon_row = mj.utilities.calc_tct_recon_params(source_detector_dist,
-                                                                                       source_iso_dist, delta_det_row,
-                                                                                       delta_det_channel,
-                                                                                       sinogram_shape,
-                                                                                       translation_vectors)
+        recon_shape, delta_voxel, voxel_row_aspect = mj.utilities.calc_tct_recon_params(source_detector_dist,
+                                                                                        source_iso_dist, delta_det_row,
+                                                                                        delta_det_channel,
+                                                                                        sinogram_shape,
+                                                                                        translation_vectors,
+                                                                                        voxel_row_aspect,
+                                                                                        voxel_slice_aspect)
 
-        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_recon_row=delta_recon_row, delta_voxel=delta_voxel)
-
+        self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel,
+                        voxel_row_aspect=voxel_row_aspect)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -262,6 +269,7 @@ class TranslationModel(mj.TomographyModel):
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
         L_max = jnp.minimum(1, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
@@ -271,7 +279,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
+            A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -307,6 +315,8 @@ class TranslationModel(mj.TomographyModel):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
         num_slices = voxel_cylinder.shape[0]
 
+        delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
+
         # From pixel index, compute y and pixel_mag
         y, pixel_mag = TranslationModel.compute_y_mag_for_pixel(pixel_index, translation_vector, recon_shape,
                                                                 projector_params)
@@ -316,7 +326,7 @@ class TranslationModel(mj.TomographyModel):
         # For computational efficiency, we use that to scale the voxel_cylinder values.
         ### possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
         k = jnp.arange(len(voxel_cylinder))
-        z = gp.delta_voxel * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2] # recon_ijk_to_xyz
+        z = delta_voxel_slice * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2]  # recon_ijk_to_xyz
         v = pixel_mag * z  # geometry_xyz_to_uv_mag
         # Compute vertical cone angle of voxels
         phi_p = jnp.arctan2(v, gp.source_detector_dist)  # compute_vertical_data_single_pixel
@@ -326,7 +336,7 @@ class TranslationModel(mj.TomographyModel):
 
         # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
         # This is also the slope of the map from voxel index to detector index
-        W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
+        W_p_r = (pixel_mag * delta_voxel_slice) / gp.delta_det_row
         slope_k_to_m = W_p_r
         L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
@@ -348,7 +358,7 @@ class TranslationModel(mj.TomographyModel):
             v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
             z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
             # Convert to voxel fractional index and find the center of each voxel
-            k_m = (z_m + translation_vector[2]) / gp.delta_voxel + (num_slices - 1) / 2.0
+            k_m = (z_m + translation_vector[2]) / delta_voxel_slice + (num_slices - 1) / 2.0
             k_m_center = jnp.round(k_m).astype(int)  # Center of the voxel hit by the center of the detector
             # Then map the center of the voxels back to the detector.
             m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
@@ -430,6 +440,7 @@ class TranslationModel(mj.TomographyModel):
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
         L_max = jnp.minimum(1, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
@@ -439,7 +450,7 @@ class TranslationModel(mj.TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = gp.delta_recon_row * L_p_c_n / cos_theta_p
+            A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -557,11 +568,13 @@ class TranslationModel(mj.TomographyModel):
         recon_shape = projector_params.recon_shape
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
+        delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
+
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         # slice_indices = jnp.arange(num_recon_slices)
 
-        x_p, y_p, z_p = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, recon_shape, gp.delta_voxel, gp.delta_recon_row, translation_vector)
+        x_p, y_p, z_p = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, recon_shape, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect, translation_vector)
 
         # Convert from xyz to coordinates on detector
         u_p, v_p, pixel_mag = TranslationModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification)
@@ -580,7 +593,7 @@ class TranslationModel(mj.TomographyModel):
         # cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
 
         # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_p_r = pixel_mag * (gp.delta_voxel / gp.delta_det_row)  # * cos_alpha_p_z / cos_phi_p
+        W_p_r = pixel_mag * (delta_voxel_slice / gp.delta_det_row)  # * cos_alpha_p_z / cos_phi_p
 
         vertical_data = (m_p, m_p_center, W_p_r, cos_phi_p)  # cos_alpha_p_z)
 
@@ -611,7 +624,7 @@ class TranslationModel(mj.TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
         slice_index = jnp.arange(1)
 
-        x_p, y_p, _ = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_index, recon_shape, gp.delta_voxel, gp.delta_recon_row, translation_vector)
+        x_p, y_p, _ = TranslationModel.recon_ijk_to_xyz(row_index, col_index, slice_index, recon_shape, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect, translation_vector)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
@@ -638,15 +651,18 @@ class TranslationModel(mj.TomographyModel):
         return horizontal_data
 
     @staticmethod
-    def recon_ijk_to_xyz(i, j, k, recon_shape, delta_voxel, delta_recon_row, translation_vector):
+    def recon_ijk_to_xyz(i, j, k, recon_shape, delta_voxel, voxel_row_aspect, voxel_slice_aspect, translation_vector):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        y = delta_recon_row * (i - (num_recon_rows - 1) / 2.0) - translation_vector[1]
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+        y = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0) - translation_vector[1]
         x = delta_voxel * (j - (num_recon_cols - 1) / 2.0) - translation_vector[0]
-        z = delta_voxel * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2]
+        z = delta_voxel_slice * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2]
         return x, y, z
 
     @staticmethod
@@ -692,7 +708,9 @@ class TranslationModel(mj.TomographyModel):
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
 
-        y = gp.delta_recon_row * (row_index - (num_recon_rows - 1) / 2.0) - translation_vector[1]
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+
+        y = delta_voxel_row * (row_index - (num_recon_rows - 1) / 2.0) - translation_vector[1]
 
         # Convert from xyz to coordinates on detector
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
@@ -730,8 +748,13 @@ class TranslationModel(mj.TomographyModel):
         # Get parameters
         num_views, num_rows, num_channels = sinogram.shape
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
+
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+        voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
 
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
@@ -761,7 +784,7 @@ class TranslationModel(mj.TomographyModel):
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         recon_filter = mj.tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        alpha = delta_det_row / (voxel_volume * M_0)
         recon_filter = alpha * recon_filter
 
         # Define convolution for a single row (across its channels)
@@ -820,8 +843,11 @@ class TranslationModel(mj.TomographyModel):
             sino_indicator (ndarray): a binary mask that indicates the region of sinogram support; same shape as sinogram.
         """
         # Get parameters
-        delta_recon_row = self.get_params('delta_recon_row')
+        delta_voxel = self.get_params('delta_voxel')
         recon_shape = self.get_params('recon_shape')
+        voxel_row_aspect = self.get_params('voxel_row_aspect')
+
+        delta_voxel_row = voxel_row_aspect * delta_voxel
 
         # Compute the typical magnitude of a sinogram value
         typical_sinogram_value = np.average(np.abs(sinogram), weights=sino_indicator)
@@ -830,7 +856,7 @@ class TranslationModel(mj.TomographyModel):
         # For TCT, we will assume that the projections are along the row direction,
         # and we will assume that the object fills approximately half the distance along the rows.
         fraction_of_fill = 0.5
-        typical_path_length = fraction_of_fill * recon_shape[0] * delta_recon_row
+        typical_path_length = fraction_of_fill * recon_shape[0] * delta_voxel_row
 
         # Compute a typical recon value by dividing average sinogram value by a typical projection path length
         recon_std = typical_sinogram_value / typical_path_length
