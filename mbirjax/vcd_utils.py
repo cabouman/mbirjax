@@ -27,46 +27,47 @@ def generate_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, 
     if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
         raise ValueError("Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.")
 
-    if voxel_row_aspect <= 0:
-        raise ValueError("voxel_row_aspect must be positive.")
-
     if delta_voxel <= 0:
         raise ValueError("delta_voxel must be positive.")
+
+    if voxel_row_aspect <= 0:
+        raise ValueError("voxel_row_aspect must be positive.")
 
     num_recon_rows, num_recon_cols = recon_shape[:2]
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
 
     col_coords_alu = (np.arange(num_recon_cols) - col_center) * delta_voxel
-    row_coords_alu = (
-        np.arange(num_recon_rows) - row_center
-    ) * voxel_row_aspect * delta_voxel
+    row_coords_alu = (np.arange(num_recon_rows) - row_center) * voxel_row_aspect * delta_voxel
 
     col_grid_alu, row_grid_alu = np.meshgrid(col_coords_alu, row_coords_alu)
 
     if radius_alu is None:
-        col_extent_alu = col_center * delta_voxel
-        row_extent_alu = row_center * voxel_row_aspect * delta_voxel
-        radius_alu = min(col_extent_alu, row_extent_alu)
-    else:
-        radius_alu = float(radius_alu)
+        auto_num_recon_rows = int(np.round(num_recon_cols / voxel_row_aspect))
 
-    if radius_alu < 0:
-        raise ValueError("radius_alu must be nonnegative.")
+        col_radius_pixels = (num_recon_cols - 1) / 2
+        row_radius_pixels = (auto_num_recon_rows - 1) / 2
+
+        col_radius_alu = col_radius_pixels * delta_voxel
+        row_radius_alu = row_radius_pixels * voxel_row_aspect * delta_voxel
+    else:
+        if radius_alu <= 0:
+            raise ValueError("radius_alu must be positive.")
+        col_radius_alu = float(radius_alu)
+        row_radius_alu = float(radius_alu)
 
     if crop_radius_fraction != 0.0:
-        crop_radius_alu = radius_alu * crop_radius_fraction
+        col_radius_alu *= max(1.0 - crop_radius_fraction, 0.0)
+        row_radius_alu *= max(1.0 - crop_radius_fraction, 0.0)
     else:
-        # Preserve old behavior: pixels are column-pixel-equivalent units.
-        crop_radius_alu = crop_radius_pixels * delta_voxel
+        crop_radius_alu = max(crop_radius_pixels, 0) * delta_voxel
+        col_radius_alu -= crop_radius_alu
+        row_radius_alu -= crop_radius_alu
 
-    crop_radius_alu = max(crop_radius_alu, 0.0)
-    radius_alu = max(radius_alu - crop_radius_alu, 0.0)
-
-    mask = col_grid_alu**2 + row_grid_alu**2 <= radius_alu**2
+    mask = (col_grid_alu / col_radius_alu) ** 2 + (row_grid_alu / row_radius_alu) ** 2 <= 1.0
     mask = mask[:, :]
+    print(np.sum(mask))
     return mask
-
 
 def get_2d_ror_mask(recon_shape, *, delta_voxel=1.0, voxel_row_aspect=1.0, ror_mask_option="auto", crop_radius_pixels=0, crop_radius_fraction=0.0):
     """

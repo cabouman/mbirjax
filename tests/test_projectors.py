@@ -307,7 +307,9 @@ class TestProjectors(unittest.TestCase):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
         x = jnp.zeros(recon_shape)
         key, subkey = jax.random.split(key)
-        i, j = jax.random.randint(subkey, shape=(2,), minval=0, maxval=num_recon_rows)
+        i = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_rows)
+        key, subkey = jax.random.split(key)
+        j = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_cols)
         key, subkey = jax.random.split(key)
         k = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_slices)
 
