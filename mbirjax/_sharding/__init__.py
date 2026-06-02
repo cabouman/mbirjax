@@ -11,6 +11,9 @@ TomographyModel.  Two concerns are kept separate so they compose:
   - thread_execution.py  : fanning a per-device computation out across threads
                            and assembling the per-device results into one
                            sharded array.
+  - placement.py         : `Placement` (where an array type lives across
+                           devices) and the adjoint pair that moves voxel
+                           cylinders between a recon and a sino placement.
 
 Higher-level code (e.g. TomographyModel.configure_sharding and the projector
 phases) imports these via `from mbirjax._sharding import ...`.
@@ -18,6 +21,7 @@ phases) imports these via `from mbirjax._sharding import ...`.
 
 from .transfer import is_dev2dev_safe, move_shard
 from .thread_execution import run_per_device, assemble_sharded, device_pool
+from .placement import Placement, move_cylinders_to_sino, sum_cylinders_to_recon
 
 __all__ = [
     "is_dev2dev_safe",
@@ -25,4 +29,7 @@ __all__ = [
     "run_per_device",
     "assemble_sharded",
     "device_pool",
+    "Placement",
+    "move_cylinders_to_sino",
+    "sum_cylinders_to_recon",
 ]
