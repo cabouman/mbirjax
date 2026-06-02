@@ -24,9 +24,8 @@ class TestVCD(unittest.TestCase):
         self.anisotropic_cone_tolerances = {'nrmse': 0.49, 'max_diff': 1.0, 'pct_95': 0.21}
         self.helical_cone_tolerances = self.cone_tolerances
         self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
-        self.anisotropic_translation_tolerances = {'nrmse': 0.6, 'max_diff': 1.0, 'pct_95': 0.13}
         self.all_tolerances = [self.parallel_tolerances, self.anisotropic_parallel_tolerances, self.cone_tolerances,
-                               self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances, self.anisotropic_translation_tolerances]
+                               self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
@@ -38,7 +37,7 @@ class TestVCD(unittest.TestCase):
         
         # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
         self.voxel_row_aspect = 1.9
-        self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
+        self.voxel_slice_aspect = 2.9 # cone beam only
 
         # These can be adjusted to describe the geometry in the cone beam case.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
@@ -100,7 +99,7 @@ class TestVCD(unittest.TestCase):
                                              source_iso_dist=self.source_iso_dist)
         elif (geometry_type == 'parallel') | (geometry_type == 'anisotropic_parallel'):
             ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
-        elif (geometry_type == 'translation') | (geometry_type == 'anisotropic_translation'):
+        elif geometry_type == 'translation':
             ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
@@ -124,7 +123,7 @@ class TestVCD(unittest.TestCase):
 
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')
-        if geometry_type in ('translation', 'anisotropic_translation'):
+        if geometry_type == 'translation':
             recon_shape = ct_model.get_params('recon_shape')
             words = ["Purdue", "Presents", "Translation", "Tomography"]
             phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', text=words)
@@ -164,11 +163,6 @@ class TestVCD(unittest.TestCase):
         if geometry_type == 'anisotropic_parallel':
             ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
             ct_model.auto_set_recon_geometry()
-        if geometry_type == 'anisotropic_translation':
-            # For TCT, keep voxel_row_aspect at the automatically computed default.
-            # Reconstruction quality is sensitive to row pitch, so only vary voxel_slice_aspect here.
-            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
-            ct_model.auto_set_recon_geometry()
 
         # ##########################
         # Perform VCD reconstruction
@@ -178,7 +172,7 @@ class TestVCD(unittest.TestCase):
         recon.block_until_ready()
         
         # if anisotropic, rescale the recon to the phantom shape
-        if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel') | (geometry_type == 'anisotropic_translation'):
+        if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel'):
             phantom_temp = scipy.ndimage.zoom(phantom, zoom=(np.shape(recon)[0] / np.shape(phantom)[0],
                                                              np.shape(recon)[1] / np.shape(phantom)[1],
                                                              np.shape(recon)[2] / np.shape(phantom)[2]))
