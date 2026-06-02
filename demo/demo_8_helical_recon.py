@@ -8,7 +8,6 @@ This script demonstrates helical cone beam reconstruction by creating a 3D phant
 
 """
 
-import sys
 import time
 import numpy as np
 import mbirjax as mj
