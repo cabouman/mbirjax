@@ -5,6 +5,7 @@ import jax
 import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
 
+
 def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
     Get a binary mask for the region of reconstruction.  By default, the mask is an ellipse inscribed in
@@ -27,14 +28,13 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
     Returns:
         np.ndarray: Boolean 2D binary mask.
     """
-    
-    if use_ror_mask==False:
+    if use_ror_mask is False:
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is set to False.')
             
         return np.ones_like(recon_shape[:2])
 
-    elif use_ror_mask==True:
+    elif use_ror_mask is True:
         # Set up a mask to zero out points outside the ROR
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.')
@@ -50,12 +50,12 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
         row_coords = np.arange(num_recon_rows) - row_center
         coords = np.meshgrid(col_coords, row_coords)
     
-        mask = (coords[0] / col_radius)**2 + (coords[1] / row_radius)**2 <= 1.0
+        mask = (coords[0] / col_radius) ** 2 + (coords[1] / row_radius) ** 2 <= 1.0
         mask = mask[:, :]
         
         return mask
     
-    else: # user-provided mask
+    else:  # user-provided mask
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is a custom array.')
             
@@ -115,7 +115,7 @@ def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
         ror_mask = get_2d_ror_mask(recon_shape, use_ror_mask=use_ror_mask)
     else:
         ror_mask = 1
-    subset_inds = (subset_inds + 1) * ror_mask - 1 # Get a - at each location outside the mask, subset_ind at other points 
+    subset_inds = (subset_inds + 1) * ror_mask - 1 # Get a -1 at each location outside the mask, subset_ind at other points
     subset_inds = subset_inds.flatten()
     num_inds = len(np.where(subset_inds > -1)[0])
 
