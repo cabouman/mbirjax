@@ -136,8 +136,8 @@ def make_input(size, seed=0):
 def make_indices(model):
     """Full field-of-view pixel indices for the model (deterministic per size)."""
     import mbirjax
-    recon_shape = model.get_params('recon_shape')
-    return mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+    recon_shape, use_ror_mask = model.get_params(['recon_shape', 'use_ror_mask'])
+    return mbirjax.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
 
 
 def run_pipeline(model, sino, pixel_indices):

@@ -80,7 +80,7 @@ def worker_measure(size_label, slice_band, out_file):
             model.back_project_slice_band = int(slice_band)
         recon_shape = model.get_params('recon_shape')
         num_slices = int(recon_shape[2])
-        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
         num_pixels = int(len(idx))
         eff_band = model._slice_band_length(num_slices, N_DEVICES, num_pixels)
         num_bands = len(model._balanced_slice_bounds(num_slices, eff_band))

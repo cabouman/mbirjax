@@ -111,7 +111,7 @@ def worker_attribute(out_file):
     model = _build(devs)                     # baseline batch sizes (no override)
     recon_shape = model.get_params('recon_shape')
     num_slices = int(recon_shape[2])
-    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
     num_pixels = int(len(idx))
     vb = int(model.view_batch_size_for_vmap)
     pb = int(model.pixel_batch_size_for_vmap)
@@ -167,7 +167,7 @@ def worker_measure(view_batch, pixel_batch, out_file, slice_band=-1):
         sino_np = np.random.default_rng(SEED).random(SIZE, dtype=np.float32)
         sino_sharded = model._shard_sinogram(sino_np)
         idx = mbirjax.gen_full_indices(model.get_params('recon_shape'),
-                                       use_ror_mask=model.use_ror_mask)
+                                       use_ror_mask=model.get_params('use_ror_mask'))
         stats, _ = sc.time_op(lambda: model.sparse_back_project(sino_sharded, idx),
                               WARMUP, TRIALS)
         mem_mb, mem_kind = sc.peak_memory_mb(devs)

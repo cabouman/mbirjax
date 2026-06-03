@@ -81,8 +81,8 @@ def main():
 
     # Full field-of-view indices (deterministic for this size) and a fixed-seed
     # random sinogram.  These must match what the beta setup worker builds.
-    recon_shape = model.get_params('recon_shape')
-    full_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+    recon_shape, use_ror_mask = model.get_params(['recon_shape', 'use_ror_mask'])
+    full_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
     rng = np.random.default_rng(CORRECTNESS_SEED)
     sino = rng.random(CORRECTNESS_SIZE, dtype=np.float32)
 

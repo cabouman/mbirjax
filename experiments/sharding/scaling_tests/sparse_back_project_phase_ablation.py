@@ -97,7 +97,7 @@ def build(size, devices):
     sino_np = np.random.default_rng(SEED).random(size, dtype=np.float32)
     sino_sharded = model._shard_sinogram(sino_np)
     idx = mbirjax.gen_full_indices(model.get_params('recon_shape'),
-                                   use_ror_mask=model.use_ror_mask)
+                                   use_ror_mask=model.get_params('use_ror_mask'))
     return model, sino_sharded, idx
 
 

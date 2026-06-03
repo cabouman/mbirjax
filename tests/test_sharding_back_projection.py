@@ -152,7 +152,7 @@ class TestBackProjectSharded(unittest.TestCase):
         self._check_divisible(model, 2)
         model.configure_sharding(self.devs)
         recon_shape = model.get_params('recon_shape')
-        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
         sharded_in = model._shard_sinogram(_random_sino(model))
         out = model.sparse_back_project(sharded_in, idx)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
@@ -184,7 +184,7 @@ class TestBackProjectSharded(unittest.TestCase):
         self._check_divisible(model, 2)
         model.configure_sharding(self.devs)
         recon_shape = model.get_params('recon_shape')
-        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.use_ror_mask)
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
         sharded_in = model._shard_sinogram(_random_sino(model))
         num_views = model.get_params('sinogram_shape')[0]
         with self.assertRaises(NotImplementedError):
