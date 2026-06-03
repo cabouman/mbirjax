@@ -43,7 +43,7 @@ version, with the worked example.
 - **Free the previous result in a timing loop.**  Holding the prior output while
   the next allocates over-reports memory by a full shard and causes allocation
   thrash (which also inflated timing).
-- **Don't post-multiply a full array by a float64 scalar.**  `np.pi` is float64;
+- **Watch for hidden memory use.**  `np.pi` is float64;
   `f32_array * f64_scalar` (out of place) promotes the whole array to f64 →
   doubles memory (the f64 OOM).  Fold the scalar into a small operand (the f32
   filter); convolution's linearity makes it free.
@@ -135,3 +135,69 @@ fast, then honest":
    only a one-line kernel fix (size the voxel cylinder from the *input* rows, not
    `projector_params`) so a row-sliced view yields just those slices — the whole
    streaming scheme then reused the existing jitted projector unchanged.
+
+## Placement architecture + GPU-allocation reliability (2026-06-03)
+
+The device-config redesign and the back-projection re-open under it.
+
+1. **One placement abstraction, two roles.**  `recon_placement` / `sino_placement`
+   (each a device list + sharded axis + 1-D mesh) replace the scalar
+   `main_device` / `sinogram_device`.  Every mode is a placement pair; single
+   device is a trivial 1-shard placement, so sharding is "always on" and the
+   `mesh is None` branching dissolves.  The hybrid (recon-CPU / sino-GPU) case is
+   two *separate* single-device meshes — never one mixed mesh — which sidesteps
+   the JAX heterogeneous-mesh fragility.
+2. **The only thing that crosses placements is voxel cylinders.**  The sinogram
+   is written locally on its view-shard and never moves.  So the whole inter-
+   device interface is one adjoint pair — `move_cylinders_to_sino` (all-gather)
+   / `sum_cylinders_to_recon` (reduce-scatter) — built on `move_shard`, looping
+   over the placements' shards: `N×N` homogeneous, `1×1` single-device, **no
+   mode branch**.  Take cylinders directly (the pixel axis is unsharded, so the
+   caller slices `flat_recon[pix]`); keeps the primitives pure + unit-testable.
+3. **User-facing = match input; internal = sharded-only.**  User-facing methods
+   (`back_project`, `fbp_recon`, `direct_recon`, future `forward_project`) match
+   their input: plain in → plain out (shard at entry, gather at exit), sharded in
+   → sharded out (no gather).  Internal (`sparse_*`, `fbp_filter`/`direct_filter`)
+   are sharded in → sharded out, no transition code.  Decided by one
+   `isinstance(x.sharding, NamedSharding)` on the primary input, read *before* the
+   entry shard.  Why match-input not always-gather: these are dual-use
+   (`direct_recon` is `vcd_recon`'s init), so a sharded caller stays on-device.
+4. **Pixel-batch vs slice-band back projection — fine grain is fragile.**  The
+   slice-banded path fires ~n_dev² × bands small dispatches; the pixel-batched
+   path (full cylinders per pixel batch, reduce-scattered) fires far fewer,
+   larger ops.  On a clean H100×3 run the pixel path scaled *as-well-or-better*
+   (1008³: 3.12× vs 2.75× on 3 dev) but used ~2–2.7× more memory at the default
+   B_p; the band path is memory-lean but dispatch-heavy (which also made it more
+   sensitive to the NUMA/throttle issues below).  **Verdict (2026-06-03): kept
+   band, removed pixel.**  The B_p sweep showed pixel's memory plateaus at
+   ~1.7–2.7× band — a floor B_p can't push below (it's the accumulated output +
+   concatenate, not the per-batch transient) — for only ~11–16% less time.  With
+   memory / max-recon-per-GPU the priority, that gap isn't worth pixel's
+   simplicity/speed.  (The genuinely simpler *and* memory-lean option for parallel
+   beam is the slice-sharded-sinogram / embarrassingly-parallel scheme, noted as a
+   future option — not pixel.)
+
+5. **A throttling GPU masqueraded as a code regression — separate the ruler from
+   the measured, hardware edition.**  Band 4-device at 1024³ "regressed" 2.8× vs
+   a prior run — but the *same Phase D commit* reproduced it, so it wasn't code.
+   The tell-tale signature: **size-dependent (only the largest, sustained load)
+   and device-count-specific (only when the bad card joined).**  The phase
+   ablation isolated it to Phase 1 (compute), not the reduce-scatter (≤0.2%).
+   Root cause via `nvidia-smi dmon`: one GPU at **345 MHz @ 86 °C** while its
+   neighbors ran **1980 MHz @ 40 °C** — a thermally-throttling card; the reduce
+   waits for the slowest device, so it gated the whole multi-device run.
+   - **Idle temperature predicts it:** the warmest-at-idle card (61 °C vs ~30 °C)
+     was the one that throttled.  A 10-second `dmon` glance is a cheap pre-flight.
+   - **345 MHz alone is NOT throttling** — it's the normal H100 *idle* clock; the
+     discriminator is low clock AND high temp (vs low clock + cool = idle).
+   - **`DEVICE_COUNTS = [1,2,3]`** sidesteps a known-bad 4th slot (`pick_devices`
+     takes the first n) and, on a 2/2-NUMA node, also keeps all three on one
+     socket — so 3-on-one-socket is often the cleanest scaling a node can give.
+6. **Instrument the ruler.**  The scaling harness now self-records, per run:
+   `nvidia-smi topo -m` + GPU UUIDs (allocation/NUMA), `dev2dev_safe` (host-bounce
+   state), and a per-GPU clock/temp sample that flags a row `[THROTTLED]` when a
+   participating GPU shows the low-clock+high-temp signature.  Turns this whole
+   class of afternoon-eating surprise into a one-line annotation in the result.
+7. **Gitignored `results/` doesn't survive a handoff.**  Scaling numbers and the
+   decisions they drive must be written into committed prose (status / plan /
+   here), or they evaporate with the session.

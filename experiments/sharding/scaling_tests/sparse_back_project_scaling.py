@@ -88,18 +88,14 @@ WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
 
-# Sharded back-projection implementations to measure side by side: 'band' is the
-# slice-banded reduce-scatter, 'pixel' is the pixel-batched one.  Each runs in its
-# own fresh worker process per (size, path) so peak memory reads cleanly, and gets
-# its own YAML + plots (suffixed with the path); a comparison table is printed at
-# the end.  Set to a single path to measure just one.
-BACK_PROJECT_PATHS = ("band", "pixel")
+# Sharded back-projection path(s) to measure.  The 'pixel' path was RETIRED in the
+# P2 decision (2026-06-03): band is the sole sharded back projection, so this is
+# just ('band',).  The path / B_p-sweep plumbing below (and the model's
+# _back_project_path switch it set) is now vestigial — left in place for a future
+# band-vs-alternative comparison; strip in a cleanup pass if not reused.
+BACK_PROJECT_PATHS = ("band",)
 
-# Pixel-batch (B_p) sweep for the 'pixel' path: None → just the auto default;
-# a list → measure the pixel path once per B_p value (each its own fresh worker /
-# YAML), so the comparison shows how pixel's peak memory and time trade off with
-# B_p — the lever for whether pixel can match band's memory.  None entries mean
-# "use the auto default B_p".  Example: [None, 50_000, 25_000, 12_500].
+# Was the pixel-path B_p sweep (pixel retired; keep None).
 PIXEL_BATCH_SWEEP = None
 
 CORRECTNESS_SIZE = (80, 48, 64)   # small, fixed, NON-symmetric (distinct views/

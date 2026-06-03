@@ -108,30 +108,49 @@ Build everything **next to the existing code on ParallelBeam first** (the proven
 F1 pattern: parallel path → measure → promote winner → **delete loser**; do not
 leave two paths lingering), then port to the other geometries.
 
-### P1 — Placement foundation
-- Introduce `recon_placement` / `sino_placement` as `Sharding`s; trivial
-  single-device placements; `move_shard` same-device no-op verified.
-- Implement `move_cylinders_to_sino` / `sum_cylinders_to_recon` (cylinders-direct,
-  `move_shard`-based, `N×N` / `1×1`).
-- **Early low-risk migration:** replace raw `device_put` / `default_device` /
-  `jnp.zeros(device=…)` with the placement/move helpers (behavior-preserving;
-  no-op on same device) — validates the no-op property before the multi-device
-  path depends on it, and starts the unification.
-- Side-by-side scaffolding so the new path runs beside the existing code.
-- Tests: trivial-placement bit-exact vs single-device; movement primitives
-  unit-tested on a sharded cylinder array.
+### P1 — Placement foundation  ✅ DONE (committed)
+- [x] `Placement` (`mbirjax/_sharding/placement.py`): device list + sharded axis
+  + 1-D mesh; `shard_ranges()` / `shard_structure()` / `is_trivial`.
+- [x] `move_cylinders_to_sino` / `sum_cylinders_to_recon` (cylinders-direct,
+  `move_shard`-based, `N×N` / `1×1`, same-device no-op).  Adjoint identity tested.
+- [x] Model builds `recon_placement` / `sino_placement` via `_set_placements()`
+  (additive; coexists with `main_device`/`sinogram_device` + `mesh`, which the
+  `TODO(P6)` retires).
+- [x] Tests: `test_sharding_placement.py` (primitives + adjoint);
+  `test_sharding_hooks.py::TestModelPlacements` (model construction + consistency).
+- Deferred (intentionally): the broad `device_put → move` migration — it happens
+  organically as each path is rewritten (P2/P3/P4), not as upfront churn.
 
-### P2 — Back projection on placements (re-opened Phase D)
-- Pixel-batched `sum_cylinders_to_recon` back projection on ParallelBeam.
-- **Side-by-side vs the slice-banded Phase D** on the existing GPU harness
-  (memory peak / time / scaling at 256/512/1024³ on 1/2/4 GPUs).  Decision rule:
-  if pixel-batching is within noise (expected — the Phase D ablation found the
-  reduce-scatter ≤9% of time), **adopt it and retire the band code**; else keep
-  band only if a clear regime needs it.
-- Anchors: trivial bit-exact vs prerelease; n>1 float-noise match; the
-  `sparse_back_project` correctness baseline.
+### P2 — Back projection on placements (re-opened Phase D)  ⏳ measuring
+- [x] `_sparse_back_project_pixel`: pixel-batched, uses `sum_cylinders_to_recon`;
+  first consumer of `recon_placement` + the movement primitives.  Runs **alongside**
+  the slice-banded `_sparse_back_project_sharded` via the temporary
+  `_back_project_path` switch ('band'|'pixel'); shared setup in
+  `_sharded_back_project_setup`.  `B_p` knob = `back_project_pixel_batch` /
+  `_BACK_PROJECT_MAX_PIXEL_WORK`.
+- [x] Tests: `TestPixelBackProject` (trivial bit-exact; matches band + single-device;
+  Hessian; B_p sweep; match-input sharded-in).
+- [x] Harness: `sparse_back_project_scaling.py` measures both paths side by side
+  (+ topology/`dev2dev_safe`/per-GPU-throttle capture, `DEVICE_COUNTS`,
+  `PIXEL_BATCH_SWEEP`).
+- **Findings so far (clean H100×3 GPU run, 1008³):** time comparable (pixel edges
+  ahead and scales slightly better at scale — 3.12× vs 2.75× on 3 dev); band uses
+  **~2–2.7× less memory** (structural).  Tradeoff: pixel = simpler + scales
+  as-well-or-better; band = memory-lean.
+- **Decision rule:** the `B_p` sweep decides — if a smaller `B_p` brings pixel's
+  memory to band's level without losing its time, **adopt pixel** (retire the band
+  code: `_sparse_back_project_sharded`, `_slice_band_length`,
+  `_balanced_slice_bounds`, `back_project_slice_band`; rename
+  `_sparse_back_project_pixel` → `_sparse_back_project_sharded`; drop the switch);
+  else keep band.  **VERDICT (2026-06-03): KEEP BAND.**  The B_p sweep showed
+  pixel's peak memory plateaus at ~1.7–2.7× band (untunable — a floor below the
+  per-batch transient) for only ~11–16% less time; memory/max-recon-per-GPU wins.
+  The pixel path, its `_back_project_path` switch, and `back_project_pixel_batch`
+  knob were removed; band remains `_sparse_back_project_sharded`.
+  `_sharded_back_project_setup` (the factored shared setup) is kept.
+- Anchors (met): trivial bit-exact vs prerelease; n>1 float-noise match.
 
-### P3 — Forward projection on placements (Phase C)
+### P3 — Forward projection on placements (Phase C)  ← NEXT
 - Pixel-batched `move_cylinders_to_sino` forward projection on ParallelBeam.
 - **match-input** per the F2 contract.
 - Correctness gate: forward/back **adjoint round-trip** against the validated P2

@@ -19,6 +19,71 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-03) — P1 done; P2 DECIDED: keep band (pixel retired); finalizing → P3 next
+
+**Where we are.**  The placement architecture is underway:
+- **P1 (placement foundation) — DONE, committed.**  `mbirjax/_sharding/placement.py`
+  (`Placement`; `move_cylinders_to_sino` / `sum_cylinders_to_recon` adjoint pair,
+  `move_shard`-based, `N×N`/`1×1` no mode branch).  Model builds
+  `recon_placement` / `sino_placement` via `_set_placements()` (additive; coexists
+  with `main_device`/`sinogram_device` + `mesh`, which a `TODO(P6)` retires).
+  Tests: `test_sharding_placement.py`, `test_sharding_hooks.py::TestModelPlacements`.
+- **P2 (back projection on placements) — pixel path built + committed; deciding band vs pixel.**
+  `_sparse_back_project_pixel` (pixel-batched, uses `sum_cylinders_to_recon`) runs
+  **alongside** the slice-banded `_sparse_back_project_sharded`, selected by the
+  temporary `_back_project_path` switch ('band'|'pixel').  Shared setup factored
+  into `_sharded_back_project_setup`.  Tests in
+  `test_sharding_back_projection.py::TestPixelBackProject` (bit-exact, matches
+  band, Hessian, B_p sweep, match-input).  The `B_p` knob is
+  `back_project_pixel_batch` / `_BACK_PROJECT_MAX_PIXEL_WORK`.
+
+**Band-vs-pixel determination (GPU, H100×3 on one NUMA socket, clean — no throttle).**
+Trustworthy GPU numbers (results/ is gitignored, so recorded here), 1008³:
+
+  | n_dev | band time / mem | pixel time / mem | pixel vs band |
+  |---|---|---|---|
+  | 1 | 20322 ms / 11592 MB | 20424 ms / 23347 MB | t=1.01 m=2.01 |
+  | 2 | 11075 ms / 6928 MB  | 9356 ms / 18618 MB  | t=0.84 m=2.69 |
+  | 3 | 7396 ms / 4770 MB   | 6555 ms / 12436 MB  | t=0.89 m=2.61 |
+
+Robust reads: **time is comparable** (pixel edges ahead and scales slightly
+better at the largest size — 3.12× vs 2.75× on 3 dev; band faster at 504³);
+**band uses ~2–2.7× less memory** (structural).  So the tradeoff is **pixel =
+simpler + scales as-well-or-better; band = much more memory-efficient.**
+
+**The decider is the `B_p` sweep** (`PIXEL_BATCH_SWEEP = [None, 50_000, 25_000,
+12_500]`, re-run): can a smaller `B_p` bring pixel's memory to band's level
+without losing its time?  If yes → adopt pixel (retire band code, rename
+`_sparse_back_project_pixel` → `_sparse_back_project_sharded`, drop the switch);
+if it costs too much time → keep band.  **VERDICT (2026-06-03): KEEP BAND.**  The
+B_p sweep showed pixel's peak memory plateaus at **~1.7–2.7× band** (a floor B_p
+can't push below — it's the accumulated output + concatenate, not the per-batch
+transient), for only ~11–16% less time.  Memory / max-recon-per-GPU is the
+priority, so band stays as the sole sharded path; the **pixel path was removed**
+(model + tests), and the harness is set band-only.
+
+**Uncommitted at this handoff:** the scaling-harness hardening (3 files:
+`scaling_common.py`, `sparse_back_project_scaling.py`, `scaling_tests/_file_index.md`)
+— topology + `dev2dev_safe` capture, per-GPU clock/temp throttle flagging,
+`DEVICE_COUNTS` override, `PIXEL_BATCH_SWEEP`.  CPU-validated; commit before handoff.
+
+**GPU-allocation gotcha (cost us an afternoon — see lessons.md).**  A single hot
+GPU throttling under sustained 1024³ load (345 MHz @ 86 °C while neighbors ran
+1980 MHz @ 40 °C) gated the 4-device case and looked like a code regression.
+Pre-flight: glance `nvidia-smi dmon -s pct` — the warmest-at-idle card is the one
+that throttles.  `DEVICE_COUNTS=[1,2,3]` keeps to the first three (cooler, and on
+this node all NUMA-0) GPUs, dodging both the bad 4th card and the NUMA split.
+
+**Next:** finish the `B_p` sweep → finalize P2 per the verdict → **P3 (forward
+projection on placements, built on `move_cylinders_to_sino`, with the forward/back
+adjoint round-trip test).**  P2 code finalized: pixel path + switch + knob + pixel
+tests removed; `_sharded_back_project_setup` kept (band uses it); band tests +
+suite green (39 sharding + back-projection).  Remaining: commit the finalization;
+optional cleanup of the harness's now-vestigial path/B_p-sweep plumbing
+(`--path`/`--pixel-batch`, `_print_path_comparison`).
+
+---
+
 ## HANDOFF (2026-06-02) — direction change: placement architecture; Phase D re-opened
 
 **F1 / D / F2 are done and GPU-validated.**  While designing the device-config UX
@@ -376,10 +441,12 @@ Done (original sequence):
       baseline captured.  Public-API layer; survives the re-open.
 
 Forward (placement architecture — see `sharding_implementation_plan_v2.md`):
-- [ ] P1 — Placement foundation (placements, move_cylinders_to_sino /
-      sum_cylinders_to_recon, device_put→move migration) ← NEXT
-- [ ] P2 — Back projection on placements (re-opened D; compare vs slice-banding)
-- [ ] P3 — Forward projection on placements (C; adjoint test)
+- [x] P1 — Placement foundation (Placement + move_cylinders_to_sino /
+      sum_cylinders_to_recon; model builds recon/sino placements) — DONE, committed
+- [x] P2 — Back projection on placements — DONE: kept band (pixel retired; B_p
+      sweep showed pixel's ~2× memory gap is untunable).  Finalization committed?
+      — see top handoff.
+- [ ] P3 — Forward projection on placements (C; adjoint test) ← NEXT
 - [ ] P4 — VCD on placements (E)
 - [ ] P5 — Device-config UX (`configure_devices`, auto-select, divisibility warnings)
 - [ ] P6 — Port geometries + retire `main_device`/`sinogram_device`
