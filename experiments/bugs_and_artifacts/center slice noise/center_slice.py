@@ -1,7 +1,12 @@
-
 import numpy as np
 import mbirjax as mj
 import matplotlib.pyplot as plt
+
+
+def cos_angle(diff1, diff2):
+    inner_prod = np.sum(diff1 * diff2, axis=(0, 1))
+    cos_theta = inner_prod / (np.linalg.norm(diff1, axis=(0, 1)) * np.linalg.norm(diff2, axis=(0, 1)))
+    return cos_theta
 
 
 if __name__ == "__main__":
@@ -34,54 +39,82 @@ if __name__ == "__main__":
     sinogram = ct_model.forward_project(phantom)
     sinogram = np.asarray(sinogram)
 
+    # Get the fully converged version
+    filename = 'fully_converged_sharpness_{}.npy'.format(sharpness)
+    try:
+        converged_result = np.load(filename)
+    except FileNotFoundError:
+        converged_result, _ = ct_model.recon(sinogram, max_iterations=100, stop_threshold_change_pct=1e-6)
+        np.save(filename, converged_result)
+        exit(0)
+
+    # ct_model.set_params(partition_sequence=[1,], max_overrelaxation=1)
+
     recons = [np.zeros_like(phantom)]
     init_recon = None
     for j in range(num_iterations):
-        recon0, recon_dict0 = ct_model.recon(sinogram, init_recon=None, first_iteration=j, max_iterations=j+1, stop_threshold_change_pct=1e-6)
+        recon0, recon_dict0 = ct_model.recon(sinogram, init_recon=init_recon, first_iteration=j, max_iterations=j+1, stop_threshold_change_pct=1e-6)
         # mj.slice_viewer(recon0, slice_axis=2)
         recons.append(recon0)
         init_recon = recon0
 
-    mj.slice_viewer(recons[1].transpose((2, 0, 1)), recons[-1].transpose((2, 0, 1)), slice_axis=0,
-                    title='FDK left vs MBIR right\nsharpness = {}, num_iterations = {}, '.format(sharpness, num_iterations))
+    # Determine convergence to baseline for select slices
+    plt.figure(0)
+    slice_indices = [3, 10, 13, 16, 19]
+    for index in slice_indices:
+        norms = [np.linalg.norm(recons[j+1][:, :, index] - converged_result[:, :, index]) for j in range(num_iterations-1)]
+        log_norms = np.log10(norms)
+        print('log_10 || recon_j - recon_infty || for slice {}:'.format(index))
+        print(log_norms)
+        plt.plot(log_norms)
 
-    cos_thetas = []
-    delta_norms = []
+    plt.legend(['norms for slice {}'.format(slice_indices[s]) for s in range(len(slice_indices))])
+    plt.show()
+
     plt.figure(1)
-    plt.title('cos_thetas of consecutive delta_recons by slice')
-    plt.figure(2)
     plt.title('norms of consecutive delta_recons by slice')
     for j in range(num_iterations-1):
         diff1 = recons[j+1] - recons[j]
-        diff2 = recons[j+2] - recons[j+1]
-        inner_prod = np.sum(diff1 * diff2, axis=(0, 1))
-        cos_theta = inner_prod / (np.linalg.norm(diff1, axis=(0, 1)) * np.linalg.norm(diff2, axis=(0, 1)))
+
         delta_norm = np.linalg.norm(diff1, axis=(0, 1))
-        delta_norms.append(delta_norm)
-        cos_thetas.append(cos_theta)
         plt.figure(1)
-        plt.plot(cos_theta)
-        plt.figure(2)
         plt.plot(delta_norm)
+
+        for k in [2, 3, 4, 5]:
+            if j + k < len(recons):
+                diff = recons[j + k] - recons[j + k - 1]
+                cos_theta = cos_angle(diff, diff1)
+                plt.figure(k)
+                plt.plot(cos_theta)
     plt.figure(1)
-    plt.legend(['fdk vs recon1',] + ['recon{} vs recon{}'.format(j+1, j+2) for j in range(num_iterations-1)])
-    plt.figure(2)
     plt.legend(['norm of delta_recon{}'.format(j) for j in range(num_iterations)])
+
+    for k in [2, 3, 4, 5]:
+        plt.figure(k)
+        plt.ylim(-1, 1)
+        plt.title('cos of angle between diff (j + {}) and diff j'.format(k - 1, j))
+
     error_sino0 = ct_model.forward_project(recon0) - sinogram
 
 
     hessian = ct_model.compute_hessian_diagonal()
 
+    # Use the power method to determine the slice dependent average intensity of D^{-1} A^T A
+    # This gives an estimate of which slices overshoot and by how much.
+    # This approach assumes the intensity is constant on each slice, so uses the same
+    # 1D profile for each voxel cylinder on each iteration.  A random set of voxel cylinders is fixed.
+    # In practice, the weight matrix would have to be included also.
     eigenmode = np.random.random(ct_model.get_params('recon_shape'))
     eigenmode *= eigenmode < 0.01
-    for j in range(20):
+    for j in range(10):
         sinogram = ct_model.forward_project(eigenmode)
         eigenmode = ct_model.back_project(sinogram)
         eigenmode /= hessian
         eigenmode /= np.linalg.norm(eigenmode)
+    eigenmode /= np.linalg.norm(eigenmode)
     grad_by_slice = np.linalg.norm(eigenmode, axis=(0, 1))
 
-    plt.figure(3)
+    plt.figure(10)
     plt.plot(grad_by_slice)
     plt.title('Norm of top eigenmode by slice')
     vrange = 0.001
