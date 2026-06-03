@@ -106,6 +106,10 @@ class TomographyModel(ParameterHandler):
         # live on different meshes.)  Also remove the previous paragraph.
         self.recon_placement = None
         self.sino_placement = None
+        # Temporary selector for the sharded back-projection implementation while
+        # the pixel-batched path is compared against the slice-banded one
+        # ('band' | 'pixel'); removed once the comparison picks a winner.
+        self._back_project_path = 'band'
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -929,6 +933,10 @@ class TomographyModel(ParameterHandler):
         # slice-sharded (no gather here; the user-facing back_project gathers).
         # Otherwise the single-device path runs unchanged.
         if self.mesh is not None:
+            if self._back_project_path == 'pixel':
+                return self._sparse_back_project_pixel(
+                    sinogram, pixel_indices, view_indices=view_indices,
+                    coeff_power=coeff_power)
             return self._sparse_back_project_sharded(
                 sinogram, pixel_indices, view_indices=view_indices,
                 coeff_power=coeff_power)
@@ -982,6 +990,47 @@ class TomographyModel(ParameterHandler):
 
         return recon_at_indices
 
+    def _sharded_back_project_setup(self, sinogram, pixel_indices, view_indices):
+        """Shared setup for the sharded back-projection paths.
+
+        Validates the view-sharded contract (no view subset), defensively shards
+        the sinogram (a no-op when already view-sharded, so internal callers that
+        pass a plain array -- e.g. compute_hessian_diagonal with plain weights --
+        still work), and builds the per-device data both streaming strategies
+        (slice-band and pixel-batch) need.
+
+        Returns:
+            (devices, n_dev, num_slices, num_pixels, shard_info, local_pixels):
+            ``shard_info`` maps each device to ``(its local view-shard, the GLOBAL
+            view indices it covers)`` so the projector picks the matching angles;
+            ``local_pixels`` is ``pixel_indices`` placed on each device once.
+        """
+        if view_indices is not None:
+            # A view subset would mean filtering each device's shard to the
+            # requested views and adjusting the angle lookup per shard; not needed
+            # by the consumers (back_project / direct_recon pass all views).
+            raise NotImplementedError(
+                "Sharded back projection currently requires view_indices=None "
+                "(the full view-sharded sinogram).")
+        # Defensively run the (idempotent, no-op-when-already-sharded) shard so
+        # internal callers that pass a plain array still work correctly.
+        sinogram = self._shard_sinogram(sinogram)
+
+        devices = self.shard_devices
+        n_dev = len(devices)
+        num_views = sinogram.shape[0]
+        num_slices = self.get_params('recon_shape')[2]
+        num_pixels = len(pixel_indices)
+
+        # shard.index[0] may be a full slice(None, None, None) on a single-device
+        # shard; .indices() normalizes it to (start, stop, step).
+        shard_info = {}
+        for s in sinogram.addressable_shards:
+            start, stop, step = s.index[0].indices(num_views)
+            shard_info[s.device] = (s.data, jnp.arange(start, stop, step))
+        local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
+        return devices, n_dev, num_slices, num_pixels, shard_info, local_pixels
+
     def _sparse_back_project_sharded(self, sinogram, pixel_indices, view_indices=None,
                                      coeff_power=1):
         """
@@ -1027,40 +1076,12 @@ class TomographyModel(ParameterHandler):
             jax array of shape (len(pixel_indices), num_slices), slice-sharded
             across the mesh.
         """
-        if view_indices is not None:
-            # The sharded contract takes the full view-sharded sinogram.  A view
-            # subset would mean filtering each device's shard to the requested
-            # views and adjusting the angle lookup per shard; not needed by the
-            # user-facing consumers (back_project / direct_recon pass all views).
-            raise NotImplementedError(
-                "Sharded back projection currently requires view_indices=None "
-                "(the full view-sharded sinogram).")
-
-        # Contract: callers pass a view-sharded sinogram.  We defensively run the
-        # (idempotent, no-op-when-already-sharded) shard here so internal callers
-        # that have not yet been ported to shard at entry (e.g.
-        # compute_hessian_diagonal passing plain weights) still work correctly.
-        sinogram = self._shard_sinogram(sinogram)
-
-        devices = self.shard_devices
-        n_dev = len(devices)
-        num_views = sinogram.shape[0]
-        num_slices = self.get_params('recon_shape')[2]
-        num_pixels = len(pixel_indices)
+        devices, n_dev, num_slices, num_pixels, shard_info, local_pixels = \
+            self._sharded_back_project_setup(sinogram, pixel_indices, view_indices)
 
         # Each device owns a contiguous block of slices_per_dev slices (exact,
         # since configure_sharding requires num_slices % n_dev == 0).
         slices_per_dev = num_slices // n_dev
-
-        # Per device: its local view-shard, the GLOBAL view indices it covers (so
-        # the projector picks the matching angles), and its pixel indices placed
-        # on-device once.  shard.index[0] may be a full slice(None, None, None) on
-        # a single-device shard; .indices() normalizes it to (start, stop, step).
-        shard_info = {}
-        for s in sinogram.addressable_shards:
-            start, stop, step = s.index[0].indices(num_views)
-            shard_info[s.device] = (s.data, jnp.arange(start, stop, step))
-        local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
 
         # Stream the slice axis in BANDS to bound the transient memory.  No
         # full-cylinder partial is ever materialized: because detector row r maps
@@ -1189,6 +1210,88 @@ class TomographyModel(ParameterHandler):
             bounds.append((start, start + length))
             start += length
         return bounds
+
+    # Upper cap on per-pixel-batch work (B_p * num_slices, in elements) for the
+    # pixel-batched back projection.  The per-device transient (full-cylinder
+    # partial + reduce-gather) scales with B_p * num_slices, so capping that work
+    # bounds the streaming peak -- the pixel-axis analogue of
+    # _BACK_PROJECT_MAX_BAND_WORK.  The knee is to be confirmed by a GPU sweep of
+    # back_project_pixel_batch.
+    _BACK_PROJECT_MAX_PIXEL_WORK = 100_000_000
+
+    def _back_project_pixel_batch(self, num_pixels, num_slices):
+        """Pixel-batch size B_p for the pixel-batched sharded back projection.
+
+        Each device holds a full-cylinder partial (B_p x num_slices) per batch and
+        the per-owner reduce gathers about the same, so the per-device transient
+        scales with B_p x num_slices.  The default bounds that work at
+        _BACK_PROJECT_MAX_PIXEL_WORK (a single cap, since here the reduce-gather
+        and compute bounds coincide -- unlike the slice band, which also has a
+        smaller cross-device gather bound).  Set self.back_project_pixel_batch to a
+        fixed B_p to override (sweepable).  Always capped at num_pixels.
+        """
+        b = getattr(self, 'back_project_pixel_batch', None)
+        if not b:
+            b = max(1, self._BACK_PROJECT_MAX_PIXEL_WORK // max(1, num_slices))
+        return min(int(b), num_pixels)
+
+    def _sparse_back_project_pixel(self, sinogram, pixel_indices, view_indices=None,
+                                   coeff_power=1):
+        """Sharded back projection by PIXEL batching (the alternative to the
+        slice-banded _sparse_back_project_sharded; selected by _back_project_path).
+
+        Same view/slice sharding and same result -- a slice-sharded
+        (num_pixels, num_slices) recon-at-indices -- but the streaming axis is
+        pixels, not slices.  For each pixel batch every device back-projects ITS
+        views onto the FULL cylinders (all slices) for those pixels, and the
+        per-device partials are reduce-scattered to the slice owners via
+        sum_cylinders_to_recon.  The batch is reduce-scattered before the next, so
+        the per-device transient stays at B_p x num_slices (see
+        _back_project_pixel_batch) rather than the full cylinder.
+
+        Args:
+            sinogram (jax array): view-sharded sinogram (NamedSharding on axis 0).
+            pixel_indices (jax array): 1D indices into the flattened (rows, cols).
+            view_indices: must be None (the full view-sharded sinogram is expected).
+            coeff_power (int): 1 normally, 2 for the Hessian diagonal.
+
+        Returns:
+            jax array (len(pixel_indices), num_slices), slice-sharded.
+        """
+        devices, n_dev, num_slices, num_pixels, shard_info, local_pixels = \
+            self._sharded_back_project_setup(sinogram, pixel_indices, view_indices)
+
+        # Stream the PIXEL axis in batches so the full-cylinder partial is never
+        # held for all pixels at once; each batch is reduce-scattered before the
+        # next.  One thread pool is reused across all batches.
+        batch = self._back_project_pixel_batch(num_pixels, num_slices)
+        bounds = np.append(np.arange(0, num_pixels, batch), num_pixels)
+
+        batch_results = []
+        with mjs.device_pool(n_dev) as pool:
+            for k in range(len(bounds) - 1):
+                p0, p1 = int(bounds[k]), int(bounds[k + 1])
+
+                # Each device back-projects its views onto FULL cylinders for this
+                # pixel batch.  p0/p1 bound as defaults so the closure is not
+                # captured late.
+                def _partial(i, device, p0=p0, p1=p1):
+                    data, global_view_idx = shard_info[device]
+                    return self.projector_functions.sparse_back_project(
+                        data, local_pixels[i][p0:p1], view_indices=global_view_idx,
+                        coeff_power=coeff_power)
+                partials = mjs.run_per_device(devices, _partial, executor=pool)
+
+                # Reduce over devices' views + scatter slice-bands to recon owners.
+                batch_results.append(mjs.sum_cylinders_to_recon(
+                    {devices[i]: partials[i] for i in range(n_dev)},
+                    self.recon_placement, dev2dev_safe=self.dev2dev_safe))
+
+        # Concatenate the per-batch slice-sharded results along the pixel axis.
+        # Like the band path's per-owner concatenate, this briefly holds inputs +
+        # output, but it runs after the compute phase so it is not the binding peak
+        # (an in-place dynamic_update_slice alternative was measured worse).
+        return jnp.concatenate(batch_results, axis=0)
 
     def compute_hessian_diagonal(self, weights=None, output_device=None):
         """

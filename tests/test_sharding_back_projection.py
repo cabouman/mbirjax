@@ -272,5 +272,116 @@ class TestBalancedSliceBounds(unittest.TestCase):
             self.assertEqual(len(bounds), -(-extent // band_len))
 
 
+class TestPixelBackProject(unittest.TestCase):
+    """The pixel-batched sharded back projection (_back_project_path='pixel')
+    matches the slice-banded path and single-device, across pixel batch sizes."""
+
+    def setUp(self):
+        self.devs = preferred_devices(2)
+        if self.devs is None:
+            self.skipTest("need >= 2 devices")
+
+    @staticmethod
+    def _divisible(model, n):
+        sino_shape = model.get_params('sinogram_shape')
+        recon_shape = model.get_params('recon_shape')
+        return sino_shape[0] % n == 0 and recon_shape[2] % n == 0
+
+    def test_trivial_pixel_bit_exact(self):
+        """1-device pixel path is bit-exact to the unconfigured single-device path."""
+        single = preferred_devices(1)
+        if single is None:
+            self.skipTest("need >= 1 device")
+        model = _make_model()
+        sino = _random_sino(model)
+        ref = np.asarray(model.back_project(sino))
+
+        shard = _make_model()
+        shard.configure_sharding(single)
+        shard._back_project_path = 'pixel'
+        out = np.asarray(shard.back_project(sino))
+        self.assertTrue(np.array_equal(out, ref),
+                        msg=f"trivial pixel path not bit-exact; max|diff|={np.max(np.abs(out-ref))}")
+
+    def test_pixel_matches_single_device(self):
+        model = _make_model()
+        if not self._divisible(model, 2):
+            self.skipTest("sharded axes not divisible by 2")
+        sino = _random_sino(model)
+        ref = np.asarray(model.back_project(sino))
+
+        shard = _make_model()
+        shard.configure_sharding(self.devs)
+        shard._back_project_path = 'pixel'
+        out = shard.back_project(sino)
+        # Plain input -> plain (gathered) output (match-input).
+        self.assertNotIsInstance(getattr(out, 'sharding', None),
+                                 jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+
+    def test_pixel_matches_band(self):
+        model_band = _make_model()
+        if not self._divisible(model_band, 2):
+            self.skipTest("sharded axes not divisible by 2")
+        sino = _random_sino(model_band)
+        model_band.configure_sharding(self.devs)            # default 'band'
+        ref = np.asarray(model_band.back_project(sino))
+
+        model_pix = _make_model()
+        model_pix.configure_sharding(self.devs)
+        model_pix._back_project_path = 'pixel'
+        out = np.asarray(model_pix.back_project(sino))
+        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+
+    def test_pixel_hessian_diagonal(self):
+        """coeff_power=2 (Hessian diagonal) via the pixel path matches single-device."""
+        model = _make_model()
+        if not self._divisible(model, 2):
+            self.skipTest("sharded axes not divisible by 2")
+        weights = _random_sino(model, seed=7)
+        ref = np.asarray(model.compute_hessian_diagonal(weights))
+
+        shard = _make_model()
+        shard.configure_sharding(self.devs)
+        shard._back_project_path = 'pixel'
+        out = np.asarray(shard.compute_hessian_diagonal(weights))
+        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+
+    def test_pixel_batch_sweep_matches(self):
+        """Explicit pixel batch sizes (incl. a non-divisor of num_pixels) all match
+        single-device -- the batching must not change the result."""
+        ref_model = _make_model()
+        if not self._divisible(ref_model, 2):
+            self.skipTest("sharded axes not divisible by 2")
+        sino = _random_sino(ref_model)
+        ref = np.asarray(ref_model.back_project(sino))
+        for bp in [3, 7]:
+            model = _make_model()
+            model.configure_sharding(self.devs)
+            model._back_project_path = 'pixel'
+            model.back_project_pixel_batch = bp
+            out = np.asarray(model.back_project(sino))
+            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"pixel batch {bp}")
+
+    def test_pixel_sharded_input_returns_sharded(self):
+        """Match-input via the pixel path: a sharded sinogram returns a
+        slice-sharded recon matching single-device -- exercises the mesh
+        composition (recon_placement.mesh vs self.mesh) end to end."""
+        model = _make_model()
+        if not self._divisible(model, 2):
+            self.skipTest("sharded axes not divisible by 2")
+        sino = _random_sino(model)
+        ref = np.asarray(model.back_project(sino))
+
+        shard = _make_model()
+        shard.configure_sharding(self.devs)
+        shard._back_project_path = 'pixel'
+        sharded_in = shard._shard_sinogram(sino)
+        out = shard.back_project(sharded_in)
+        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+
+
 if __name__ == "__main__":
     unittest.main()
