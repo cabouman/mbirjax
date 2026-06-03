@@ -19,13 +19,21 @@ orchestrator that touches no JAX spawns fresh worker subprocesses so per-device
 peak memory reads correctly), same two plotted views of one (size × device-count)
 grid, same top-of-file run configuration (no CLI args for the human).
 
-  - orchestrator (default, no args)  : spawns workers, collects YAML, plots.
+It measures EACH sharded back-projection implementation in BACK_PROJECT_PATHS
+('band' = slice-banded reduce-scatter, 'pixel' = pixel-batched) in its own fresh
+worker process per (size, path), writes a YAML + two plots per path (suffixed
+with the path), and prints a band-vs-pixel time/memory comparison table at the
+end -- the head-to-head readout the band-vs-pixel decision rests on.
+
+  - orchestrator (default, no args)  : spawns workers per (path, size), collects
+                                       YAMLs/plots, prints the comparison.
   - worker --mode setup              : reports platform/devices + single-device
                                        correctness vs the prerelease baseline.
-  - worker --mode measure --size ... : times + measures memory for one size,
-                                       device counts DESCENDING (8→4→2→1) so
-                                       per-device allocation is ascending in the
-                                       fresh process and peak reads correctly.
+  - worker --mode measure --size --path ... : times + measures memory for one
+                                       size and path, device counts DESCENDING
+                                       (8→4→2→1) so per-device allocation is
+                                       ascending in the fresh process and peak
+                                       reads correctly.
 
 Run from the BETA worktree root:
 
@@ -73,6 +81,13 @@ WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
 
+# Sharded back-projection implementations to measure side by side: 'band' is the
+# slice-banded reduce-scatter, 'pixel' is the pixel-batched one.  Each runs in its
+# own fresh worker process per (size, path) so peak memory reads cleanly, and gets
+# its own YAML + plots (suffixed with the path); a comparison table is printed at
+# the end.  Set to a single path to measure just one.
+BACK_PROJECT_PATHS = ("band", "pixel")
+
 CORRECTNESS_SIZE = (80, 48, 64)   # small, fixed, NON-symmetric (distinct views/
                                   # rows/channels) so shape/axis bugs surface;
                                   # comparison is size-independent
@@ -88,8 +103,12 @@ _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
 
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
-def make_model(size, devices=None):
+def make_model(size, devices=None, path="band"):
     """Build a ParallelBeamModel for the given (views, rows, channels).
+
+    ``path`` selects the sharded back-projection implementation ('band' = the
+    slice-banded reduce-scatter, 'pixel' = the pixel-batched one) so the two can
+    be measured side by side; it only affects the sharded (mesh) path.
 
     Returns None if the requested device count does not evenly divide the
     sharded axes (configure_sharding raises) — the caller skips that point.
@@ -105,6 +124,7 @@ def make_model(size, devices=None):
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")
             return None
+    model._back_project_path = path
     return model
 
 
@@ -177,8 +197,9 @@ def worker_setup(out_file):
     print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
 
 
-def worker_measure(size_label, device_counts, warmup, trials, out_file):
-    """Time + measure memory for one size, device counts DESCENDING.
+def worker_measure(size_label, device_counts, warmup, trials, out_file, path="band"):
+    """Time + measure memory for one size and back-projection path, device counts
+    DESCENDING.
 
     Descending order (8→4→2→1) makes per-device allocation ascending within this
     fresh process, so the cumulative peak_bytes_in_use equals each config's own
@@ -201,7 +222,7 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
     import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
     desc = sorted(set(device_counts), reverse=True)
-    print(f"\n[measure {size_label}]  device counts (descending): {desc}")
+    print(f"\n[measure {size_label} | path={path}]  device counts (descending): {desc}")
     sino_np = make_input(size, seed=0)
     rows = []
     failures = []
@@ -216,7 +237,7 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
         if devs is None:
             print(f"  n_devices={n}: not enough devices, skipping")
             continue
-        model = make_model(size, devices=devs)
+        model = make_model(size, devices=devs, path=path)
         if model is None:
             continue
         try:
@@ -258,12 +279,14 @@ def run_worker(argv):
     p.add_argument("--device-counts", type=int, nargs="+", default=None)
     p.add_argument("--warmup", type=int, default=WARMUP)
     p.add_argument("--trials", type=int, default=TRIALS)
+    p.add_argument("--path", default="band", help="sharded back-projection path")
     p.add_argument("--out-file", required=True)
     a = p.parse_args(argv)
     if a.mode == "setup":
         worker_setup(a.out_file)
     else:
-        worker_measure(a.size, a.device_counts, a.warmup, a.trials, a.out_file)
+        worker_measure(a.size, a.device_counts, a.warmup, a.trials, a.out_file,
+                       path=a.path)
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
@@ -275,6 +298,36 @@ def _beta_root():
     """
     return os.path.abspath(os.path.join(os.path.dirname(__file__),
                                         os.pardir, os.pardir, os.pardir))
+
+
+def _print_path_comparison(grids_by_path, size_labels, device_counts):
+    """Print a side-by-side time/memory comparison of the back-projection paths.
+
+    For each size and device count, shows each path's min time and peak memory,
+    and (when both 'band' and 'pixel' ran) the pixel/band ratios -- so a ratio
+    below 1 means pixel is faster / smaller.  This is the head-to-head readout the
+    band-vs-pixel decision rests on.
+    """
+    paths = list(grids_by_path.keys())
+    print("\n" + "=" * 72)
+    print("  band vs pixel — min time (ms) / peak mem (MB) per (size, n_dev)")
+    print("=" * 72)
+    for label in size_labels:
+        print(f"\n  {label}")
+        byn = {p: {r["n_devices"]: r for r in grids_by_path[p].get(label, [])}
+               for p in paths}
+        for n in device_counts:
+            cols = []
+            for p in paths:
+                r = byn[p].get(n)
+                cols.append(f"{p}: {r['min_ms']:8.2f}ms {r['mem_mb']:8.1f}MB"
+                            if r else f"{p}: --")
+            line = f"    n={n:<2d}  " + "   ".join(cols)
+            b, px = byn.get("band", {}).get(n), byn.get("pixel", {}).get(n)
+            if b and px:
+                line += (f"   pixel/band: t={px['min_ms'] / b['min_ms']:.2f} "
+                         f"m={px['mem_mb'] / b['mem_mb']:.2f}")
+            print(line)
 
 
 def main():
@@ -337,58 +390,65 @@ def main():
     print(f"  sizes: {size_labels}")
     print(f"  device counts: {device_counts}")
 
-    # 2. One measure worker per size (fresh process each → clean peak memory).
-    grid = {}
-    failures_by_size = {}
-    mem_kind = "n/a"
-    for label in size_labels:
-        args = ["--worker", "--mode", "measure", "--size", label,
-                "--device-counts", *[str(n) for n in device_counts],
-                "--warmup", str(WARMUP), "--trials", str(TRIALS)]
-        res, rc = sc.run_worker(script, args, extra_env=worker_env)
-        rows = (res or {}).get("rows") or []
-        fails = (res or {}).get("failures") or []
-        if fails:
-            failures_by_size[label] = fails
-            for fl in fails:
-                tag = "OOM" if fl.get("oom") else "ERROR"
-                print(f"  size {label}: n_devices={fl['n_devices']} {tag}")
-        if not rows:
-            print(f"  size {label}: worker returned no rows (rc={rc}); skipping")
-            grid[label] = []
-            continue
-        mem_kind = res.get("mem_kind", mem_kind)
-        sc.annotate_speedups(rows)        # speedup vs 1 device
-        sc.annotate_mem_fraction(rows)    # memory relative to 1 device
-        rows.sort(key=lambda r: r["n_devices"])   # ascending for readable YAML
-        grid[label] = rows
-        by_n = {r["n_devices"]: r for r in rows}
-        summary = "  ".join(f"{n}d={by_n[n]['speedup']:.2f}x" for n in sorted(by_n))
-        print(f"  size {label} speedup: {summary}")
+    # 2. For each back-projection path, one measure worker per size (fresh process
+    #    each → clean peak memory).  Each path gets its own YAML + plots, suffixed
+    #    with the path; the grids are kept for the comparison table below.
+    grids_by_path = {}
+    for path in BACK_PROJECT_PATHS:
+        print(f"\n=== back-projection path: {path} ===")
+        grid = {}
+        failures_by_size = {}
+        mem_kind = "n/a"
+        for label in size_labels:
+            args = ["--worker", "--mode", "measure", "--size", label,
+                    "--device-counts", *[str(n) for n in device_counts],
+                    "--warmup", str(WARMUP), "--trials", str(TRIALS),
+                    "--path", path]
+            res, rc = sc.run_worker(script, args, extra_env=worker_env)
+            rows = (res or {}).get("rows") or []
+            fails = (res or {}).get("failures") or []
+            if fails:
+                failures_by_size[label] = fails
+                for fl in fails:
+                    tag = "OOM" if fl.get("oom") else "ERROR"
+                    print(f"  size {label}: n_devices={fl['n_devices']} {tag}")
+            if not rows:
+                print(f"  size {label}: worker returned no rows (rc={rc}); skipping")
+                grid[label] = []
+                continue
+            mem_kind = res.get("mem_kind", mem_kind)
+            sc.annotate_speedups(rows)        # speedup vs 1 device
+            sc.annotate_mem_fraction(rows)    # memory relative to 1 device
+            rows.sort(key=lambda r: r["n_devices"])   # ascending for readable YAML
+            grid[label] = rows
+            by_n = {r["n_devices"]: r for r in rows}
+            summary = "  ".join(f"{n}d={by_n[n]['speedup']:.2f}x" for n in sorted(by_n))
+            print(f"  size {label} speedup: {summary}")
 
-    # 3. Persist results (YAML) and the two plots (two views of the one grid).
-    results = {
-        "op": OP_NAME,
-        "platform": plat,
-        "device_label": dev_label,
-        "mbirjax_path": mpath,
-        "warmup": WARMUP, "trials": TRIALS,
-        "device_counts": device_counts,
-        "sizes": size_labels,
-        "mem_kind": mem_kind,
-        "correctness": corr,
-        "grid": grid,
-        "failures": failures_by_size,
-    }
-    sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}.yaml"), results)
+        # Persist this path's results (YAML) and two plots, suffixed with the path.
+        results = {
+            "op": OP_NAME, "back_project_path": path,
+            "platform": plat, "device_label": dev_label, "mbirjax_path": mpath,
+            "warmup": WARMUP, "trials": TRIALS,
+            "device_counts": device_counts, "sizes": size_labels,
+            "mem_kind": mem_kind, "correctness": corr,
+            "grid": grid, "failures": failures_by_size,
+        }
+        sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}.yaml"),
+                     results)
+        if any(grid.values()):
+            title = f"{OP_NAME} ({path})"
+            sc.plot_device_sweep(
+                title, grid, device_counts, size_labels, dev_label, mem_kind,
+                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}_device_sweep.png"))
+            sc.plot_size_sweep(
+                title, grid, device_counts, size_labels, dev_label, mem_kind,
+                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}_size_sweep.png"))
+        grids_by_path[path] = grid
 
-    if any(grid.values()):
-        sc.plot_device_sweep(
-            OP_NAME, grid, device_counts, size_labels, dev_label, mem_kind,
-            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_device_sweep.png"))
-        sc.plot_size_sweep(
-            OP_NAME, grid, device_counts, size_labels, dev_label, mem_kind,
-            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_size_sweep.png"))
+    # 3. Side-by-side comparison of the paths (when more than one ran).
+    if len(BACK_PROJECT_PATHS) > 1:
+        _print_path_comparison(grids_by_path, size_labels, device_counts)
 
     print("\nDone.")
 

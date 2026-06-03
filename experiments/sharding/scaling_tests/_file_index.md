@@ -34,7 +34,11 @@
   + compute and the transient per-device partial buffer `(num_pixels, num_slices)`
   (the memory whose size drives the "do we need slice sub-tiling" decision).
   Back projection is much heavier per element than fbp_filter, so its top-of-file
-  `SIZES` are smaller (tune freely).  Run from the beta worktree root.
+  `SIZES` are smaller (tune freely).  Measures EACH path in `BACK_PROJECT_PATHS`
+  ('band' = slice-banded, 'pixel' = pixel-batched) in its own fresh process per
+  (size, path), writes a YAML + plots per path, and prints a band-vs-pixel
+  time/memory comparison table (the head-to-head for the band-vs-pixel decision).
+  Run from the beta worktree root.
 - `sparse_back_project_capture_baseline.py` — run ONCE from a prerelease checkout
   to capture the prerelease `sparse_back_project` output (over full-FOV indices)
   for correctness comparison.  Writes `baselines/sparse_back_project.{npy,yaml}`.
