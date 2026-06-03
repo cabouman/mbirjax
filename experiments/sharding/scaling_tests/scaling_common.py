@@ -254,6 +254,45 @@ def gpu_topology():
     return out
 
 
+def sample_gpu_state():
+    """Per-GPU SM clock (MHz) and temperature (C) via nvidia-smi.
+
+    A throttled card under load shows a collapsed SM clock at high temperature
+    (e.g. 345 MHz @ 86 C vs a healthy 1980 MHz @ 40 C), which silently caps
+    multi-device scaling.  Sampling this with each measurement lets a bad card
+    auto-flag itself in the result instead of masquerading as a code regression.
+    Returns a list of ``{index, sm_mhz, temp_c}`` (one per GPU), or ``[]`` when
+    nvidia-smi is unavailable (CPU runs).
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,clocks.sm,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return []
+        out = []
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                out.append({"index": int(parts[0]), "sm_mhz": int(parts[1]),
+                            "temp_c": int(parts[2])})
+        return out
+    except Exception:   # nvidia-smi missing / CPU node — best effort
+        return []
+
+
+def throttled_gpus(state, clock_below=1500, temp_above=80):
+    """GPUs in ``state`` that look thermally throttled (low SM clock + high temp).
+
+    The clock+temp pair discriminates throttling from a normal idle low-clock:
+    an idle card is also low-clock but COOL, while a throttling card is low-clock
+    and HOT.  Returns the sublist of throttled GPU dicts.
+    """
+    return [g for g in state
+            if g["sm_mhz"] < clock_below and g["temp_c"] > temp_above]
+
+
 def default_device_counts(max_devices):
     """Powers-of-two-ish device-count ladder up to max_devices, always incl. 1."""
     counts = [1]

@@ -70,13 +70,20 @@ OP_NAME = "sparse_back_project"
 # per element than fbp_filter (it is the projector: cost ~ views × pixels × psf ×
 # slices), so the sizes here are smaller than the fbp ones — tune freely.
 # Divisibility: the view axis (n_views) and the slice axis (≈ n_rows for parallel
-# beam) must both be divisible by every device count in the ladder; powers of two
-# that are multiples of the max device count are safe (configure_sharding raises
-# otherwise and the point is skipped).
+# beam) must both be divisible by every device count in the ladder, else
+# configure_sharding raises and the point is skipped.  The GPU sizes are
+# divisible by 1/2/3/4 (multiples of 12, ~the old 256/512/1024) so the ladder can
+# include 3 devices — useful for skipping a throttling 4th card on a node by
+# running on the cooler first three GPUs (see DEVICE_COUNTS).
 SIZES = {
     "cpu": [(64, 64, 64), (128, 128, 128), (256, 256, 256), (400, 400, 400)],
-    "gpu": [(256, 256, 256), (512, 512, 512), (1024, 1024, 1024)],
+    "gpu": [(252, 252, 252), (504, 504, 504), (1008, 1008, 1008)],
 }
+# Device-count ladder.  None → the automatic powers-of-two ladder
+# (default_device_counts).  Set explicitly to override — e.g. [1, 2, 3] to use
+# only the first three GPUs and skip a known-bad 4th card (pick_devices takes the
+# first n, so [0,1,2]).  Sizes must be divisible by each count used.
+DEVICE_COUNTS = [1, 2, 3]
 WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
@@ -87,6 +94,13 @@ CORRECTNESS_THRESHOLD = 1e-4
 # its own YAML + plots (suffixed with the path); a comparison table is printed at
 # the end.  Set to a single path to measure just one.
 BACK_PROJECT_PATHS = ("band", "pixel")
+
+# Pixel-batch (B_p) sweep for the 'pixel' path: None → just the auto default;
+# a list → measure the pixel path once per B_p value (each its own fresh worker /
+# YAML), so the comparison shows how pixel's peak memory and time trade off with
+# B_p — the lever for whether pixel can match band's memory.  None entries mean
+# "use the auto default B_p".  Example: [None, 50_000, 25_000, 12_500].
+PIXEL_BATCH_SWEEP = None
 
 CORRECTNESS_SIZE = (80, 48, 64)   # small, fixed, NON-symmetric (distinct views/
                                   # rows/channels) so shape/axis bugs surface;
@@ -103,12 +117,14 @@ _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
 
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
-def make_model(size, devices=None, path="band"):
+def make_model(size, devices=None, path="band", pixel_batch=None):
     """Build a ParallelBeamModel for the given (views, rows, channels).
 
     ``path`` selects the sharded back-projection implementation ('band' = the
     slice-banded reduce-scatter, 'pixel' = the pixel-batched one) so the two can
     be measured side by side; it only affects the sharded (mesh) path.
+    ``pixel_batch`` (when not None) pins the pixel path's B_p
+    (back_project_pixel_batch) for the B_p sweep; None uses the auto default.
 
     Returns None if the requested device count does not evenly divide the
     sharded axes (configure_sharding raises) — the caller skips that point.
@@ -125,6 +141,8 @@ def make_model(size, devices=None, path="band"):
                   f"{sc.size_label(size)}: {e})")
             return None
     model._back_project_path = path
+    if pixel_batch is not None:
+        model.back_project_pixel_batch = pixel_batch
     return model
 
 
@@ -217,9 +235,14 @@ def worker_setup(out_file):
         print("[setup] GPUs:\n    " + topology["devices"].replace("\n", "\n    "))
 
 
-def worker_measure(size_label, device_counts, warmup, trials, out_file, path="band"):
+def worker_measure(size_label, device_counts, warmup, trials, out_file, path="band",
+                   pixel_batch=None):
     """Time + measure memory for one size and back-projection path, device counts
     DESCENDING.
+
+    ``pixel_batch`` pins the pixel path's B_p (None = auto).  After each timed
+    config a per-GPU clock/temp sample is recorded and a loud warning printed if
+    any GPU was thermally throttling (which silently caps multi-device scaling).
 
     Descending order (8→4→2→1) makes per-device allocation ascending within this
     fresh process, so the cumulative peak_bytes_in_use equals each config's own
@@ -242,7 +265,9 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file, path="ba
     import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
     desc = sorted(set(device_counts), reverse=True)
-    print(f"\n[measure {size_label} | path={path}]  device counts (descending): {desc}")
+    bp_label = "auto" if pixel_batch is None else str(pixel_batch)
+    print(f"\n[measure {size_label} | path={path} | B_p={bp_label}]  "
+          f"device counts (descending): {desc}")
     sino_np = make_input(size, seed=0)
     rows = []
     failures = []
@@ -257,7 +282,7 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file, path="ba
         if devs is None:
             print(f"  n_devices={n}: not enough devices, skipping")
             continue
-        model = make_model(size, devices=devs, path=path)
+        model = make_model(size, devices=devs, path=path, pixel_batch=pixel_batch)
         if model is None:
             continue
         try:
@@ -268,6 +293,9 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file, path="ba
             stats, _ = sc.time_op(lambda: run_back_project(model, sino, idx),
                                   warmup, trials)
             mem_mb, mem_kind = sc.peak_memory_mb(devs)
+            # Sample GPU clocks/temps right after the run (still warm): a card
+            # throttling here means this multi-device timing is unreliable.
+            gpu_state = sc.sample_gpu_state()
         except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
             msg = str(e).replace("\n", " ")
             is_oom = any(k in msg.upper() for k in _OOM_MARKERS)
@@ -279,9 +307,15 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file, path="ba
                       f"need more per-device memory and would also OOM")
                 break
             continue
-        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb})
+        hot = sc.throttled_gpus(gpu_state)
+        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb,
+                     "gpu_state": gpu_state, "throttled": bool(hot)})
         print(f"  n_devices={n:2d}  min={stats['min_ms']:8.2f} ms  "
               f"mean={stats['mean_ms']:8.2f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
+        if hot:
+            print("  !! THROTTLING — this timing is UNRELIABLE: "
+                  + ", ".join(f"GPU{g['index']}={g['sm_mhz']}MHz@{g['temp_c']}C"
+                              for g in hot))
         # Publish partial progress and free this config before the next (larger)
         # one so peak_bytes_in_use reflects each config alone.
         _publish()
@@ -300,13 +334,15 @@ def run_worker(argv):
     p.add_argument("--warmup", type=int, default=WARMUP)
     p.add_argument("--trials", type=int, default=TRIALS)
     p.add_argument("--path", default="band", help="sharded back-projection path")
+    p.add_argument("--pixel-batch", type=int, default=None,
+                   help="pin the pixel path's B_p (omit for auto)")
     p.add_argument("--out-file", required=True)
     a = p.parse_args(argv)
     if a.mode == "setup":
         worker_setup(a.out_file)
     else:
         worker_measure(a.size, a.device_counts, a.warmup, a.trials, a.out_file,
-                       path=a.path)
+                       path=a.path, pixel_batch=a.pixel_batch)
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
@@ -320,34 +356,39 @@ def _beta_root():
                                         os.pardir, os.pardir, os.pardir))
 
 
-def _print_path_comparison(grids_by_path, size_labels, device_counts):
-    """Print a side-by-side time/memory comparison of the back-projection paths.
+def _print_path_comparison(grids_by_variant, size_labels, device_counts):
+    """Print a side-by-side time/memory comparison of the measured variants.
 
-    For each size and device count, shows each path's min time and peak memory,
-    and (when both 'band' and 'pixel' ran) the pixel/band ratios -- so a ratio
-    below 1 means pixel is faster / smaller.  This is the head-to-head readout the
-    band-vs-pixel decision rests on.
+    For each size and device count, shows each variant's min time and peak memory
+    (with a [THROTTLED] mark when a GPU was throttling, i.e. that timing is
+    unreliable), and -- when a 'band' variant is present -- each other variant's
+    time/memory ratio vs band (a ratio below 1 means faster / smaller).  This is
+    the head-to-head readout the band-vs-pixel and B_p decisions rest on.
     """
-    paths = list(grids_by_path.keys())
+    variants = list(grids_by_variant.keys())
     print("\n" + "=" * 72)
-    print("  band vs pixel — min time (ms) / peak mem (MB) per (size, n_dev)")
+    print("  variant comparison — min time (ms) / peak mem (MB) per (size, n_dev)")
+    print("  (ratios are vs 'band'; [THROTTLED] = a GPU throttled, timing unreliable)")
     print("=" * 72)
     for label in size_labels:
         print(f"\n  {label}")
-        byn = {p: {r["n_devices"]: r for r in grids_by_path[p].get(label, [])}
-               for p in paths}
+        byn = {v: {r["n_devices"]: r for r in grids_by_variant[v].get(label, [])}
+               for v in variants}
         for n in device_counts:
-            cols = []
-            for p in paths:
-                r = byn[p].get(n)
-                cols.append(f"{p}: {r['min_ms']:8.2f}ms {r['mem_mb']:8.1f}MB"
-                            if r else f"{p}: --")
-            line = f"    n={n:<2d}  " + "   ".join(cols)
-            b, px = byn.get("band", {}).get(n), byn.get("pixel", {}).get(n)
-            if b and px:
-                line += (f"   pixel/band: t={px['min_ms'] / b['min_ms']:.2f} "
-                         f"m={px['mem_mb'] / b['mem_mb']:.2f}")
-            print(line)
+            print(f"    n={n}")
+            band = byn.get("band", {}).get(n)
+            for v in variants:
+                r = byn[v].get(n)
+                if not r:
+                    print(f"        {v:<16s} --")
+                    continue
+                line = f"        {v:<16s} {r['min_ms']:9.2f} ms  {r['mem_mb']:9.1f} MB"
+                if band and v != "band":
+                    line += (f"   vs band: t={r['min_ms'] / band['min_ms']:.2f} "
+                             f"m={r['mem_mb'] / band['mem_mb']:.2f}")
+                if r.get("throttled"):
+                    line += "  [THROTTLED]"
+                print(line)
 
 
 def main():
@@ -413,19 +454,30 @@ def main():
 
     sizes = SIZES[plat]
     size_labels = [sc.size_label(s) for s in sizes]
-    device_counts = sc.default_device_counts(max_dev)   # e.g. [1, 2, 4, 8]
+    # DEVICE_COUNTS override (e.g. [1,2,3] to skip a bad 4th card); else auto.
+    device_counts = [n for n in (DEVICE_COUNTS or sc.default_device_counts(max_dev))
+                     if n <= max_dev]
     # On CPU, pin the virtual device count so each worker matches this count.
     if plat == "cpu":
         worker_env["MBIRJAX_NUM_CPU_DEVICES"] = str(max_dev)
     print(f"  sizes: {size_labels}")
     print(f"  device counts: {device_counts}")
 
-    # 2. For each back-projection path, one measure worker per size (fresh process
-    #    each → clean peak memory).  Each path gets its own YAML + plots, suffixed
-    #    with the path; the grids are kept for the comparison table below.
-    grids_by_path = {}
+    # 2. Build the variants to measure: each back-projection path, and for the
+    #    pixel path optionally one variant per swept B_p value.  Each variant runs
+    #    a fresh worker per size (clean peak memory) and gets its own YAML + plots.
+    variants = []   # (path, pixel_batch, label)
     for path in BACK_PROJECT_PATHS:
-        print(f"\n=== back-projection path: {path} ===")
+        if path == "pixel" and PIXEL_BATCH_SWEEP:
+            for bp in PIXEL_BATCH_SWEEP:
+                variants.append(("pixel", bp,
+                                 f"pixel_bp{'auto' if bp is None else bp}"))
+        else:
+            variants.append((path, None, path))
+
+    grids_by_variant = {}
+    for path, pixel_batch, vlabel in variants:
+        print(f"\n=== variant: {vlabel} ===")
         grid = {}
         failures_by_size = {}
         mem_kind = "n/a"
@@ -434,6 +486,8 @@ def main():
                     "--device-counts", *[str(n) for n in device_counts],
                     "--warmup", str(WARMUP), "--trials", str(TRIALS),
                     "--path", path]
+            if pixel_batch is not None:
+                args += ["--pixel-batch", str(pixel_batch)]
             res, rc = sc.run_worker(script, args, extra_env=worker_env)
             rows = (res or {}).get("rows") or []
             fails = (res or {}).get("failures") or []
@@ -455,9 +509,9 @@ def main():
             summary = "  ".join(f"{n}d={by_n[n]['speedup']:.2f}x" for n in sorted(by_n))
             print(f"  size {label} speedup: {summary}")
 
-        # Persist this path's results (YAML) and two plots, suffixed with the path.
+        # Persist this variant's results (YAML) and two plots, suffixed with vlabel.
         results = {
-            "op": OP_NAME, "back_project_path": path,
+            "op": OP_NAME, "back_project_path": path, "pixel_batch": pixel_batch,
             "platform": plat, "device_label": dev_label, "mbirjax_path": mpath,
             "warmup": WARMUP, "trials": TRIALS,
             "device_counts": device_counts, "sizes": size_labels,
@@ -465,21 +519,21 @@ def main():
             "dev2dev_safe": dev2dev_safe, "topology": topology,
             "grid": grid, "failures": failures_by_size,
         }
-        sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}.yaml"),
+        sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{vlabel}_{plat}.yaml"),
                      results)
         if any(grid.values()):
-            title = f"{OP_NAME} ({path})"
+            title = f"{OP_NAME} ({vlabel})"
             sc.plot_device_sweep(
                 title, grid, device_counts, size_labels, dev_label, mem_kind,
-                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}_device_sweep.png"))
+                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{vlabel}_{plat}_device_sweep.png"))
             sc.plot_size_sweep(
                 title, grid, device_counts, size_labels, dev_label, mem_kind,
-                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}_size_sweep.png"))
-        grids_by_path[path] = grid
+                os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{vlabel}_{plat}_size_sweep.png"))
+        grids_by_variant[vlabel] = grid
 
-    # 3. Side-by-side comparison of the paths (when more than one ran).
-    if len(BACK_PROJECT_PATHS) > 1:
-        _print_path_comparison(grids_by_path, size_labels, device_counts)
+    # 3. Side-by-side comparison of the variants (when more than one ran).
+    if len(variants) > 1:
+        _print_path_comparison(grids_by_variant, size_labels, device_counts)
 
     print("\nDone.")
 

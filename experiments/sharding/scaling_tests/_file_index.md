@@ -9,8 +9,10 @@
   (`run_worker`/`write_worker_result`), matplotlib plots, and a best-effort GPU
   topology/UUID snapshot (`gpu_topology`, via `nvidia-smi`) so a run records which
   physical GPUs + interconnect/NUMA it got (the allocation-quality variable behind
-  run-to-run multi-device scaling surprises).  Problem-size sets live in each op
-  driver, not here.
+  run-to-run multi-device scaling surprises), and a per-GPU clock/temp sample
+  (`sample_gpu_state` / `throttled_gpus`) so a thermally-throttling card
+  auto-flags itself instead of masquerading as a code regression.  Problem-size
+  sets live in each op driver, not here.
 - `fbp_filter_scaling.py` — scaling + correctness driver for
   `ParallelBeamModel.fbp_filter`.  ISOLATED-SUBPROCESS HARNESS: an orchestrator
   (default, no args, touches no JAX) spawns fresh worker subprocesses — `--mode
@@ -41,7 +43,11 @@
   ('band' = slice-banded, 'pixel' = pixel-batched) in its own fresh process per
   (size, path), writes a YAML + plots per path, and prints a band-vs-pixel
   time/memory comparison table (the head-to-head for the band-vs-pixel decision).
-  Run from the beta worktree root.
+  Top-of-file knobs: `DEVICE_COUNTS` (e.g. [1,2,3] to skip a known-bad 4th GPU;
+  GPU `SIZES` are divisible by 1/2/3/4 for this), and `PIXEL_BATCH_SWEEP` (sweep
+  the pixel path's B_p to see whether it can match band's memory).  Each measure
+  records a per-GPU clock/temp sample and marks a row `[THROTTLED]` if a GPU was
+  throttling (that timing is unreliable).  Run from the beta worktree root.
 - `sparse_back_project_capture_baseline.py` — run ONCE from a prerelease checkout
   to capture the prerelease `sparse_back_project` output (over full-FOV indices)
   for correctness comparison.  Writes `baselines/sparse_back_project.{npy,yaml}`.
