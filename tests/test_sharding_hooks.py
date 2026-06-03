@@ -2,9 +2,10 @@
 Tests for the geometry sharding hooks on TomographyModel.
 
 Covers the axis-declaration hooks, the shard/gather round-trips for sinogram and
-recon (both 3-D and flat), the _extract_halos boundary-slice logic, and the
-no-op behavior when no mesh is configured.  Runs on whatever devices are present
-(real GPUs on a cluster, virtual CPU devices otherwise, via conftest).
+recon (both 3-D and flat), the _extract_halos boundary-slice logic, the no-op
+behavior when no mesh is configured, and the recon/sino placement construction.
+Runs on whatever devices are present (real GPUs on a cluster, virtual CPU devices
+otherwise, via conftest).
 """
 import unittest
 
@@ -133,6 +134,55 @@ class TestExtractHalos(unittest.TestCase):
         np.testing.assert_array_equal(left[1], flat[:, h - 1])
         # right[0] = first slice of device 1 = column h of the global array.
         np.testing.assert_array_equal(right[0], flat[:, h])
+
+
+class TestModelPlacements(unittest.TestCase):
+    """The model builds recon_placement / sino_placement from its device config."""
+
+    def test_single_device_trivial_placements(self):
+        model = _make_model()
+        self.assertIsNone(model.mesh)
+        for pl, axis in ((model.recon_placement, model.recon_shard_axis()),
+                         (model.sino_placement, model.sinogram_shard_axis())):
+            self.assertIsNotNone(pl)
+            self.assertTrue(pl.is_trivial)
+            self.assertEqual(pl.n_devices, 1)
+            self.assertEqual(pl.axis, axis)
+        # The trivial placements sit on the configured single devices.
+        self.assertEqual(model.recon_placement.devices, [model.main_device])
+        self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
+
+    def test_sharded_placements_over_mesh(self):
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        model = _make_model()
+        if model.get_params('recon_shape')[2] % 2 != 0:
+            self.skipTest("num_slices not divisible by 2")
+        model.configure_sharding(devs)
+        self.assertEqual(model.recon_placement.devices, list(devs))
+        self.assertEqual(model.sino_placement.devices, list(devs))
+        self.assertEqual(model.recon_placement.axis, model.recon_shard_axis())
+        self.assertEqual(model.sino_placement.axis, model.sinogram_shard_axis())
+
+    def test_placements_match_existing_sharding(self):
+        """Placement.shard_structure matches the sharding _shard_recon /
+        _shard_sinogram produce, so the placements describe the same distribution
+        as the existing hooks."""
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        model = _make_model()
+        num_slices = model.get_params('recon_shape')[2]
+        if num_slices % 2 != 0:
+            self.skipTest("num_slices not divisible by 2")
+        model.configure_sharding(devs)
+        flat = np.ones((6, num_slices), dtype=np.float32)
+        self.assertEqual(model._shard_recon(flat).sharding,
+                         model.recon_placement.shard_structure(2))
+        sino = np.ones((8, 4, 16), dtype=np.float32)
+        self.assertEqual(model._shard_sinogram(sino).sharding,
+                         model.sino_placement.shard_structure(3))
 
 
 if __name__ == "__main__":

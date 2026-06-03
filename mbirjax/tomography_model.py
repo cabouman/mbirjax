@@ -84,6 +84,28 @@ class TomographyModel(ParameterHandler):
         self.mesh = None
         self.shard_devices = None
         self.dev2dev_safe = True   # set empirically in configure_sharding
+        # recon_placement / sino_placement describe how recon-like and sino-like
+        # arrays are distributed across devices.  Each is a Placement, which owns
+        # a device list, a sharded axis, AND its own 1-D mesh; _set_placements()
+        # builds them from the current device config (a single device gives a
+        # trivial 1-shard placement).
+        #
+        # These are intended to be the single source of truth for device layout,
+        # but for now they coexist with the two older representations they will
+        # replace: the scalar main_device / sinogram_device, and mesh /
+        # shard_devices (where `mesh is None` also serves as the single-vs-multi
+        # flag).  In sharded mode each placement's mesh is currently an
+        # equal-but-distinct copy of self.mesh.
+        #
+        # TODO (P6 — retire the pre-placement device representations): once the
+        # projector and VCD paths consume recon_placement / sino_placement,
+        # remove main_device / sinogram_device and mesh / shard_devices; the
+        # placements (each owning its mesh) become the single source of device
+        # layout and the `mesh is None` branching is unified away.  (self.mesh
+        # does not generalize to the hybrid case anyway, where recon and sino
+        # live on different meshes.)  Also remove the previous paragraph.
+        self.recon_placement = None
+        self.sino_placement = None
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -205,6 +227,30 @@ class TomographyModel(ParameterHandler):
         self.shard_devices = devices
         self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
         self.use_gpu = 'sharded'
+        self._set_placements()
+
+    def _set_placements(self):
+        """Build recon_placement / sino_placement from the current device config.
+
+        A configured mesh gives placements over its devices (recon on the slice
+        axis, sino on the view axis); otherwise each is a trivial 1-device
+        placement on the configured single device -- which may differ for recon
+        and sino (e.g. recon on CPU and sino on GPU for a large recon).
+        """
+        recon_axis = self.recon_shard_axis()
+        sino_axis = self.sinogram_shard_axis()
+        if self.mesh is not None:
+            devices = self.shard_devices
+            self.recon_placement = mjs.Placement(devices, axis=recon_axis)
+            self.sino_placement = mjs.Placement(devices, axis=sino_axis)
+        else:
+            # Single-device.  This runs at the end of set_devices_and_batch_sizes
+            # (which has just set both devices) or configure_sharding (mesh path
+            # above), so the devices are always concrete here.
+            assert self.main_device is not None and self.sinogram_device is not None, \
+                "main_device/sinogram_device must be set before _set_placements"
+            self.recon_placement = mjs.Placement([self.main_device], axis=recon_axis)
+            self.sino_placement = mjs.Placement([self.sinogram_device], axis=sino_axis)
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -498,6 +544,7 @@ class TomographyModel(ParameterHandler):
             print('mem for all vcd = {}'.format(mem_for_all_vcd))
             print('view_batch_size_for_vmap = {}'.format(self.view_batch_size_for_vmap))
 
+        self._set_placements()
         return
 
     def get_recon_dict(self, recon_params=None, notes=None, save_log=True, save_model=True, str_format=False):
