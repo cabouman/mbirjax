@@ -56,9 +56,8 @@ class TranslationModel(mj.TomographyModel):
         view_params_name = 'translation_vectors'
 
         super().__init__(sinogram_shape, translation_vectors=translation_vectors, source_detector_dist=source_detector_dist,
-                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,), ror_mask_option=None)
+                         source_iso_dist=source_iso_dist, view_params_name=view_params_name, qggmrf_nbr_wts=(0.1, 1, 1,), use_ror_mask=False)
         
-        # self.set_params(ror_mask_option = None)
         self.set_params(max_overrelaxation=1.3)  # We override this value due to observed instabilities with larger values
 
     def get_magnification(self):

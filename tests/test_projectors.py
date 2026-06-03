@@ -168,8 +168,8 @@ class TestProjectors(unittest.TestCase):
             phantom = phantom_core
 
         # Generate indices of pixels and get the voxel cylinders
-        ror_mask_option, delta_voxel, voxel_row_aspect = ct_model.get_params(['ror_mask_option', 'delta_voxel', 'voxel_row_aspect'])
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)[0]
+        use_ror_mask = ct_model.get_params('use_ror_mask')
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)[0]
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
         # Compute forward projection with all the views at once
@@ -246,8 +246,8 @@ class TestProjectors(unittest.TestCase):
 
         # Generate indices of pixels
         num_subsets = 1
-        ror_mask_option, delta_voxel, voxel_row_aspect = ct_model.get_params(['ror_mask_option', 'delta_voxel', 'voxel_row_aspect'])
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=num_subsets, delta_voxel=delta_voxel, voxel_row_aspect=voxel_row_aspect, ror_mask_option=ror_mask_option)
+        use_ror_mask = ct_model.get_params('use_ror_mask')
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=num_subsets, use_ror_mask=use_ror_mask)
 
         # Generate sinogram data
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]

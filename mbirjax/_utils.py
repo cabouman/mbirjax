@@ -61,7 +61,7 @@ _reconstruction_defaults_dict = {
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
-    'ror_mask_option': Param('auto', False),
+    'use_ror_mask': Param(True, False),
 }
 
 # These headings should match the dictionaries
