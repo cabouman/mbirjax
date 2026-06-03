@@ -23,7 +23,7 @@ class QGGMRFDenoiser(TomographyModel):
         if len(image_shape) != 3:
             raise ValueError('image_shape must be 3-dimensional. Got image_shape={}. To denoise a 2D image, use shape (1, m, n).'.format(image_shape))
         super().__init__(image_shape, view_params_name=view_params_name, sigma_noise=None)
-        self.use_ror_mask = False
+        self.set_params(use_ror_mask=False)
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
@@ -193,7 +193,7 @@ class QGGMRFDenoiser(TomographyModel):
         --------
         TomographyModel : The base class from which this class inherits.
         """
-        self.use_ror_mask = use_ror_mask
+        self.set_params(use_ror_mask=use_ror_mask)
         if sigma_noise is None:
             sigma_noise = self.estimate_image_noise_std(image)
         self.set_params(sigma_noise=sigma_noise)
@@ -207,7 +207,8 @@ class QGGMRFDenoiser(TomographyModel):
         image_shape, granularity = self.get_params(['recon_shape', 'granularity'])
         partition_sequence = self.get_params('partition_sequence')
         partition_index = partition_sequence[0]
-        partitions = mj.gen_set_of_pixel_partitions(image_shape, [granularity[partition_index]], use_ror_mask=self.use_ror_mask)
+        use_ror_mask = self.get_params('use_ror_mask')
+        partitions = mj.gen_set_of_pixel_partitions(image_shape, [granularity[partition_index]], use_ror_mask=use_ror_mask)
 
         # Generate sequence of partitions to use
         partition = partitions[0]
