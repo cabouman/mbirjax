@@ -69,7 +69,9 @@ class TestProjectors(unittest.TestCase):
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        # Add a small offset to the angles to avoid the jax rounding bug
+        # See experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md
+        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False) + 1e-4
 
     def set_translation_vectors(self, geometry_type):
         if geometry_type in ('translation', 'anisotropic_translation'):

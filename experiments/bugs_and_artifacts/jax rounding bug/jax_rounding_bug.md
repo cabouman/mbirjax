@@ -4,6 +4,11 @@
 `minimal_lax_map_repro.{py,md}` (in `./lax_map_scatter_bug/`).
 Investigation 2026-05-25/26; JAX 0.10.1.*
 
+*Update on 2026-06-03:  the bug can appear also in conebeam
+`forward_vertical_fan_one_pixel_to_one_view` and with jax.lax.map 
+replaced with jax.vmap and with a vectorized `jnp.add()` rather than a 
+scatter `.at[:, n].add()`.*
+
 ---
 
 ## Table of contents
@@ -34,7 +39,9 @@ from `cos`/`sin` of the view angle.  Under certain combinations of
 outer wrappers — specifically `jax.vmap` (over views) wrapping
 `jax.lax.map` (over slice batches) wrapping a scatter-add — XLA's
 optimized HLO produces incorrect results for specific pixel-cloud /
-view-angle combinations.
+view-angle combinations.  This behavior has also been observed in
+`forward_vertical_fan_one_pixel_to_one_view`, where it persisted
+even after replacing the jax.lax.map with jax.vmap.  
 
 **Symptom:** an antisymmetric channel error in the sinogram —
 excess at `n_pc − 1`, deficit at `n_pc + 1` — of magnitude
@@ -59,11 +66,14 @@ the precise XLA failure mechanism is **not** "CSE-failed round" of the
 kind we (and presumably the upstream JAX/XLA team) have seen before.
 It remains undetermined.
 
-**What we know with certainty** is the precondition for the bug:
+**What we know** are necessary preconditions for the bug:
 `jnp.round` of a continuous, in-jit-derived `n_p` must live inside
-the `vmap → lax.map → scatter` chain.  Take any one of those three
+a `vmap → lax.map → scatter` or `vmap → vmap → scatter` chain.  Take any one of those three
 nesting levels away — or precompute `n_pc` on the host so the `round`
 doesn't appear inside the chain at all — and the bug vanishes.
+
+The bug is sensitive to many conditions, including exactly which views and/or
+pixels are projected: the bug can go away if more views or pixels are projected. 
 
 The full investigation, with all 15 test variants and the HLO
 post-mortem, is in `../lax_map_scatter_bug/minimal_lax_map_repro.md`.
