@@ -1,3 +1,4 @@
+from . import _device_setup  # noqa: F401 — must precede all JAX imports
 from .projectors import *
 from .parameter_handler import *
 from .tomography_model import *
