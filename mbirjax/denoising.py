@@ -164,7 +164,7 @@ class QGGMRFDenoiser(TomographyModel):
                 False:
                     No mask.
                 True:
-                    The mask is an ellipse that fills the reconstruction volume.
+                    The mask is an ellipse inscribed in the reconstruction volume.
                 2D array:
                     Use a custom binary mask. Must have shape recon_shape[:2].
             init_image (numpy or jax array, optional):  An initial image for the minimization.  Defaults to image.

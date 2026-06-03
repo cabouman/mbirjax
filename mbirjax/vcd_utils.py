@@ -7,7 +7,10 @@ import mbirjax.preprocess as mjp
 
 def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
-    Resolve the selected binary mask for the region of reconstruction.
+    Get a binary mask for the region of reconstruction.  By default, the mask is an ellipse inscribed in
+    the edges of the 2D recon_shape[0:2].  The size of this ellipse can be reduced by setting
+    crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the ellipse axes.  Only
+    one of these can be nonzero. Negative values are clipped to 0.
 
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices), or just (rows, columns).
@@ -15,7 +18,7 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
             False:
                 No mask.
             True:
-                The mask is an ellipse that fills the reconstruction volume.
+                The mask is an ellipse inscribed in the reconstruction volume.
             2D array:
                 Use a custom binary mask. Must have shape recon_shape[:2].
         crop_radius_pixels (int): Number of column-pixel-equivalent pixels to subtract from radius.
@@ -83,7 +86,7 @@ def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, us
             False:
                 No mask.
             True:
-                The mask is an ellipse that fills the reconstruction volume.
+                The mask is an ellipse inscribed in the reconstruction volume.
             2D array:
                 Use a custom binary mask. Must have shape recon_shape[:2].
 
@@ -162,7 +165,7 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
             False:
                 No mask.
             True:
-                The mask is an ellipse that fills the reconstruction volume.
+                The mask is an ellipse inscribed in the reconstruction volume.
             2D array:
                 Use a custom binary mask. Must have shape recon_shape[:2].
 
@@ -218,7 +221,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
             False:
                 No mask.
             True:
-                The mask is an ellipse that fills the reconstruction volume.
+                The mask is an ellipse inscribed in the reconstruction volume.
             2D array:
                 Use a custom binary mask. Must have shape recon_shape[:2].
 
