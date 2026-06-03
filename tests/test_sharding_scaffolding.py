@@ -35,7 +35,8 @@ class TestShardingScaffolding(unittest.TestCase):
     def test_preferred_devices_returns_two(self):
         """preferred_devices(2) returns exactly two devices."""
         devs = preferred_devices(2)
-        if devs is None:
+        n = len(jax.devices())
+        if n < 2:
             self.skipTest("Need >= 2 devices for sharding tests.")
         self.assertEqual(len(devs), 2)
 
