@@ -48,7 +48,7 @@ import os
 import sys
 
 # Keep in sync with mbirjax/_device_setup.py DEFAULT_MAX_CPU_DEVICES.
-DEFAULT_MAX_CPU_DEVICES = 8
+DEFAULT_MAX_CPU_DEVICES = 3
 
 
 def _performance_core_count():
