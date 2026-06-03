@@ -47,7 +47,7 @@ import os
 import sys
 
 # Keep in sync with mbirjax/_device_setup.py DEFAULT_MAX_CPU_DEVICES.
-DEFAULT_MAX_CPU_DEVICES = 2
+DEFAULT_MAX_CPU_DEVICES = 3
 
 
 def _performance_core_count():
@@ -100,18 +100,21 @@ import jax
 
 
 def preferred_devices(n: int):
-    """Return a list of n devices for sharding tests, or None if unavailable.
+    """Return a list of n devices for sharding tests.
 
-    On a machine WITH GPUs the pool is the real GPUs (so tests exercise real
-    hardware), capped at the GPU count: we do NOT fall back to CPU when GPUs are
-    present but too few — that would silently run a "GPU sharding" test on CPU.
-    On a machine with no GPU backend (laptop/CI) the pool is the virtual CPU
-    devices.  Returns None when the chosen pool has fewer than n devices (the
-    caller should raise unittest.SkipTest).
+    Prefers real GPUs over virtual CPU devices so that sharding tests exercise
+    real hardware on a GPU cluster and fall back to virtual CPUs on a laptop.
+
+    Returns None if fewer than n devices of any kind are available (the caller
+    should raise unittest.SkipTest in that case).
     """
     try:
         gpus = jax.devices('gpu')
+        if len(gpus) >= n:
+            return gpus[:n]
     except RuntimeError:
-        gpus = []
-    pool = gpus if gpus else jax.devices('cpu')
-    return pool[:n] if len(pool) >= n else None
+        pass
+    cpus = jax.devices('cpu')
+    if len(cpus) >= n:
+        return cpus[:n]
+    return None
