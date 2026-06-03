@@ -188,13 +188,33 @@ def worker_setup(out_file):
               f"pct_above={m['pct_above_threshold']:.6f}%"
               + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
+    # Record which physical GPUs / interconnect / NUMA this allocation got, and
+    # whether the host-bounce transfer path is active -- both can swing
+    # multi-device performance, so they are logged with every run.
+    topology = sc.gpu_topology() if plat == "gpu" else {}
+    dev2dev_safe = None
+    if plat == "gpu":
+        try:
+            import jax
+            import mbirjax._sharding as mjs
+            gpus = jax.devices("gpu")
+            if len(gpus) > 1:
+                dev2dev_safe = bool(mjs.is_dev2dev_safe(gpus))
+        except Exception:   # noqa: BLE001 — best effort, never abort setup
+            pass
+
     pkg_path = os.path.dirname(mbirjax.__file__)
     beta_state, branch = sc.beta_status(pkg_path)   # by git branch, not dir name
     result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
               "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
-              "correctness": corr}
+              "correctness": corr, "topology": topology, "dev2dev_safe": dev2dev_safe}
     sc.write_worker_result(out_file, result)
     print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
+    if dev2dev_safe is not None:
+        print(f"[setup] dev2dev_safe={dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    if topology.get("devices"):
+        print("[setup] GPUs:\n    " + topology["devices"].replace("\n", "\n    "))
 
 
 def worker_measure(size_label, device_counts, warmup, trials, out_file, path="band"):
@@ -366,6 +386,8 @@ def main():
     mpath = setup.get("mbirjax_path", "?")
     beta_state = setup.get("beta_state", "unknown")
     branch = setup.get("branch")
+    topology = setup.get("topology") or {}
+    dev2dev_safe = setup.get("dev2dev_safe")
     if beta_state == "beta":
         label = f"*** beta ***  (branch {branch})"
     elif beta_state == "not-beta":
@@ -380,6 +402,14 @@ def main():
               + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
     else:
         print("  correctness: no baseline present")
+    if dev2dev_safe is not None:
+        print(f"  dev2dev_safe: {dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    if topology.get("topo"):
+        # The GPU↔GPU interconnect + NUMA placement (the allocation-quality
+        # variable behind run-to-run multi-device scaling surprises).
+        print("  GPU topology (nvidia-smi topo -m):")
+        print("    " + topology["topo"].replace("\n", "\n    "))
 
     sizes = SIZES[plat]
     size_labels = [sc.size_label(s) for s in sizes]
@@ -432,6 +462,7 @@ def main():
             "warmup": WARMUP, "trials": TRIALS,
             "device_counts": device_counts, "sizes": size_labels,
             "mem_kind": mem_kind, "correctness": corr,
+            "dev2dev_safe": dev2dev_safe, "topology": topology,
             "grid": grid, "failures": failures_by_size,
         }
         sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{path}_{plat}.yaml"),

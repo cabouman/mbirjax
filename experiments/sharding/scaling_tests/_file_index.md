@@ -6,8 +6,11 @@
   timing (warmup+trials), peak memory (GPU per-device / CPU RSS), correctness
   metric (percent of points above an fp32 threshold), YAML I/O, baseline npy/yaml
   save+load, speedup/mem-fraction annotators, subprocess orchestration
-  (`run_worker`/`write_worker_result`), and matplotlib plots.  Problem-size sets
-  live in each op driver, not here.
+  (`run_worker`/`write_worker_result`), matplotlib plots, and a best-effort GPU
+  topology/UUID snapshot (`gpu_topology`, via `nvidia-smi`) so a run records which
+  physical GPUs + interconnect/NUMA it got (the allocation-quality variable behind
+  run-to-run multi-device scaling surprises).  Problem-size sets live in each op
+  driver, not here.
 - `fbp_filter_scaling.py` — scaling + correctness driver for
   `ParallelBeamModel.fbp_filter`.  ISOLATED-SUBPROCESS HARNESS: an orchestrator
   (default, no args, touches no JAX) spawns fresh worker subprocesses — `--mode

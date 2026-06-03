@@ -232,6 +232,28 @@ def device_label():
     return f"{plat.upper()} ({kind})"
 
 
+def gpu_topology():
+    """Best-effort GPU topology snapshot for reproducibility.
+
+    Records which physical GPUs the scheduler handed us (UUIDs, via
+    ``nvidia-smi -L``) and how they interconnect (``nvidia-smi topo -m``).
+    Cross-allocation performance can hinge on this -- e.g. all GPUs on one NUMA
+    socket vs split across two changes host-side launch latency, which hits the
+    launch-heavy multi-device paths most -- so we log it next to every result.
+    Returns ``{}`` when nvidia-smi is unavailable (e.g. CPU runs).
+    """
+    out = {}
+    for key, cmd in (("devices", ["nvidia-smi", "-L"]),
+                     ("topo", ["nvidia-smi", "topo", "-m"])):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                out[key] = r.stdout.strip()
+        except Exception:   # nvidia-smi missing / CPU node — best effort
+            pass
+    return out
+
+
 def default_device_counts(max_devices):
     """Powers-of-two-ish device-count ladder up to max_devices, always incl. 1."""
     counts = [1]
