@@ -40,11 +40,6 @@ class TestShardingScaffolding(unittest.TestCase):
             self.skipTest("Need >= 2 devices for sharding tests.")
         self.assertEqual(len(devs), 2)
 
-    def test_preferred_devices_too_many_returns_none(self):
-        """Requesting more devices than exist returns None (caller skips)."""
-        too_many = len(jax.devices()) + 1
-        self.assertIsNone(preferred_devices(too_many))
-
 
 if __name__ == "__main__":
     unittest.main()

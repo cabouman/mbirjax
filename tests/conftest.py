@@ -106,13 +106,14 @@ def preferred_devices(n: int):
     Prefers real GPUs over virtual CPU devices so that sharding tests exercise
     real hardware on a GPU cluster and fall back to virtual CPUs on a laptop.
 
-    Returns None if fewer than n devices of any kind are available (the caller
-    should raise unittest.SkipTest in that case).
+    Returns None if fewer than n GPUs are available when there is at least one
+    GPU and return None if fewer than n CPUs are available and no GPUs are available.
     """
     try:
         gpus = jax.devices('gpu')
         if len(gpus) >= n:
             return gpus[:n]
+        return None
     except RuntimeError:
         pass
     cpus = jax.devices('cpu')
