@@ -15,8 +15,9 @@ It serves two roles here:
   2. Shared helpers for test files — `preferred_devices(n)` is importable from
      any test via `from conftest import preferred_devices`.
 
-Every sharding test file relies on this file; none of them needs to repeat
-the device-flag setup or the device-pick logic.
+Every sharding test file (Phases A–F of the implementation plan) relies on this
+file; none of them needs to repeat the device-flag setup or the device-pick
+logic.
 
 XLA device flag
 ───────────────
@@ -105,13 +106,14 @@ def preferred_devices(n: int):
     Prefers real GPUs over virtual CPU devices so that sharding tests exercise
     real hardware on a GPU cluster and fall back to virtual CPUs on a laptop.
 
-    Returns None if fewer than n devices of any kind are available (the caller
-    should raise unittest.SkipTest in that case).
+    Returns None if fewer than n GPUs are available when there is at least one
+    GPU and return None if fewer than n CPUs are available and no GPUs are available.
     """
     try:
         gpus = jax.devices('gpu')
         if len(gpus) >= n:
             return gpus[:n]
+        return None
     except RuntimeError:
         pass
     cpus = jax.devices('cpu')
