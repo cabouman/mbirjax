@@ -155,6 +155,77 @@ leave two paths lingering), then port to the other geometries.
 - **match-input** per the F2 contract.
 - Correctness gate: forward/back **adjoint round-trip** against the validated P2
   back projector.
+- **Design in P3: the geometry-neutral "project to a slice band" interface**
+  (see the design note below).  P3 is where it should land, because it must be
+  built for forward + back together so the adjoint round-trip gates it.
+
+### Design note — geometry-neutral slice-band projector interface (decided 2026-06-04)
+
+Today the sharded back path streams the recon's slice axis in **bands** but
+positions each band by **row-slicing the sinogram** (`data[:, g0:g1, :]`), which
+only works for parallel beam (detector row `r` ↔ slice `r`).  The agreed
+generalization:
+
+- **Interface (B2): `(band_start g0, band_length L)` in *global slice-index*
+  units**, passed to the per-view projector; the projector reads the full
+  (resident) view and emits exactly slices `[g0:g0+L)`.  `g0` is a **dynamic
+  (traced)** scalar; `L` is **static**.
+  - *Why integer slice index, not a physical offset / `recon_slice_offset` (B1):*
+    a per-geometry survey shows the z-shift is a *different* quantity in each
+    geometry, so `recon_slice_offset` is **not** a uniform currency:
+
+    | geometry | slice→row map | z-shift it uses | internal slice-batching |
+    |---|---|---|---|
+    | `parallel_beam` | positional, row = slice | *none* | *none* |
+    | `cone_beam` | z-based vertical fan | `recon_slice_offset` (+ per-view helical) | `entries_per_cylinder_batch` |
+    | `multiaxis_parallel` | z-based vertical fan | `recon_slice_offset` | `entries_per_cylinder_batch` |
+    | `translation_model` | z-based vertical fan | `translation_vector[2]` (per view) | `entries_per_cylinder_batch` |
+
+    The integer band *is* uniform.  Each geometry converts internally: parallel →
+    rows `[g0:g0+L)` via `dynamic_slice` on the resident view; the z-based three →
+    compute z for global indices `k = g0 + k_local` using their existing shift
+    term.  `recon_slice_offset` stays each geometry's private parameter; **nothing
+    is added to parallel or translation.**  This also keeps the door open for a
+    future *row-sharded* parallel beam (a device just owns band
+    `(g0=row_start, L=row_count)`, no reduce) — adding `recon_slice_offset` to
+    parallel beam would have fought that.
+- **Recompilation discipline:** `g0` **dynamic**, `L` **static** → ≤2 compiles
+  (the balanced split yields ≤2 band lengths).  The per-band position must **not**
+  ride through `recon_slice_offset`/`recon_shape`, which are closure/`static`
+  constants of the projector — varying them per band rebuilds the projector
+  (~`n_dev²` times).
+  - *Rejected:* conveying `L` by passing an empty output cylinder — JAX keys the
+    jit cache on input *shapes* exactly as on static-arg values, so it saves no
+    compile and just adds a throwaway allocation.  Use a static `num_output_slices`
+    arg.
+  - *Assembly / in-place:* keep `concatenate` for the **multi-device threaded
+    reduce-scatter** (an in-place `dynamic_update_slice` accumulator only goes
+    in-place under `jit` + `donate_argnums`; in our Python band loop it copies
+    per band and serializes the band-to-band streaming overlap).  In-place
+    donation **is** the right assembly for the *jittable* single-device streaming
+    (P6) and the forward accumulation (P3) — file it there.
+- **Slice-batching subsumption (P6):** the z-based geometries' internal
+  `entries_per_cylinder_batch` chunking *is* banding one layer down.  Once the
+  kernel takes `(g0, L)`, the outer band loop subsumes it and that machinery is
+  deleted from cone/multiaxis/translation — but this only fully lands when the
+  **single-device path also drives band-looping** (the trivial-sharding
+  unification), since today the internal chunking is what bounds single-device
+  memory.
+- **Adjoint test:** add the same `(g0, L)` to the forward projectors; "forward a
+  band, back-project it, compare" at arbitrary `(g0, L)` becomes a strong
+  per-geometry gate.
+
+**Implementation note — why this is P3, not a quick parallel-beam change now.**
+Inspecting the call stack: the per-view kernel is vmapped by the *shared* generic
+layer (`projectors.py` `sparse_back_project_view_batch`, the
+`jax.vmap(back_project_one_view_to_pixel_batch, ...)`), so adding a band argument
+the kernel uses *internally* changes the generic projector API **and every
+geometry's kernel signature at once** — there is no clean parallel-beam-only
+version.  For parallel beam specifically the only *localized* way to band is the
+**current external row-crop**, which is already bit-exact.  So: leave the external
+row-crop as parallel beam's band mechanism for now, and build the `(g0, L)`
+interface once in P3 across forward + back with the adjoint round-trip as the
+gate.
 
 ### P4 — VCD on placements (Phase E)
 - Entry/exit placements for sinogram (view) / recon (slice) / weights (view).
@@ -182,9 +253,15 @@ leave two paths lingering), then port to the other geometries.
   cone-beam lever; parallel-beam sharded axes are sinogram-side).
 
 ### P6 — Port + retire
-- Port the placement/movement path to cone / translation / multiaxis geometries.
+- Port the placement/movement path to cone / translation / multiaxis geometries
+  (each implements the `(g0, L)` slice-band projector interface from the P3 design
+  note).
 - Retire `main_device` / `sinogram_device` entirely (the trivial-sharding
   unification); remove the old single-device and slice-band code paths.
+- With the single-device path unified onto band-looping, **delete the per-geometry
+  `entries_per_cylinder_batch` slice-batching** (subsumed by the outer band loop)
+  and switch the jittable single-device / forward assembly to an in-place
+  `dynamic_update_slice` accumulator with `donate_argnums` (see the P3 design note).
 
 ---
 

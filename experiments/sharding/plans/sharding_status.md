@@ -19,6 +19,62 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-04) — back-projection refactor landed (CPU-green); GPU scaling PENDING; `(g0,L)` interface designed for P3
+
+**What changed (staged, not committed — Greg commits from PyCharm).**  A
+readability/modularity refactor of the P2 band back-projection, behavior-preserving:
+- `_sparse_back_project_sharded` is now a four-beat narrative (setup → size bands →
+  `_back_project_all_bands` → assemble).  Extracted `_back_project_all_bands`
+  (slice-owner × band double loop) and `_back_project_local_views_to_band` (the
+  parallel per-view-owner partial projection).
+- New primitive `mjs.sum_band_to_owner` (`_sharding/transfer.py`) — the
+  cross-device reduce (move_shard each partial + sum), pulled out of the old inline
+  loop; foreshadows the deferred P3 consolidation with `sum_cylinders_to_recon`.
+- `_slice_band_length` is now a `@staticmethod(…, fixed_band=None)` with the
+  1/n_dev² band-sizing rationale written out.
+- **Terminology** adopted throughout: *view-owner / slice-owner / view-shard /
+  slice-shard* (and *band* = sub-range of a slice-shard).
+- **Light placement alignment:** `devices` from `self.sino_placement.devices`;
+  final assembly via `self.recon_placement.shard_structure(2)` (replacing the
+  inline `NamedSharding(self.mesh, …)`).
+- Bundled (separate concern): the one-line `use_ror_mask` attribute→`get_params`
+  fix in `back_project` ([tomography_model.py:790]) left over from the
+  anisotropic_voxels2 merge (the test/script spots were already in `56ed0bf`).
+
+**Verification.**  CPU green: back projection + `fbp_recon` 18; full sharding suite
+58; projectors + FBP regression.  Trivial n=1 **bit-exact** vs single-device; 2/4/8
+float-noise match; Hessian, band-sweep, single-device-streaming, view-subset all
+pass.  (`conftest.py` device count set to 8 so the sweep exercises >2 devices; note
+the CPU default stays 2 because back projection degrades past it — bandwidth-bound,
+not a defect.)  **GPU re-run PENDING on the cluster:** run
+`sparse_back_project_scaling.py` (already band-only, `DEVICE_COUNTS=[1,2,3]`; pre-flight
+`nvidia-smi dmon -s pct`) and confirm time/mem **match the recorded P2 band table**
+(1008³: 20322/11075/7396 ms; 11592/6928/4770 MB).  A deviation would point at the
+placement-alignment swap producing a non-equivalent mesh — the one assumption to
+confirm on real hardware.
+
+**Designed, not built — `(g0,L)` geometry-neutral slice-band projector interface.**
+Recorded as the **P3 design note** in `sharding_implementation_plan_v2.md` (with a P6
+pointer): adopt **B2** — a band parameterized by `(band_start g0 dynamic, length L
+static)` in global slice-index units, each geometry converting internally (per-geometry
+survey shows `recon_slice_offset` is *not* a uniform currency: cone/multiaxis use it,
+translation uses `translation_vector[2]`, parallel is positional).  Decisions captured:
+dynamic-g0/static-L recompilation discipline; empty-buffer-for-L rejected;
+in-place `dynamic_update_slice` deferred to the *jittable* single-device/forward paths
+(P6/P3) only; `entries_per_cylinder_batch` slice-batching is internal banding to be
+**subsumed by the band loop** in P6; forward/back adjoint round-trip is the gate.
+**Implementation finding:** there is **no clean parallel-beam-only** version — the
+shared `vmap` in `projectors.py` forces all four geometry kernel signatures at once —
+so PB keeps the bit-exact **external row-crop** for now and the `(g0,L)` kernel is built
+once in **P3** (forward+back together).
+
+**Next:** (1) Greg runs GPU correctness + scaling on the cluster, confirm match;
+(2) the separate harness vestigial-plumbing cleanup (`--path`/`--pixel-batch`,
+`_print_path_comparison`); (3) **P3 — forward projection on placements**, building the
+`(g0,L)` slice-band interface per the design note.
+
+---
+
 ## HANDOFF (2026-06-03) — P1 done; P2 DECIDED: keep band (pixel retired); finalizing → P3 next
 
 **Where we are.**  The placement architecture is underway:
