@@ -66,6 +66,13 @@ import numpy as np
 OP_NAME = "sparse_back_project"
 
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
+# Device-count ladder.  None → the automatic powers-of-two ladder
+# (default_device_counts).  Set explicitly to override — e.g. [1, 2, 3] to use
+# only the first three GPUs and skip a known-bad 4th card (pick_devices takes the
+# first n, so [0,1,2]).  Sizes must be divisible by each count used.
+DEVICE_COUNTS = [1, 2, 3, 4]  # [1, 2, 3]
+DEVICE_COUNTS = np.array(DEVICE_COUNTS)
+
 # Problem sizes (n_views, n_rows, n_channels).  Back projection is MUCH heavier
 # per element than fbp_filter (it is the projector: cost ~ views × pixels × psf ×
 # slices), so the sizes here are smaller than the fbp ones — tune freely.
@@ -75,15 +82,17 @@ OP_NAME = "sparse_back_project"
 # divisible by 1/2/3/4 (multiples of 12, ~the old 256/512/1024) so the ladder can
 # include 3 devices — useful for skipping a throttling 4th card on a node by
 # running on the cooler first three GPUs (see DEVICE_COUNTS).
-SIZES = {
+SIZES_BY_12 = {
     "cpu": [(64, 64, 64), (128, 128, 128), (256, 256, 256), (400, 400, 400)],
     "gpu": [(252, 252, 252), (504, 504, 504), (1008, 1008, 1008)],
 }
-# Device-count ladder.  None → the automatic powers-of-two ladder
-# (default_device_counts).  Set explicitly to override — e.g. [1, 2, 3] to use
-# only the first three GPUs and skip a known-bad 4th card (pick_devices takes the
-# first n, so [0,1,2]).  Sizes must be divisible by each count used.
-DEVICE_COUNTS = [1, 2, 3]
+SIZES_BY_16 = {
+    "cpu": [(64, 64, 64), (128, 128, 128), (256, 256, 256), (400, 400, 400)],
+    "gpu": [(256, 256, 256), (512, 512, 512), (1024, 1024, 1024)],
+}
+
+SIZE = SIZES_BY_12 if 3 in DEVICE_COUNTS else SIZES_BY_16
+
 WARMUP = 1
 TRIALS = 3
 CORRECTNESS_THRESHOLD = 1e-4
