@@ -19,7 +19,7 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-04) — back-projection refactor landed (CPU-green); GPU scaling PENDING; `(g0,L)` interface designed for P3
+## HANDOFF (2026-06-04) — back-projection refactor landed & GPU-confirmed (H100×1–4); `(g0,L)` interface designed for P3
 
 **What changed (staged, not committed — Greg commits from PyCharm).**  A
 readability/modularity refactor of the P2 band back-projection, behavior-preserving:
@@ -46,12 +46,46 @@ readability/modularity refactor of the P2 band back-projection, behavior-preserv
 float-noise match; Hessian, band-sweep, single-device-streaming, view-subset all
 pass.  (`conftest.py` device count set to 8 so the sweep exercises >2 devices; note
 the CPU default stays 2 because back projection degrades past it — bandwidth-bound,
-not a defect.)  **GPU re-run PENDING on the cluster:** run
-`sparse_back_project_scaling.py` (already band-only, `DEVICE_COUNTS=[1,2,3]`; pre-flight
-`nvidia-smi dmon -s pct`) and confirm time/mem **match the recorded P2 band table**
-(1008³: 20322/11075/7396 ms; 11592/6928/4770 MB).  A deviation would point at the
-placement-alignment swap producing a non-equivalent mesh — the one assumption to
-confirm on real hardware.
+not a defect.)
+
+**GPU CONFIRMED (H100×1–4, one NUMA-0 socket, clean — no throttle, all 1980 MHz;
+cross-platform correctness 3.05e-5, 0 above 1e-4).**  Times match the pre-refactor
+P2 baseline within ~1% at 1/2/3 dev (behavior-preserving); 4-dev is new (no prior
+1008³/4-dev baseline).  1008³:
+
+  | n_dev | time (ms) | speedup | mem (MB) | mem_frac |
+  |---|---|---|---|---|
+  | 1 | 20193 | 1.00 | 11565 | 1.00 |
+  | 2 | 11036 | 1.83 | 6996 | 0.61 |
+  | 3 | 7363 | 2.74 | 4852¹ | 0.42 |
+  | 4 | 6132 | 3.29 | 3460 | 0.30 |
+
+4-dev speedup is also 3.32× @504³, 2.51× @252³ (small size overhead-bound).  The
+3.29× (vs the old 3.91× at 1024³) is a **size** effect — 1008 = 2⁴·7·9 tiles worse
+in XLA than 1024 = 2¹⁰ — not a regression (the 1/2/3-dev times are unchanged).
+
+¹ **Harness "ruler" gotcha (suspect-the-ruler).** `worker_measure` runs **one
+subprocess per *size***, looping device counts *descending* and reading the
+cumulative `peak_bytes_in_use` with `gc.collect()` between — but XLA's allocator
+fragments, so a config measured *after* a different-device-count config in the same
+process can over-report peak.  The 4-dev run's n=3 read **5697 MB** (inflated ~17%
+by the preceding n=4); the **clean value is 4852 MB** (from the `[1,2,3]`-only run,
+where n=3 was measured first).  n=1/n=2 match across runs because their preceding
+config is the same.  **Rule: trust each size's *first-measured* (largest-device-
+count) memory; later same-process configs can be fragmentation-inflated.**  A fully
+clean fix = one subprocess per `(size, n_dev)` — filed under the (separate) harness
+cleanup, not chased here.  Result yamls (gitignored): top-level = 4-dev run;
+`results/back_projection/v7_post_refactor_3_gpus/` = the clean `[1,2,3]` run.
+
+**End-to-end `direct_recon` (Phase F2) re-confirmed post-refactor (H100, `[1,2,4]`).**
+The full FBP pipeline (shard → `fbp_filter` F1 → `back_project` D → gather) matches
+the F2 baseline (`results/direct_recon/v0/`): correctness **identical** (both
+`max_abs_diff = 3.95e-7`, 0 above 1e-4 — bit-for-bit), times within ~1%, memory
+within ~3%.  1024³: n=1 19594 ms / n=2 9354 ms (2.09×) / n=4 5265 ms (3.72×); the
+pipeline scales better than raw back projection because the compute-bound filter
+lifts the combined number.  **So the original Phase D (sharded back projection,
+reduce-scatter slice-band) and Phase F2 (`direct_recon` match-input pipeline) are
+COMPLETE and GPU-validated on the refactored code.**
 
 **Designed, not built — `(g0,L)` geometry-neutral slice-band projector interface.**
 Recorded as the **P3 design note** in `sharding_implementation_plan_v2.md` (with a P6
@@ -68,10 +102,11 @@ shared `vmap` in `projectors.py` forces all four geometry kernel signatures at o
 so PB keeps the bit-exact **external row-crop** for now and the `(g0,L)` kernel is built
 once in **P3** (forward+back together).
 
-**Next:** (1) Greg runs GPU correctness + scaling on the cluster, confirm match;
+**Next:** (1) ✅ GPU correctness + scaling confirmed (H100×1–4, table above);
 (2) the separate harness vestigial-plumbing cleanup (`--path`/`--pixel-batch`,
-`_print_path_comparison`); (3) **P3 — forward projection on placements**, building the
-`(g0,L)` slice-band interface per the design note.
+`_print_path_comparison`) — and consider the per-`(size, n_dev)` subprocess fix for
+the memory-fragmentation gotcha (footnote ¹); (3) **P3 — forward projection on
+placements**, building the `(g0,L)` slice-band interface per the design note.
 
 ---
 
