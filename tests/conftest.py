@@ -6,18 +6,14 @@ What conftest.py is
 `conftest.py` is a pytest *special* file, not a test module (it intentionally
 contains no tests).  pytest auto-discovers it and applies it to every test file
 in this directory and below — no import is needed for its setup to take effect.
-It serves two roles here:
+Its role here is process setup that must happen *before any test imports JAX*:
+conftest is the only reliable "runs first, before everything" hook pytest
+provides, so the XLA virtual-device flag is set here (see below).  A test that
+did `import jax` before the flag was set would lock JAX into 1 CPU device.
 
-  1. Process setup that must happen *before any test imports JAX.*  conftest is
-     the only reliable "runs first, before everything" hook pytest provides, so
-     the XLA virtual-device flag is set here (see below).  A test that did
-     `import jax` before the flag was set would lock JAX into 1 CPU device.
-  2. Shared helpers for test files — `preferred_devices(n)` is importable from
-     any test via `from conftest import preferred_devices`.
-
-Every sharding test file (Phases A–F of the implementation plan) relies on this
-file; none of them needs to repeat the device-flag setup or the device-pick
-logic.
+This applies hierarchically to every test in tests/ and below, including the
+sharding subpackage (tests/sharding/) — whose own conftest adds the
+`preferred_devices(n)` device-picker that the sharding tests share.
 
 XLA device flag
 ───────────────
@@ -32,17 +28,6 @@ source vs site-packages copy) Python resolves first, and so the flag is set even
 before mbirjax is imported by a test.  The slight redundancy is intentional:
 conftest guards the *test* process regardless of mbirjax import order, while
 mbirjax._device_setup guards normal *library* use.
-
-Device-preference policy for sharding tests
-───────────────────────────────────────────
-Use preferred_devices(n) in test setUp/setUpClass to pick devices:
-
-  1. Real GPUs (jax.devices('gpu')) — used when ≥n GPUs are available.
-  2. Virtual CPU devices (jax.devices('cpu')) — fallback set by XLA_FLAGS below.
-
-Sharding tests automatically exercise real hardware on a GPU cluster and fall
-back to virtual CPUs on a laptop or CI machine.  The tests are identical either
-way.
 """
 import os
 import sys
@@ -96,27 +81,3 @@ os.environ.setdefault(
     "XLA_FLAGS",
     f"--xla_force_host_platform_device_count={_resolve_num_cpu_devices()}"
 )
-
-import jax
-
-
-def preferred_devices(n: int):
-    """Return a list of n devices for sharding tests.
-
-    Prefers real GPUs over virtual CPU devices so that sharding tests exercise
-    real hardware on a GPU cluster and fall back to virtual CPUs on a laptop.
-
-    Returns None if fewer than n GPUs are available when there is at least one
-    GPU and return None if fewer than n CPUs are available and no GPUs are available.
-    """
-    try:
-        gpus = jax.devices('gpu')
-        if len(gpus) >= n:
-            return gpus[:n]
-        return None
-    except RuntimeError:
-        pass
-    cpus = jax.devices('cpu')
-    if len(cpus) >= n:
-        return cpus[:n]
-    return None

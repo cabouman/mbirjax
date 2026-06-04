@@ -125,3 +125,32 @@ def sum_band_to_owner(partials, owner, dev2dev_safe=True):
     for c in contribs[1:]:
         total = total + c
     return total
+
+
+def broadcast_band_to_views(band, view_owners, dev2dev_safe=True):
+    """Copy a slice-band cylinder from its slice-owner to every view-owner.
+
+    The adjoint of :func:`sum_band_to_owner`.  In sharded forward projection the
+    recon is slice-sharded, so a band of slices lives on a single slice-owner,
+    yet every view-owner needs that band to forward-project its own views'
+    detector rows.  This broadcasts the band (one-to-many) to each view-owner via
+    ``move_shard`` (so the hardware-safe path is honored).  A ``move_shard`` to
+    the band's own device is a no-op, so the single-device case carries no
+    overhead.
+
+    Broadcast (copy to N devices) is the transpose of ``sum_band_to_owner``'s
+    reduce (sum from N devices) -- which is what keeps forward and back projection
+    adjoint.
+
+    Args:
+        band (jax.Array): a slice-band cylinder ``(num_pixels, band_len)``
+            resident on its slice-owner.
+        view_owners (sequence of jax.Device): the devices that will
+            forward-project (each gets its own copy of the band).
+        dev2dev_safe (bool): cached hardware probe; forwarded to ``move_shard``.
+
+    Returns:
+        dict {view_owner: jax.Array}: the band resident on each view-owner.
+    """
+    return {dev: move_shard(band, dev, dev2dev_safe=dev2dev_safe)
+            for dev in view_owners}

@@ -745,6 +745,14 @@ class TomographyModel(ParameterHandler):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
+        This is a **user-facing** method: its output sharding **matches its
+        input** (mirroring :meth:`back_project`).  A plain recon is sharded at
+        entry, forward-projected, and the sinogram is gathered to a plain array at
+        exit.  A slice-sharded recon stays on-device: the sinogram is returned
+        view-sharded with no gather, so callers composing on-device (e.g. the VCD
+        loop) pay no host round-trip.  Internally the work is the same all-gather
+        either way (see :meth:`sparse_forward_project`); only the exit differs.
+
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
@@ -753,15 +761,31 @@ class TomographyModel(ParameterHandler):
             recon (jnp array): The 3D reconstruction array.
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.
+            jnp array: The resulting 3D sinogram -- plain if the input was plain,
+            view-sharded if the input was a sharded array.
         """
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
-        voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        output_device = self.sinogram_device
-        sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
 
-        return sinogram
+        if self.mesh is not None:
+            # Decide the exit handling from the ORIGINAL input (before the entry
+            # shard, which would make any input look sharded).
+            input_is_sharded = isinstance(getattr(recon, 'sharding', None),
+                                          jax.sharding.NamedSharding)
+            recon = self._shard_recon(recon)            # no-op if already sharded
+            # Extracting cylinders from a slice-sharded volume keeps the slice
+            # sharding (the index is on the unsharded row/col axes), so this yields
+            # slice-sharded cylinders with no movement.
+            voxel_values = self.get_voxels_at_indices(recon, full_indices)
+            # All-gather forward projection -> view-sharded sinogram.
+            sinogram = self.sparse_forward_project(voxel_values, full_indices)
+            if input_is_sharded:
+                return sinogram                          # match input: stay sharded
+            return self._gather_sinogram(sinogram)       # plain in -> plain out
+
+        voxel_values = self.get_voxels_at_indices(recon, full_indices)
+        return self.sparse_forward_project(voxel_values, full_indices,
+                                           output_device=self.sinogram_device)
 
     def back_project(self, sinogram):
         """
@@ -872,6 +896,26 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
+        # When a mesh is configured, take the sharded path: the recon cylinders are
+        # expected slice-sharded and the result is returned view-sharded (no gather
+        # here; the user-facing forward_project gathers).  Otherwise the
+        # single-device path runs unchanged.
+        if self.mesh is not None:
+            return self._sparse_forward_project_sharded(
+                voxel_values, pixel_indices, view_indices=view_indices)
+        return self._sparse_forward_project_single_device(
+            voxel_values, pixel_indices, view_indices=view_indices,
+            output_device=output_device)
+
+    def _sparse_forward_project_single_device(self, voxel_values, pixel_indices,
+                                              view_indices=None, output_device=None):
+        """
+        Single-device forward projection (the original prerelease implementation).
+
+        See :meth:`sparse_forward_project` for the full argument description.  This
+        method carries the unchanged single-device body so the sharded path can be
+        added alongside it without disturbing single-device behavior.
+        """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
@@ -904,6 +948,168 @@ class TomographyModel(ParameterHandler):
 
         sinogram = jnp.concatenate(sinogram)
         return sinogram
+
+    def _sharded_forward_project_setup(self, voxel_values, pixel_indices, view_indices):
+        """Shared setup for sharded forward projection (adjoint of the back setup).
+
+        Validates the contract (no view subset), defensively slice-shards the
+        recon cylinders (a no-op when already slice-sharded), and builds the
+        per-device data the band streaming needs.
+
+        Returns:
+            (devices, n_dev, num_views, num_slices, num_pixels, recon_shard_info,
+             view_ranges, local_pixels): ``recon_shard_info`` maps each slice-owner
+            to ``(its cylinder slice-shard, the GLOBAL (start, stop) slice range it
+            owns)``; ``view_ranges`` maps each view-owner to the GLOBAL view indices
+            it produces (its sinogram view-shard); ``local_pixels`` is
+            ``pixel_indices`` placed on each device once.
+        """
+        if view_indices is not None:
+            raise NotImplementedError(
+                "Sharded forward projection currently requires view_indices=None "
+                "(the full view-sharded sinogram).")
+        # Defensively slice-shard the cylinders (idempotent, no-op when already
+        # slice-sharded) so internal callers that pass a plain array still work.
+        voxel_values = self._shard_recon(voxel_values)
+
+        devices = self.sino_placement.devices
+        n_dev = len(devices)
+        num_views = self.get_params('sinogram_shape')[0]
+        num_slices = voxel_values.shape[1]
+        num_pixels = len(pixel_indices)
+
+        # recon_shard_info: slice-owner -> (its (num_pixels, slices_per_dev) shard,
+        # the GLOBAL slice range it owns).  index[1] is the slice axis of the 2-D
+        # cylinder; .indices() normalizes a possibly-open slice to (start, stop, step).
+        recon_shard_info = {}
+        for s in voxel_values.addressable_shards:
+            start, stop, step = s.index[1].indices(num_slices)
+            recon_shard_info[s.device] = (s.data, (start, stop))
+
+        # view_ranges: view-owner -> the GLOBAL views it produces (its sino shard).
+        view_ranges = {dev: jnp.arange(v0, v1)
+                       for dev, (v0, v1) in self.sino_placement.shard_ranges(num_views)}
+
+        local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
+        return (devices, n_dev, num_views, num_slices, num_pixels,
+                recon_shard_info, view_ranges, local_pixels)
+
+    def _sparse_forward_project_sharded(self, voxel_values, pixel_indices, view_indices=None):
+        """
+        Sharded forward projection: slice-sharded recon -> view-sharded sinogram.
+
+        This is the **all-gather adjoint** of :meth:`_sparse_back_project_sharded`'s
+        reduce-scatter.  Same two-level slice structure (see that method):
+
+          * The recon is sharded by **slice**: device t (a *slice-owner*) owns a
+            *slice-shard* of the cylinders, ``(num_pixels, slices_per_dev)``.
+          * The sinogram is sharded by **view**: device d (a *view-owner*) owns a
+            *view-shard* and must produce all detector rows for its own views.
+
+        Because a view-owner's detector row r is the forward projection of slice r
+        (parallel beam), producing its views needs slices from every slice-owner.
+        The work is **streamed in bands**, the mirror of back projection:
+
+          For each slice-band held by a slice-owner, the band is **broadcast** to
+          every view-owner (``broadcast_band_to_views`` -- the adjoint of back's
+          ``sum_band_to_owner``); each view-owner forward-projects ITS views from
+          that band, producing exactly detector rows ``[g0:g1)`` (the kernel sizes
+          its output rows from the input slices).  A view-owner concatenates its
+          row-bands, in global-slice order, into its full view-shard -- no reduce,
+          since each detector row is produced by exactly one view-owner.
+
+        No gather is performed here (contract: the user-facing ``forward_project``
+        gathers at exit).
+
+        Args:
+            voxel_values (jax array): slice-sharded recon cylinders
+                ``(num_pixels, num_slices)``.
+            pixel_indices (jax array): 1D indices into the flattened (rows, cols).
+            view_indices: must be None in sharded mode.
+
+        Returns:
+            jax array of shape sinogram_shape, view-sharded across the mesh.
+        """
+        (devices, n_dev, num_views, num_slices, num_pixels,
+         recon_shard_info, view_ranges, local_pixels) = \
+            self._sharded_forward_project_setup(voxel_values, pixel_indices, view_indices)
+
+        # Each slice-owner owns a contiguous block of slices_per_dev slices; that
+        # block is streamed in BANDS (contiguous sub-ranges) so each view-owner
+        # holds only one band at a time, not the whole gathered cylinder.  Band
+        # sizing mirrors back projection (see _slice_band_length); forward's
+        # transient is even smaller (no n_dev-way gather), so the back sizing is a
+        # safe, conservative reuse.
+        slices_per_dev = num_slices // n_dev
+        band_len = self._slice_band_length(
+            slices_per_dev, n_dev, num_pixels,
+            fixed_band=getattr(self, 'forward_project_slice_band', None))
+        band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
+
+        owned = self._forward_project_all_bands(
+            band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
+
+        # Wrap the per-view-owner shards as one view-sharded sinogram (no movement).
+        sinogram_shape = self.get_params('sinogram_shape')
+        return mjs.assemble_sharded(
+            owned, (num_views, *sinogram_shape[1:]),
+            self.sino_placement.shard_structure(3))
+
+    def _forward_project_all_bands(self, band_bounds, recon_shard_info, view_ranges,
+                                   local_pixels, devices):
+        """Broadcast every slice-band and forward-project it on every view-owner.
+
+        Slice-owners are visited in GLOBAL slice order so each view-owner's
+        row-bands accumulate in detector-row order.  For each band: broadcast it
+        from its slice-owner to all view-owners, then every view-owner
+        forward-projects ITS views from the band (rows ``[g0:g1)``).  A view-owner
+        concatenates its row-bands along the detector-row axis into its view-shard.
+
+        One thread pool spans every band's per-device fan-out.
+
+        Returns:
+            list: per-view-owner sinogram shards; ``owned[i]`` is
+            ``(views_per_dev, num_rows, num_channels)`` resident on ``devices[i]``.
+        """
+        # view_bands[i] collects view-owner devices[i]'s row-bands in row order.
+        view_bands = [[] for _ in devices]
+        # Visit slice-owners in global slice order (their shard's start), so the
+        # appended row-bands tile [0, num_rows) in order for every view-owner.
+        slice_owners = sorted(devices, key=lambda d: recon_shard_info[d][1][0])
+        with mjs.device_pool(len(devices)) as pool:
+            for slice_owner in slice_owners:
+                cyl_shard, _ = recon_shard_info[slice_owner]   # (num_pixels, slices_per_dev)
+                for (l0, l1) in band_bounds:
+                    band = cyl_shard[:, l0:l1]                 # (num_pixels, L) on slice_owner
+                    band_on_views = mjs.broadcast_band_to_views(
+                        band, devices, self.dev2dev_safe)
+                    row_bands = self._forward_project_band_to_local_views(
+                        band_on_views, local_pixels, view_ranges, devices, pool)
+                    for i in range(len(devices)):
+                        view_bands[i].append(row_bands[i])     # (vpd, L, num_channels)
+        return [bands[0] if len(bands) == 1 else jnp.concatenate(bands, axis=1)
+                for bands in view_bands]
+
+    def _forward_project_band_to_local_views(self, band_on_views, local_pixels,
+                                             view_ranges, devices, pool):
+        """Forward-project a broadcast band on every view-owner, its own views only.
+
+        The adjoint of ``_back_project_local_views_to_band``: there each view-owner
+        back-projects its views onto a slice band (then the partials are summed);
+        here each view-owner forward-projects ITS views FROM the band (no sum, each
+        detector row has a single producer).  The kernel sizes its output rows from
+        the input slices, so a band of ``L`` slices yields detector rows of length
+        ``L``.  Runs one thread per view-owner (reusing ``pool``).
+
+        Returns:
+            list: per-view-owner row-bands, each ``(views_per_dev, L, num_channels)``,
+            in device order.
+        """
+        def worker(i, device):
+            band = band_on_views[device]                       # (num_pixels, L)
+            return self.projector_functions.sparse_forward_project(
+                band, local_pixels[i], view_indices=view_ranges[device])
+        return mjs.run_per_device(devices, worker, executor=pool)
 
     def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
         """

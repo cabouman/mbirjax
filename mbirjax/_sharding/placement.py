@@ -1,8 +1,7 @@
 """
 mbirjax._sharding.placement
 ────────────────────────────
-How an array type is distributed across devices (which device owns which shard),
-and the one thing that moves between two such distributions: voxel cylinders.
+How an array type is distributed across devices: which device owns which shard.
 
 `Placement` is the unit that replaces the scalar ``main_device`` /
 ``sinogram_device`` fields: it defines how a recon-like (or sino-like) array is
@@ -11,33 +10,24 @@ distributed — a list of devices, the axis its array type is sharded on, and a
 ``recon_placement`` and ``sino_placement`` may share the same devices but differ
 in axis (slice vs view), which is why the axis is part of the placement.
 
-Under view/slice sharding the **only** array that crosses the recon↔sino
-boundary is a batch of voxel cylinders (rows of ``flat_recon``); the sinogram is
-written locally on its view-shard and never moves.  The two functions here are
-that crossing, as an **adjoint pair**:
+Under view/slice sharding the **only** data that crosses the recon↔sino boundary
+is voxel-cylinder slice-bands (the sinogram is written locally on its view-shard
+and never moves).  That crossing is the banded adjoint pair in
+:mod:`mbirjax._sharding.transfer`, both built on the one transfer primitive
+``move_shard``:
 
-  - ``move_cylinders_to_sino``  (forward / all-gather): assemble the full
-    cylinders (all slices) for a pixel batch onto each sino device.
-  - ``sum_cylinders_to_recon``  (back / reduce-scatter): reduce per-sino-device
-    partial cylinders over devices and scatter slice-bands to the recon owners.
+  - ``broadcast_band_to_views``  (forward / all-gather): copy a slice-band from
+    its slice-owner to every view-owner.
+  - ``sum_band_to_owner``        (back / reduce-scatter): sum each view-owner's
+    band partials onto the band's slice-owner.
 
-Both are loops over the placements' shards built on the one transfer primitive
-``move_shard``.  The shard counts come from the placements, so the homogeneous
-multi-device case (``N×N``) and the single-device / hybrid case (``1×1``) are the
-same code with no mode branch; a ``move_shard`` to the same device is a no-op, so
-the single-device path carries no overhead.
-
-The adjointness ``<move_cylinders_to_sino(x), y> == <x, sum_cylinders_to_recon(y)>``
-is what keeps forward and back projection adjoints (the property the forward/back
-adjoint round-trip test relies on).
+(An earlier full-cylinder pair, ``move_cylinders_to_sino`` /
+``sum_cylinders_to_recon``, was superseded by this banded pair, which streams the
+slice axis and so holds less transient memory.)
 """
 
 import numpy as np
 import jax
-import jax.numpy as jnp
-
-from .transfer import move_shard
-from .thread_execution import assemble_sharded
 
 
 class Placement:
@@ -125,84 +115,3 @@ class Placement:
         return jax.sharding.NamedSharding(
             self.mesh, jax.sharding.PartitionSpec(*spec)
         )
-
-
-def move_cylinders_to_sino(cylinders, sino_placement, dev2dev_safe=True):
-    """Gather full cylinders (all slices) for a pixel batch onto each sino device.
-
-    Forward projection's all-gather.  ``cylinders`` is a **slice-sharded**
-    ``(num_pixels_batch, num_slices)`` array (each device owns a contiguous slice
-    band); each sino device needs the *full* cylinder (all slices) to project its
-    views, so the slice bands are assembled onto every sino device.
-
-    The adjoint of :func:`sum_cylinders_to_recon`.
-
-    Assumes the sinogram is sharded on an axis **orthogonal** to the recon slice
-    axis (currently by view), which is what makes every sino device need all
-    slices.  It does not apply to a slice-sharded sinogram: in parallel beam
-    slice ``s`` maps only to detector row ``s``, so a slice-sharded sinogram
-    leaves each device owning the recon slices and detector rows for its own band
-    — projection is then fully local and no cylinder movement (hence no call
-    here) is needed.
-
-    Args:
-        cylinders (jax.Array): slice-sharded ``(num_pixels_batch, num_slices)``.
-        sino_placement (Placement): the devices that will project (only the
-            device list is used here — the sino is view-sharded, but the cylinder
-            movement only cares about *which devices* receive the cylinders).
-        dev2dev_safe (bool): cached hardware probe; forwarded to ``move_shard``.
-
-    Returns:
-        dict {sino_device: jax.Array}: the full ``(num_pixels_batch, num_slices)``
-        cylinders resident on each sino device.
-    """
-    # Recon slice-shards in slice order, so concatenation reassembles correctly.
-    recon_shards = sorted(cylinders.addressable_shards, key=lambda s: s.index[-1].start)
-    pieces = [s.data for s in recon_shards]   # (batch, local_slices) on each recon device
-    full = {}
-    for dev in sino_placement.devices:
-        parts = [move_shard(p, dev, dev2dev_safe=dev2dev_safe) for p in pieces]
-        full[dev] = parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=-1)
-    return full
-
-
-def sum_cylinders_to_recon(partials, recon_placement, dev2dev_safe=True):
-    """Reduce per-sino-device partial cylinders and scatter slice-bands to owners.
-
-    Back projection's reduce-scatter.  ``partials`` holds one full
-    ``(num_pixels_batch, num_slices)`` cylinder per sino device (that device's
-    view contribution); they are summed over devices and each recon owner's slice
-    band is landed on its device, yielding a slice-sharded result.
-
-    The adjoint of :func:`move_cylinders_to_sino`.
-
-    Assumes the sinogram is sharded on an axis **orthogonal** to the recon slice
-    axis (currently by view), so each device's partial spans all slices and the
-    partials must be summed across devices.  Under a slice-sharded sinogram each
-    slice has a single contributor (its own device), so there is nothing to sum
-    and back projection is local — this reduce-scatter would not apply (and would
-    be incorrect if forced).
-
-    Args:
-        partials (dict {device: jax.Array}): per-sino-device cylinders, each
-            ``(num_pixels_batch, num_slices)``.
-        recon_placement (Placement): the recon (slice) placement to land into.
-        dev2dev_safe (bool): cached hardware probe; forwarded to ``move_shard``.
-
-    Returns:
-        jax.Array: slice-sharded ``(num_pixels_batch, num_slices)`` on
-        ``recon_placement`` (the summed cylinders).
-    """
-    parts = list(partials.values())
-    num_pixels_batch, num_slices = parts[0].shape
-    owned = []
-    for dev, (s0, s1) in recon_placement.shard_ranges(num_slices):
-        # Bring each sino device's slice band for this owner to the owner, sum.
-        contribs = [move_shard(p[:, s0:s1], dev, dev2dev_safe=dev2dev_safe)
-                    for p in parts]
-        total = contribs[0]
-        for c in contribs[1:]:
-            total = total + c
-        owned.append(total)   # (batch, s1 - s0) on dev
-    return assemble_sharded(owned, (num_pixels_batch, num_slices),
-                            recon_placement.shard_structure(2))
