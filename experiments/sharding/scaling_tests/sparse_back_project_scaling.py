@@ -71,7 +71,6 @@ OP_NAME = "sparse_back_project"
 # only the first three GPUs and skip a known-bad 4th card (pick_devices takes the
 # first n, so [0,1,2]).  Sizes must be divisible by each count used.
 DEVICE_COUNTS = [1, 2, 3, 4]  # [1, 2, 3]
-DEVICE_COUNTS = np.array(DEVICE_COUNTS)
 
 # Problem sizes (n_views, n_rows, n_channels).  Back projection is MUCH heavier
 # per element than fbp_filter (it is the projector: cost ~ views × pixels × psf ×
@@ -91,7 +90,7 @@ SIZES_BY_16 = {
     "gpu": [(256, 256, 256), (512, 512, 512), (1024, 1024, 1024)],
 }
 
-SIZE = SIZES_BY_12 if 3 in DEVICE_COUNTS else SIZES_BY_16
+SIZES = SIZES_BY_12 if 3 in DEVICE_COUNTS else SIZES_BY_16
 
 WARMUP = 1
 TRIALS = 3
