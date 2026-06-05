@@ -6,43 +6,71 @@ import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
 
 
-def get_2d_ror_mask(recon_shape, *, crop_radius_pixels=0, crop_radius_fraction=0.0):
+def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, crop_radius_fraction=0.0):
     """
-    Get a binary mask for the region of reconstruction.  By default, the mask is the largest possible circle
-    inscribed on the longest edge of the 2D recon_shape[0:2].  The radius of this circle can be reduced by
-    setting crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the radius.  Only one
-    of these can be nonzero. Negative values are clipped to 0.
+    Get a binary mask for the region of reconstruction.  By default, the mask is an ellipse inscribed in
+    the edges of the 2D recon_shape[0:2].  The size of this ellipse can be reduced by setting
+    crop_radius_pixels or crop_radius_fraction, either of which is subtracted from the ellipse axes.  Only
+    one of these can be nonzero. Negative values are clipped to 0.
 
     Args:
-        recon_shape (tuple): Shape of recon in (rows, columns, slices)
-        crop_radius_pixels (int): Number of pixels to subtract from the radius before creating the mask.
-        crop_radius_fraction (float): Fraction to subtract from the radius before creating the mask.
-
+        recon_shape (tuple): Shape of recon in (rows, columns, slices), or just (rows, columns).
+        use_ror_mask (default is True):
+            False:
+                No mask.
+            True:
+                The mask is an ellipse inscribed in the reconstruction volume.
+            2D array:
+                Use a custom binary mask. Must have shape recon_shape[:2].
+        crop_radius_pixels (int): Number of column-pixel-equivalent pixels to subtract from radius.
+        crop_radius_fraction (float): Fraction to subtract from each axis radius.
+    
     Returns:
-        A binary mask for the region of reconstruction.
+        np.ndarray: Boolean 2D binary mask.
     """
-    # Set up a mask to zero out points outside the ROR
-    if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
-        raise ValueError('Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.')
+    if use_ror_mask is False:
+        if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
+            raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is set to False.')
+            
+        return np.ones_like(recon_shape[:2])
 
-    num_recon_rows, num_recon_cols = recon_shape[:2]
-    row_center = (num_recon_rows - 1) / 2
-    col_center = (num_recon_cols - 1) / 2
-
-    radius = max(row_center, col_center)
-
-    crop_radius = int(radius * crop_radius_fraction)
-    crop_radius = max(crop_radius, crop_radius_pixels)
-    crop_radius = max(crop_radius, 0)
-    radius -= crop_radius
-
-    col_coords = np.arange(num_recon_cols) - col_center
-    row_coords = np.arange(num_recon_rows) - row_center
-
-    coords = np.meshgrid(col_coords, row_coords)  # Note the interchange of rows and columns for meshgrid
-    mask = coords[0]**2 + coords[1]**2 <= radius**2
-    mask = mask[:, :]
-    return mask
+    elif use_ror_mask is True:
+        # Set up a mask to zero out points outside the ROR
+        if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
+            raise ValueError('Only one of crop_radius_pixels and crop_radius_fraction can be nonzero.')
+    
+        num_recon_rows, num_recon_cols = recon_shape[:2]
+        row_center = (num_recon_rows - 1) / 2
+        col_center = (num_recon_cols - 1) / 2
+    
+        row_radius = row_center - max(int(row_center * crop_radius_fraction), crop_radius_pixels, 0)
+        col_radius = col_center - max(int(col_center * crop_radius_fraction), crop_radius_pixels, 0)
+    
+        col_coords = np.arange(num_recon_cols) - col_center
+        row_coords = np.arange(num_recon_rows) - row_center
+        coords = np.meshgrid(col_coords, row_coords)
+    
+        mask = (coords[0] / col_radius) ** 2 + (coords[1] / row_radius) ** 2 <= 1.0
+        mask = mask[:, :]
+        
+        return mask
+    
+    else:  # user-provided mask
+        if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
+            raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is a custom array.')
+            
+        mask = np.asarray(use_ror_mask)
+    
+        if mask.shape != tuple(recon_shape[:2]):
+            raise ValueError(
+                "Custom use_ror_mask must have shape recon_shape[:2]. "
+                f"Got mask.shape={mask.shape}, expected {tuple(recon_shape[:2])}."
+            )
+    
+        if not np.all((mask == 0) | (mask == 1)):
+            raise ValueError("Custom use_ror_mask must contain only 0s and 1s.")
+    
+        return mask
 
 
 def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, use_ror_mask=True):
@@ -54,7 +82,13 @@ def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, us
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         granularity (list or tuple):  List of num_subsets to use for each partition
         output_device (jax device): Device on which to place the output of the partition
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        use_ror_mask (default is True):
+            False:
+                No mask.
+            True:
+                The mask is an ellipse inscribed in the reconstruction volume.
+            2D array:
+                Use a custom binary mask. Must have shape recon_shape[:2].
 
     Returns:
         tuple: A tuple of 2D arrays each representing a partition of voxels into the specified number of subsets.
@@ -76,9 +110,12 @@ def gen_pixel_partition_grid(recon_shape, num_subsets, use_ror_mask=True):
     single_subset_inds = np.random.permutation(num_subsets).reshape((small_tile_side, small_tile_side))
     subset_inds = np.tile(single_subset_inds, num_small_tiles)
     subset_inds = subset_inds[:recon_shape[0], :recon_shape[1]]
-
-    ror_mask = get_2d_ror_mask(recon_shape[:2]) if use_ror_mask else 1
-    subset_inds = (subset_inds + 1) * ror_mask - 1  # Get a - at each location outside the mask, subset_ind at other points
+    
+    if use_ror_mask is not False:
+        ror_mask = get_2d_ror_mask(recon_shape, use_ror_mask=use_ror_mask)
+    else:
+        ror_mask = 1
+    subset_inds = (subset_inds + 1) * ror_mask - 1 # Get a -1 at each location outside the mask, subset_ind at other points
     subset_inds = subset_inds.flatten()
     num_inds = len(np.where(subset_inds > -1)[0])
 
@@ -124,7 +161,13 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        use_ror_mask (default is True):
+            False:
+                No mask.
+            True:
+                The mask is an ellipse inscribed in the reconstruction volume.
+            2D array:
+                Use a custom binary mask. Must have shape recon_shape[:2].
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -138,8 +181,8 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
     indices = np.arange(max_index_val, dtype=np.int32)
 
     # Mask off indices that are outside the region of reconstruction
-    if use_ror_mask:
-        mask = get_2d_ror_mask(recon_shape)
+    if use_ror_mask is not False:
+        mask = get_2d_ror_mask(recon_shape, use_ror_mask=use_ror_mask)
         mask = mask.flatten()
         indices = indices[mask == 1]
     if num_subsets > len(indices):
@@ -174,7 +217,13 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     Args:
         recon_shape (tuple): Shape of recon in (rows, columns, slices)
         num_subsets (int): The number of subsets to divide the pixel indices into.
-        use_ror_mask (bool): Flag to indicate whether to mask out a circular RoR
+        use_ror_mask (default is True):
+            False:
+                No mask.
+            True:
+                The mask is an ellipse inscribed in the reconstruction volume.
+            2D array:
+                Use a custom binary mask. Must have shape recon_shape[:2].
 
     Raises:
         ValueError: If the number of subsets specified is greater than the total number of pixels in the grid.
@@ -184,7 +233,10 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     """
     pattern = bn.bn256
     num_tiles = [np.ceil(recon_shape[k] / pattern.shape[k]).astype(int) for k in [0, 1]]
-    ror_mask = get_2d_ror_mask(recon_shape) if use_ror_mask else 1
+    if use_ror_mask is not False:
+        ror_mask = get_2d_ror_mask(recon_shape, use_ror_mask=use_ror_mask)
+    else:
+        ror_mask = 1
 
     single_subset_inds = np.floor(pattern / (2**16 / num_subsets)).astype(int)
 
@@ -195,7 +247,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
     subset_inds = subset_inds.flatten()
     num_valid_inds = np.sum(subset_inds >= 0)
     if num_subsets > num_valid_inds:
-        return gen_pixel_partition(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
 
     flat_inds = []
     max_points = 0
@@ -207,7 +259,7 @@ def gen_pixel_partition_blue_noise(recon_shape, num_subsets, use_ror_mask=True):
         min_points = min(min_points, cur_inds.size)
 
     if min_points == 0:
-        return gen_pixel_partition(recon_shape, num_subsets)
+        return gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=use_ror_mask)
 
     extra_point_inds = np.random.randint(low=0, high=min_points, size=(max_points - min_points + 1,))
 

@@ -106,7 +106,7 @@ class ConeBeamModel(TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, view_params_array = self.get_params(['sinogram_shape', 'view_params_array'])
+        sinogram_shape, view_params_array, voxel_row_aspect, voxel_slice_aspect = self.get_params(['sinogram_shape', 'view_params_array', 'voxel_row_aspect', 'voxel_slice_aspect'])
         num_views, num_det_rows = sinogram_shape[:2]
         if view_params_array is None:
             raise ValueError("view_params_array was not set. This should be created in ConeBeamModel.__init__.")
@@ -115,6 +115,16 @@ class ConeBeamModel(TomographyModel):
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
             error_message += "Got {} for length of view-dependent parameters and "
             error_message += "{} for number of views.".format(view_params_array.shape[1], num_views)
+            raise ValueError(error_message)
+        
+        if voxel_row_aspect <= 0:
+            error_message = "Voxel row aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
+            raise ValueError(error_message)
+        
+        if voxel_slice_aspect <= 0:
+            error_message = "Voxel slice aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
             raise ValueError(error_message)
 
         # Check for cone angle > 45 degrees
@@ -137,9 +147,17 @@ class ConeBeamModel(TomographyModel):
             namedtuple of required geometry parameters.
         """
         # First get the parameters managed by ParameterHandler
-        geometry_param_names = \
-            ['delta_det_row', 'delta_det_channel', 'det_row_offset', 'det_channel_offset',
-             'source_detector_dist', 'delta_voxel', 'recon_slice_offset']
+        geometry_param_names = [
+            'delta_det_row',
+            'delta_det_channel',
+            'det_row_offset',
+            'det_channel_offset',
+            'source_detector_dist',
+            'delta_voxel',
+            'voxel_row_aspect',
+            'voxel_slice_aspect',
+            'recon_slice_offset',
+        ]
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -162,9 +180,12 @@ class ConeBeamModel(TomographyModel):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
         """
-        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel = self.get_params(
-            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel'])
+        delta_det_row, delta_det_channel, source_detector_dist, recon_shape, delta_voxel, voxel_row_aspect, voxel_slice_aspect = self.get_params(
+            ['delta_det_row', 'delta_det_channel', 'source_detector_dist', 'recon_shape', 'delta_voxel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         magnification = self.get_magnification()
+        
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
 
         # Compute minimum detector pitch
         delta_det = jnp.minimum(delta_det_row, delta_det_channel)
@@ -175,18 +196,23 @@ class ConeBeamModel(TomographyModel):
             min_magnification = 1
         else:
             source_to_iso_dist = source_detector_dist / magnification
+            half_width_x = 0.5 * recon_shape[1] * delta_voxel
+            half_width_y = 0.5 * recon_shape[0] * delta_voxel_row
+            half_xy_extent = jnp.maximum(half_width_x, half_width_y)
             # This isn't exactly the closest pixel since we're not accounting for rotation but for realistic cases it shouldn't matter.
-            source_to_closest_pixel = source_to_iso_dist - 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            source_to_closest_pixel = source_to_iso_dist - half_xy_extent
             max_magnification = source_detector_dist / source_to_closest_pixel
-            source_to_farthest_pixel = source_to_iso_dist + 0.5 * jnp.maximum(recon_shape[0], recon_shape[1])*delta_voxel
+            source_to_farthest_pixel = source_to_iso_dist + half_xy_extent
             min_magnification = source_detector_dist / source_to_farthest_pixel
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil((delta_voxel * max_magnification / delta_det)) / 2))
+        max_voxel_pitch = jnp.maximum(jnp.maximum(delta_voxel, delta_voxel_row), delta_voxel_slice)
+        psf_radius = int(jnp.ceil(jnp.ceil((max_voxel_pitch * max_magnification / delta_det)) / 2))
         # Then repeat for the back projection from detector elements to voxels.
         # The voxels closest to the detector will be covered the most by a given detector element.
-        # With magnification=1, the number of voxels per element would be delta_det / delta_voxel
-        max_voxels_per_detector = delta_det / (min_magnification * delta_voxel)
+        # With magnification=1, the number of voxels per element would be delta_det / min_voxel_pitch
+        min_voxel_pitch = jnp.minimum(jnp.minimum(delta_voxel, delta_voxel_row), delta_voxel_slice)
+        max_voxels_per_detector = delta_det / (min_magnification * min_voxel_pitch)
         self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
 
         self.slice_range_length = int(1 + 2 * self.bp_psf_radius + \
@@ -199,15 +225,20 @@ class ConeBeamModel(TomographyModel):
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
 
-        # Compute delta_voxel
-        delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
+        voxel_row_aspect, voxel_slice_aspect = self.get_params(['voxel_row_aspect', 'voxel_slice_aspect'])
+        
+        magnification = self.get_magnification()
+        
+        # Compute delta_voxel for each dimension
+        delta_voxel = delta_det_channel / magnification
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
 
         # Compute the recon_shape
         sinogram_shape = self.get_params('sinogram_shape')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
-        magnification = self.get_magnification()
-        num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
-        num_recon_cols = num_recon_rows
+        num_recon_rows = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel_row) / magnification)))
+        num_recon_cols = int(jnp.round(num_det_channels * ((delta_det_channel / delta_voxel) / magnification)))
         
         # z coverage for helical
         z_shifts = self.get_params('view_params_array')[:,1]
@@ -219,7 +250,7 @@ class ConeBeamModel(TomographyModel):
         H_iso = num_det_rows * (delta_det_row / magnification)
     
         # Total axial coverage: include all slices that are projected onto at least one view
-        num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel))
+        num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel_slice))
         num_recon_slices = max(1, num_recon_slices)
     
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
@@ -308,8 +339,9 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         L_max = jnp.minimum(1, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
@@ -319,7 +351,7 @@ class ConeBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -356,7 +388,9 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
         num_slices = voxel_cylinder.shape[0]
-
+        
+        delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
+        
         # From pixel index, compute y and pixel_mag
         y, pixel_mag = ConeBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
 
@@ -365,7 +399,7 @@ class ConeBeamModel(TomographyModel):
         # For computational efficiency, we use that to scale the voxel_cylinder values.
         # TODO:  possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
         k = jnp.arange(len(voxel_cylinder))
-        z = gp.delta_voxel * (k - (num_slices - 1) / 2.0) + (gp.recon_slice_offset - helical_z_shift)  # recon_ijk_to_xyz
+        z = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + (gp.recon_slice_offset - helical_z_shift)  # recon_ijk_to_xyz
         v = pixel_mag * z  # geometry_xyz_to_uv_mag
         # Compute vertical cone angle of voxels
         phi_p = jnp.arctan2(v, gp.source_detector_dist)  # compute_vertical_data_single_pixel
@@ -375,7 +409,7 @@ class ConeBeamModel(TomographyModel):
 
         # Get the length of projection of detector on vertical voxel profile (in fraction of voxel size)
         # This is also the slope of the map from voxel index to detector index
-        W_p_r = (pixel_mag * gp.delta_voxel) / gp.delta_det_row
+        W_p_r = (pixel_mag * delta_voxel_slice) / gp.delta_det_row
         slope_k_to_m = W_p_r
         L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
@@ -397,7 +431,7 @@ class ConeBeamModel(TomographyModel):
             v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset  # Detector center in ALUs
             z_m = v_m / pixel_mag  # z coordinate of the projection of the center of the first detector element in this batch
             # Convert to voxel fractional index and find the center of each voxel
-            k_m = (z_m - (gp.recon_slice_offset - helical_z_shift)) / gp.delta_voxel + (num_slices - 1) / 2.0
+            k_m = (z_m - (gp.recon_slice_offset - helical_z_shift)) / delta_voxel_slice + (num_slices - 1) / 2.0
             k_m_center = jnp.round(k_m).astype(int)  # Center of the voxel hit by the center of the detector
             # Then map the center of the voxels back to the detector.
             m_p = slope_k_to_m * (k_m_center - k_m[0]) + m_center[0]  # Projection to detector of voxel centers
@@ -477,8 +511,9 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         L_max = jnp.minimum(1, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
@@ -488,7 +523,7 @@ class ConeBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -608,13 +643,15 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+        
+        delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
         # slice_indices = jnp.arange(num_recon_slices)
 
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel,
-                                                       recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
+        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_indices, gp.delta_voxel, gp.voxel_row_aspect,
+                                                       gp.voxel_slice_aspect, recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
         u_p, v_p, pixel_mag = ConeBeamModel.geometry_xyz_to_uv_mag(x_p, y_p, z_p, gp.source_detector_dist, gp.magnification,
@@ -632,7 +669,7 @@ class ConeBeamModel(TomographyModel):
         # cos_alpha_p_z = jnp.maximum(jnp.abs(cos_phi_p), jnp.abs(jnp.sin(phi_p)))
 
         # Get the length of projection of flattened voxel on detector (in fraction of detector size)
-        W_p_r = pixel_mag * (gp.delta_voxel / gp.delta_det_row)   # * cos_alpha_p_z / cos_phi_p
+        W_p_r = pixel_mag * (delta_voxel_slice / gp.delta_det_row)   # * cos_alpha_p_z / cos_phi_p
 
         vertical_data = (m_p, m_p_center, W_p_r, cos_phi_p)  # cos_alpha_p_z)
 
@@ -641,7 +678,7 @@ class ConeBeamModel(TomographyModel):
     @staticmethod
     def compute_horizontal_data(pixel_indices, single_view_params, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for horizontal projection.
+        Compute the quantities n_p, n_p_center, W_p_c, footprint_xy needed for horizontal projection.
 
         Behavior differs by detector type:
 
@@ -656,7 +693,7 @@ class ConeBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+            n_p, n_p_center, W_p_c, footprint_xy
         """
         angle = single_view_params[0]
         helical_z_shift = single_view_params[1]
@@ -668,13 +705,15 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+        
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
         slice_index = jnp.arange(1)
 
-        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel,
-                                                     recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
+        x_p, y_p, z_p = ConeBeamModel.recon_ijk_to_xyz(row_index, col_index, slice_index, gp.delta_voxel, gp.voxel_row_aspect,
+                                                       gp.voxel_slice_aspect, recon_shape, gp.recon_slice_offset - helical_z_shift, angle)
 
         # Convert from xyz to coordinates on detector
         # pixel_mag should be kept in terms of magnification to allow for source_detector_dist = jnp.Inf
@@ -691,32 +730,35 @@ class ConeBeamModel(TomographyModel):
         if not gp.use_curved_detector: # 'flat'
             # Exact horizontal cone angle for flat detector
             theta_p = jnp.arctan2(u_p, gp.source_detector_dist)
-            cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
-                                         jnp.abs(jnp.sin(angle - theta_p)))
+            # Compute footprint for row and columns
+            footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)) * gp.delta_voxel, jnp.abs(jnp.sin(angle - theta_p)) * delta_voxel_row)
             # Foreshortening correction: voxel footprint widens at oblique angles on a flat detector
-            W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * (cos_alpha_p_xy / jnp.cos(theta_p))
+            W_p_c = pixel_mag * (footprint_xy / gp.delta_det_channel) / jnp.cos(theta_p)
         else:  # 'curved'
             # u_p is arc-length, so effective angle is u_p / sdd
             theta_p = u_p / gp.source_detector_dist
-            cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)),
-                                         jnp.abs(jnp.sin(angle - theta_p)))
+            # Compute footprint for row and columns
+            footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle - theta_p)) * gp.delta_voxel, jnp.abs(jnp.sin(angle - theta_p)) * delta_voxel_row)
             # No cos(theta_p) denominator: arc parameterisation absorbs the foreshortening
-            W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
+            W_p_c = pixel_mag * (footprint_xy / gp.delta_det_channel)
 
-        horizontal_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
+        horizontal_data = (n_p, n_p_center, W_p_c, footprint_xy)
 
         return horizontal_data
 
     @staticmethod
-    def recon_ijk_to_xyz(i, j, k, delta_voxel, recon_shape, recon_slice_offset, angle):
+    def recon_ijk_to_xyz(i, j, k, delta_voxel, voxel_row_aspect, voxel_slice_aspect, recon_shape, recon_slice_offset, angle):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+        
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
 
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = delta_voxel * (i - (num_recon_rows - 1) / 2.0)
+        y_tilde = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0)
         x_tilde = delta_voxel * (j - (num_recon_cols - 1) / 2.0)
 
         # Precompute cosine and sine of view angle, then do the rotation
@@ -726,7 +768,7 @@ class ConeBeamModel(TomographyModel):
         x = cosine * x_tilde - sine * y_tilde
         y = sine * x_tilde + cosine * y_tilde
 
-        z = delta_voxel * (k - (num_recon_slices - 1) / 2.0) + recon_slice_offset
+        z = delta_voxel_slice * (k - (num_recon_slices - 1) / 2.0) + recon_slice_offset
         return x, y, z
 
     @staticmethod
@@ -819,10 +861,12 @@ class ConeBeamModel(TomographyModel):
 
         gp = projector_params.geometry_params
         row_index, col_index = jnp.unravel_index(pixel_index, recon_shape[:2])
+        
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = gp.delta_voxel * (row_index - (recon_shape[0] - 1) / 2.0)
+        y_tilde = delta_voxel_row * (row_index - (recon_shape[0] - 1) / 2.0)
         x_tilde = gp.delta_voxel * (col_index - (recon_shape[1] - 1) / 2.0)
 
         # Precompute cosine and sine of view angle, then do the rotation
@@ -867,9 +911,14 @@ class ConeBeamModel(TomographyModel):
         # Get parameters
         num_views, num_rows, num_channels = sinogram.shape
         source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel'])
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
-
+        
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+        
+        voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
+        
         if view_batch_size is None:
             view_batch_size = self.view_batch_size_for_vmap
             max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
@@ -898,7 +947,7 @@ class ConeBeamModel(TomographyModel):
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        alpha = delta_det_row / (delta_voxel**3 * M_0)
+        alpha = delta_det_row / (voxel_volume * M_0)
         recon_filter = alpha * recon_filter
 
         # Define convolution for a single row (across its channels)
@@ -920,10 +969,10 @@ class ConeBeamModel(TomographyModel):
         filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
         filtered_sinogram *= jnp.pi / num_views
         return filtered_sinogram
-    
+
     def helical_fdk_z_weight(self, recon, sinogram):
         """
-        Scale each helical FDK slice by the inverse of the fraction of scan that the slice is in view of the detector.
+        Scale each helical FDK slice by the inverse of the fraction of the scan that the slice is in view of the detector.
 
         Args:
             recon (jax array): The initial FDK reconstruction.
@@ -936,20 +985,16 @@ class ConeBeamModel(TomographyModel):
         num_views, num_rows, num_channels = sinogram.shape
         view_params_array = self.get_params('view_params_array')
         helical_z_shifts = view_params_array[:, 1]
-        # delta_voxel, voxel_slice_aspect, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
-        #     ['delta_voxel', 'voxel_slice_aspect', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
-        # )
-        delta_voxel, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
-            ['delta_voxel', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
+        delta_voxel, voxel_slice_aspect, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
+            ['delta_voxel', 'voxel_slice_aspect', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
         )
         M_0 = self.get_magnification()
         num_rows = self.get_params('sinogram_shape')[1]
-        # delta_voxel_slice = voxel_slice_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
         num_slices = recon_shape[2]
         
         k = jnp.arange(num_slices)
-        # z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
-        z_k = delta_voxel * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+        z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
         det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
         visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
         coverage = jnp.sum(visible, axis=1)
@@ -1050,13 +1095,15 @@ class ConeBeamModel(TomographyModel):
         delta_det_row = self.get_params('delta_det_row')
         full_det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
+        voxel_slice_aspect = self.get_params('voxel_slice_aspect')
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
         full_recon_shape = self.get_params('recon_shape')
         full_recon_slice_offset = self.get_params('recon_slice_offset')
         magnification = self.get_magnification()
 
         # Compute overlaps for sinogram and recon
         delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
-        ratio_pixel_to_sino_pitch = delta_voxel / delta_detector_row_at_iso
+        ratio_pixel_to_sino_pitch = delta_voxel_slice / delta_detector_row_at_iso
         if ratio_pixel_to_sino_pitch > 1:
             half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
             half_overlap_recon = half_overlap
@@ -1125,7 +1172,7 @@ class ConeBeamModel(TomographyModel):
         full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
 
         # -------- Compute the recon slice nearest to iso --------
-        full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel
+        full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel_slice
         split_index = int(jnp.round(full_recon_iso_slice_index_float))
         top_num_slices = split_index + 1
 
@@ -1159,8 +1206,8 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half.set_params(recon_shape=bot_recon_shape)
 
         # -------- Compute and set the offsets of top and bottom recons --------
-        top_recon_slice_offset = (+half_overlap_recon - (top_recon_shape[2]-1)/2 + 0 + split_offset) * delta_voxel
-        bot_recon_slice_offset = (-half_overlap_recon + (bot_recon_shape[2]-1)/2 + 1 + split_offset) * delta_voxel
+        top_recon_slice_offset = (+half_overlap_recon - (top_recon_shape[2]-1)/2 + 0 + split_offset) * delta_voxel_slice
+        bot_recon_slice_offset = (-half_overlap_recon + (bot_recon_shape[2]-1)/2 + 1 + split_offset) * delta_voxel_slice
 
         ct_model_top_half.set_params(recon_slice_offset=top_recon_slice_offset)
         ct_model_bot_half.set_params(recon_slice_offset=bot_recon_slice_offset)
@@ -1202,4 +1249,3 @@ class ConeBeamModel(TomographyModel):
                            'model_params_bottom': recon_bot_dict['model_params'], }
 
         return recon_full, recon_full_dict
-

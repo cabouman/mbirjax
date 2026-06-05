@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
+import scipy
 import mbirjax as mj
 
 
@@ -18,10 +19,14 @@ class TestVCD(unittest.TestCase):
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
         self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
-        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.06}
+        self.anisotropic_parallel_tolerances = {'nrmse': 0.20, 'max_diff': 0.45, 'pct_95': 0.08}
+        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04}
+        self.anisotropic_cone_tolerances = {'nrmse': 0.49, 'max_diff': 1.0, 'pct_95': 0.21}
         self.helical_cone_tolerances = self.cone_tolerances
         self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
-        self.all_tolerances = [self.parallel_tolerances, self.cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances]
+        self.anisotropic_translation_tolerances = {'nrmse': 0.6, 'max_diff': 1.0, 'pct_95': 0.13}
+        self.all_tolerances = [self.parallel_tolerances, self.anisotropic_parallel_tolerances, self.cone_tolerances,
+                               self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances, self.anisotropic_translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
 
@@ -30,11 +35,15 @@ class TestVCD(unittest.TestCase):
         self.num_det_rows = 40
         self.num_det_channels = 128
         self.sharpness = 0.0
+        
+        # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
+        self.voxel_row_aspect = 1.9
+        self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
 
         # These can be adjusted to describe the geometry in the cone beam case.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         self.source_detector_dist = 4 * self.num_det_channels
-        self.source_iso_dist = self.source_detector_dist
+        self.source_iso_dist = self.source_detector_dist / 2
         
         # These can be adjusted to describe the geometry in the helical cone beam case.
         self.helical_pitch = 0.5
@@ -54,27 +63,22 @@ class TestVCD(unittest.TestCase):
     def set_view_params(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
-            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        elif geometry_type == 'anisotropic_cone':
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
         elif geometry_type == 'helical_cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
-            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
-            # compute z_shifts:
-            total_angle_span = end_angle - start_angle
+            
             magnification = self.source_detector_dist / self.source_iso_dist
             det_height_iso = self.num_det_rows / magnification
             z_per_rot = self.helical_pitch * det_height_iso
-            dz_per_view = (total_angle_span / (2 * np.pi)) * z_per_rot / self.num_views
+            dz_per_view = z_per_rot / self.num_views
             view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
             self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
         else:
             detector_cone_angle = 0
-            start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
-            end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-            self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+        end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
 
         num_x_translations = 7
         num_z_translations = 7
@@ -86,9 +90,7 @@ class TestVCD(unittest.TestCase):
         self.translation_vectors = translation_vectors
 
     def get_model(self, geometry_type):
-        if geometry_type == 'parallel':
-            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
-        elif geometry_type == 'cone':
+        if (geometry_type == 'cone') | (geometry_type == 'anisotropic_cone'):
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
@@ -96,7 +98,9 @@ class TestVCD(unittest.TestCase):
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
-        elif geometry_type == 'translation':
+        elif (geometry_type == 'parallel') | (geometry_type == 'anisotropic_parallel'):
+            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif (geometry_type == 'translation') | (geometry_type == 'anisotropic_translation'):
             ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
@@ -120,14 +124,32 @@ class TestVCD(unittest.TestCase):
 
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')
-
-        if geometry_type == 'translation':
+        if geometry_type in ('translation', 'anisotropic_translation'):
             recon_shape = ct_model.get_params('recon_shape')
             words = ["Purdue", "Presents", "Translation", "Tomography"]
             phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', text=words)
         else:
-            phantom_shape = ct_model.get_params('recon_shape')
-            phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+            recon_shape = ct_model.get_params('recon_shape')
+            phantom_shape = recon_shape
+            embed_slice_start = 0
+            embed_slice_stop = recon_shape[2]
+            if geometry_type == 'helical_cone':
+                embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
+                    ct_model,
+                    self.helical_pitch,
+                    self.helical_z_shifts
+                )
+                phantom_shape = (
+                    recon_shape[0],
+                    recon_shape[1],
+                    embed_slice_stop - embed_slice_start,
+                )
+            phantom_core = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+            if geometry_type == 'helical_cone':
+                phantom = jnp.zeros(recon_shape)
+                phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+            else:
+                phantom = phantom_core
 
         # Generate synthetic sinogram data
         print('  Creating sinogram')
@@ -135,6 +157,18 @@ class TestVCD(unittest.TestCase):
 
         # Set reconstruction parameter values
         ct_model.set_params(verbose=0)
+        if geometry_type == 'anisotropic_cone':
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
+        if geometry_type == 'anisotropic_parallel':
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.auto_set_recon_geometry()
+        if geometry_type == 'anisotropic_translation':
+            # For TCT, keep voxel_row_aspect at the automatically computed default.
+            # Reconstruction quality is sensitive to row pitch, so only vary voxel_slice_aspect here.
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
 
         # ##########################
         # Perform VCD reconstruction
@@ -143,26 +177,21 @@ class TestVCD(unittest.TestCase):
         recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
         
-        if geometry_type == 'helical_cone':
-            # only evaluate for slices that were in view for the required angular span (e.g., pi + cone angle)
-            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
-            required_angle_span = np.pi + detector_cone_angle
-            magnification = self.source_detector_dist / self.source_iso_dist
-            det_height_iso = self.num_det_rows / magnification
-            z_per_rot = self.helical_pitch * det_height_iso
-            z_shift_per_required_angle_span = z_per_rot*required_angle_span/(2*np.pi)
-            if z_shift_per_required_angle_span>det_height_iso:
-                raise ValueError('No recon slices were in view throughout the requested angular span of {} radians.'.format(required_angle_span))
-            else:
-                phantom_eval = phantom[:, :, int(z_shift_per_required_angle_span):-int(z_shift_per_required_angle_span)]
-                recon_eval = recon[:, :, int(z_shift_per_required_angle_span):-int(z_shift_per_required_angle_span)]
-        else:
-            phantom_eval = phantom
-            recon_eval = recon
-        
-        max_diff = np.amax(np.abs(phantom_eval  - recon_eval))
-        nrmse = np.linalg.norm(recon_eval - phantom_eval ) / np.linalg.norm(phantom_eval )
-        pct_95 = np.percentile(np.abs(recon_eval - phantom_eval ), 95)
+        # if anisotropic, rescale the recon to the phantom shape
+        if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel') | (geometry_type == 'anisotropic_translation'):
+            phantom_temp = scipy.ndimage.zoom(phantom, zoom=(np.shape(recon)[0] / np.shape(phantom)[0],
+                                                             np.shape(recon)[1] / np.shape(phantom)[1],
+                                                             np.shape(recon)[2] / np.shape(phantom)[2]))
+            phantom = scipy.ndimage.zoom(phantom_temp, zoom=(np.shape(phantom)[0] / np.shape(phantom_temp)[0],
+                                                             np.shape(phantom)[1] / np.shape(phantom_temp)[1],
+                                                             np.shape(phantom)[2] / np.shape(phantom_temp)[2]))
+            recon = scipy.ndimage.zoom(recon, zoom=(np.shape(phantom)[0] / np.shape(recon)[0],
+                                                    np.shape(phantom)[1] / np.shape(recon)[1],
+                                                    np.shape(phantom)[2] / np.shape(recon)[2]))
+
+        max_diff = np.amax(np.abs(phantom  - recon))
+        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
+        pct_95 = np.percentile(np.abs(recon - phantom), 95)
         print('  nrmse = {:.3f}'.format(nrmse))
         print('  max_diff = {:.3f}'.format(max_diff))
         print('  pct_95 = {:.3f}'.format(pct_95))

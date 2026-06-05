@@ -26,11 +26,15 @@ class TestProjectors(unittest.TestCase):
         self.num_det_rows = 40
         self.num_det_channels = 128
         self.sharpness = 0.0
+        
+        # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
+        self.voxel_row_aspect = 1.9
+        self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
 
         # These can be adjusted to describe the geometry in the cone beam case.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         self.source_detector_dist = 4 * self.num_det_channels
-        self.source_iso_dist = self.source_detector_dist
+        self.source_iso_dist = self.source_detector_dist / 2
         
         # These can be adjusted to describe the geometry in the helical cone beam case.
         self.helical_pitch = 0.5
@@ -47,11 +51,14 @@ class TestProjectors(unittest.TestCase):
         """Clean up after each test method."""
         pass
 
-    def set_angles(self, geometry_type):
+    def set_view_params(self, geometry_type):
         if geometry_type == 'cone':
             detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+        elif geometry_type == 'anisotropic_cone':
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
         elif geometry_type == 'helical_cone':
-            detector_cone_angle = 0
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            
             magnification = self.source_detector_dist / self.source_iso_dist
             det_height_iso = self.num_det_rows / magnification
             z_per_rot = self.helical_pitch * det_height_iso
@@ -62,10 +69,12 @@ class TestProjectors(unittest.TestCase):
             detector_cone_angle = 0
         start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
         end_angle = (np.pi + detector_cone_angle) * (1 / 2)
-        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+        # Add a small offset to the angles to avoid the jax rounding bug
+        # See experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md
+        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False) + 1e-4
 
     def set_translation_vectors(self, geometry_type):
-        if geometry_type == 'translation':
+        if geometry_type in ('translation', 'anisotropic_translation'):
             self.translation_vectors = np.zeros((self.num_views, 3))
             self.translation_vectors[:, 0] = np.random.uniform(-10, 10, self.num_views)
             self.translation_vectors[:, 1] = 0.0
@@ -79,16 +88,34 @@ class TestProjectors(unittest.TestCase):
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'anisotropic_cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
         elif geometry_type == 'helical_cone':
             ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
                                              source_detector_dist=self.source_detector_dist,
                                              source_iso_dist=self.source_iso_dist)
         elif geometry_type == 'parallel':
             ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif geometry_type == 'anisotropic_parallel':
+            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.auto_set_recon_geometry()
         elif geometry_type == 'translation':
             ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                                 source_detector_dist=self.source_detector_dist,
                                                 source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'anisotropic_translation':
+            ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                           source_detector_dist=self.source_detector_dist,
+                                           source_iso_dist=self.source_iso_dist)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -113,16 +140,36 @@ class TestProjectors(unittest.TestCase):
                 self.verify_view_batching(geometry_type)
 
     def verify_view_batching(self, geometry_type):
-        self.set_angles(geometry_type)
+        self.set_view_params(geometry_type)
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
-        phantom = mj.gen_cube_phantom(recon_shape)
+        phantom_shape = recon_shape
+        embed_slice_start = 0
+        embed_slice_stop = recon_shape[2]
+        if geometry_type == 'helical_cone':
+            embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
+                ct_model,
+                self.helical_pitch,
+                self.helical_z_shifts
+            )
+            phantom_shape = (
+                recon_shape[0],
+                recon_shape[1],
+                embed_slice_stop - embed_slice_start,
+            )
+        phantom_core = mj.gen_cube_phantom(phantom_shape)
+        if geometry_type == 'helical_cone':
+            phantom = jnp.zeros(recon_shape)
+            phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+        else:
+            phantom = phantom_core
 
         # Generate indices of pixels and get the voxel cylinders
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1)[0]
+        use_ror_mask = ct_model.get_params('use_ror_mask')
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)[0]
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
 
         # Compute forward projection with all the views at once
@@ -165,7 +212,7 @@ class TestProjectors(unittest.TestCase):
         Verify the adjoint property of the projectors:
         Choose a random phantom, x, and a random sinogram, y, and verify that <y, Ax> = <Aty, x>.
         """
-        self.set_angles(geometry_type)
+        self.set_view_params(geometry_type)
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
@@ -176,11 +223,31 @@ class TestProjectors(unittest.TestCase):
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
-        phantom = mj.gen_cube_phantom(recon_shape)
+        phantom_shape = recon_shape
+        embed_slice_start = 0
+        embed_slice_stop = recon_shape[2]
+        if geometry_type == 'helical_cone':
+            embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
+                ct_model,
+                self.helical_pitch,
+                self.helical_z_shifts
+            )
+            phantom_shape = (
+                recon_shape[0],
+                recon_shape[1],
+                embed_slice_stop - embed_slice_start,
+            )
+        phantom_core = mj.gen_cube_phantom(phantom_shape)
+        if geometry_type == 'helical_cone':
+            phantom = jnp.zeros(recon_shape)
+            phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+        else:
+            phantom = phantom_core
 
         # Generate indices of pixels
         num_subsets = 1
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets)
+        use_ror_mask = ct_model.get_params('use_ror_mask')
+        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=num_subsets, use_ror_mask=use_ror_mask)
 
         # Generate sinogram data
         voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
@@ -220,8 +287,13 @@ class TestProjectors(unittest.TestCase):
 
         # Determine if property holds
         adjoint_test_result = np.allclose(Aty_x, y_Ax, rtol=1e-4)
-        print("maximum difference = ", np.max(Aty_x - y_Ax))
-        print("minimum difference = ", np.min(Aty_x - y_Ax))
+        diff = Aty_x - y_Ax
+        abs_diff = jnp.abs(diff)
+        rel_diff = abs_diff / jnp.maximum(jnp.abs(Aty_x), jnp.abs(y_Ax))
+        print("Aty_x =", Aty_x)
+        print("y_Ax =", y_Ax)
+        print("absolute difference =", diff)
+        print("relative difference =", rel_diff)
         self.assertTrue(adjoint_test_result)
 
     def verify_hessian(self, geometry_type):
@@ -229,7 +301,7 @@ class TestProjectors(unittest.TestCase):
         Verify the hessian property of the back projector:
         Choose a random pixel, set it to epsilon, apply A^T A and compare to the value from compute_hessian_diagaonal.
         """
-        self.set_angles(geometry_type)
+        self.set_view_params(geometry_type)
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
@@ -244,7 +316,9 @@ class TestProjectors(unittest.TestCase):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
         x = jnp.zeros(recon_shape)
         key, subkey = jax.random.split(key)
-        i, j = jax.random.randint(subkey, shape=(2,), minval=0, maxval=num_recon_rows)
+        i = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_rows)
+        key, subkey = jax.random.split(key)
+        j = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_cols)
         key, subkey = jax.random.split(key)
         k = jax.random.randint(subkey, shape=(), minval=0, maxval=num_recon_slices)
 

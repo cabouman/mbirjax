@@ -7,7 +7,7 @@ import copy
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
 # Update to include new geometries that should be included in the tests suite
-_geometry_types_for_tests = ['parallel', 'cone', 'helical_cone', 'translation']
+_geometry_types_for_tests = ['parallel', 'anisotropic_parallel', 'cone', 'anisotropic_cone', 'helical_cone', 'translation', 'anisotropic_translation']
 
 # The order and content of these dictionaries must match the headings and list of dicts below
 # The second entry in each case indicates if changing that parameter should trigger a recompile
@@ -41,6 +41,8 @@ _forward_model_defaults_dict = {
 _recon_model_defaults_dict = {
     'recon_shape': Param(None, True),
     'delta_voxel': Param(None, True),
+    'voxel_row_aspect': Param(1.0, True),
+    'voxel_slice_aspect': Param(1.0, True),
     'sigma_x': Param(1.0, False),
     'sigma_prox': Param(1.0, False),
     'p': Param(2.0, False),
@@ -59,6 +61,7 @@ _reconstruction_defaults_dict = {
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
+    'use_ror_mask': Param(True, False),
 }
 
 # These headings should match the dictionaries

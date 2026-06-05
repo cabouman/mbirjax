@@ -66,7 +66,6 @@ class TomographyModel(ParameterHandler):
         super().__init__()
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
 
-        self.use_ror_mask = True
         self.auto_set_recon_geometry(no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
@@ -705,8 +704,8 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
@@ -727,8 +726,8 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
@@ -1201,9 +1200,8 @@ class TomographyModel(ParameterHandler):
         self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
 
         # Generate set of voxel partitions
-        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
-                                                    use_ror_mask=self.use_ror_mask)
+        recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])
+        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device, use_ror_mask=use_ror_mask)
         partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
         # Generate sequence of partitions to use
