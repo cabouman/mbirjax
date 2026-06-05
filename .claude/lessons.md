@@ -98,7 +98,44 @@ version, with the worked example.
   problem (forward scalars on the sino mesh, prior scalars on the recon mesh).
   Cheap on CPU; potentially serializing on GPU.  If it bites, replicate `alpha`
   onto both meshes with `device_put` (a couple of scalar broadcasts) instead of
-  bouncing through the host.
+  bouncing through the host.  **Confirmed on GPU (2026-06-05) via a full op sweep — and it is VCD-SPECIFIC, not a
+  size floor.**  On the SAME H100×4 allocation, at 4 dev every bare op scales (256³:
+  back 2.51×, direct 2.78×, forward 4.00×; 512³: fbp 3.10×, back 3.33×, direct 3.65×,
+  forward 4.75×) while vcd_recon alone is 0.28× (256³) / 1.62× (512³).  So "256³ is too
+  small for GPU" is FALSE — the projectors scale there; VCD doesn't because it calls
+  them per subset (`recon_pixels/num_subsets` pixels), so each op does num_subsets× less
+  work against a fixed per-subset host overhead.  CPU clinches that the overhead is host
+  round-trips: at 256³/4d VCD scales like the others on CPU (2.10×) but collapses on GPU
+  (0.28×).  Fix = A/B/alpha (cut the per-subset host round-trips); target = move GPU
+  512³/4d from 1.62× toward the projectors' ~3.3×.
+- **`CUDA_ERROR_NOT_PERMITTED` from `cuda_vmm_allocator.cc` ("VMM cuMemCreate with
+  FABRIC+POSIX_FD handle types failed … will retry with simpler handle types") is a
+  BENIGN warning, not a failure — don't chase it.**  XLA's VMM allocator probes
+  advanced memory-handle types (multi-node NVLink fabric / fd-based IPC) on the first
+  multi-GPU allocation; when the job's environment forbids them it falls back to
+  simpler handles and the allocation + any collective succeed (verified: a standalone
+  multi-GPU `jnp.sum` emits the warnings AND returns the right value; the full run
+  exits 0 with correct output).  It's a `W` line; real errors are `E`/`F` or a Python
+  traceback.  Silence with `TF_CPP_MIN_LOG_LEVEL=2`.  (I twice mis-attributed it — to
+  an orchestrator JAX-import and then to a blocked P2P collective — before the
+  standalone ablation showed it's noise.  Distinguish warning-vs-fatal FIRST.)
+- **On GPU, sharding is primarily a CAPACITY tool, not a speed tool.**  Per-device
+  memory drops a lot with more devices (1 device holds full transients; multi-device
+  streams in bands), so you shard to fit a bigger recon, and any speedup past the
+  crossover is a bonus.  Don't read inverted *time* at a fits-on-one-GPU size as a
+  defect — read whether *memory* shards (it does) and whether time scales *above* the
+  crossover (it does: 512³ 1.65×@2d).
+- **Preallocated `peak_bytes_in_use` over-reports the true need — don't extrapolate it
+  across sizes (ruler caution, Greg).**  The scaling harnesses set
+  `XLA_PYTHON_CLIENT_PREALLOCATE=true` / `MEM_FRACTION=0.9`, so the BFC allocator is
+  loose: `peak_bytes_in_use` is what it chose to hold in the big pool (fragmentation-
+  and size-dependent), not the minimum working set.  The 1d→Nd *ratio* at one size is
+  still meaningful (structural band-streaming), but absolute MB and cross-size ×k
+  extrapolation are NOT — e.g. "512³ 1d ≈ 40 GB ⇒ 1008³ won't fit one GPU" is wrong
+  (1K³ has been run on a single GPU even with the older, heavier code).  For a true
+  capacity claim, measure with `PREALLOCATE=false` (peak tracks actual need), or the
+  OOM threshold (`sparse_back_project_single_device_sweep.py` style), or the per-buffer
+  attribution (`sparse_back_project_memory_attribution.py`).
 
 ## Phase F1 case study (the arc)
 

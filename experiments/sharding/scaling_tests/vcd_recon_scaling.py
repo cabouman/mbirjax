@@ -65,6 +65,13 @@ DEVICE_COUNTS = [1, 2, 4, 8]  # [1, 2, 3] to skip a known-bad 4th GPU
 # the projector drivers' and the iteration count is modest.
 MAX_ITERATIONS = 10
 
+# GPU memory preallocation.  True (default) matches the other scaling drivers and gives
+# stable timing, but the BFC allocator is then loose, so peak_bytes_in_use OVER-reports
+# the true working set and must NOT be extrapolated across sizes (ruler caution).  Set
+# False for an honest per-device CAPACITY pass: the allocator grows on demand and
+# peak_bytes_in_use tracks actual need much more tightly (timing is then less stable).
+MEM_PREALLOCATE = True
+
 # Problem sizes (n_views, n_rows, n_channels).  n_views and the slice axis
 # (≈ n_rows for parallel beam) must both divide every device count used, else
 # configure_sharding raises and the point is skipped.  Multiples of 12 admit a
@@ -328,9 +335,12 @@ def main():
     existing_pp = os.environ.get("PYTHONPATH", "")
     worker_env = {
         "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "true" if MEM_PREALLOCATE else "false",
         "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
     }
+    if not MEM_PREALLOCATE:
+        print("  MEM_PREALLOCATE=False: on-demand allocation — peak_bytes_in_use tracks "
+              "actual need (honest capacity), but timing is less stable.")
 
     print("=" * 72)
     print("  vcd_recon scaling — isolated-subprocess harness (orchestrator)")

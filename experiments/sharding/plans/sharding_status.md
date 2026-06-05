@@ -107,18 +107,62 @@ produced the numbers above.)
 larger sizes there, with real per-device memory — and the d2d path only runs there) +
 the per-subset scalar-host-sync watch.  CPU measurement is now done (above).
 
-### `vcd_recon_scaling.py` CUDA_ERROR_NOT_PERMITTED — FIXED (orchestrator was not JAX-free)
-The isolated-subprocess harness REQUIRES the orchestrator to touch no JAX (so it holds
-no CUDA context while worker subprocesses run).  `vcd_recon_scaling.py` violated this:
-its top-level `from vcd_recon_capture_baseline import …` (for shared constants) executed
-that module, which did `import mbirjax` at top → jax/CUDA initialized **in the
-orchestrator** → worker subprocesses (with `XLA_PYTHON_CLIENT_PREALLOCATE`) collided with
-the parent's context → `CUDA_ERROR_NOT_PERMITTED`.  Confirmed on CPU: importing the
-orchestrator pulled in jax (the working forward/back drivers do not).  **Fix:**
-`vcd_recon_capture_baseline.py` now imports mbirjax LAZILY (inside its functions), so it
-is JAX-free to import; the orchestrator is JAX-free again (verified).  Greg: re-run the
-GPU scaling — this should clear the error.  (The demo `vcd_shard_vs_noshard.py` was
-already clean.)
+### `vcd_recon_scaling.py` CUDA_ERROR_NOT_PERMITTED — RESOLVED (the messages are benign)
+The `CUDA_ERROR_NOT_PERMITTED` lines turned out to be **benign `W` warnings** from XLA's
+VMM allocator (`cuda_vmm_allocator.cc`) probing FABRIC+POSIX_FD memory-handle types on the
+first multi-GPU allocation; those handle types aren't permitted in this job's environment,
+so XLA **retries with simpler handles and succeeds**.  Proof: a standalone multi-GPU
+`jnp.sum` over a NamedSharding array emits the same warnings AND returns the correct value;
+and the full run exits 0, writes the YAML, prints "Done", correct vs baseline.  Silence
+with `TF_CPP_MIN_LOG_LEVEL=2` (cosmetic).  *(Two earlier hypotheses were wrong — the
+orchestrator JAX-import and a blocked P2P collective — the data refuted both; classic
+ruler-before-code.)*  Separately we DID fix a real latent bug found en route:
+`vcd_recon_capture_baseline.py` now imports mbirjax LAZILY so the scaling orchestrator
+stays JAX-free (it was pulling jax in via the top-level constants import) — worth keeping
+(no orchestrator GPU preallocation), but it was NOT the cause of the warnings.
+
+### GPU scaling (H100×4, NVLink mesh, dev2dev_safe=true, no throttle) — size-floor, mirrors CPU
+`results/vcd_recon_gpu.yaml` (10 iters; correctness vs baseline 8.8e-7):
+
+  | size | 1d | 2d | 4d | mem 1d→4d |
+  |---|---|---|---|---|
+  | 256³ | 5865 ms | 10450 ms (0.56×) | 21180 ms (0.28×) | 4770→355 MB |
+  | 512³ | 43274 ms | 26301 ms (**1.65×**) | 26690 ms (1.62×) | 40685→2038 MB |
+
+- **ATTRIBUTION (full op sweep, same allocation, 2026-06-05): the under-scaling is
+  VCD-SPECIFIC per-subset host overhead, NOT a size floor or environment.**  At 4 GPUs every
+  *bare* op scales — 256³: back 2.51×, direct 2.78×, forward 4.00×; 512³: fbp 3.10×, back
+  3.33×, direct 3.65×, forward 4.75× — while **vcd_recon alone** is 0.28× (256³) / 1.62×
+  (512³).  The projectors handle 256³ fine, so my earlier "256³ below the GPU crossover"
+  framing was WRONG.  Mechanism: VCD calls the projectors/prior PER SUBSET
+  (`recon_pixels/num_subsets` pixels), so each sharded op does `num_subsets`× less work than a
+  full projection while the per-call host overhead (`_extract_halos` read, 5 `float()` alpha
+  syncs/subset, per-shard dispatch) is fixed → overhead-bound.  CPU corroborates the overhead
+  is host round-trips: at 256³/4d VCD scales like the other ops on CPU (2.10×, cheap shared-mem
+  copies) but collapses on GPU (0.28×, expensive host syncs/PCIe).  ⇒ A/B/alpha target exactly
+  this; success metric = move VCD GPU 512³/4d from 1.62× toward the projectors' ~3.3×.
+- **Memory: only the 1d→Nd RATIO is trustworthy here, not the absolute MB.**  Per-device peak
+  drops a lot with more devices (structural: 1 device holds full transients, multi-device
+  streams in bands).  BUT the harness PREALLOCATES (`XLA_PYTHON_CLIENT_PREALLOCATE=true`,
+  `MEM_FRACTION=0.9`), so `peak_bytes_in_use` is what the BFC allocator chose to hold in the
+  big pool (loose, fragmentation-dependent, size-dependent) — NOT the true minimum working
+  set.  So the reported "512³ 1d = 40 GB" is likely over-stated and the ×8 → "1008³ won't fit
+  one GPU" extrapolation is INVALID (Greg has run 1K³ on a single GPU even with the older,
+  heavier code).  For a real capacity claim, re-measure with `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+  (peak tracks actual need more tightly) or use the OOM-threshold / per-buffer attribution
+  (`sparse_back_project_memory_attribution.py`).  Sharding's GPU value is still primarily
+  capacity, but quantify it honestly before stating thresholds.
+- **2→4 stalls at 512³** (1.65×→1.62×) while a single big projector got 3.29×@4d at 1008³ on
+  the earlier clean run.  Likely VCD's **per-subset host overhead** (many small sharded calls
+  ×  `_extract_halos` host reads + 5 `float()` alpha syncs/subset), amplified at 4 dev where
+  the host round-trips cross the NUMA0/NUMA1 boundary (2 dev are both on NUMA0).  ⇒ the
+  prior-opt **A + B + alpha fix below are now justified GPU levers**, not cosmetic.
+- **Ablation (1) DONE:** the bare-projector sweep on this allocation settled it — projectors
+  scale 2.5–4.75×@4d at 256³/512³, VCD alone under-scales ⇒ VCD per-subset overhead, not
+  environment.  **So implement A + B + alpha next** (they directly cut the per-subset host
+  round-trips), then re-measure GPU vs the 1.62×→~3.3× target.  Remaining optional measurements:
+  a 1008³ VCD run (starts at 1 dev — it fits) to see if 4 dev pays at large scale despite the
+  fine-granularity subsets; and a `MEM_PREALLOCATE=False` pass for honest capacity numbers.
 
 ### Prior-optimization plan (AGREED; deferred — decide scope after the GPU run)
 The sharded qGGMRF prior regresses at fine granularity (0.47×; ~8% of per-subset CPU
