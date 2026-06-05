@@ -384,7 +384,43 @@ class TomographyModel(ParameterHandler):
         right_halos = [np.asarray(s.data[..., 0]) for s in shards[1:]] + [None]
         return left_halos, right_halos
 
-    def _qggmrf_prior_sharded(self, flat_recon, pixel_indices, qggmrf_params):
+    def _stage_halos(self, flat_recon):
+        """Extract the qGGMRF boundary halos once and pre-place each on its shard's device.
+
+        :meth:`_extract_halos` reads the ``2*(n_dev-1)`` boundary slices to host; this
+        wrapper then ``device_put``s each onto the device of the shard that will use it,
+        so a caller can stage the halos ONCE (e.g. per VCD partition pass) and hand the
+        result to :meth:`_qggmrf_prior_sharded` for every subset in that pass — turning
+        a per-subset host round-trip into a per-pass one (the host round-trips are what
+        cap VCD's multi-GPU scaling).
+
+        The per-shard ordering is by slice-start, matching ``_qggmrf_prior_sharded``'s
+        shard sort; the recon's sharding is constant across a pass, so a halo staged on
+        ``shards[i].device`` here lines up with shard ``i`` there even though the recon
+        array itself is replaced each subset.
+
+        Args:
+            flat_recon (jax array): the (slice-sharded) recon to read boundaries from.
+
+        Returns:
+            (staged_left, staged_right): per-shard lists (slice-start order); each entry
+            is an on-device halo slice ``(num_pixels,)`` or ``None`` at a true recon edge.
+            ``([None], [None])`` when no mesh is configured.
+        """
+        left_halos, right_halos = self._extract_halos(flat_recon)
+        if self.mesh is None:
+            return left_halos, right_halos
+        slice_axis = self.recon_shard_axis() % flat_recon.ndim
+        shards = sorted(flat_recon.addressable_shards,
+                        key=lambda s: s.index[slice_axis].start)
+        staged_left = [None if h is None else jax.device_put(h, s.device)
+                       for h, s in zip(left_halos, shards)]
+        staged_right = [None if h is None else jax.device_put(h, s.device)
+                        for h, s in zip(right_halos, shards)]
+        return staged_left, staged_right
+
+    def _qggmrf_prior_sharded(self, flat_recon, pixel_indices, qggmrf_params,
+                              staged_halos=None):
         """Compute the qGGMRF prior gradient and Hessian on a slice-sharded recon.
 
         This is the recon-domain analogue of the sharded projectors: the recon is
@@ -394,8 +430,8 @@ class TomographyModel(ParameterHandler):
 
         The qGGMRF prior couples each slice to its slice-axis neighbors, so an
         interior shard boundary needs one boundary slice from each adjacent shard.
-        Those are supplied as *halos* (:meth:`_extract_halos`, one host read of
-        ``2*(n_dev-1)`` slices); the halo-aware
+        Those are supplied as *halos* (per-shard boundary slices, pre-placed on each
+        shard's device); the halo-aware
         :func:`mbirjax.qggmrf_gradient_and_hessian_at_indices` then runs entirely
         on each shard's device with no cross-device communication inside the kernel.
         At the true recon edges (device 0's left, the last device's right) the halo
@@ -407,8 +443,7 @@ class TomographyModel(ParameterHandler):
         (and identical across equal shards, so the jitted prior compiles once).
 
         No gather is performed: the inputs are slice-sharded and the outputs are
-        returned slice-sharded (matching ``recon_placement``), so the VCD loop pays
-        no host round-trip beyond the small halo read.
+        returned slice-sharded (matching ``recon_placement``).
 
         Args:
             flat_recon (jax array): slice-sharded recon ``(num_pixels, num_slices)``
@@ -416,6 +451,11 @@ class TomographyModel(ParameterHandler):
             pixel_indices (jax array): 1D indices into the flattened (rows, cols)
                 identifying the subset of cylinders to evaluate.
             qggmrf_params (tuple): the prior parameters ``(b, sigma_x, p, q, T)``.
+            staged_halos (tuple or None): ``(staged_left, staged_right)`` from
+                :meth:`_stage_halos`, pre-placed on the shard devices.  Pass these to
+                avoid re-reading the halos every subset (the VCD loop stages once per
+                pass).  When ``None``, the halos are extracted+staged here from
+                ``flat_recon`` (the self-contained path, e.g. for tests/standalone use).
 
         Returns:
             (gradient, hessian): each a slice-sharded array of shape
@@ -424,12 +464,16 @@ class TomographyModel(ParameterHandler):
         num_rows, num_cols, num_slices = self.get_params('recon_shape')[:3]
         num_indices = len(pixel_indices)
 
-        # Boundary slices each shard needs from its neighbors (None at the true edges).
-        left_halos, right_halos = self._extract_halos(flat_recon)
+        # Boundary slices each shard needs from its neighbors (None at the true edges),
+        # pre-placed on the shard devices.  Stage here if the caller did not.
+        if staged_halos is None:
+            staged_left, staged_right = self._stage_halos(flat_recon)
+        else:
+            staged_left, staged_right = staged_halos
 
         # Order the shards by their start index along the sharded (slice) axis so the
-        # device sequence matches both _extract_halos (the halo lists) and
-        # recon_placement's device order (used to reassemble below).
+        # device sequence matches the staged-halo order and recon_placement's device
+        # order (used to reassemble below).
         slice_axis = self.recon_shard_axis() % flat_recon.ndim
         shards = sorted(flat_recon.addressable_shards,
                         key=lambda s: s.index[slice_axis].start)
@@ -440,13 +484,11 @@ class TomographyModel(ParameterHandler):
             local = shard.data                       # (num_pixels, local_slices) on this device
             local_slices = local.shape[slice_axis]
             recon_shape_local = (num_rows, num_cols, local_slices)
-            # Indices and halos must be resident on this shard's device for a local compute.
+            # Indices must be resident on this shard's device; the halos already are.
             local_indices = jax.device_put(pixel_indices, device)
-            lh = None if left_halos[i] is None else jax.device_put(left_halos[i], device)
-            rh = None if right_halos[i] is None else jax.device_put(right_halos[i], device)
             g, h = mj.qggmrf_gradient_and_hessian_at_indices(
                 local, recon_shape_local, local_indices, qggmrf_params,
-                left_halo=lh, right_halo=rh)
+                left_halo=staged_left[i], right_halo=staged_right[i])
             grad_owned.append(g)
             hess_owned.append(h)
 
@@ -2312,12 +2354,23 @@ class TomographyModel(ParameterHandler):
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
         partition_worker = jax.device_put(partition, self.sinogram_device)
+        # Stage the qGGMRF boundary halos ONCE for this whole partition pass and reuse them
+        # for every subset.  The prior couples a voxel only to its same-pixel cross-shard
+        # slice neighbor, and the partition's subsets are (almost) disjoint, so a subset's
+        # halo at its own pixels is unchanged until that subset runs -- hence pass-start
+        # halos are correct for each subset.  This turns the per-subset host halo read (the
+        # main per-subset host round-trip, which caps multi-GPU scaling) into a per-pass one.
+        # (Caveat: gen_pixel_partition replicates a few pixels to equalize subset lengths, so
+        # this is not strictly bit-exact at those pixels -- quantified by test; negligible.
+        # Set self._vcd_halo_per_subset = True to restore per-subset extraction for A/B.)
+        stage_per_pass = (self.mesh is not None
+                          and not getattr(self, '_vcd_halo_per_subset', False))
+        staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
             subset_worker = partition_worker[index]
-            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(flat_recon,
-                                                                                                       error_sinogram,
-                                                                                                       subset, subset_worker, times)
+            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names = vcd_subset_updater(
+                flat_recon, error_sinogram, subset, subset_worker, times, staged_halos)
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
         # # Debug code to go with timing info in vcd_subset_updater
@@ -2370,7 +2423,8 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker, times,
+                               staged_halos=None):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -2385,6 +2439,10 @@ class TomographyModel(ParameterHandler):
                 pixel_indices (jax array): 1D array of pixel indices.
                 pixel_indices_worker (jax array): Same as pixel_indices, but copied onto the worker device.
                 times (ndarray): 1D array of elapsed times for debugging/performance tuning.
+                staged_halos (tuple or None): ``(staged_left, staged_right)`` qGGMRF boundary
+                    halos staged once per partition pass (see :meth:`_stage_halos`); forwarded
+                    to the sharded prior so the halos are not re-read every subset.  ``None``
+                    in the single-device path or when per-subset extraction is forced.
 
             Returns:
                 flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset:
@@ -2422,7 +2480,9 @@ class TomographyModel(ParameterHandler):
                 if self.mesh is not None:
                     # Sharded path: flat_recon is slice-sharded, so compute the prior per slice-owner
                     # with halo exchange for the inter-slice term, keeping the result slice-sharded.
-                    prior_grad, prior_hess = self._qggmrf_prior_sharded(flat_recon, pixel_indices, qggmrf_params)
+                    # staged_halos (staged once per partition pass) avoids re-reading the halos here.
+                    prior_grad, prior_hess = self._qggmrf_prior_sharded(
+                        flat_recon, pixel_indices, qggmrf_params, staged_halos=staged_halos)
                 else:
                     with jax.default_device(self.main_device):
                         if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:

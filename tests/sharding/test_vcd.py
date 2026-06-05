@@ -214,8 +214,14 @@ class TestShardedRecon(unittest.TestCase):
 
     MAX_ITERS = 6
 
-    def _recon(self, model, sino, seed=0):
+    def _recon(self, model, sino, seed=0, halo_per_subset=False):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
+        if model.mesh is not None:
+            # halo_per_subset=True forces the exact (re-extract-every-subset) prior path,
+            # which reproduces single-device exactly; the default (False) stages halos once
+            # per pass (prior opt A) and is exact except at gen_pixel_partition's few
+            # replicated pixels.
+            model._vcd_halo_per_subset = halo_per_subset
         recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0,  # run all iters, no early stop
                                print_logs=False)
@@ -236,7 +242,10 @@ class TestShardedRecon(unittest.TestCase):
                         msg=f"trivial-sharded recon not bit-exact; max|diff|={np.max(np.abs(out-ref))}")
 
     def test_sharded_recon_matches_single_device_sweep(self):
-        """2/4/8-device recon matches the single-device recon to float noise."""
+        """2/4/8-device recon matches single-device to float noise on the EXACT prior
+        path (halos re-extracted per subset).  This is the tight correctness gate for
+        the sharding machinery (projectors, recon_indices, alpha, halo staging),
+        independent of the halo-once approximation tested separately below."""
         sino = _phantom_sino(_make_model())
         ref = self._recon(_make_model(), sino)
 
@@ -249,10 +258,37 @@ class TestShardedRecon(unittest.TestCase):
             if not _divisible(model, n):
                 continue
             model.configure_sharding(devs)
-            out = self._recon(model, sino)
+            out = self._recon(model, sino, halo_per_subset=True)   # exact path
             # Iterative amplification of float-reduce-order differences -> modest tolerance.
             np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
                                        err_msg=f"recon mismatch at n_dev={n}")
+            ran_multi = True
+        if not ran_multi:
+            self.skipTest("no usable device count > 1")
+
+    def test_halo_once_per_pass_approximation_is_small(self):
+        """Prior opt A stages the qGGMRF halos ONCE per partition pass instead of per
+        subset.  That is bit-exact except at the few pixels gen_pixel_partition
+        REPLICATES to equalize subset lengths (a replicated pixel updated in one subset
+        has a stale pass-start halo when its other subset runs).  Quantify that the
+        resulting difference (halo-once vs the exact per-subset path) is negligible —
+        far below the recon-vs-phantom error (~0.07) — so the default halo-once path is
+        safe.  (Measured ~1e-4–3e-4 NRMSE on small noise problems; bound generously.)"""
+        sino = _phantom_sino(_make_model())
+        ran_multi = False
+        for n in (2, 4):
+            devs = preferred_devices(n)
+            if devs is None:
+                continue
+            if not _divisible(_make_model(), n):
+                continue
+            m_once = _make_model(); m_once.configure_sharding(devs)
+            once = self._recon(m_once, sino, halo_per_subset=False)
+            m_exact = _make_model(); m_exact.configure_sharding(devs)
+            exact = self._recon(m_exact, sino, halo_per_subset=True)
+            nrmse = np.linalg.norm(once - exact) / np.linalg.norm(exact)
+            self.assertLess(nrmse, 2e-3,
+                            msg=f"halo-once approximation too large at n_dev={n}: NRMSE={nrmse:.2e}")
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")

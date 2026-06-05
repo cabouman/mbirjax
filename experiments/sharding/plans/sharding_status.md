@@ -169,15 +169,19 @@ The sharded qGGMRF prior regresses at fine granularity (0.47×; ~8% of per-subse
 cost, but host round-trips hurt the GPU more — let the GPU numbers set priority).  Agreed
 approach (options A–E with pros/cons were worked through this session; A+B chosen, C/D held,
 E rejected as an algorithmic change):
-- **A — extract halos once per partition pass, not per subset** (move `_extract_halos`
-  up to `vcd_partition_iterator`, thread fixed halos into the prior).  API change is OK.
-  **CAVEAT (Greg):** subsets are NOT always perfectly disjoint — `vcd_utils.gen_pixel_partition()`
-  REPLICATES a few pixels to make equal-length subsets.  The bit-exactness argument for A
-  assumes disjoint pixels, so a replicated pixel could read a pass-start halo at a pixel
-  another subset already updated.  Expected to be negligible in real results, but
-  **quantify with a test** (halo-once vs halo-per-subset diff) before trusting bit-exact.
+- **A — extract halos once per partition pass, not per subset.  ✅ DONE (CPU-validated;
+  GPU perf re-measure pending).**  New `_stage_halos` (extract + pre-place each halo on its
+  shard's device, once); `vcd_partition_iterator` stages once per pass and threads the staged
+  halos through `vcd_subset_updater` → `_qggmrf_prior_sharded(..., staged_halos=...)`.  A
+  temporary `self._vcd_halo_per_subset` switch restores per-subset extraction for A/B.
+  **Replicated-pixel caveat QUANTIFIED:** the per-subset (exact) path still matches single
+  device to **6e-7** (machinery sound); the halo-once approximation (replicated pixels only)
+  is **NRMSE ~6e-5–3e-4, max ~1.5–2.4e-3** on small noise problems — ~1000× below the
+  recon-vs-phantom error (~0.07), i.e. negligible.  Tests: exact-path sweep gated at 1e-4;
+  new `test_halo_once_per_pass_approximation_is_small` bounds it <2e-3.  Full sharding suite
+  75 green.  **GPU: re-run `vcd_recon_scaling.py` to measure A's effect on the 512³/4d 1.62×.**
 - **B — run the prior's shards concurrently via `run_per_device`** (the projectors' thread
-  pool; the prior currently loops serially).  Good, **if** we modularize the thread
+  pool; the prior currently loops serially).  NEXT.  Good, **if** we modularize the thread
   management so the subset-updater loop stays readable.
 - **Add a qGGMRF scaling test with a prerelease baseline** to round out the suite
   (mirrors the projector/recon baselines).
