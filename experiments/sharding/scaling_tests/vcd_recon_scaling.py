@@ -44,6 +44,7 @@ import os
 import gc
 import sys
 import argparse
+import traceback
 
 import scaling_common as sc
 
@@ -65,12 +66,21 @@ DEVICE_COUNTS = [1, 2, 4, 8]  # [1, 2, 3] to skip a known-bad 4th GPU
 # the projector drivers' and the iteration count is modest.
 MAX_ITERATIONS = 10
 
-# GPU memory preallocation.  True (default) matches the other scaling drivers and gives
-# stable timing, but the BFC allocator is then loose, so peak_bytes_in_use OVER-reports
-# the true working set and must NOT be extrapolated across sizes (ruler caution).  Set
-# False for an honest per-device CAPACITY pass: the allocator grows on demand and
-# peak_bytes_in_use tracks actual need much more tightly (timing is then less stable).
-MEM_PREALLOCATE = True
+# GPU memory knobs.
+#
+# IMPORTANT (measured 2026-06-05): peak_bytes_in_use is the peak *live* working set and is
+# essentially the SAME whether preallocation is on or off (verified: 1d 512³ reads ~41.6 GB
+# either way).  Under a generous budget XLA does no rematerialization, so this peak is the
+# natural full-speed working set -- a REAL number, not a preallocation artifact (do not extrapolate
+# across sizes though).  So PREALLOCATE=False does NOT reveal the capacity floor.
+#
+# To measure the true capacity floor / OOM threshold, ARTIFICIALLY RESTRICT the budget: keep
+# PREALLOCATE=True and LOWER MEM_FRACTION (a hard pool cap).  XLA then rematerializes to fit, so
+# the peak drops to the minimum-feasible (slower) -- and a size that exceeds it OOMs, which is the
+# honest "max recon per GPU" signal.  (MEM_FRACTION is ignored when PREALLOCATE=False.)
+MEM_PREALLOCATE = True     # leave True; flipping it does NOT change peak_bytes_in_use
+MEM_FRACTION = 0.9         # pool fraction (hard cap when preallocating); LOWER it to probe the
+                           # capacity floor / OOM threshold, e.g. 0.25 for a ~20 GB cap on an 80 GB GPU
 
 # Problem sizes (n_views, n_rows, n_channels).  n_views and the slice axis
 # (≈ n_rows for parallel beam) must both divide every device count used, else
@@ -278,9 +288,17 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
             gpu_state = sc.sample_gpu_state()
         except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
             msg = str(e).replace("\n", " ")
-            is_oom = any(k in msg.upper() for k in _OOM_MARKERS)
-            failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300]})
+            tb = traceback.format_exc()
+            # Classify OOM from the FULL traceback, not just str(e): an out-of-memory failure
+            # often surfaces as an unrelated-looking error (e.g. numpy "setting an array element
+            # with a sequence") with the real RESOURCE_EXHAUSTED only visible deeper in the stack.
+            is_oom = any(k in tb.upper() for k in _OOM_MARKERS)
+            failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300],
+                             "traceback": tb})
             print(f"  n_devices={n:2d}  {'OOM' if is_oom else 'ERROR'}: {msg[:120]}")
+            if not is_oom:
+                # Print the real stack so a non-OOM failure isn't silently truncated to one line.
+                print(tb)
             _publish()
             if is_oom:
                 print(f"  stopping descent at {size_label}: fewer-device configs "
@@ -336,11 +354,11 @@ def main():
     worker_env = {
         "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
         "XLA_PYTHON_CLIENT_PREALLOCATE": "true" if MEM_PREALLOCATE else "false",
-        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": str(MEM_FRACTION),
     }
-    if not MEM_PREALLOCATE:
-        print("  MEM_PREALLOCATE=False: on-demand allocation — peak_bytes_in_use tracks "
-              "actual need (honest capacity), but timing is less stable.")
+    if MEM_FRACTION < 0.9:
+        print(f"  CAPACITY PROBE: MEM_FRACTION={MEM_FRACTION} (hard pool cap) — a size that "
+              f"exceeds the floor will OOM; that OOM threshold is the honest max-recon-per-GPU.")
 
     print("=" * 72)
     print("  vcd_recon scaling — isolated-subprocess harness (orchestrator)")

@@ -21,6 +21,24 @@ principles: `sharding_implementation_plan.md`.*
 
 ## HANDOFF (2026-06-05) — P4 VCD on placements DONE (CPU, ParallelBeam); GPU scaling + hybrid timing are NEXT
 
+▶ **CURRENT FOCUS (next session): single-device memory / no-regression vs prerelease.**
+P4 core (sharded VCD + A halos-once + alpha host-sync fix) is DONE & validated; GPU scaling
+is healthy (1008³ 2d→4d **2.20×** — the 4-device cap was SIZE, resolved at scale).  The open
+item Greg flagged: the slice-**band** is really a per-device *memory* knob but is sized only by
+device count (`~num_slices/n_dev²`), so at `n_dev=1` it's **full** (no streaming).  Beta's
+1-device-MESH path OOM'd at 1008³ where **prerelease single-device fits 1008³ fine** → must not
+regress the 1-GPU capability.  Plan (steps): **(1)** prerelease single-device time+mem baseline —
+**script ready:** `vcd_single_device_baseline.py` (no sharding, 1 run/size, OOM-safe, output
+named by branch); Greg runs on prerelease AND beta.  **(2)** verify beta *no-mesh* path matches
+prerelease (normal single-GPU users; my VCD edits are all mesh-guarded so it *should* be the
+verbatim prerelease body — verify at 1008³).  **(3)** diagnose the 1-device-MESH heaviness (full
+band? no within-band pixel-batching like the single-device body?) via the `back_project_slice_band`
+knob + `sparse_back_project_single_device_sweep.py`.  **(4)** make band sizing **memory-budget-driven**
+— `band = min(reduce-scatter-optimal(n_dev), cap_from_byte_budget)` — so it streams on 1 device and
+uses finer bands for huge recons on N devices (this is the v2 plan's deferred P6 "single-device
+streaming / trivial-sharding unification", pulled forward).  Steps 3–4 need code review/approval.
+B (parallel prior) is now low-priority (4d cap was size, not the prior).
+
 **Sharded VCD reconstruction works end-to-end on placements (ParallelBeam).**  The
 loop now composes the validated sharded forward/back projectors with one new piece
 — the **qGGMRF prior on a slice-sharded recon** — and runs entirely on the
@@ -141,17 +159,19 @@ stays JAX-free (it was pulling jax in via the top-level constants import) — wo
   is host round-trips: at 256³/4d VCD scales like the other ops on CPU (2.10×, cheap shared-mem
   copies) but collapses on GPU (0.28×, expensive host syncs/PCIe).  ⇒ A/B/alpha target exactly
   this; success metric = move VCD GPU 512³/4d from 1.62× toward the projectors' ~3.3×.
-- **Memory: only the 1d→Nd RATIO is trustworthy here, not the absolute MB.**  Per-device peak
-  drops a lot with more devices (structural: 1 device holds full transients, multi-device
-  streams in bands).  BUT the harness PREALLOCATES (`XLA_PYTHON_CLIENT_PREALLOCATE=true`,
-  `MEM_FRACTION=0.9`), so `peak_bytes_in_use` is what the BFC allocator chose to hold in the
-  big pool (loose, fragmentation-dependent, size-dependent) — NOT the true minimum working
-  set.  So the reported "512³ 1d = 40 GB" is likely over-stated and the ×8 → "1008³ won't fit
-  one GPU" extrapolation is INVALID (Greg has run 1K³ on a single GPU even with the older,
-  heavier code).  For a real capacity claim, re-measure with `XLA_PYTHON_CLIENT_PREALLOCATE=false`
-  (peak tracks actual need more tightly) or use the OOM-threshold / per-buffer attribution
-  (`sparse_back_project_memory_attribution.py`).  Sharding's GPU value is still primarily
-  capacity, but quantify it honestly before stating thresholds.
+- **Memory: the per-device peak is REAL (not a preallocation artifact); only cross-size
+  extrapolation is unsafe.**  CORRECTED (Greg, 2026-06-05): `peak_bytes_in_use` is the peak
+  *live* working set and is essentially **preallocation-invariant** — rerunning gave the same
+  numbers (1d 512³ ≈ 41.6 GB either way).  Under a generous budget XLA does no remat, so this is
+  the natural full-speed working set, a real figure — so my earlier "preallocation over-reports
+  the 1d number" was WRONG, and the ~10× 1d→Nd drop is genuine (band-streaming + sharding really
+  cut live memory).  What you must NOT do is extrapolate absolute MB across sizes.  And
+  **`PREALLOCATE=false` does NOT reveal the capacity floor** (it gives ~the same peak).  To find
+  the true floor / OOM threshold you must ARTIFICIALLY RESTRICT the budget: keep PREALLOCATE=true
+  and LOWER `MEM_FRACTION` (hard pool cap, e.g. 0.25) so XLA rematerializes to fit — a size that
+  then OOMs is the honest max-recon-per-GPU.  `vcd_recon_scaling.py` now exposes `MEM_FRACTION`
+  for exactly this; the `sparse_back_project_single_device_sweep.py` continue-past-OOM pattern
+  is the model.  (The `MEM_PREALLOCATE` knob is kept but flipping it does nothing to the peak.)
 - **2→4 stalls at 512³** (1.65×→1.62×) while a single big projector got 3.29×@4d at 1008³ on
   the earlier clean run.  Likely VCD's **per-subset host overhead** (many small sharded calls
   ×  `_extract_halos` host reads + 5 `float()` alpha syncs/subset), amplified at 4 dev where
@@ -160,9 +180,9 @@ stays JAX-free (it was pulling jax in via the top-level constants import) — wo
 - **Ablation (1) DONE:** the bare-projector sweep on this allocation settled it — projectors
   scale 2.5–4.75×@4d at 256³/512³, VCD alone under-scales ⇒ VCD per-subset overhead, not
   environment.  **So implement A + B + alpha next** (they directly cut the per-subset host
-  round-trips), then re-measure GPU vs the 1.62×→~3.3× target.  Remaining optional measurements:
-  a 1008³ VCD run (starts at 1 dev — it fits) to see if 4 dev pays at large scale despite the
-  fine-granularity subsets; and a `MEM_PREALLOCATE=False` pass for honest capacity numbers.
+  round-trips), then re-measure GPU vs the 1.62×→~3.3× target.  [DONE — A+alpha landed; the
+  1008³ run answered the scaling question below.]  Capacity floor, if wanted: a LOW `MEM_FRACTION`
+  pass (hard cap) to find the OOM threshold — NOT `PREALLOCATE=false` (which leaves the peak ~unchanged).
 
 ### Prior-optimization plan (AGREED; deferred — decide scope after the GPU run)
 The sharded qGGMRF prior regresses at fine granularity (0.47×; ~8% of per-subset CPU
@@ -199,10 +219,35 @@ E rejected as an algorithmic change):
   host syncs** (verified by grep: the remaining `float(alpha)`/`device_put(main_device)` are
   all in single-device-only branches).  Single-device path unchanged (alpha stays a jax
   scalar exactly as before).  Tests: sharded VCD suite 8 green (trivial bit-exact, exact-path
-  1e-4, halo-once bound).  **GPU: re-run `vcd_recon_scaling.py` to measure the effect on
-  512³/4d (now 1.92× after A).**
-- **B — parallel per-shard prior** (`run_per_device`): still NEXT (clear CPU win; GPU benefit
-  uncertain since async dispatch may already overlap).  Do after measuring the alpha fix.
+  1e-4, halo-once bound).  **GPU RESULT (512³; v1=A under `results/vcd/v1_per_partition_halo/`,
+  A+alpha under `v2_in_place_alpha/`):** 2d 1.76×→**1.97×** (24659→21196 ms, −14%) and 1d
+  faster too (the 1-device *mesh* path also had the syncs; 256³ 1d 6152→5140 ms, −16%), but
+  **4d ~flat** (1.92×→1.90×, 22534→22046 ms).  Cumulative vs v0: 512³ 2d 1.65×→1.97×.
+
+### The 4-device cap is cross-NUMA × VCD's many-small-calls — likely structural, not host-sync
+After A+alpha, **4d ≈ 2d in absolute time at 512³** (22046 vs 21196 ms) — going 2→4 no longer
+pays.  The box is **GPU0/1 on NUMA0, GPU2/3 on NUMA1**; at 2 dev everything is on NUMA0, at 4
+it spans both.  A single big projector hit 3.3×@4d because its one large sharded call amortizes
+the cross-NUMA movement; VCD makes **many small per-subset calls** (per subset: sharded
+back+forward+prior, each with its own band/move_shard loop + assemble + the alpha scalar
+replications), each paying cross-NUMA latency that does NOT amortize over the tiny per-subset
+compute.  So per-op host-sync removal (A, alpha) helps 1d/2d but can't move the 4d cap.  **Net:
+~2× at 2 GPUs (512³) is the shippable win; on GPU sharding's primary value is capacity anyway.**
+- **RESULT (504³ & 1008³, d=1,2,4): the 4-device cap was SIZE, not structural.**  504³: 2d
+  1.96×, 4d 1.86× (4d<2d, same flat 2→4 as 512³).  **1008³: 2d→4d = 2.20×** (382959→173894 ms) —
+  near-ideal doubling.  So once per-subset work is large enough to amortize the cross-NUMA cost,
+  4 devices pays; the 4-device crossover sits between ~504³ and 1008³.  ⇒ **VCD multi-GPU scales
+  fine at the sizes where you'd actually shard on GPU (capacity-driven); no structural redesign
+  needed.**  Memory at 1008³ shards cleanly (2d 26278 → 4d 12721 MB).  The "many small subsets"
+  ideas (in lessons) are filed for the future, not needed now.
+  - *1008³ 1d FAILED* with `setting an array element with a sequence` (`oom=False`).  Almost
+    certainly real OOM: 1d 512³ already needs ~41.6 GB live, so 1008³ (8×) far exceeds 80 GB; the
+    numpy-looking error is the OOM surfacing at a host boundary, and the harness had swallowed the
+    traceback.  Harness now records `traceback.format_exc()` + classifies OOM from the full stack;
+    re-run 1008³/1d (or a low `MEM_FRACTION`) to confirm the stack shows RESOURCE_EXHAUSTED.
+- **B — parallel per-shard prior** (`run_per_device`): clear CPU win; GPU benefit doubtful now
+  that the 4d cap is shown to be size (resolved at 1008³).  Lower priority — do for CPU/B-completeness,
+  or skip.  Decide with Greg.
 - **Add a qGGMRF scaling test with a prerelease baseline** to round out the suite
   (mirrors the projector/recon baselines).
 

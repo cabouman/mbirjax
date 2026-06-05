@@ -125,17 +125,28 @@ version, with the worked example.
   crossover is a bonus.  Don't read inverted *time* at a fits-on-one-GPU size as a
   defect — read whether *memory* shards (it does) and whether time scales *above* the
   crossover (it does: 512³ 1.65×@2d).
-- **Preallocated `peak_bytes_in_use` over-reports the true need — don't extrapolate it
-  across sizes (ruler caution, Greg).**  The scaling harnesses set
-  `XLA_PYTHON_CLIENT_PREALLOCATE=true` / `MEM_FRACTION=0.9`, so the BFC allocator is
-  loose: `peak_bytes_in_use` is what it chose to hold in the big pool (fragmentation-
-  and size-dependent), not the minimum working set.  The 1d→Nd *ratio* at one size is
-  still meaningful (structural band-streaming), but absolute MB and cross-size ×k
-  extrapolation are NOT — e.g. "512³ 1d ≈ 40 GB ⇒ 1008³ won't fit one GPU" is wrong
-  (1K³ has been run on a single GPU even with the older, heavier code).  For a true
-  capacity claim, measure with `PREALLOCATE=false` (peak tracks actual need), or the
-  OOM threshold (`sparse_back_project_single_device_sweep.py` style), or the per-buffer
-  attribution (`sparse_back_project_memory_attribution.py`).
+- **`peak_bytes_in_use` is the REAL live working set and is preallocation-INVARIANT;
+  `PREALLOCATE=false` does NOT reveal the capacity floor — restrict the budget instead
+  (ruler caution, Greg; I initially got this backwards).**  Verified: rerunning with
+  preallocation off gave the SAME peak (1d 512³ ≈ 41.6 GB either way).  `peak_bytes_in_use`
+  is the peak of *live* (in-use) bytes, not the reserved pool, so preallocation doesn't
+  change it.  Under a *generous* budget XLA does no rematerialization, so this peak is the
+  natural full-speed working set — a real number (so the ~10× 1d→Nd drop from band-streaming +
+  sharding is genuine, NOT a preallocation artifact; my earlier "preallocation over-reports
+  the 1d number" was wrong).  Caveats that DO hold: don't extrapolate absolute MB across sizes
+  (the natural working set isn't a clean ×k in size), and to find the true **capacity floor /
+  OOM threshold** you must ARTIFICIALLY RESTRICT the budget — keep `PREALLOCATE=true` and LOWER
+  `XLA_PYTHON_CLIENT_MEM_FRACTION` (a hard pool cap, e.g. 0.25) so XLA rematerializes to fit;
+  a size that then OOMs is the honest max-recon-per-GPU.  (`MEM_FRACTION` is ignored when
+  `PREALLOCATE=false`, the other reason False is useless for this.)  See the continue-past-OOM
+  sweep (`sparse_back_project_single_device_sweep.py`) and per-buffer attribution
+  (`sparse_back_project_memory_attribution.py`); `vcd_recon_scaling.py` exposes `MEM_FRACTION`.
+- **An OOM can surface as an unrelated-looking error — classify it from the FULL traceback,
+  and don't let a harness swallow the stack.**  A 1008³/1d VCD run failed with numpy's
+  "setting an array element with a sequence" and `oom=False`, because the real
+  RESOURCE_EXHAUSTED was deeper in the stack and the harness only stored `str(e)[:300]`.  Fix:
+  record `traceback.format_exc()` and match OOM markers against the whole traceback, not just
+  the top-level message.
 
 ## Phase F1 case study (the arc)
 
