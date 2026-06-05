@@ -19,6 +19,74 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-05) — P4 VCD on placements DONE (CPU, ParallelBeam); GPU scaling + hybrid timing are NEXT
+
+**Sharded VCD reconstruction works end-to-end on placements (ParallelBeam).**  The
+loop now composes the validated sharded forward/back projectors with one new piece
+— the **qGGMRF prior on a slice-sharded recon** — and runs entirely on the
+placements with no accidental gather/re-shard.  Staged (not committed — Greg commits
+from PyCharm).
+
+### What landed
+- **Halo-aware qGGMRF** (`qggmrf.py`): `qggmrf_gradient_and_hessian_at_indices` and
+  `qggmrf_grad_and_hessian_per_cylinder` gained `left_halo`/`right_halo` (per-cylinder
+  boundary values for the inter-slice term).  Default `None` = mirror the local
+  boundary slice (reflected BC) → **bit-exact** with the old single-device prior
+  (the old `0`-concatenation special case is the `left_val=v[0]`/`right_val=v[-1]`
+  case of the new `left_delta`/`right_delta` formulation).  Ported from the research
+  branch; allocation-free.  The single-device `..._transfer` variant updated to pass
+  reflected-BC neighbors (kept bit-exact).
+- **`_qggmrf_prior_sharded`** (`tomography_model.py`, next to `_extract_halos`): the
+  recon-domain analogue of the sharded projectors.  Calls `_extract_halos` (one host
+  read of `2*(n_dev-1)` boundary slices), runs the halo-aware prior **locally on each
+  slice-owner's shard**, and reassembles into a slice-sharded `(N, num_slices)` via
+  `recon_placement.shard_structure(2)` + `assemble_sharded` — no in-kernel cross-device
+  comm, consistent with the host-mediated movement architecture (no XLA auto-collective).
+  Trivial 1-device mesh → 1 shard, reflected BC → bit-exact.
+- **VCD made placement-correct** (`vcd_recon` + `create_vcd_subset_updater`):
+  - `to_sino`/`to_recon` helpers route every entry placement (sinogram/weights →
+    view-sharded; init/recon/flat_recon → slice-sharded) and **replace the
+    `device_put(..., main_device/sinogram_device)` calls that would silently gather a
+    sharded array**.  `direct_recon(sharded sino)` → slice-sharded init (match-input);
+    `forward_project(init)` → view-sharded error sino; `compute_hessian_diagonal` →
+    slice-sharded `fm_hessian`.
+  - Subset updater: prior dispatches to `_qggmrf_prior_sharded` when `mesh is not None`.
+    Recon-domain gathers/scatters (`fm_hessian[idx]`, `flat_recon[idx]`, `update_recon`)
+    use a **mesh-replicated `recon_indices`** (PartitionSpec()) so the index array
+    matches the slice-sharded operand's devices (the first multi-device bug the tests
+    caught: indices committed to device 0 vs array on `[0..n]`).
+  - The line-search `alpha`: the forward-model scalars (sino mesh) and prior scalars
+    (recon mesh) live on **distinct meshes**; combining device scalars across meshes is
+    illegal.  Fix: in the sharded path reduce the four scalars + `alpha` to **host
+    floats** (`float(...)`) and do the alpha arithmetic on the host — a python-float
+    `alpha` scales any sharding cleanly (the second multi-device bug the tests caught).
+    *Perf note for the GPU run:* this is a few host syncs per subset (the original
+    already gathered `forward_lin_quad` to main_device + `float(alpha)`), but watch it.
+- **Tests** (`tests/sharding/test_vcd.py`, 7 tests, all green): halo boundary
+  self-consistency (mesh-free) + no-halo==legacy-reflected-BC; sharded-prior trivial
+  **bit-exact** and 2/4/8-dev float-match (+ slice-sharded output check); full recon
+  trivial **bit-exact** and 2/4/8-dev match (measured **NRMSE ~6e-7** vs single-device,
+  far inside the 1e-4 gate); and an audit test that `vcd_recon`'s return (pre-exit-gather)
+  stays slice-sharded across all devices (no accidental gather in the loop).
+
+### Verification (CPU)
+Full `tests/sharding/` **70 passed**.  Single-device regressions green: `test_qggmrf`,
+`test_vcd`, `test_denoiser`, `test_prox` (the qGGMRF signature change is backward-compatible).
+
+### NEXT
+- **GPU (Greg, cluster):** VCD scaling on H100 (no harness yet — see P3's
+  `sparse_*_project_scaling.py` for the pattern; new `vcd_recon_scaling.py` to write).
+  This is the only place the d2d path + real scaling run.  Pre-flight `nvidia-smi dmon`.
+- **Hybrid timing (deferred Q3):** measure whether the `qggmrf_..._transfer`
+  small-subset variant still earns its keep under the recon-CPU/sino-GPU placement; if
+  not, retire it.
+- **P5/P6** per `sharding_implementation_plan_v2.md` (device-config UX; geometry port —
+  cone/translation/multiaxis prior+projector, which also needs their horizontal-fan
+  channel-major layout, Track A).  Prox-map prior under sharding is untouched (the
+  `prox_input` branch); revisit when needed.
+
+---
+
 ## HANDOFF (2026-06-04 #2) — P3 forward DONE (CPU); power-of-2 channel-aliasing fix (parallel beam done, GPU-gate PASSED, port to 3 geometries is NEXT); tests reorganized
 
 **Two things landed this session: P3 (sharded forward projection) and a DETOUR —

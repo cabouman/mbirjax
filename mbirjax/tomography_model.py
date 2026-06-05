@@ -384,6 +384,78 @@ class TomographyModel(ParameterHandler):
         right_halos = [np.asarray(s.data[..., 0]) for s in shards[1:]] + [None]
         return left_halos, right_halos
 
+    def _qggmrf_prior_sharded(self, flat_recon, pixel_indices, qggmrf_params):
+        """Compute the qGGMRF prior gradient and Hessian on a slice-sharded recon.
+
+        This is the recon-domain analogue of the sharded projectors: the recon is
+        sharded by slice, so each slice-owner computes the prior on its own
+        slice-shard **locally** and the results are assembled (with no data
+        movement) into one slice-sharded array.
+
+        The qGGMRF prior couples each slice to its slice-axis neighbors, so an
+        interior shard boundary needs one boundary slice from each adjacent shard.
+        Those are supplied as *halos* (:meth:`_extract_halos`, one host read of
+        ``2*(n_dev-1)`` slices); the halo-aware
+        :func:`mbirjax.qggmrf_gradient_and_hessian_at_indices` then runs entirely
+        on each shard's device with no cross-device communication inside the kernel.
+        At the true recon edges (device 0's left, the last device's right) the halo
+        is ``None`` and the boundary slice is mirrored (reflected BC) -- matching the
+        single-device result exactly.
+
+        The in-slice (row/col) prior term is fully local and uses only the shard's
+        own slices, so passing the *local* slice count in ``recon_shape`` is correct
+        (and identical across equal shards, so the jitted prior compiles once).
+
+        No gather is performed: the inputs are slice-sharded and the outputs are
+        returned slice-sharded (matching ``recon_placement``), so the VCD loop pays
+        no host round-trip beyond the small halo read.
+
+        Args:
+            flat_recon (jax array): slice-sharded recon ``(num_pixels, num_slices)``
+                (a 1-device mesh is the trivial 1-shard case).
+            pixel_indices (jax array): 1D indices into the flattened (rows, cols)
+                identifying the subset of cylinders to evaluate.
+            qggmrf_params (tuple): the prior parameters ``(b, sigma_x, p, q, T)``.
+
+        Returns:
+            (gradient, hessian): each a slice-sharded array of shape
+            ``(len(pixel_indices), num_slices)``.
+        """
+        num_rows, num_cols, num_slices = self.get_params('recon_shape')[:3]
+        num_indices = len(pixel_indices)
+
+        # Boundary slices each shard needs from its neighbors (None at the true edges).
+        left_halos, right_halos = self._extract_halos(flat_recon)
+
+        # Order the shards by their start index along the sharded (slice) axis so the
+        # device sequence matches both _extract_halos (the halo lists) and
+        # recon_placement's device order (used to reassemble below).
+        slice_axis = self.recon_shard_axis() % flat_recon.ndim
+        shards = sorted(flat_recon.addressable_shards,
+                        key=lambda s: s.index[slice_axis].start)
+
+        grad_owned, hess_owned = [], []
+        for i, shard in enumerate(shards):
+            device = shard.device
+            local = shard.data                       # (num_pixels, local_slices) on this device
+            local_slices = local.shape[slice_axis]
+            recon_shape_local = (num_rows, num_cols, local_slices)
+            # Indices and halos must be resident on this shard's device for a local compute.
+            local_indices = jax.device_put(pixel_indices, device)
+            lh = None if left_halos[i] is None else jax.device_put(left_halos[i], device)
+            rh = None if right_halos[i] is None else jax.device_put(right_halos[i], device)
+            g, h = mj.qggmrf_gradient_and_hessian_at_indices(
+                local, recon_shape_local, local_indices, qggmrf_params,
+                left_halo=lh, right_halo=rh)
+            grad_owned.append(g)
+            hess_owned.append(h)
+
+        # Wrap the per-shard pieces into one slice-sharded array (no data movement).
+        structure = self.recon_placement.shard_structure(2)
+        gradient = mjs.assemble_sharded(grad_owned, (num_indices, num_slices), structure)
+        hessian = mjs.assemble_sharded(hess_owned, (num_indices, num_slices), structure)
+        return gradient, hessian
+
     def set_devices_and_batch_sizes(self):
         """
         Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
@@ -2044,21 +2116,37 @@ class TomographyModel(ParameterHandler):
         """
         # Ensure that everything has the right shape and is on the main device
         self.verify_valid_params()
+
+        # Placement helpers.  When sharding is on, recon-like arrays are slice-sharded and sino-like
+        # arrays are view-sharded; otherwise each is committed to main/sinogram_device.  Routing every
+        # placement through these keeps the rest of the loop placement-agnostic and (crucially) avoids
+        # committing a sharded array to a single device, which would silently gather it.
+        def to_sino(x):
+            return self._shard_sinogram(x) if self.mesh is not None else jax.device_put(x, self.sinogram_device)
+
+        def to_recon(x):
+            return self._shard_recon(x) if self.mesh is not None else jax.device_put(x, self.main_device)
+
         if weights is None:
             weights = 1
             constant_weights = True
         else:
-            weights = jax.device_put(weights, self.sinogram_device)
+            weights = to_sino(weights)
             constant_weights = False
 
         recon_shape = self.get_params('recon_shape')
         num_recon_slices = recon_shape[2]
 
+        # Place the sinogram (view-sharded when sharding is on) so direct_recon yields a matching
+        # slice-sharded init and the alpha dot-products below stay aligned with the error sinogram.
+        sinogram = to_sino(sinogram)
+
         scale_recon_to_sinogram = True if init_recon is None else False
         if init_recon is None:
-            # Initialize VCD recon, and error sinogram
+            # Initialize VCD recon, and error sinogram.  With a sharded sinogram, direct_recon's
+            # match-input contract returns a slice-sharded init (no gather).
             self.logger.info('Starting direct recon for initial reconstruction')
-            init_recon = self.direct_recon(sinogram)  # init_recon is output to self.main device because of the default output device in self.back_project
+            init_recon = self.direct_recon(sinogram)
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
@@ -2069,6 +2157,10 @@ class TomographyModel(ParameterHandler):
                                                                                           init_recon.shape)
             self.logger.error(error_message)
             raise ValueError(error_message)
+
+        # Place the init as a recon-like array (slice-sharded when sharding is on); a no-op when
+        # direct_recon already returned it sharded.
+        init_recon = to_recon(init_recon)
 
         # Initialize VCD recon and error sinogram using the init_recon
         # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
@@ -2089,8 +2181,8 @@ class TomographyModel(ParameterHandler):
         init_recon = alpha * init_recon
 
         recon = init_recon
-        recon = jax.device_put(recon, self.main_device)  # Even if recon was created with main_device as the default, it wasn't committed there.
-        error_sinogram = jax.device_put(error_sinogram, self.sinogram_device)
+        recon = to_recon(recon)  # commit to main_device (single device) or keep slice-sharded (sharded path)
+        error_sinogram = to_sino(error_sinogram)
 
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
@@ -2119,11 +2211,11 @@ class TomographyModel(ParameterHandler):
         if constant_weights:
             weights = 1
         else:
-            weights = jax.device_put(weights, self.sinogram_device)
+            weights = to_sino(weights)
 
         # Initialize the emtpy recon
         flat_recon = recon.reshape((-1, num_recon_slices))
-        flat_recon = jax.device_put(flat_recon, self.main_device)
+        flat_recon = to_recon(flat_recon)
 
         # Create the finer grained recon update operators
         vcd_subset_updater = self.create_vcd_subset_updater(fm_hessian, weights=weights, prox_input=prox_input)
@@ -2308,21 +2400,39 @@ class TomographyModel(ParameterHandler):
             # time_index = 0
             time_names = []
 
+            # Recon-domain gathers/scatters below (fm_hessian[...], flat_recon[...], update_recon)
+            # index the *unsharded* pixel axis of a slice-sharded array.  For the gather to be valid
+            # the index array must live on the same devices as the array, so in the sharded path
+            # replicate the indices across the recon mesh (PartitionSpec() == fully replicated); the
+            # single-device path leaves them on main_device unchanged.
+            if self.mesh is not None:
+                recon_indices = jax.device_put(
+                    pixel_indices,
+                    jax.sharding.NamedSharding(self.recon_placement.mesh,
+                                               jax.sharding.PartitionSpec()))
+            else:
+                recon_indices = pixel_indices
+
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
             # time_names.append('qggmrf')
             # time_start = time.time()
             if prox_input is None:
 
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                with jax.default_device(self.main_device):
-                    if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
-                        prior_grad, prior_hess = (
-                            mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params, self.main_device, self.sinogram_device))
-                    else:
-                        prior_grad, prior_hess = (
-                            mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                           qggmrf_params))
+                if self.mesh is not None:
+                    # Sharded path: flat_recon is slice-sharded, so compute the prior per slice-owner
+                    # with halo exchange for the inter-slice term, keeping the result slice-sharded.
+                    prior_grad, prior_hess = self._qggmrf_prior_sharded(flat_recon, pixel_indices, qggmrf_params)
+                else:
+                    with jax.default_device(self.main_device):
+                        if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
+                            prior_grad, prior_hess = (
+                                mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
+                                                                               qggmrf_params, self.main_device, self.sinogram_device))
+                        else:
+                            prior_grad, prior_hess = (
+                                mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                               qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = 1 / (sigma_prox ** 2)
@@ -2355,7 +2465,7 @@ class TomographyModel(ParameterHandler):
             # Get the forward hessian for this subset
             # time_names.append('forhess')
             # time_start = time.time()
-            forward_hess = fm_constant * fm_hessian[pixel_indices]
+            forward_hess = fm_constant * fm_hessian[recon_indices]
             # forward_hess = forward_hess.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2401,11 +2511,24 @@ class TomographyModel(ParameterHandler):
                                                                           weights, fm_constant, const_weights,
                                                                           output_device=self.main_device)
 
-            # Compute optimal update step
+            # Compute optimal update step.
+            # The forward-model line-search scalars are reduced over the view-sharded sinogram (the
+            # sino mesh) while the prior scalars are reduced over the slice-sharded recon (the recon
+            # mesh); combining device scalars across two distinct meshes is not allowed.  alpha is a
+            # single line-search scalar that then scales both a recon-sharded and a sino-sharded
+            # array, so in the sharded path reduce the four scalars to host floats and do the alpha
+            # arithmetic on the host -- a python-float alpha scales any sharding cleanly.
+            if self.mesh is not None:
+                forward_linear = float(forward_linear)
+                forward_quadratic = float(forward_quadratic)
+                prior_linear = float(prior_linear)
+                prior_quadratic_approx = float(prior_quadratic_approx)
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
+            if self.mesh is not None:
+                alpha = float(alpha)
             # alpha = alpha.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2433,11 +2556,15 @@ class TomographyModel(ParameterHandler):
             # Greg, this may result in excess compilation. Not sure.
             if positivity_flag is True:
                 # Get recon at index_batch
-                recon_at_indices = flat_recon[pixel_indices]
+                recon_at_indices = flat_recon[recon_indices]
 
                 # Clip updates to ensure non-negativity
                 pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
-                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+                # In the sharded path delta_recon_at_indices is already slice-sharded to match
+                # flat_recon; committing it to a single device here would gather it, so only place
+                # it on main_device in the single-device path.
+                if self.mesh is None:
+                    delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
@@ -2445,8 +2572,11 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('scaledr')
             # time_start = time.time()
-            # Perform sparse updates at index locations
-            delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+            # Perform sparse updates at index locations.  In the sharded path delta_recon_at_indices
+            # is already slice-sharded to match flat_recon (so update_recon stays a local scatter);
+            # committing it to a single device would gather it, so only do that single-device.
+            if self.mesh is None:
+                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
             delta_recon_at_indices = alpha * delta_recon_at_indices
             # delta_recon_at_indices = delta_recon_at_indices.block_until_ready()
             # times[time_index] += time.time() - time_start
@@ -2454,7 +2584,7 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('flatrec')
             # time_start = time.time()
-            flat_recon = update_recon(flat_recon, pixel_indices, delta_recon_at_indices)
+            flat_recon = update_recon(flat_recon, recon_indices, delta_recon_at_indices)
             # flat_recon = flat_recon.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1

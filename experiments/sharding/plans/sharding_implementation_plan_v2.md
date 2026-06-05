@@ -227,13 +227,24 @@ row-crop as parallel beam's band mechanism for now, and build the `(g0, L)`
 interface once in P3 across forward + back with the adjoint round-trip as the
 gate.
 
-### P4 — VCD on placements (Phase E)
-- Entry/exit placements for sinogram (view) / recon (slice) / weights (view).
-- Halo exchange via `_extract_halos` in the VCD loop.
-- Default init: `vcd_recon` computes `init_recon = direct_recon(sinogram)` — with
-  match-input, pass it the already-sharded sinogram so the init stays sharded and
-  flows into the loop with no round-trip.
-- No accidental gather/re-shard inside the loop body.
+### P4 — VCD on placements (Phase E)  ✅ DONE (CPU, ParallelBeam; GPU scaling pending)
+- [x] Entry/exit placements for sinogram (view) / recon (slice) / weights (view) via
+  `to_sino`/`to_recon` in `vcd_recon` (replace the `device_put(..., main/sinogram_device)`
+  gather hazards).
+- [x] Halo exchange via `_extract_halos` in the new `_qggmrf_prior_sharded` — the
+  recon-domain analogue of the sharded projectors (per-slice-owner local prior +
+  `assemble_sharded`; halo-aware `qggmrf_*` ported from research, default `None` =
+  reflected BC = bit-exact).
+- [x] Default init: `direct_recon(sharded sinogram)` → slice-sharded init (match-input),
+  `forward_project(init)` → view-sharded error sino; stays sharded into the loop.
+- [x] No accidental gather/re-shard inside the loop body: recon-domain gathers use a
+  mesh-replicated `recon_indices`; the cross-mesh line-search `alpha` is reduced to a
+  host float (the two multi-device bugs the tests caught).  Audited by a test that
+  `vcd_recon`'s pre-exit-gather return stays slice-sharded across all devices.
+- Gate: full recon trivial **bit-exact**; 2/4/8-dev **NRMSE ~6e-7** vs single-device;
+  prior trivial bit-exact + 2/4/8-dev float-match.  `tests/sharding/test_vcd.py` (7).
+- **Pending:** GPU VCD scaling (cluster); hybrid timing for the `qggmrf_..._transfer`
+  variant (deferred Q3); prox-map prior under sharding (untouched).
 
 ### P5 — Device-config UX (can land in parallel once P1 fixes what gets configured)
 - `configure_devices(devices=None)` user-facing (None→auto, list→exact,

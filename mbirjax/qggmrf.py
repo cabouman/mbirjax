@@ -86,11 +86,13 @@ def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pix
     # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
     b, sigma_x, p, q, T = qggmrf_params
 
-    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
+    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder.
+    # This transfer variant is single-device (no halos): mirror the local boundary slices (reflected BC)
+    # by passing the first/last local slice as the neighbor values, exactly as in the single-device path.
     cur_voxels = jax.device_put(flat_recon[pixel_indices], worker_device)
     qggmrf_params = (b, sigma_x, p, q, T)
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
-    gradient_cyl, hessian_cyl = cylinder_map(cur_voxels, qggmrf_params)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, 0, 0))
+    gradient_cyl, hessian_cyl = cylinder_map(cur_voxels, qggmrf_params, cur_voxels[:, 0], cur_voxels[:, -1])
     gradient_cyl, hessian_cyl = jax.device_put([gradient_cyl, hessian_cyl], device=main_device)
 
     # Then work on slices - add in the contributions from neighbors in the same slice
@@ -116,7 +118,8 @@ def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pix
 
 
 @partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
-def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
+def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params,
+                                           left_halo=None, right_halo=None):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
@@ -124,24 +127,46 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
 
     Args:
         flat_recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+            When operating on a single slice-shard, num_recon_slices is the local (per-shard) slice count.
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
+            num_recon_rows and num_recon_cols are always the full (unsharded) values; the slice count entry should match
+            ``flat_recon``'s (local) slice count -- only the in-slice term uses recon_shape, and it ignores the slice count.
         pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
+        left_halo (jax.array or None): 1D array of shape (num_recon_rows x num_recon_cols,) holding the slice
+            immediately to the left (lower global slice index) of this shard, used to compute the inter-slice prior
+            term at the shard's left boundary.  Pass None at the true left edge of the full recon, which mirrors the
+            local boundary slice (reflected BC) and reproduces the single-device result exactly.
+        right_halo (jax.array or None): 1D array of shape (num_recon_rows x num_recon_cols,) holding the slice
+            immediately to the right (higher global slice index) of this shard.  Pass None at the true right edge of
+            the full recon (reflected BC).
 
     Returns:
-        tuple of two arrays and a float (first_derivative, second_derivative, loss).  The first two entries have shape
-        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices. loss is 1x1.
+        tuple of two arrays (first_derivative, second_derivative), each of shape
+        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices.
     """
     # Initialize the neighborhood weights for averaging surrounding pixel values.
     # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
     b, sigma_x, p, q, T = qggmrf_params
 
-    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
-    qggmrf_params = (b, sigma_x, p, q, T)
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
-    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
+    # Resolve the per-cylinder boundary values for the inter-slice (cylinder) prior term.
+    # With no halo (a true edge or single-device run), mirror the local boundary slice: passing
+    # voxel_cylinder[0] as left_val and voxel_cylinder[-1] as right_val makes both boundary deltas
+    # zero, exactly reproducing the reflected-BC single-device behavior.  With a halo (a shard
+    # interior boundary), use the actual neighboring-shard slice values so the inter-slice gradient
+    # is correct at the boundary -- and no temporary extended-cylinder array is allocated.
+    lh_vals = (left_halo[pixel_indices]  if left_halo  is not None
+               else flat_recon[pixel_indices, 0])   # (N_indices,)
+    rh_vals = (right_halo[pixel_indices] if right_halo is not None
+               else flat_recon[pixel_indices, -1])  # (N_indices,)
 
-    # Then work on slices - add in the contributions from neighbors in the same slice
+    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder.
+    # lh_vals / rh_vals are vmapped as per-cylinder scalars (in_axes 0).
+    qggmrf_params = (b, sigma_x, p, q, T)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, 0, 0))
+    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params, lh_vals, rh_vals)
+
+    # Then work on slices - add in the contributions from neighbors in the same slice (fully local, no halos)
     slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
     gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
 
@@ -149,13 +174,20 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
 
 
 @partial(jax.jit, static_argnames='qggmrf_params')
-def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
+def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params, left_val, right_val):
     """
     Compute the qggmrf gradient and diagonal Hessian at each voxel of a voxel_cylinder.
 
     Args:
-        voxel_cylinder (jax array): 1D array of voxel values
+        voxel_cylinder (jax array): 1D array of voxel values for one (row, col) location, spanning all slices local
+            to this shard.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
+        left_val (scalar): Value of the voxel in the slice immediately before this cylinder (global slice index -1
+            relative to the cylinder).  Pass voxel_cylinder[0] for a reflected (zero-delta) boundary at the true
+            left edge of the recon.
+        right_val (scalar): Value of the voxel in the slice immediately after this cylinder (global slice index n
+            relative to the cylinder).  Pass voxel_cylinder[-1] for a reflected (zero-delta) boundary at the true
+            right edge of the recon.
 
     Returns:
         tuple of gradient and Hessian, each of which is a 1D jax array of the same length as voxel_cylinder
@@ -164,11 +196,15 @@ def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
     b_at_slice_plus_one, b_at_slice_minus_one = b[4:6]
 
     # Voxel cylinder is 1D.
-    # Compute the differences delta[j] = voxel_cylinder[j+1] - voxel_cylinder[j], then add 0s at both ends to
-    # represent reflected boundaries at 0 and the end.
-    # Get v[0]-v[-1], v[1]-v[0], v[2]-v[1], ..., v[n]-v[n-1]  (where v[-1] = v[0], v[n]=v[n-1] in this case).
-    zero = 0 * voxel_cylinder[:1]  # Use this form rather than jnp.zeros(1) to work on the same device as voxel_cylinder
-    delta = jnp.concatenate((zero, jnp.diff(voxel_cylinder), zero))
+    # Build delta[j] = voxel_cylinder[j] - voxel_cylinder[j-1] for interior positions, with explicit boundary
+    # deltas at each end derived from the neighbor values.  Result is
+    #   v[0]-left_val, v[1]-v[0], v[2]-v[1], ..., v[n-1]-v[n-2], right_val-v[n-1].
+    # Passing left_val = voxel_cylinder[0] makes delta[0] = 0 and right_val = voxel_cylinder[-1] makes delta[n] = 0,
+    # which is the reflected boundary condition used on a single device; a true neighbor slice (a shard halo) gives
+    # the correct cross-boundary delta instead.
+    left_delta = voxel_cylinder[:1] - left_val    # shape (1,)
+    right_delta = right_val - voxel_cylinder[-1:]  # shape (1,)
+    delta = jnp.concatenate((left_delta, jnp.diff(voxel_cylinder), right_delta))
 
     # Compute the primary quantity used for the gradient and Hessian
     # Use b_for_delta = 1 here and scale by b_slice below.
