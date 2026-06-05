@@ -92,6 +92,38 @@
   filter (per-view -> `apply_row_filter`), so beta-vs-prerelease is a FLOAT-NOISE
   comparison (~8e-8 on CPU, 0% above the 1e-4 threshold) that catches real
   divergence and CPU/GPU drift above that floor.
+- `vcd_recon_scaling.py` — scaling + correctness driver for end-to-end sharded VCD
+  (`TomographyModel.vcd_recon`).  Same isolated-subprocess harness as the projector
+  drivers.  The timed unit is the INTERNAL `vcd_recon` on a PRE-SHARDED sinogram
+  with FIXED partitions (built once, outside the timed region), returning the
+  slice-sharded recon (NO exit gather) — so it isolates the iterative loop's
+  forward/back projection + slice-sharded qGGMRF prior + cross-device movement and
+  the peak transient of one full reconstruction.  Determinism: the timed callable
+  seeds the GLOBAL numpy RNG each call (VCD shuffles subset order per iteration), so
+  every trial does identical work and the result is reproducible across device
+  counts.  Top-of-file knobs: `DEVICE_COUNTS`, `MAX_ITERATIONS`, per-platform
+  `SIZES` (smaller than the projector drivers' — VCD is iterative).  Correctness
+  (setup worker) runs the FULL single-device `recon` at a small size and compares
+  the volume vs the prerelease baseline (FLOAT-NOISE gate; ~5e-8 on CPU).  Run from
+  the beta worktree root.
+- `vcd_recon_capture_baseline.py` — run ONCE from a prerelease checkout to capture
+  the prerelease end-to-end `recon` volume.  Writes `baselines/vcd_recon.{npy,yaml}`.
+  Seeds the global RNG once (partitions + per-iteration subset shuffles + the random
+  sinogram all come from that one seeded stream) and forces exactly MAX_ITERATIONS
+  (`stop_threshold_change_pct=0`) so capture and check are aligned.  Shares
+  `run_reference_recon` with `vcd_recon_scaling.py` (one definition, one RNG
+  sequence).  NOT bit-exact (iterative accumulation amplifies reduce-order
+  differences; the qGGMRF prior's no-halo path is bit-exact with prerelease) — a
+  float-noise gate that catches real divergence and CPU/GPU drift.
+- `vcd_shard_vs_noshard.py` — demo-style head-to-head of the user-facing `recon`
+  run no-shard (single device) vs shard (4 virtual CPU devices, or all usable GPUs)
+  on the SAME Shepp-Logan data, reporting time / peak memory / NRMSE and the
+  shard/no-shard ratios.  Isolated-subprocess harness (one fresh worker per mode;
+  the shard worker's CPU virtual-device count is set via its env before JAX import).
+  Runs the WHOLE recon (entry shard + loop + exit gather), so it reflects the real
+  user call — for the pure sharded-loop peak use `vcd_recon_scaling.py`.  CPU memory
+  is whole-process RSS (no per-device win on CPU); the per-device memory benefit
+  shows on GPU.  Top-of-file knobs: size, `MAX_ITERATIONS`, `CPU_SHARD_DEVICES`.
 - `results/` (gitignored) — generated YAML tables (timing + speedup + correctness
   metrics) and plots.
 - `baselines/` (gitignored) — single prerelease reference: `<op>.npy` (array) +

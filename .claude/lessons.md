@@ -67,6 +67,39 @@ version, with the worked example.
   SINGLE-PROCESS (the cores of one machine); spanning multiple nodes still needs
   multi-host JAX (`jax.distributed`).
 
+- **Per-subset sharding has a problem-SIZE floor — measure VCD at realistic sizes,
+  not toy ones (ruler lesson, self-inflicted).**  VCD reuses the same sharded
+  projectors but calls them over a *subset* of pixels each update
+  (`recon_pixels / num_subsets`), so the effective work per sharded op is far
+  smaller than a full projection — VCD needs a *bigger* recon than the bare
+  projectors to amortize the per-device + per-subset overhead.  A first
+  shard-vs-noshard demo at 64³ showed VCD ~0.35× at 4 CPU devices and I wrongly
+  called it "expected sharding overhead."  It was a too-small ruler: the bare back
+  projector is itself only 0.44× at 4 dev at 64³ (it doesn't beat 1× on CPU until
+  ~256³).  Measured VCD CPU scaling (4 virtual devices): 64³ ≈ 0.35×, 128³ ≈ 0.86×,
+  **256³ ≈ 1.70×** — right in line with the projectors' CPU ceiling (back ~1.9×,
+  forward ~1.6× at 256³).  So sub-256³ "slowdowns" are the size, not a defect; never
+  conclude "sharding doesn't help here" from a toy size.  Full CPU device curve at
+  256³: 2d 1.63×, **4d 1.86×**, 8d 1.73× — 2-dev already wins, **4 dev is the peak,
+  8 dev regresses** (bandwidth-bound on the shared CPU memory bus, like back-proj);
+  384³ is slightly worse (4d 1.75×, 8d 1.41×) as larger working sets saturate the bus
+  sooner.  ~4 devices is the CPU sweet spot.
+- **VCD's sharded qGGMRF prior is the one per-subset component that goes BACKWARDS
+  at fine granularity** (attribution at 256³/4-dev: prior 0.47× on 1024-pixel
+  subsets vs 1.45× on 16384-pixel subsets; back/forward stay ≥1.3×).  Cause: its
+  host-halo extraction (`_extract_halos` ≈ 1.35 ms/call) + the per-shard Python
+  dispatch + `assemble_sharded` don't amortize when the actual prior compute is ~2
+  ms.  It's only ~8% of per-subset cost (the projections dominate), so it drags
+  overall VCD scaling only slightly — but it's the obvious optimization if the prior
+  ever dominates: avoid the per-subset host round-trip (on-device `move_shard` halo
+  exchange where d2d is safe, or fuse the halo read across subsets).
+- **GPU watch for VCD:** the line-search `alpha` is reduced to a host float each
+  subset (5 `float()` device→host syncs/subset) to dodge the cross-mesh scalar
+  problem (forward scalars on the sino mesh, prior scalars on the recon mesh).
+  Cheap on CPU; potentially serializing on GPU.  If it bites, replicate `alpha`
+  onto both meshes with `device_put` (a couple of scalar broadcasts) instead of
+  bouncing through the host.
+
 ## Phase F1 case study (the arc)
 
 The sharded FBP filter, start to finish — a template for "make it correct, then

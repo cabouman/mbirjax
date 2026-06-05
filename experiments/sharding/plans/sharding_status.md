@@ -73,10 +73,52 @@ from PyCharm).
 Full `tests/sharding/` **70 passed**.  Single-device regressions green: `test_qggmrf`,
 `test_vcd`, `test_denoiser`, `test_prox` (the qGGMRF signature change is backward-compatible).
 
+### CPU scaling (measured 2026-06-05) — VCD sharding works; sub-256³ "slowdowns" were a ruler error
+The first shard-vs-noshard demo ran at **64³** and showed VCD ~0.35× at 4 CPU devices,
+which I wrongly called "expected overhead."  It was a **too-small ruler**: per-subset
+sharded ops have a problem-SIZE floor, and even the *bare* back projector is only
+0.44× at 4 dev at 64³ on CPU (it doesn't beat 1× until ~256³).  Measured VCD scaling
+(`vcd_recon`, 4 iters, 4 virtual CPU devices):
+
+  | size | 1d | 2d | 4d | 8d |
+  |---|---|---|---|---|
+  | 64³  | 1.00× | — | ~0.35× | — |  (overhead-bound)
+  | 128³ | 1.00× | — | 0.86× | — |
+  | 256³ | 1.00× | **1.63×** | **1.86×** | 1.73× |
+  | 384³ | 1.00× | 1.57× | 1.75× | 1.41× |
+
+So **2-dev is already a clear win, 4-dev is the peak, 8-dev regresses** — the
+bandwidth-bound pattern of the bare back projector on shared-memory virtual CPU
+devices (it plateaus/declines past 4 too); 384³ scales slightly worse than 256³
+because larger working sets saturate the one memory bus sooner (cf. back-proj going
+backwards at 400³).  256³/4-dev (~1.7–1.9×, run-to-run) matches the bare projectors'
+CPU ceiling (back ~1.9×, forward ~1.6×), so **VCD scales as well as its building
+blocks — no VCD-specific pathology**; ~4 devices is the CPU sweet spot.  The full
+user-facing `recon()` demo at 256³ (8 iters, 4 dev) gives **1.56×** (a bit below the
+pure-loop figure — it also pays the serial exit gather + partition gen) with
+**identical NRMSE 0.0752** shard vs no-shard.  Attribution (256³/4-dev) showed the **sharded prior** is the one component
+that regresses at fine granularity (0.47× on 1024-pixel subsets vs 1.45× on
+16384-pixel ones) — its host-halo extraction (~1.35 ms) + per-shard dispatch don't
+amortize; ~8% of per-subset cost, so a minor drag and a clear future optimization.
+The demo default is now 256³ with size guidance.  (Tools: `vcd_recon_scaling.py` for
+rigorous curves; the throwaway `/tmp/vcd_diag.py`/`vcd_sweep.py`/`vcd_attrib.py` ablations
+produced the numbers above.)
+**Remaining before P5/P6:** GPU scaling on the cluster (the crossover/sweet-spot is at
+larger sizes there, with real per-device memory — and the d2d path only runs there) +
+the per-subset scalar-host-sync watch.  CPU measurement is now done (above).
+
 ### NEXT
-- **GPU (Greg, cluster):** VCD scaling on H100 (no harness yet — see P3's
-  `sparse_*_project_scaling.py` for the pattern; new `vcd_recon_scaling.py` to write).
+- **GPU (Greg, cluster):** VCD scaling on H100.  **Harnesses now written** (CPU-smoke-tested,
+  in `experiments/sharding/scaling_tests/`): `vcd_recon_scaling.py` (isolated-subprocess
+  device+size sweep, times internal `vcd_recon` on pre-sharded sino, correctness vs
+  prerelease baseline) + `vcd_recon_capture_baseline.py` (run once from a prerelease
+  checkout — **CPU baseline already captured**, beta-vs-prerelease single-device
+  max_abs_diff **5.3e-8**; re-capture on the cluster as baselines/ is gitignored) +
+  `vcd_shard_vs_noshard.py` (full-recon head-to-head, time/mem/NRMSE; shard/no-shard
+  NRMSE identical 0.1826 — correctness; default now 256³ where CPU sharding pays).
   This is the only place the d2d path + real scaling run.  Pre-flight `nvidia-smi dmon`.
+  **Watch the per-subset host syncs** (the `float(alpha)` coercions) — if they dominate
+  at scale, replicate alpha onto both meshes instead of bouncing through the host.
 - **Hybrid timing (deferred Q3):** measure whether the `qggmrf_..._transfer`
   small-subset variant still earns its keep under the recon-CPU/sino-GPU placement; if
   not, retire it.
