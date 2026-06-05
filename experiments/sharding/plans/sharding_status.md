@@ -19,6 +19,104 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-04 #2) — P3 forward DONE (CPU); power-of-2 channel-aliasing fix (parallel beam done, GPU-gate PASSED, port to 3 geometries is NEXT); tests reorganized
+
+**Two things landed this session: P3 (sharded forward projection) and a DETOUR —
+a power-of-2 cache-aliasing bug in the projector kernels, found via forward CPU
+scaling.  Both are committed; the layout fix has an open GPU gate (running).**
+
+### P3 — forward projection on placements: DONE (CPU-green; GPU scaling pending)
+The all-gather **adjoint** of the band back projector, **slice-banded (Option B)**
+— chosen over the v2 plan's pixel-batch (`move_cylinders_to_sino`) for memory
+symmetry with back projection (same reasons band beat pixel in P2).
+- New `broadcast_band_to_views` (`_sharding/transfer.py`) — adjoint of
+  `sum_band_to_owner`; `_sparse_forward_project_sharded` + `_forward_project_all_bands`
+  + `_forward_project_band_to_local_views` (`tomography_model.py`); `forward_project`
+  match-input (mirror of `back_project`); parallel-beam **forward kernel sizes
+  output rows from input slices** (adjoint of the back kernel's row-slicing).
+- **Removed** the superseded full-cylinder primitives `move_cylinders_to_sino` /
+  `sum_cylinders_to_recon` (the banded `sum_band_to_owner`/`broadcast_band_to_views`
+  pair supersedes them).
+- Gate: **forward/back adjoint round-trip** `<Ax,y>==<x,Aᵀy>` green at 1/2/4/8
+  devices; trivial n=1 bit-exact; match-input tested.  Commit `7461abb`.
+- **Pending:** GPU forward scaling (`sparse_forward_project_scaling.py`, adjoint-identity
+  correctness, no baseline needed) on the cluster — the only place the d2d path runs.
+
+### Tests reorganized
+The 8 sharding test files moved to **`tests/sharding/`** (dropped the redundant
+`test_sharding_` prefix → `test_back_projection.py`, etc.).  `preferred_devices`
+now lives in `tests/sharding/conftest.py`; the parent `tests/conftest.py` keeps the
+load-bearing pre-JAX XLA device flag.  Run all via `pytest tests/sharding/`.
+
+### THE DETOUR — power-of-2 `num_det_channels` cache aliasing (commit `47b787a`)
+**Symptom:** forward at 256³ on CPU ran **~6× slower** than 252³ (and the forward
+scaling harness showed fake 15–33× superlinear + 400³ faster than 256³).
+**Diagnosis (single-variable ablation):** the *sole* cause is **`num_det_channels`
+being a power of 2**.  The kernels access `sinogram_view[:, n]` by **column**
+(stride = `num_det_channels`); a power-of-2 stride aliases the CPU cache
+(set-conflict misses), severity ∝ slices-per-call.  Views/rows are irrelevant; the
+in-plane recon access is NOT a separate cause (confirmed at 2048 channels).
+**Fix:** **channel-major layout** in the parallel-beam forward + back kernels —
+build/read the view as `(channels, slices)` so the per-pixel scatter/gather is
+**contiguous (stride 1)**, transpose at the kernel boundary (output layout and all
+callers unchanged).  **Bit-compatible** (projectors 4+26, sharding 63 green).
+**CPU payoff:** 256³ forward **27291 → 1348 ms (~20×)**; **~3.5× faster even at
+non-pow2** (252³ 4474 → 1260); **flat** across the channel sweep (256≈252, 512≈504).
+Micro-bench of the isolated scatter: transposed 14.5× faster at 256ch / 4× at
+252ch, bit-exact, XLA honors the layout.
+**Tooling:** `projector_sino_size_scan.py` — single-device forward/back timing per
+sinogram axis (views/rows/channels alone + uniform; pow2 vs non-pow2); CPU/GPU;
+A/B vs the old kernel via `git stash`.
+
+**GPU GATE: PASSED (2026-06-04, H100, new kernel).**  `projector_sino_size_scan_gpu.yaml`
+is **flat across power-of-2 channels** (1024≈1008: 1229≈1238 ms fwd; 2048≈2016:
+5318≈5262 ms) — no aliasing in the new layout, times scale smoothly with
+num_pixels; views/rows power-of-2-insensitive.  No regression (1024³ single-device
+fwd 35.0 s new vs 45.3 s old forward-scaling n=1, different paths but not slower).
+**Confirms the old GPU kernel WAS aliasing at power-of-2 channels** — that is what
+faked the **5.17× forward superlinear at 1024³** (n=1's full band thrashed; sharded
+small bands escaped).  ⇒ re-running `sparse_forward_project_scaling.py` with the new
+kernel should show *normal* ~3–4× scaling.  **Layout fix is good on CPU and GPU.**
+
+**Suspect prior numbers:** early **CPU back-projection** scaling used 256³ (power of
+2) → aliased → suspect (re-run at non-pow2).  GPU back used 1008³ (non-pow2) → clean.
+
+### FORWARD PLAN — two tracks
+
+**(A) Finish the layout-fix detour — GPU gate PASSED, so the PORT is the next task:**
+Apply the same channel-major transpose (build/read the **horizontal-fan**
+`sinogram_view` as `(channels, rows)`; contiguous `.at[n, :]` scatter / `[n, :]`
+gather; transpose at the kernel boundary, output layout unchanged) to the
+horizontal-fan kernels of the other three geometries — the only kernels with the
+strided `sinogram_view[:, n]` channel access (the vertical fan handles slices and
+is untouched):
+  - **cone_beam.py**: `forward_horizontal_fan_pixel_batch_to_one_view` (the
+    `.at[:, n].add`, ~L356) + `back_horizontal_fan_one_view_to_pixel_batch`
+    (`sinogram_view[:, n].T`, ~L529).
+  - **translation_model.py**: same pair (`forward_horizontal_fan...` ~L283;
+    `back_horizontal_fan...` ~L455).
+  - **multiaxis_parallel.py**: `forward_horizontal_fan...` (~L325, note the
+    `weight*scale*valid` factor) + `back_horizontal_fan...` (~L385, the
+    `cols = sinogram_view[:, n].T`).
+  Verify per geometry: `test_projectors` (all geometries) + `test_fbp_fdk` (cone)
+  stay bit-exact; `projector_sino_size_scan.py` flat across the channel sweep.
+  **Parallel beam is the verified template** (commit `47b787a`).  Mechanical but
+  numerically sensitive across 3 files → best done with fresh context.
+If a GPU regression ever appears on a geometry → platform-conditional layout.
+
+**(B) Resume the main sharding thread (after the detour):**
+- P3 wrap: GPU forward scaling confirmation.
+- **P4 — VCD on placements** (NEXT after P3): entry/exit placements for
+  sino(view)/recon(slice)/weights(view); halo exchange via `_extract_halos`;
+  default init = already-sharded `direct_recon`; no accidental gather/re-shard in
+  the loop body.
+- P5 — device-config UX (`configure_devices`).
+- P6 — port placement path to other geometries; retire `main_device`/`sinogram_device`;
+  the `(g0,L)` slice-band projector interface + slice-batching→band unification +
+  in-place donation (see the **P3/P6 design note** in `sharding_implementation_plan_v2.md`).
+
+---
+
 ## HANDOFF (2026-06-04) — back-projection refactor landed & GPU-confirmed (H100×1–4); `(g0,L)` interface designed for P3
 
 **What changed (staged, not committed — Greg commits from PyCharm).**  A
