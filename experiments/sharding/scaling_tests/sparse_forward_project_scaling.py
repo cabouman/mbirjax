@@ -159,7 +159,9 @@ def _adjoint_rel_error(model, idx):
     lhs = float(np.sum(ax * y_sino))
     rhs = float(np.sum(x_cyl * aty))
     rel = abs(lhs - rhs) / (abs(lhs) + 1e-30)
-    return lhs, rhs, rel
+    # Also return ax = forward(x_cyl): x_cyl is the prerelease baseline's input
+    # (the same first draw), so the caller compares ax against the baseline.
+    return lhs, rhs, rel, ax
 
 
 # ── Worker side (runs in an isolated subprocess) ──────────────────────────────
@@ -170,18 +172,37 @@ def worker_setup(out_file):
     plat, max_dev = sc.detect_platform()
     dev_label = sc.device_label()
 
-    # Single-device (no mesh) forward/back adjoint identity -- the forward
-    # correctness gate, self-contained (no captured baseline needed).
+    # Two correctness checks at the small correctness size, single-device (no mesh):
+    #  (1) forward/back adjoint identity <Ax,y>==<x,Aᵀy> (self-contained), and
+    #  (2) forward(x_cyl) vs the prerelease reference baseline (cross-version /
+    #      cross-platform; single baseline captured on CPU prerelease).
     model = make_model(CORRECTNESS_SIZE, devices=None)
     idx = make_indices(model)
-    lhs, rhs, rel = _adjoint_rel_error(model, idx)
-    corr = {"baseline_present": True, "check": "adjoint_identity",
-            "lhs": lhs, "rhs": rhs, "rel_error": rel,
-            "max_abs_diff": abs(lhs - rhs),
-            "pct_above_threshold": 0.0 if rel <= CORRECTNESS_THRESHOLD else 100.0,
-            "cross_platform": False, "threshold": CORRECTNESS_THRESHOLD}
+    lhs, rhs, rel, ax = _adjoint_rel_error(model, idx)
+    corr = {"check": "adjoint_identity + prerelease_baseline",
+            "adjoint_lhs": lhs, "adjoint_rhs": rhs, "adjoint_rel_error": rel,
+            "adjoint_ok": bool(rel <= CORRECTNESS_THRESHOLD),
+            "threshold": CORRECTNESS_THRESHOLD}
     print(f"[setup] adjoint identity <Ax,y>={lhs:.6f}  <x,A^Ty>={rhs:.6f}  "
           f"rel={rel:.3e}" + ("" if rel <= CORRECTNESS_THRESHOLD else "  <-- ABOVE THRESHOLD"))
+
+    # ax is forward(x_cyl) with x_cyl == the baseline's input draw, so compare directly.
+    ref, bmeta = sc.load_baseline(OP_NAME)
+    if ref is None:
+        corr["baseline_present"] = False
+        print("[setup] no prerelease baseline — run "
+              "sparse_forward_project_capture_baseline.py from a prerelease checkout")
+    else:
+        captured_on = bmeta.get("captured_on_platform", "unknown")
+        bm = sc.correctness_metrics(ref, ax, threshold=CORRECTNESS_THRESHOLD)
+        corr.update({"baseline_present": True, "baseline_platform": captured_on,
+                     "current_platform": plat, "cross_platform": captured_on != plat,
+                     "max_abs_diff": bm["max_abs_diff"],
+                     "pct_above_threshold": bm["pct_above_threshold"]})
+        print(f"[setup] vs prerelease baseline ({captured_on}): "
+              f"max_abs_diff={bm['max_abs_diff']:.3e}  "
+              f"pct_above={bm['pct_above_threshold']:.6f}%"
+              + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
     # Record physical GPUs / interconnect / NUMA and the host-bounce probe.
     topology = sc.gpu_topology() if plat == "gpu" else {}
@@ -352,9 +373,14 @@ def main():
         label = "(branch undetermined — verify path manually)"
     print(f"  mbirjax: {label}   {mpath}")
     print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
-    print(f"  correctness (adjoint identity): rel_error={corr['rel_error']:.3e}  "
-          f"max_abs_diff={corr['max_abs_diff']:.3e}"
-          + ("" if corr['pct_above_threshold'] == 0.0 else "   <-- ABOVE THRESHOLD"))
+    print(f"  correctness: adjoint rel_error={corr['adjoint_rel_error']:.3e}"
+          + ("" if corr.get('adjoint_ok', True) else "  <-- ADJOINT ABOVE THRESHOLD"))
+    if corr.get("baseline_present"):
+        print(f"  vs prerelease baseline: max_abs_diff={corr['max_abs_diff']:.3e}  "
+              f"pct_above={corr['pct_above_threshold']:.6f}%"
+              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
+    else:
+        print("  vs prerelease baseline: none present")
     if dev2dev_safe is not None:
         print(f"  dev2dev_safe: {dev2dev_safe}"
               + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))

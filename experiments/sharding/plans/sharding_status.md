@@ -39,8 +39,17 @@ symmetry with back projection (same reasons band beat pixel in P2).
   pair supersedes them).
 - Gate: **forward/back adjoint round-trip** `<Ax,y>==<x,Aᵀy>` green at 1/2/4/8
   devices; trivial n=1 bit-exact; match-input tested.  Commit `7461abb`.
-- **Pending:** GPU forward scaling (`sparse_forward_project_scaling.py`, adjoint-identity
-  correctness, no baseline needed) on the cluster — the only place the d2d path runs.
+- **Prerelease baseline captured + wired** (this session): `sparse_forward_project_capture_baseline.py`
+  + `baselines/sparse_forward_project.{npy,yaml}` (captured CPU prerelease via a temp
+  `prerelease` worktree); the forward harness's setup now checks the adjoint identity
+  **and** `forward(x_cyl)` vs the prerelease reference (beta matches prerelease to
+  **1.1e-5** — also validates the channel-major layout fix against prerelease).
+  **TODO — capture the same forward baseline for cone / translation / multiaxis**
+  (generalize `sparse_forward_project_capture_baseline.py` beyond `ParallelBeamModel`,
+  or add per-geometry capture); pairs naturally with the geometry port in Track A.
+- **Pending:** GPU forward scaling (`sparse_forward_project_scaling.py`) on the
+  cluster — the only place the d2d path runs (re-run will also exercise the baseline
+  check cross-platform).
 
 ### Tests reorganized
 The 8 sharding test files moved to **`tests/sharding/`** (dropped the redundant
