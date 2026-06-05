@@ -384,6 +384,20 @@ class TomographyModel(ParameterHandler):
         right_halos = [np.asarray(s.data[..., 0]) for s in shards[1:]] + [None]
         return left_halos, right_halos
 
+    def _replicate_scalar(self, x, placement):
+        """Place scalar ``x`` replicated across ``placement``'s devices (no host round-trip).
+
+        Used in the VCD line search: the forward-model scalars are reduced on the sino
+        mesh and the prior scalars on the recon mesh (distinct meshes over the same
+        devices), and the resulting ``alpha`` must scale both a recon-sharded and a
+        sino-sharded array.  ``device_put`` to a fully-replicated ``NamedSharding`` keeps
+        the value on-device (a cheap scalar broadcast/reshard, NVLink not host), so the
+        line search never bounces a scalar through the host -- avoiding the per-subset
+        device→host syncs that stall the GPU pipeline.
+        """
+        return jax.device_put(
+            x, jax.sharding.NamedSharding(placement.mesh, jax.sharding.PartitionSpec()))
+
     def _stage_halos(self, flat_recon):
         """Extract the qGGMRF boundary halos once and pre-place each on its shard's device.
 
@@ -2567,28 +2581,29 @@ class TomographyModel(ParameterHandler):
 
             # time_names.append('forlqu')
             # time_start = time.time()
-            forward_linear, forward_quadratic = self.get_forward_lin_quad(weighted_error_sinogram, delta_sinogram,
-                                                                          weights, fm_constant, const_weights,
-                                                                          output_device=self.main_device)
+            forward_linear, forward_quadratic = self.get_forward_lin_quad(
+                weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
+                # Sharded: leave the forward scalars where the reduction produced them (the sino
+                # mesh) and reconcile meshes on-device below; single-device: commit to main_device.
+                output_device=(None if self.mesh is not None else self.main_device))
 
             # Compute optimal update step.
             # The forward-model line-search scalars are reduced over the view-sharded sinogram (the
             # sino mesh) while the prior scalars are reduced over the slice-sharded recon (the recon
-            # mesh); combining device scalars across two distinct meshes is not allowed.  alpha is a
-            # single line-search scalar that then scales both a recon-sharded and a sino-sharded
-            # array, so in the sharded path reduce the four scalars to host floats and do the alpha
-            # arithmetic on the host -- a python-float alpha scales any sharding cleanly.
+            # mesh); combining device scalars across two distinct meshes is not allowed.  Rather than
+            # bounce all four through the host (5 device->host syncs/subset that stall the GPU), keep
+            # the line search ON-DEVICE: replicate the forward scalars onto the recon mesh (a cheap
+            # scalar reshard over the same devices), do the arithmetic there, and replicate the
+            # resulting alpha onto the sino mesh below to scale the sino-sharded delta.
             if self.mesh is not None:
-                forward_linear = float(forward_linear)
-                forward_quadratic = float(forward_quadratic)
-                prior_linear = float(prior_linear)
-                prior_quadratic_approx = float(prior_quadratic_approx)
+                forward_linear = self._replicate_scalar(forward_linear, self.recon_placement)
+                forward_quadratic = self._replicate_scalar(forward_quadratic, self.recon_placement)
+                # prior_linear / prior_quadratic_approx are already replicated on the recon mesh.
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
             alpha = jnp.clip(alpha, jnp.finfo(jnp.float32).eps, max_alpha)
-            if self.mesh is not None:
-                alpha = float(alpha)
+            # alpha stays a device scalar (recon mesh when sharded); no host sync.
             # alpha = alpha.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2652,7 +2667,13 @@ class TomographyModel(ParameterHandler):
             # Update sinogram and loss
             # time_names.append('deltsin')
             # time_start = time.time()
-            delta_sinogram = float(alpha) * delta_sinogram
+            # delta_sinogram is view-sharded (sino mesh); scale by alpha replicated onto that mesh
+            # (sharded) or by the host float (single-device) -- either way no per-subset host sync
+            # beyond the single-device one that was always there.
+            if self.mesh is not None:
+                delta_sinogram = self._replicate_scalar(alpha, self.sino_placement) * delta_sinogram
+            else:
+                delta_sinogram = float(alpha) * delta_sinogram
             error_sinogram = error_sinogram - delta_sinogram
             # error_sinogram = error_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start

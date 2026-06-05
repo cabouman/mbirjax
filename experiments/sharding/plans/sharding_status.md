@@ -179,14 +179,32 @@ E rejected as an algorithmic change):
   is **NRMSE ~6e-5–3e-4, max ~1.5–2.4e-3** on small noise problems — ~1000× below the
   recon-vs-phantom error (~0.07), i.e. negligible.  Tests: exact-path sweep gated at 1e-4;
   new `test_halo_once_per_pass_approximation_is_small` bounds it <2e-3.  Full sharding suite
-  75 green.  **GPU: re-run `vcd_recon_scaling.py` to measure A's effect on the 512³/4d 1.62×.**
+  75 green.  **GPU RESULT (H100×4, 10 iters; old run saved under `results/vcd/v0_per_subset_halo/`):**
+  A **un-stalls the 2→4 step at 512³** — v0 1.65×→1.62× (flat) becomes A 1.76×→**1.92×**
+  (4d time 26690→22534 ms, −16%); 256³ still inverted (0.28×→0.33×, below the crossover).
+  Confirms the per-subset halo host-read was part of the cap.  Still 1.92× vs the projectors'
+  ~3.3×, so more per-subset host overhead remains (→ B + alpha).
 - **B — run the prior's shards concurrently via `run_per_device`** (the projectors' thread
-  pool; the prior currently loops serially).  NEXT.  Good, **if** we modularize the thread
-  management so the subset-updater loop stays readable.
+  pool; the prior currently loops serially).  **NEXT** (justified: A closed only part of the
+  gap).  Good, **if** we modularize the thread management so the subset-updater loop stays
+  readable.
+- **alpha host-sync fix.  ✅ DONE (CPU-validated; GPU perf re-measure pending).**  The line
+  search did 5 `float()` device→host syncs/subset (4 scalars + alpha) to combine forward
+  scalars (sino mesh) with prior scalars (recon mesh).  Replaced with on-device replication:
+  new `_replicate_scalar(x, placement)` (`device_put` to a fully-replicated `NamedSharding`,
+  a cheap same-device/NVLink scalar reshard, NOT host); forward scalars are replicated onto
+  the recon mesh, `alpha` stays a **device scalar**, and is replicated onto the sino mesh to
+  scale the view-sharded delta.  `get_forward_lin_quad` is called with `output_device=None`
+  when sharded so it doesn't pre-commit to device 0.  Sharded path now has **zero per-subset
+  host syncs** (verified by grep: the remaining `float(alpha)`/`device_put(main_device)` are
+  all in single-device-only branches).  Single-device path unchanged (alpha stays a jax
+  scalar exactly as before).  Tests: sharded VCD suite 8 green (trivial bit-exact, exact-path
+  1e-4, halo-once bound).  **GPU: re-run `vcd_recon_scaling.py` to measure the effect on
+  512³/4d (now 1.92× after A).**
+- **B — parallel per-shard prior** (`run_per_device`): still NEXT (clear CPU win; GPU benefit
+  uncertain since async dispatch may already overlap).  Do after measuring the alpha fix.
 - **Add a qGGMRF scaling test with a prerelease baseline** to round out the suite
   (mirrors the projector/recon baselines).
-- Investigate B + the **alpha host-sync fix** (replicate alpha onto both meshes instead of
-  5 `float()` syncs/subset) **depending on the GPU-run results**.
 
 ### NEXT
 - **GPU (Greg, cluster):** VCD scaling on H100.  **Harnesses now written** (CPU-smoke-tested,
