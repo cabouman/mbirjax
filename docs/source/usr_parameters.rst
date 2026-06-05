@@ -137,10 +137,31 @@ Spacing between voxels in ALU.
 If None, then it is automatically set to `delta_voxel = delta_det_channel / magnification` where `magnification` is the
 magnification of a voxel at iso determined from the function :func:`TomographyModel.get_magnification()`.
 
+.. _param-row_aspect:
+
+voxel_row_aspect
+""""""""""""""""
+:Type: float (Defaults to 1.0)
+
+Ratio of voxel spacing in rows to voxel spacing in columns.
+This defaults to 1.0, so that the voxel spacing is the same in rows and columns, i.e., the voxels are square looking from the top.
+
+.. _param-slice_aspect:
+
+voxel_slice_aspect
+""""""""""""""""""
+:Type: float (Defaults to 1.0)
+
+Ratio of voxel spacing in slices to voxel spacing in columns.
+This defaults to 1.0, so that the voxel spacing is the same in slices and columns, i.e., the voxels are square looking from the side.
+
+.. _param-alu_unit:
 
 alu_unit
 """"""""
 :Type: string (Defaults to None)
+
+.. _param-alu_value:
 
 alu_value
 """""""""
