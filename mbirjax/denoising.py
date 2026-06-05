@@ -160,13 +160,10 @@ class QGGMRFDenoiser(TomographyModel):
         Args:
             image (numpy or jax array):  The 3D volume to be denoised.
             sigma_noise (float, optional):  The estimated noise variance in the noisy image.  If None, then the noise level is estimated from the image.
-            use_ror_mask: Option to restrict denoising to a masked region in the image. Defaults to False.
-                False:
-                    No mask.
-                True:
-                    The mask is an ellipse inscribed in the reconstruction volume.
-                2D array:
-                    Use a custom binary mask. Must have shape recon_shape[:2].
+            use_ror_mask: Option to restrict denoising to a masked region in the image.
+                Defaults to False. Use False for no mask, True for an ellipse inscribed in
+                the reconstruction volume, or a custom binary 2D array with shape
+                ``recon_shape[:2]``.
             init_image (numpy or jax array, optional):  An initial image for the minimization.  Defaults to image.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
