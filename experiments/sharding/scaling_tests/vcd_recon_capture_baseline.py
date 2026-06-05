@@ -47,14 +47,19 @@ scaling_common's location), so the script is reproducible with no flags.
 """
 import os
 
-# Import mbirjax before jax (device-setup-first ordering).
-import mbirjax
-
 import numpy as np
 
 # scaling_common resolves from this script's directory (beta scaling_tests/), so
 # the baseline lands in beta's baselines/ even when run from the prerelease tree.
 import scaling_common as sc
+
+# NOTE: mbirjax (and therefore jax) is imported LAZILY inside the functions below, NOT
+# at module top, so this module is JAX-FREE TO IMPORT.  vcd_recon_scaling.py imports
+# constants + run_reference_recon from here at top level; if merely importing this
+# module initialized jax, the scaling *orchestrator* would hold a CUDA context and its
+# worker subprocesses would fail with CUDA_ERROR_NOT_PERMITTED (the whole point of the
+# isolated-subprocess harness is a JAX-free orchestrator).  Device-setup-first still
+# holds: each entry point imports mbirjax before any jax use.
 
 
 OP_NAME = "vcd_recon"
@@ -72,6 +77,7 @@ def run_reference_recon(size, seed, max_iterations):
     prerelease capture and the beta check do the identical global-RNG draw
     sequence.  Returns (recon_volume_np, timing_stats).
     """
+    import mbirjax  # lazy (device-setup-first): keeps this module JAX-free to import
     n_views, n_rows, n_channels = size
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
     model = mbirjax.ParallelBeamModel(size, angles)
@@ -92,6 +98,7 @@ def run_reference_recon(size, seed, max_iterations):
 
 
 def main():
+    import mbirjax  # lazy (device-setup-first): keeps this module JAX-free to import
     path = os.path.dirname(mbirjax.__file__)
     print("=" * 72)
     print(f"  mbirjax loaded from: {path}")

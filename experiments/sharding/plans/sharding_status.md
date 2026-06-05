@@ -107,6 +107,39 @@ produced the numbers above.)
 larger sizes there, with real per-device memory — and the d2d path only runs there) +
 the per-subset scalar-host-sync watch.  CPU measurement is now done (above).
 
+### `vcd_recon_scaling.py` CUDA_ERROR_NOT_PERMITTED — FIXED (orchestrator was not JAX-free)
+The isolated-subprocess harness REQUIRES the orchestrator to touch no JAX (so it holds
+no CUDA context while worker subprocesses run).  `vcd_recon_scaling.py` violated this:
+its top-level `from vcd_recon_capture_baseline import …` (for shared constants) executed
+that module, which did `import mbirjax` at top → jax/CUDA initialized **in the
+orchestrator** → worker subprocesses (with `XLA_PYTHON_CLIENT_PREALLOCATE`) collided with
+the parent's context → `CUDA_ERROR_NOT_PERMITTED`.  Confirmed on CPU: importing the
+orchestrator pulled in jax (the working forward/back drivers do not).  **Fix:**
+`vcd_recon_capture_baseline.py` now imports mbirjax LAZILY (inside its functions), so it
+is JAX-free to import; the orchestrator is JAX-free again (verified).  Greg: re-run the
+GPU scaling — this should clear the error.  (The demo `vcd_shard_vs_noshard.py` was
+already clean.)
+
+### Prior-optimization plan (AGREED; deferred — decide scope after the GPU run)
+The sharded qGGMRF prior regresses at fine granularity (0.47×; ~8% of per-subset CPU
+cost, but host round-trips hurt the GPU more — let the GPU numbers set priority).  Agreed
+approach (options A–E with pros/cons were worked through this session; A+B chosen, C/D held,
+E rejected as an algorithmic change):
+- **A — extract halos once per partition pass, not per subset** (move `_extract_halos`
+  up to `vcd_partition_iterator`, thread fixed halos into the prior).  API change is OK.
+  **CAVEAT (Greg):** subsets are NOT always perfectly disjoint — `vcd_utils.gen_pixel_partition()`
+  REPLICATES a few pixels to make equal-length subsets.  The bit-exactness argument for A
+  assumes disjoint pixels, so a replicated pixel could read a pass-start halo at a pixel
+  another subset already updated.  Expected to be negligible in real results, but
+  **quantify with a test** (halo-once vs halo-per-subset diff) before trusting bit-exact.
+- **B — run the prior's shards concurrently via `run_per_device`** (the projectors' thread
+  pool; the prior currently loops serially).  Good, **if** we modularize the thread
+  management so the subset-updater loop stays readable.
+- **Add a qGGMRF scaling test with a prerelease baseline** to round out the suite
+  (mirrors the projector/recon baselines).
+- Investigate B + the **alpha host-sync fix** (replicate alpha onto both meshes instead of
+  5 `float()` syncs/subset) **depending on the GPU-run results**.
+
 ### NEXT
 - **GPU (Greg, cluster):** VCD scaling on H100.  **Harnesses now written** (CPU-smoke-tested,
   in `experiments/sharding/scaling_tests/`): `vcd_recon_scaling.py` (isolated-subprocess
