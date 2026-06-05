@@ -10,7 +10,9 @@ Any of these parameters can be modified with :func:`TomographyModel.set_params`.
 Note that the default detector channel spacing is `delta_det_channel = 1 ALU`, and the voxel spacing is automatically
 set to `delta_voxel = 1/magnifaction ALU` where `magnification` is the magnification of a voxel at iso.
 
-Parameters that are specific to particular geometries are documented in the geometry's documentation.
+However, if you change geometry parameters with :func:`TomographyModel.set_params`,
+make sure to run :func:`TomographyModel.auto_set_recon_geometry` afterwards since this will update the reconstruction parameters such as the detector channel spacing to reasonable values.
+
 
 Reconstruction Parameters
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -135,10 +137,43 @@ Spacing between voxels in ALU.
 If None, then it is automatically set to `delta_voxel = delta_det_channel / magnification` where `magnification` is the
 magnification of a voxel at iso determined from the function :func:`TomographyModel.get_magnification()`.
 
+.. _param-row_aspect:
+
+voxel_row_aspect
+""""""""""""""""
+:Type: float (Defaults to 1.0)
+
+Ratio of voxel spacing in rows to voxel spacing in columns.
+This defaults to 1.0, so that the voxel spacing is the same in rows and columns, i.e., the voxels are square looking from the top.
+
+.. _param-slice_aspect:
+
+voxel_slice_aspect
+""""""""""""""""""
+:Type: float (Defaults to 1.0)
+
+Ratio of voxel spacing in slices to voxel spacing in columns.
+This defaults to 1.0, so that the voxel spacing is the same in slices and columns, i.e., the voxels are square looking from the side.
+
+.. _param-use_ror_mask:
+
+use_ror_mask
+""""""""""""
+:Type: float (Defaults to True)
+
+Determines what type of mask is used in the column-row space.
+The mask determines which voxel cylinders are updated and which are not.
+When `use_ror_mask = True`, an eliptical mask is used that inscribes the region of reconstruction.
+When `use_ror_mask = False`, no mask is used, and the entire column-row space is reconstructed.
+Alternatively, the user can supply a custom mask by setting `use_ror_mask = array`, where `array` is a 2D array of 0's and 1's with the same shape as the column-row space.
+
+.. _param-alu_unit:
 
 alu_unit
 """"""""
 :Type: string (Defaults to None)
+
+.. _param-alu_value:
 
 alu_value
 """""""""

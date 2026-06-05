@@ -48,3 +48,11 @@ However, the image can be converted to units of photons/mm using the following e
 .. math::
 
     \mbox{(recon in units of photons/mm)} = \frac{ \mbox{recon in units of photons/ALU} }{ 0.25 \mbox{mm} / \mbox{ALU}} = 4.0* \mbox{recon}
+
+
+**Changing Geometry Parameters:**
+
+The method ``model.auto_set_recon_geometry()`` can be used to automatically update the reconstruction parameters such as the detector channel spacing.
+However, this method will not update the reconstruction voxel spacing to a corresponding value.
+
+Therefore, it is recommended that after changing geometry parameters, you should run ``model.auto_set_recon_geometry()`` to update the reconstruction parameters such as voxel spacing to reasonable values.

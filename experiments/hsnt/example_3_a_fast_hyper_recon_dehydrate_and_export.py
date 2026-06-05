@@ -12,9 +12,6 @@ import numpy as np
 import time
 import mbirjax as mj
 
-from mbirjax.hsnt import generate_hyper_data, dehydrate, create_hsnt_metadata, export_hsnt_data_hdf5
-
-
 def main():
     start_time = time.time()
     
@@ -45,7 +42,7 @@ def main():
     material_basis = np.load(filename)
 
     # Generate simulated noisy hyperspectral projection data
-    [hsnt_data, angles, _] = generate_hyper_data(material_basis,
+    [hsnt_data, angles, _] = mj.generate_hyper_data(material_basis,
                                                  num_angles=num_angles,
                                                  detector_rows=detector_rows,
                                                  detector_columns=detector_columns,
@@ -58,7 +55,7 @@ def main():
     mj_model.set_params(snr_db=recon_snr_db, verbose=0)
 
     # Perform dehydration
-    hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
+    hsnt_dehydrated = mj.dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
 
     # Unpack dehydrated data
     [subspace_data, subspace_basis, dataset_type] = hsnt_dehydrated
@@ -76,9 +73,9 @@ def main():
     hsnt_dehydrated_recons = [subspace_recons, subspace_basis, dataset_type]
     
     # Export dehydrated reconstructions into HDF5 file
-    metadata = create_hsnt_metadata(dataset_name=dataset_name)
+    metadata = mj.create_hsnt_metadata(dataset_name=dataset_name)
     filename = os.path.join(output_path, dataset_name + ".h5")
-    export_hsnt_data_hdf5(filename, hsnt_dehydrated_recons, metadata)
+    mj.export_hsnt_data_hdf5(filename, hsnt_dehydrated_recons, metadata)
 
     print('Total time elapsed: ', time.time() - start_time, ' seconds')
 

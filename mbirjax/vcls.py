@@ -81,7 +81,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         (10,)
     """
     num_views = ct_model.get_params('sinogram_shape')[0]
-    angle_candidates = np.asarray(ct_model.get_params('angles'))
+    angle_candidates = np.asarray(ct_model.get_params('view_params_array'))[:, 0]
     recon_shape = ct_model.get_params('recon_shape')
     if recon_shape != reference_object.shape:
         raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))

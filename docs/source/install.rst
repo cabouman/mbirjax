@@ -36,6 +36,27 @@ Clean install using mbirjax/dev_scripts - We provide bash scripts that will do a
     source clean_install_all.sh
 
 
+**Optional Pixi development environment**
+
+For contributors who use `Pixi <https://pixi.sh>`__, ``MBIRJAX`` also provides an optional reproducible development environment.
+This does not replace the conda installation workflow above.
+
+For the default CPU environment on Linux or Apple Silicon macOS::
+
+    pixi run smoke
+    pixi run test-fast
+
+For a CUDA-enabled Linux system::
+
+    pixi run -e cuda smoke-jax
+    pixi run -e cuda test-fast
+
+Additional useful tasks include::
+
+    pixi run test
+    pixi run test-data
+    pixi run docs
+
 
 **Installing on Windows**
 

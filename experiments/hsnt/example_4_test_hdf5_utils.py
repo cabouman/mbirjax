@@ -9,7 +9,7 @@ It showcases both dehydrated and rehydrated formats and the storage efficiency a
 import numpy as np
 import os
 
-from mbirjax.hsnt import rehydrate, import_hsnt_list_hdf5, import_hsnt_data_hdf5, create_hsnt_metadata, export_hsnt_data_hdf5
+import mbirjax as mj
 
 
 def main():
@@ -25,11 +25,11 @@ def main():
     print("Dehydrated data shape:", hsnt_dehydrated[0].shape)
 
     # 2. Rehydrate to get full hyperspectral data
-    hsnt_rehydrated = rehydrate(hsnt_dehydrated)
+    hsnt_rehydrated = mj.rehydrate(hsnt_dehydrated)
     print("Rehydrated data shape:", hsnt_rehydrated.shape)
 
     # 3. Create metadata dictionaries
-    metadata_dehydrated = create_hsnt_metadata(
+    metadata_dehydrated = mj.create_hsnt_metadata(
         dataset_name="hsnt_dehydrated",
         dataset_type="attenuation",
         dataset_modality="hyperspectral neutron",
@@ -51,21 +51,14 @@ def main():
     # 4. Export datasets into separate files
     os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
     filename_dehydrated = os.path.join(output_path, "hsnt_dehydrated.h5")
-    export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata_dehydrated)
+    mj.export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata_dehydrated)
 
     filename_rehydrated = os.path.join(output_path, "hsnt_rehydrated.h5")
-    export_hsnt_data_hdf5(filename_rehydrated, hsnt_rehydrated, metadata_rehydrated)
-
-    # 5. List datasets in the files
-    datasets_in_dehydrated_file = import_hsnt_list_hdf5(filename_dehydrated)
-    datasets_in_rehydrated_file = import_hsnt_list_hdf5(filename_rehydrated)
-
-    print("\nDatasets in hsnt_dehydrated.h5:", datasets_in_dehydrated_file)
-    print("Datasets in hsnt_rehydrated.h5:", datasets_in_rehydrated_file)
+    mj.export_hsnt_data_hdf5(filename_rehydrated, hsnt_rehydrated, metadata_rehydrated)
 
     # 6. Import datasets back
-    dehydrated_imported, metadata_dehydrated_imported = import_hsnt_data_hdf5(filename_dehydrated, "hsnt_dehydrated")
-    rehydrated_imported, metadata_rehydrated_imported = import_hsnt_data_hdf5(filename_rehydrated, "hsnt_rehydrated")
+    dehydrated_imported, metadata_dehydrated_imported = mj.import_hsnt_data_hdf5(filename_dehydrated)
+    rehydrated_imported, metadata_rehydrated_imported = mj.import_hsnt_data_hdf5(filename_rehydrated)
 
     print("\nImported dehydrated data shape:", dehydrated_imported[0].shape)
     print("--Imported metadata for dehydrated:", metadata_dehydrated_imported)

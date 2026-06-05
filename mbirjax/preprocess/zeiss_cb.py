@@ -341,6 +341,10 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel = magnification * iso_pixel_pitch
     delta_det_row = magnification * iso_pixel_pitch
 
+    # Convert to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
+    det_channel_offset *= delta_det_channel
+    det_row_offset *= delta_det_row
+
     # Adjust detector size params w.r.t. cropping arguments
     num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
     num_det_channels = num_det_channels - 2 * crop_pixels_sides
@@ -353,10 +357,6 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     delta_det_channel *= downsample_factor[1]
 
     iso_pixel_pitch *= downsample_factor[0]
-
-    # Convert to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
-    det_channel_offset *= delta_det_channel
-    det_row_offset *= delta_det_row
 
     # Create a dictionary to store MBIR parameters
     num_views = len(angles)
@@ -564,7 +564,7 @@ def read_metadata(ole):
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
         'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
-        'iso_det_dist': _read_ole_value(ole, 'ImageInfo/D2RADistance', '<f'),
+        'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
             ole, 'ImageInfo/Angles', "<{0}f".format(number_of_images)),

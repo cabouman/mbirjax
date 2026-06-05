@@ -14,6 +14,9 @@ from ruamel.yaml import YAML
 import numpy as np
 from jax.errors import JaxRuntimeError
 
+# Virtual CPU device setup now lives in mbirjax/_device_setup.py, which runs as
+# the first import in mbirjax/__init__.py (before JAX initializes its backends).
+# These lines are kept commented as a historical pointer; do not re-enable.
 # num_cpus = 3 * os.cpu_count() // 4
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count={}'.format(num_cpus)
 import jax
@@ -21,6 +24,10 @@ import jax.numpy as jnp
 
 import mbirjax as mj
 from mbirjax import ParameterHandler
+# In-package access to the internal sharding primitives (see _sharding).  Direct
+# import (not the `mjs` alias used by consumers) because aliasing mbirjax
+# mid-import would be circular.
+from mbirjax._sharding import is_dev2dev_safe, move_shard
 
 from importlib.metadata import version, PackageNotFoundError
 
@@ -59,7 +66,6 @@ class TomographyModel(ParameterHandler):
         super().__init__()
         self.set_params(no_compile=True, no_warning=True, sinogram_shape=sinogram_shape, **kwargs)
 
-        self.use_ror_mask = True
         self.auto_set_recon_geometry(no_compile=True, no_warning=True)
 
         self.set_params(geometry_type=str(type(self)))
@@ -68,6 +74,12 @@ class TomographyModel(ParameterHandler):
         self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
+
+        # Multi-device sharding (opt-in via configure_sharding).  Until then,
+        # mesh is None and the existing single-device code paths are unchanged.
+        self.mesh = None
+        self.shard_devices = None
+        self.dev2dev_safe = True   # set empirically in configure_sharding
 
         # The following may be adjusted based on memory in set_devices_and_batch_sizes()
         self.view_batch_size_for_vmap = 512
@@ -121,6 +133,206 @@ class TomographyModel(ParameterHandler):
 
     def get_params(self, parameter_names):
         return super().get_params(parameter_names)
+
+    def configure_sharding(self, devices=None):
+        """
+        Configure multi-device sharding over the given devices (opt-in).
+
+        This is additive: it sets up a device mesh and an empirical
+        device-to-device safety flag, but does NOT modify ``main_device`` /
+        ``sinogram_device`` or the existing single-device code paths.  The
+        projector phases consume this configuration as they are ported to
+        sharding; until then a configured mesh has no effect on existing flows.
+
+        Sharding scheme (uniform across geometries): sinogram-like objects are
+        sharded by **view** (axis 0) and recon-like objects by **slice**, so the
+        device count must evenly divide both ``num_views`` and ``num_slices``.
+
+        Passing ``devices=None`` (or a single device) sets up a trivial 1-device
+        mesh, so single-device operation is just the degenerate sharded case and
+        the same code path can be used throughout.
+
+        Args:
+            devices (sequence of jax devices, or None): devices to shard across.
+                None uses a single device (trivial sharding).
+
+        Returns:
+            Nothing; sets ``self.mesh``, ``self.shard_devices``,
+            ``self.dev2dev_safe``, and ``self.use_gpu = 'sharded'``.
+        """
+        from jax.sharding import Mesh
+
+        if devices is None:
+            devices = jax.devices()[:1]
+        devices = list(devices)
+        n_devices = len(devices)
+        if n_devices < 1:
+            raise ValueError("configure_sharding requires at least one device.")
+
+        # O4 divisibility: the sharded axis of each array type must divide the
+        # device count.  Which axis that is comes from the axis-declaration
+        # hooks (single source of truth), not hardcoded here, so a geometry that
+        # overrides the hooks gets the matching check for free.
+        sinogram_shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
+        sino_axis = self.sinogram_shard_axis() % len(sinogram_shape)
+        recon_axis = self.recon_shard_axis() % len(recon_shape)
+        num_sino_shard = sinogram_shape[sino_axis]   # views, by default
+        num_recon_shard = recon_shape[recon_axis]    # slices, by default
+        if num_sino_shard % n_devices != 0:
+            raise ValueError(
+                f"Sharding requires the sharded sinogram axis "
+                f"(axis {sino_axis}, size {num_sino_shard}) to be divisible by "
+                f"the number of devices ({n_devices}).  Pad/crop that axis or "
+                f"choose a compatible device count."
+            )
+        if num_recon_shard % n_devices != 0:
+            raise ValueError(
+                f"Sharding requires the sharded recon axis "
+                f"(axis {recon_axis}, size {num_recon_shard}) to be divisible by "
+                f"the number of devices ({n_devices}).  Pad/crop that axis or "
+                f"choose a compatible device count."
+            )
+
+        # 1-D mesh; the axis name 'devices' is referenced by the PartitionSpecs
+        # used when sharding sinogram (view axis) and recon (slice axis).
+        self.mesh = Mesh(np.array(devices), ('devices',))
+        self.shard_devices = devices
+        self.dev2dev_safe = is_dev2dev_safe(devices)
+        self.use_gpu = 'sharded'
+
+    # ------------------------------------------------------------------
+    # Sharding hooks (uniform default scheme; override per geometry only
+    # if a geometry needs a different axis or halo strategy)
+    # ------------------------------------------------------------------
+    # The uniform scheme shards sinogram-like objects by view and recon-like
+    # objects by slice.  The two axis-declaration hooks below are the single
+    # source of truth for *which* axis is sharded; the divisibility check in
+    # configure_sharding and the _shard_*/_gather_* helpers all derive from
+    # them.  Keeping the choice here (rather than hardcoded throughout) means a
+    # geometry can declare a different axis by overriding one small method,
+    # without hunting down scattered assumptions.
+
+    def sinogram_shard_axis(self):
+        """Axis of a sinogram-like array (views, det_rows, channels) to shard.
+
+        Default 0 (views).  Sinogram, weights, and error-sinogram all share
+        this layout, so they shard on the same axis.
+        """
+        return 0
+
+    def recon_shard_axis(self):
+        """Axis of a recon-like array to shard.
+
+        Default -1 (the last axis = slices).  This is correct for both the 3-D
+        recon ``(rows, cols, slices)`` and the flat recon
+        ``(rows*cols, slices)`` because slices are the last axis in both, so a
+        single value works regardless of rank.
+        """
+        return -1
+
+    def _shard_on_axis(self, x, axis):
+        """Distribute array ``x`` across the mesh along ``axis`` (no-op if no mesh).
+
+        When ``self.mesh`` is None (single-device, not configured) ``x`` is
+        returned unchanged.  Otherwise ``x`` is placed in a NamedSharding that
+        partitions ``axis`` across the mesh's ``'devices'`` axis.
+
+        If ``x`` already carries exactly that sharding, it is returned as-is with
+        no data movement.  Otherwise it is moved via the transfer helper, which
+        copies directly when device-to-device transfer is safe on this hardware
+        and routes through host memory otherwise (see mbirjax._sharding).
+
+        Args:
+            x: a JAX (or numpy) array to distribute.
+            axis (int): the axis of ``x`` to partition across devices; may be
+                negative (counted from the end).
+
+        Returns:
+            The array in the requested NamedSharding (or ``x`` unchanged when no
+            mesh is configured).
+        """
+        if self.mesh is None:
+            return x
+        axis = axis % x.ndim
+        spec = [None] * x.ndim
+        spec[axis] = 'devices'
+        sharding = jax.sharding.NamedSharding(
+            self.mesh, jax.sharding.PartitionSpec(*spec))
+        # Skip any movement if x is already in exactly this sharding.
+        if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
+            if x.sharding == sharding:
+                return x
+        return move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
+
+    def _gather_to_host(self, x):
+        """Gather a sharded array to a single uncommitted JAX array (no-op if no mesh).
+
+        When ``self.mesh`` is None, returns ``x`` unchanged.  Otherwise reads all
+        shards to a contiguous host buffer with ``np.asarray`` (the read path is
+        always safe, even on hardware where device-to-device writes are not) and
+        wraps it as an uncommitted JAX array, leaving JAX free to place it for
+        downstream ops.
+
+        Args:
+            x: a (possibly sharded) JAX array.
+
+        Returns:
+            An uncommitted single-device JAX array with the same values, or ``x``
+            unchanged when no mesh is configured.
+        """
+        if self.mesh is None:
+            return x
+        return jnp.array(np.asarray(x))
+
+    def _shard_sinogram(self, sinogram):
+        """Distribute a sinogram-like array in its native (per-geometry) sharding."""
+        return self._shard_on_axis(sinogram, self.sinogram_shard_axis())
+
+    def _gather_sinogram(self, sinogram):
+        """Gather a sharded sinogram back to a single uncommitted array."""
+        return self._gather_to_host(sinogram)
+
+    def _shard_recon(self, recon):
+        """Distribute a recon-like array (3-D or flat) in its native sharding."""
+        return self._shard_on_axis(recon, self.recon_shard_axis())
+
+    def _gather_recon(self, recon):
+        """Gather a sharded recon back to a single uncommitted array."""
+        return self._gather_to_host(recon)
+
+    def _extract_halos(self, flat_recon):
+        """Return per-device boundary slices for the qggmrf inter-slice prior.
+
+        ``flat_recon`` is sharded along the slice axis (the last axis), so each
+        device holds ``(num_pixels, local_slices)``.  The qggmrf prior couples a
+        slice to its neighbors, so each device needs one boundary slice from each
+        adjacent device:
+
+          left_halo[i]  = last slice of device i-1  (None for device 0)
+          right_halo[i] = first slice of device i+1 (None for the last device)
+
+        Reads ``2*(n_devices-1)`` slices to host — negligible vs. compute.
+        Returns ``([None], [None])`` when no mesh is configured (single device).
+
+        Args:
+            flat_recon: a slice-sharded flat recon ``(num_pixels, slices)``.
+
+        Returns:
+            (left_halos, right_halos): two lists of length ``n_devices``; each
+            entry is a numpy array of shape ``(num_pixels,)`` or None at a
+            boundary.
+        """
+        if self.mesh is None:
+            return [None], [None]
+        slice_axis = self.recon_shard_axis() % flat_recon.ndim
+        # Order shards by their start index along the sharded (slice) axis so the
+        # device sequence is deterministic.
+        shards = sorted(flat_recon.addressable_shards,
+                        key=lambda s: s.index[slice_axis].start)
+        left_halos = [None] + [np.asarray(s.data[..., -1]) for s in shards[:-1]]
+        right_halos = [np.asarray(s.data[..., 0]) for s in shards[1:]] + [None]
+        return left_halos, right_halos
 
     def set_devices_and_batch_sizes(self):
         """
@@ -492,8 +704,8 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         output_device = self.sinogram_device
         sinogram = self.sparse_forward_project(voxel_values, full_indices, output_device=output_device)
@@ -514,8 +726,8 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        recon_shape = self.get_params('recon_shape')
-        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=self.use_ror_mask)
+        recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
+        full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         output_device = self.main_device
         recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
@@ -810,8 +1022,29 @@ class TomographyModel(ParameterHandler):
         sigma_prox = np.float32(0.2 * (2 ** sharpness) * recon_std)
         self.set_params(no_warning=True, sigma_prox=sigma_prox, auto_regularize_flag=True)
 
-    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
-        """Set the automatic value of the recon shape using the geometry parameters and sinogram shape."""
+    def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
+        """
+        Set the automatic value of the recon shape and voxel pitch using the geometry parameters and sinogram shape.
+
+        Note: This function should be run after changing geometry parameters such as ``delta_det_channel``.
+        It will set reconstruction parameters such as ``recon_shape`` and ``delta_voxel`` parameters to reasonable values.
+
+        Args:
+            no_compile (bool, optional): If True, do not recompile the JAX projector functions. Defaults to False.
+            no_warning (bool, optional): If True, do not issue warnings. Defaults to False.
+
+        Example:
+            >>> import mbirjax as mj
+            >>> import jax.numpy as jnp
+            >>> sinogram = jnp.zeros(shape=(100, 100, 100))
+            >>> angles = jnp.linspace(0, jnp.pi, 100)
+            >>> ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
+            >>> ct_model.set_params(delta_det_channel=100.0)
+            >>>
+            >>> # Required reset of recon shape and voxel spacing parameters
+            >>> ct_model.auto_set_recon_geometry()
+
+        """
         raise NotImplementedError('auto_set_recon_geometry must be implemented by each specific geometry model.')
 
     def get_voxels_at_indices(self, recon, indices):
@@ -967,9 +1200,8 @@ class TomographyModel(ParameterHandler):
         self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
 
         # Generate set of voxel partitions
-        recon_shape, granularity = self.get_params(['recon_shape', 'granularity'])
-        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device,
-                                                    use_ror_mask=self.use_ror_mask)
+        recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])
+        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device, use_ror_mask=use_ror_mask)
         partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
 
         # Generate sequence of partitions to use

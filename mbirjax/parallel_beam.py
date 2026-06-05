@@ -1,13 +1,33 @@
+import warnings
 from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax as mj
+import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
+
+
+def _warn_view_batch_size_deprecated(view_batch_size):
+    """Warn (only on explicit use) that view_batch_size is deprecated/ignored.
+
+    The row filter kernel (tomography_utils.apply_row_filter) chooses its own
+    batch (tomography_utils.ROW_FILTER_BATCH), so view_batch_size no longer
+    affects parallel-beam FBP filtering.  Kept on the user-facing methods for
+    back-compat; this fires only when a caller passes a non-None value.
+    """
+    if view_batch_size is not None:
+        warnings.warn(
+            "view_batch_size is deprecated and ignored for ParallelBeamModel FBP "
+            "filtering; the row filter kernel "
+            "(mbirjax.tomography_utils.apply_row_filter) sets its own batch "
+            "(tomography_utils.ROW_FILTER_BATCH).",
+            DeprecationWarning, stacklevel=3)
 
 
 class ParallelBeamModel(TomographyModel):
@@ -77,7 +97,17 @@ class ParallelBeamModel(TomographyModel):
             Raises ValueError for invalid parameters.
         """
         super().verify_valid_params()
-        sinogram_shape, angles = self.get_params(['sinogram_shape', 'angles'])
+        sinogram_shape, angles, voxel_row_aspect, voxel_slice_aspect = self.get_params(['sinogram_shape', 'angles', 'voxel_row_aspect', 'voxel_slice_aspect'])
+
+        if voxel_row_aspect <= 0:
+            error_message = "Voxel row aspect ratio must be positive. \n"
+            error_message += "Got {} for voxel_row_aspect.".format(voxel_row_aspect)
+            raise ValueError(error_message)
+
+        if voxel_slice_aspect != 1.0:
+            error_message = "Setting voxel slice aspect ratio is not supported for parallel beam model. \n"
+            error_message += "Got {} for voxel_slice_aspect.".format(voxel_slice_aspect)
+            raise ValueError(error_message)
 
         if angles.shape[0] != sinogram_shape[0]:
             error_message = "Number view dependent parameter vectors must equal the number of views. \n"
@@ -99,7 +129,7 @@ class ParallelBeamModel(TomographyModel):
             namedtuple of required geometry parameters.
         """
         # First get the parameters managed by ParameterHandler
-        geometry_param_names = ['delta_det_channel', 'det_channel_offset', 'delta_voxel']
+        geometry_param_names = ['delta_det_channel', 'det_channel_offset', 'delta_voxel', 'voxel_row_aspect']
         geometry_param_values = self.get_params(geometry_param_names)
 
         # Then get additional parameters:
@@ -115,27 +145,34 @@ class ParallelBeamModel(TomographyModel):
     def get_psf_radius(self):
         """Computes the integer radius of the PSF kernel for parallel beam projection.
         """
-        delta_det_channel, delta_voxel = self.get_params(['delta_det_channel', 'delta_voxel'])
+        delta_det_channel, delta_voxel, voxel_row_aspect = self.get_params(['delta_det_channel', 'delta_voxel', 'voxel_row_aspect'])
+
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+
+        max_footprint = jnp.maximum(delta_voxel, delta_voxel_row)
 
         # Compute the maximum number of detector rows/channels on either side of the center detector hit by a voxel
-        psf_radius = int(jnp.ceil(jnp.ceil(delta_voxel/delta_det_channel)/2))
+        psf_radius = int(jnp.ceil(jnp.ceil(max_footprint / delta_det_channel) / 2))
 
         return psf_radius
 
-    def auto_set_recon_geometry(self, no_compile=True, no_warning=False):
+    def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
         """Compute the default recon size using the internal parameters delta_channel and delta_pixel plus
           the number of channels from the sinogram"""
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
+        
+        voxel_row_aspect = self.get_params('voxel_row_aspect')
 
-        # Compute delta_voxel
+        # Compute delta_voxel for each dimension
         delta_voxel = self.get_params('delta_det_channel') / self.get_magnification()
+        delta_voxel_row = voxel_row_aspect * delta_voxel
 
         # Compute the recon_shape
         sinogram_shape = self.get_params('sinogram_shape')
         num_det_rows, num_det_channels = sinogram_shape[1:3]
         magnification = self.get_magnification()
-        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
-        num_recon_cols = num_recon_rows
+        num_recon_rows = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel_row * magnification)))
+        num_recon_cols = int(jnp.ceil(num_det_channels * delta_det_channel / (delta_voxel * magnification)))
         num_recon_slices = int(jnp.round(num_det_rows * ((delta_det_row / delta_voxel) / magnification)))
         recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
@@ -166,8 +203,9 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the sinogram array
         sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
@@ -177,7 +215,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
 
@@ -208,8 +246,9 @@ class ParallelBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_alpha_p_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         L_max = jnp.minimum(1.0, W_p_c)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
@@ -219,7 +258,7 @@ class ParallelBeamModel(TomographyModel):
             n = n_p_center + n_offset
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = gp.delta_voxel * L_p_c_n / cos_alpha_p_xy
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
             det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
@@ -237,7 +276,7 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, cos_alpha_p_xy
+            n_p, n_p_center, W_p_c, footprint_xy
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -245,11 +284,13 @@ class ParallelBeamModel(TomographyModel):
 
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
+        
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # Convert the index into (i,j,k) coordinates corresponding to the indices into the 3D voxel array
         row_index, col_index = jnp.unravel_index(pixel_indices, recon_shape[:2])
 
-        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, gp.delta_voxel, recon_shape, angle)
+        x_p = ParallelBeamModel.recon_ij_to_x(row_index, col_index, gp.delta_voxel, delta_voxel_row, recon_shape, angle)
 
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
@@ -257,19 +298,18 @@ class ParallelBeamModel(TomographyModel):
         n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
         n_p_center = jnp.round(n_p).astype(int)
 
-        # Compute cos alpha for row and columns
-        cos_alpha_p_xy = jnp.maximum(jnp.abs(jnp.cos(angle)),
-                                     jnp.abs(jnp.sin(angle)))
+        # Compute footprint for row and columns
+        footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle)) * gp.delta_voxel, jnp.abs(jnp.sin(angle)) * delta_voxel_row)
 
         # Compute projected voxel width along columns and rows (in fraction of detector size)
-        W_p_c = (gp.delta_voxel / gp.delta_det_channel) * cos_alpha_p_xy
+        W_p_c = footprint_xy / gp.delta_det_channel
 
-        proj_data = (n_p, n_p_center, W_p_c, cos_alpha_p_xy)
+        proj_data = (n_p, n_p_center, W_p_c, footprint_xy)
 
         return proj_data
 
     @staticmethod
-    def recon_ij_to_x(i, j, delta_voxel, recon_shape, angle):
+    def recon_ij_to_x(i, j, delta_voxel, delta_voxel_row, recon_shape, angle):
         """
         Convert (i, j, k) indices into the recon volume to corresponding (x, y, z) coordinates.
         """
@@ -277,7 +317,7 @@ class ParallelBeamModel(TomographyModel):
 
         # Compute the un-rotated coordinates relative to iso
         # Note the change in order from (i, j) to (y, x)!!
-        y_tilde = delta_voxel * (i - (num_recon_rows - 1) / 2.0)
+        y_tilde = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0)
         x_tilde = delta_voxel * (j - (num_recon_cols - 1) / 2.0)
 
         # Precompute cosine and sine of view angle, then do the rotation
@@ -289,71 +329,116 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
-        return self.fbp_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+        _warn_view_batch_size_deprecated(view_batch_size)
+        return self.fbp_recon(sinogram, filter_name=filter_name)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
-        return self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+        _warn_view_batch_size_deprecated(view_batch_size)
+        return self.fbp_filter(sinogram, filter_name=filter_name)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=100):
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform FBP filtering on the given sinogram.
+
+        This is an internal sharded-contract method: it shards the sinogram on
+        the view axis at entry (a no-op when no mesh is configured or when the
+        input is already correctly sharded) and returns the filtered sinogram in
+        that same view-native sharding.  It does NOT gather at exit, so pipelined
+        callers (e.g. ``fbp_recon``/``direct_recon`` followed by back projection)
+        keep the data on-device with zero host transfer.  Under the view-sharding
+        scheme the ramp filter is per-view, so each device filters its own views
+        with no cross-device communication.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored — the row
+                filter kernel (tomography_utils.apply_row_filter) sets its own
+                batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (jax array): The sinogram after FBP filtering, in
+            view-native sharding (or a plain array when no mesh is configured).
         """
-        num_views, _, num_channels = sinogram.shape
-        if view_batch_size is None:
-            view_batch_size = self.view_batch_size_for_vmap
-            max_view_batch_size = 128  # Limit the view batch size here and ConeBeam due to https://github.com/jax-ml/jax/issues/27591
-            view_batch_size = min(view_batch_size, max_view_batch_size)
+        _warn_view_batch_size_deprecated(view_batch_size)
+        # Shard on the view axis.  No-op when no mesh is configured (single
+        # device) or when the input already carries this sharding.
+        sinogram = self._shard_sinogram(sinogram)
 
-        # Generate the reconstruction filter with appropriate scaling
-        delta_voxel = self.get_params('delta_voxel')
+        num_views, _, num_channels = sinogram.shape
+
+        # Generate the reconstruction filter with appropriate scaling.
+        delta_voxel, voxel_row_aspect = self.get_params( ['delta_voxel', 'voxel_row_aspect'])
+        delta_voxel_row = voxel_row_aspect * delta_voxel
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        scaling_factor = 1 / (delta_voxel**2)
+        scaling_factor = 1.0 / (delta_voxel * delta_voxel_row)
         recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        recon_filter *= scaling_factor
+        # Fold BOTH scalars — the voxel-size factor and the FBP weight pi/num_views
+        # — into the filter, in place, so they cost nothing and each per-row
+        # convolution output is already fully scaled.  Convolution is linear in
+        # the filter, so scaling the filter scales every output row identically.
+        # This replaces a post-kernel `filtered_sinogram * (pi/num_views)`, which
+        # was an out-of-place, full-array multiply that promoted f32 -> f64 (np.pi
+        # is float64), ~doubling peak memory and causing the 1-device GPU OOMs at
+        # large sizes.  The in-place *= keeps the filter float32 (a tiny array).
+        recon_filter *= scaling_factor * (np.pi / num_views)
+        # Materialize the filter once as numpy; each device uploads its own copy.
+        filter_np = np.asarray(recon_filter)
 
-        # Define convolution for a single row (across its channels)
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
+        # apply_row_filter batches rows internally (ROW_FILTER_BATCH), so each
+        # device filters only its LOCAL view-shard's rows — no dependence on how
+        # many views a device holds.  See tomography_utils.apply_row_filter.
 
-        # Apply above convolve func across each row of a view
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
+        if self.mesh is not None:
+            # Multi-device: one thread per device, each filtering its own view
+            # shard locally (no cross-device data movement).
 
-        # Apply convolution across the channels of the sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views  # scaling term
+            # Map each device to the local sinogram shard already resident on it.
+            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
+
+            def worker_process(i, device):
+                # Per-device work: filter this device's contiguous block of views.
+                # Runs inside run_per_device under jax.default_device(device), so
+                # the small filter upload and the FFT all happen on `device` and
+                # the result stays there (zero host transfer).
+                shard = dev_to_shard[device]
+                filter_jax = jnp.array(filter_np)   # tiny upload: 2*channels-1 floats
+                return tomography_utils.apply_row_filter(shard, filter_jax)
+
+            # run_per_device fans worker_process out across the mesh devices (one
+            # thread each) and returns the per-device results in device order,
+            # each still resident on its own device.
+            results = mjs.run_per_device(self.shard_devices, worker_process)
+
+            # assemble_sharded stitches the per-device results back into one
+            # logically-global NamedSharding array with no data movement (the
+            # filtered shard for view-block i is already on device i).
+            filtered_sinogram = mjs.assemble_sharded(
+                results, sinogram.shape, sinogram.sharding)
+        else:
+            # Single-device path (no mesh configured): filter directly.
+            filter_jax = jnp.array(filter_np)
+            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax)
+
+        # No post-scaling: the voxel factor and pi/num_views were folded into the
+        # filter above, so each device's kernel output is already fully scaled.
         return filtered_sinogram
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -365,13 +450,13 @@ class ParallelBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
 
         Returns:
             recon (jax array): The reconstructed volume after FBP reconstruction.
         """
-
-        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+        _warn_view_batch_size_deprecated(view_batch_size)
+        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name)
 
         # Apply backprojection
         recon = self.back_project(filtered_sinogram)

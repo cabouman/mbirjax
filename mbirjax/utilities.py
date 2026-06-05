@@ -21,7 +21,6 @@ import h5py
 import re
 import warnings
 import subprocess
-import scipy
 
 
 def load_data_hdf5(file_path):
@@ -707,7 +706,8 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     return phantom
 
 
-def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None, horizontal_offset=0, vertical_offset=0):
+def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None,
+                            horizontal_offset=0, vertical_offset=0, voxel_slice_aspect=1.0):
     """
     Generate a synthetic ground truth phantom based on the selected option.
 
@@ -722,6 +722,7 @@ def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size
                                            Must have the same length as 'words' if provided.
         horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
         vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
+        voxel_slice_aspect (float, optional): Ratio between slice voxel spacing and column voxel spacing. Default is 1.0.
 
     Returns:
         np.ndarray: Generated phantom volume.
@@ -729,7 +730,8 @@ def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size
     if option == 'dots':
         return gen_dot_phantom(recon_shape, fill_rate)
     elif option == 'text':
-        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset)
+        return gen_text_phantom(recon_shape, text, font_size, text_row_indices, horizontal_offset, vertical_offset,
+                                voxel_slice_aspect=voxel_slice_aspect)
     else:
         raise ValueError(f"Unsupported phantom option: {option}")
 
@@ -765,7 +767,7 @@ def gen_dot_phantom(recon_shape, fill_rate):
 
 
 def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal_offset=0,
-                     vertical_offset=0, font_path="DejaVuSans.ttf"):
+                     vertical_offset=0, voxel_slice_aspect=1.0, font_path="DejaVuSans.ttf"):
     """
     Generate a 3D text phantom with binary word patterns embedded in specific slices.
 
@@ -778,11 +780,16 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
                                            Must have the same length as 'words' if provided.
         horizontal_offset (int, optional): Horizontal offset of the text to be rendered. Positive value shifts the phantom right. Default is 0.
         vertical_offset (int, optional): Vertical offset of the text to be rendered. Positive value shifts the phantom up. Default is 0.
+        voxel_slice_aspect (float, optional): Ratio between slice voxel spacing and column voxel spacing. The rendered
+            text is corrected so it has the same physical aspect ratio when slices are anisotropic. Default is 1.0.
         font_path (str, optional): Path to the TrueType font file. Default is "DejaVuSans.ttf".
 
     Returns:
         np.ndarray: A 3D numpy array of shape `recon_shape` containing the text phantom.
     """
+    if voxel_slice_aspect <= 0:
+        raise ValueError(f"voxel_slice_aspect must be positive. Got {voxel_slice_aspect}.")
+
     if row_indices is not None:
         if len(row_indices) != len(words):
             raise ValueError(
@@ -805,7 +812,10 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
             slice_pos = recon_shape[2] // 2 - vertical_offset
             positions.append((int(round(r)), col_pos, slice_pos))
 
-    array_size = np.minimum(recon_shape[1], recon_shape[2])
+    array_size = int(np.minimum(recon_shape[1], recon_shape[2]))
+    array_num_cols = array_size
+    array_num_slices = int(round(array_size / voxel_slice_aspect))
+    array_num_slices = min(max(array_num_slices, 1), recon_shape[2])
 
     phantom = np.zeros(recon_shape, dtype=np.float32)
     try:
@@ -841,14 +851,19 @@ def gen_text_phantom(recon_shape, words, font_size, row_indices=None, horizontal
         draw.text((x, y), word, fill=1, font=font)
 
         word_array = np.array(img.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT))
+        if array_num_slices != array_size:
+            word_img = Image.fromarray(word_array)
+            nearest_resampling = getattr(getattr(Image, 'Resampling', Image), 'NEAREST')
+            word_img = word_img.resize((array_num_slices, array_num_cols), resample=nearest_resampling)
+            word_array = np.array(word_img)
         word_array = (word_array > 0).astype(np.float32)
 
         # Crop or pad word_array to fit in the recon volume
         r_start, r_end = r, r + 1
-        c_start = c - array_size // 2
-        c_end = c_start + array_size
-        s_start = s - array_size // 2
-        s_end = s_start + array_size
+        c_start = c - array_num_cols // 2
+        c_end = c_start + array_num_cols
+        s_start = s - array_num_slices // 2
+        s_end = s_start + array_num_slices
 
         c_start_valid = max(c_start, 0)
         c_end_valid = min(c_end, recon_shape[1])
@@ -957,6 +972,68 @@ class ModelType(str, Enum):
     TRANSLATION = 'translation'
 
 
+def get_helical_half_rotation_slice_range(
+    ct_model,
+    helical_pitch,
+    helical_z_shifts,
+):
+    """
+    Return the contiguous slice range whose z positions are visible for at least
+    half a rotation.
+
+    Assumes helical_z_shifts are monotone and uniformly sampled.
+    
+    Returns:
+        start_slice, stop_slice, valid_slice_mask
+        where stop_slice is exclusive.
+    """
+    recon_shape = ct_model.get_params('recon_shape')
+    delta_voxel, voxel_slice_aspect, recon_slice_offset = ct_model.get_params(
+        ['delta_voxel', 'voxel_slice_aspect', 'recon_slice_offset']
+    )
+    sinogram_shape = ct_model.get_params('sinogram_shape')
+    delta_det_row = ct_model.get_params('delta_det_row')
+    magnification = ct_model.get_magnification()
+
+    num_slices = recon_shape[2]
+    num_det_rows = sinogram_shape[1]
+
+    delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
+    # Slice-center z locations in reconstruction coordinates.
+    k = jnp.arange(num_slices)
+    z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+
+    # Detector height mapped to isocenter.
+    det_height_iso = num_det_rows * delta_det_row / magnification
+
+    # Table travel range.
+    z_shift_min = jnp.min(helical_z_shifts)
+    z_shift_max = jnp.max(helical_z_shifts)
+
+    # Extra interior trim needed when pitch > 1.
+    # For pitch <= 1, the table-travel endpoints already have at least
+    # half-rotation visibility, so no trim is needed.
+    trim = 0.5 * det_height_iso * jnp.maximum(float(helical_pitch) - 1.0, 0.0)
+
+    z_min = z_shift_min + trim
+    z_max = z_shift_max - trim
+
+    valid_slice_mask = (z_k >= z_min) & (z_k <= z_max)
+
+    valid_indices = np.where(np.asarray(valid_slice_mask))[0]
+    if len(valid_indices) == 0:
+        raise ValueError(
+            "No slices are visible for at least half a rotation. "
+            "Check helical_pitch, helical_z_range, num_views, and detector height."
+        )
+
+    start_slice = int(valid_indices[0])
+    stop_slice = int(valid_indices[-1] + 1)
+
+    return start_slice, stop_slice
+
+
 def generate_demo_data(
     object_type: Union[ObjectType, str] = ObjectType.SHEPP_LOGAN,
     model_type: Union[ModelType, str] = ModelType.CONE,
@@ -973,7 +1050,9 @@ def generate_demo_data(
     helical_pitch: float | None = None,
     helical_z_range: float | None = None,
     helical_z_center: float = 0.0,
-    use_curved_detector: bool = False
+    use_curved_detector: bool = False,
+    voxel_row_aspect: float = 1.0,
+    voxel_slice_aspect: float = 1.0
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1025,19 +1104,25 @@ def generate_demo_data(
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
         ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
-        params = {'angles': angles}
+        ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+        ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+        ct_model_for_generation.auto_set_recon_geometry()
+        params = {'angles': angles, 'voxel_row_aspect': voxel_row_aspect, 'voxel_slice_aspect': voxel_slice_aspect}
     elif model_type == ModelType.CONE:
         # For cone beam geometry, we need to describe the distances source to detector and source to rotation axis.
         # np.Inf is an allowable value, in which case this is essentially parallel beam
         source_detector_dist = 4 * num_det_channels
-        source_iso_dist = source_detector_dist
+        source_iso_dist = source_detector_dist/2
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         if not use_helical:
             angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
             ct_model_for_generation = mj.ConeBeamModel(sinogram_shape, angles, source_detector_dist=source_detector_dist,
                                                        source_iso_dist=source_iso_dist, use_curved_detector=use_curved_detector)
+            ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+            ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+            ct_model_for_generation.auto_set_recon_geometry()
             params = {'angles': angles, 'source_detector_dist': source_detector_dist, 'source_iso_dist': source_iso_dist,
-                      'use_curved_detector': use_curved_detector}
+                      'use_curved_detector': use_curved_detector, 'voxel_row_aspect': voxel_row_aspect, 'voxel_slice_aspect': voxel_slice_aspect}
         else:
             # Require both helical_pitch and helical_z_range
             if helical_pitch is None or helical_z_range is None:
@@ -1086,6 +1171,9 @@ def generate_demo_data(
                 helical_z_shifts=helical_z_shifts,
                 use_curved_detector=use_curved_detector
             )
+            ct_model_for_generation.set_params(voxel_row_aspect=voxel_row_aspect)
+            ct_model_for_generation.set_params(voxel_slice_aspect=voxel_slice_aspect)
+            ct_model_for_generation.auto_set_recon_geometry()
 
             params = {
                 'angles': angles,
@@ -1093,6 +1181,8 @@ def generate_demo_data(
                 'source_iso_dist': source_iso_dist,
                 'helical_z_shifts': helical_z_shifts,
                 'use_curved_detector': use_curved_detector,
+                'voxel_row_aspect': voxel_row_aspect,
+                'voxel_slice_aspect': voxel_slice_aspect
             }
     elif model_type == ModelType.TRANSLATION:
         source_iso_dist = np.min(num_det_rows, num_det_channels) / 2
@@ -1110,13 +1200,32 @@ def generate_demo_data(
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     device = ct_model_for_generation.main_device
+    phantom_shape = recon_shape
+    embed_slice_start = 0
+    embed_slice_stop = recon_shape[2]
+    if model_type == ModelType.CONE and use_helical:
+        embed_slice_start, embed_slice_stop = get_helical_half_rotation_slice_range(
+            ct_model_for_generation,
+            helical_pitch,
+            helical_z_shifts
+        )
+        phantom_shape = (
+            recon_shape[0],
+            recon_shape[1],
+            embed_slice_stop - embed_slice_start,
+        )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom = generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=device)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device)
     elif object_type == ObjectType.CUBE:
-        phantom = gen_cube_phantom(recon_shape, device=device)
+        phantom_core = gen_cube_phantom(phantom_shape, device=device)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
-
+    if model_type == ModelType.CONE and use_helical:
+        phantom = jnp.zeros(recon_shape, device=device)
+        phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+    else:
+        phantom = phantom_core
+    
     # Generate synthetic sinogram data
     print('Creating sinogram')
     sinogram = ct_model_for_generation.forward_project(phantom)
@@ -1291,16 +1400,21 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     return model
 
 
-def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_cols=None):
+def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_det_rows=None, new_num_det_cols=None):
     """
     Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
     and a corresponding sinogram shape.  Restricted to ParallelBeam and ConeBeam models.
 
     Args:
         ct_model (TomographyModel): The model to copy.
-        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.  If None, then use the angles in ct_model. Defaults to None.
-        new_num_det_rows (int, optional): Number of detector rows in the new model.  If None, then use the num_det_rows in ct_model. Defaults to None.
-        new_num_det_cols (int, optional): Number of detector columns in the new model.  If None, then use the num_det_cols in ct_model. Defaults to None.
+        new_angles (ndarray of float, optional): 1D vector of projection angles in radians.
+            If None, then use the angles in ct_model. Defaults to None.
+        new_helical_z_shifts (ndarray of float, optional): 1D vector of per-view axial shifts in ALU for ConeBeamModel.
+            Defaults to None.
+        new_num_det_rows (int, optional): Number of detector rows in the new model.
+            If None, then use the num_det_rows in ct_model. Defaults to None.
+        new_num_det_cols (int, optional): Number of detector columns in the new model.
+            If None, then use the num_det_cols in ct_model. Defaults to None.
 
     Returns:
         An instance of ConeBeamModel or ParallelBeam model
@@ -1314,7 +1428,7 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
         view_params_name = ct_model.get_params('view_params_name')  # This is the name saved in the parameter list
         view_params_component_names = ct_model.get_params('view_params_component_names')  # These are the names used in __init__
         if view_params_component_names[0] != 'angles' or view_params_component_names[1] != 'helical_z_shifts':
-            raise ValueError('Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
+            raise ValueError('copy_ct_model: Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
         for name in view_params_component_names:
             required_param_names.remove(name)
 
@@ -1323,7 +1437,22 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
                                                                                values_only=True)
         view_params = ct_model.get_params(view_params_name)
         old_angles = view_params[:, 0]
-        required_params['helical_z_shifts'] = view_params[:, 1]
+        old_helical_z_shifts = view_params[:, 1]
+
+        if new_angles is None and new_helical_z_shifts is None:
+            new_helical_z_shifts = old_helical_z_shifts
+        elif new_angles is not None and new_helical_z_shifts is None:
+            if np.any(old_helical_z_shifts != 0):
+                raise ValueError('copy_ct_model: new_helical_z_shifts must be specified when changing angles for a helical scan.')
+            new_helical_z_shifts = np.zeros_like(new_angles)
+        elif new_angles is not None and new_helical_z_shifts is not None:
+            if len(new_angles) != len(new_helical_z_shifts):
+                raise ValueError('copy_ct_model: new_angles and new_helical_z_shifts must have the same length.')
+        elif new_angles is None and new_helical_z_shifts is not None:
+            if len(old_helical_z_shifts) != len(new_helical_z_shifts):
+                raise ValueError('copy_ct_model: new_helical_z_shifts must have the same length as the existing angles.')
+
+        required_params['helical_z_shifts'] = new_helical_z_shifts
 
     elif str(type(ct_model)).find('ParallelBeamModel') > 0:
         required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
@@ -1344,6 +1473,13 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
     if new_num_det_cols is not None:
         new_shape[2] = new_num_det_cols
 
+    if str(type(ct_model)).find('ConeBeamModel') > 0:
+        other_params['view_params_array'] = jnp.stack(
+            [jnp.asarray(new_angles).ravel(),
+             jnp.asarray(required_params['helical_z_shifts']).ravel()],
+            axis=1
+        )
+
     # Set the new sinogram shape and angles
     required_params['sinogram_shape'] = tuple(new_shape)
     required_params['angles'] = new_angles
@@ -1356,9 +1492,9 @@ def copy_ct_model(ct_model, new_angles=None, new_num_det_rows=None, new_num_det_
     return new_model
 
 
-def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors):
+def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):
     """
-    Calculate the translation geometry parameters: recon_shape, delta_voxel, delta_recon_rows
+    Calculate the translation geometry parameters: recon_shape, delta_voxel, voxel_row_aspect
 
     Args:
         source_det_dist (float): distance from the X-ray source to the detector (in ALU)
@@ -1367,11 +1503,13 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
         delta_det_channel (float): the spacing between detector channels (in ALU)
         sinogram_shape (tuple): Shape of the sinogram as (num_views, num_det_rows, num_det_channels)
         translation_vectors (numpy array): A (num_views, 3) array of translations (x, y, z) in ALU
+        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel. Defaults to 1.0
+        voxel_slice_aspect (float): the aspect ratio between delta_voxel_slice and delta_voxel. Defaults to 1.0
 
     Returns:
         recon_shape (tuple): Shape of the reconstruction shape as (num_recon_rows, num_recon_cols, num_recon_slices)
         delta_voxel (float): the voxel pitch at isocenter (in ALU)
-        delta_recon_row (float): the row pitch of the reocnstruction (in ALU)
+        voxel_row_aspect (float): the aspect ratio between delta_voxel_row and delta_voxel
     """
     # Get parameters
     num_views, num_det_rows, num_det_channels = sinogram_shape
@@ -1397,6 +1535,9 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     # Set delta_voxel
     delta_voxel = float(det_pixel_pitch_iso)
 
+    # Compute delta_voxel in slice dimension
+    delta_voxel_slice = voxel_slice_aspect * delta_voxel
+
     ######### Compute the row pitch based on a heuristic #########
     # ToDo: There will be problems if avg_view_slope is small or zero. Discuss with Greg.
     # The following code will result in an isotropic voxel when the avg_view_slope > 76 deg.
@@ -1405,14 +1546,28 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     delta_recon_row = jnp.maximum(nominal_row_pitch, det_pixel_pitch_iso)  # Ensure that the row resolution is not higher than the (x,z) detector resolution
     delta_recon_row = float(delta_recon_row)
 
+    ##### Compute voxel row aspect
+    # In translation geometry, anisotropic row spacing is usually needed for good reconstruction results.
+    #
+    # If voxel_row_aspect == 1.0 (default value), assume the user did not explicitly specify
+    # a row aspect ratio, and automatically compute it using the current TCT row-pitch heuristic.
+    #
+    # Otherwise, use the user-defined voxel_row_aspect to determine delta_recon_row.
+    if voxel_row_aspect == 1.0:
+        voxel_row_aspect = delta_recon_row / delta_voxel
+    else:
+        delta_recon_row = voxel_row_aspect * delta_voxel
+
     # Compute cube = (width, depth, height) of the scanned region in ALU
     max_translation = jnp.amax(translation_vectors, axis=0)  # Translate object right/up when positive
     min_translation = jnp.amin(translation_vectors, axis=0)  # Translate object left/down when negative
     cube = max_translation - min_translation
 
-    # Compute recon_box = (width, height) of the reconstruction box in "nominal voxels"
-    # Nominal voxels are the voxels that would result using the detector pitch at iso
-    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / det_pixel_pitch_iso_vec)
+    # Compute recon_box = (num_recon_cols, num_recon_slices) of the reconstruction volume.
+    # The reconstruction box size is determined using:
+    #   delta_voxel for the column direction
+    #   delta_voxel_slice for the slice direction
+    recon_box = jnp.ceil(jnp.array([cube[0], cube[2]]) / jnp.array([delta_voxel, delta_voxel_slice]))
 
     # ************ Use a heuristic to determine a reasonable number of rows *************
     # Compute the number of unknown pixels per view
@@ -1434,7 +1589,7 @@ def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta
     num_recon_slices = int(num_recon_slices)
     recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
-    return recon_shape, delta_voxel, delta_recon_row
+    return recon_shape, delta_voxel, voxel_row_aspect
 
 
 def estimate_background_cluster_boundaries(sinogram):
@@ -1489,145 +1644,3 @@ def estimate_background_cluster_boundaries(sinogram):
     right_boundary = centers[right_boundary_idx]
 
     return left_boundary, right_boundary
-
-
-def fit_beam_hardening_curve(linear_projection, target_projection, num_parameters=5):
-    """
-    Fit parametric beam-hardening function from paired samples.
-
-    This function fits the function
-
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p))
-
-    to paired ``(linear_projection, target_projection)`` samples using
-    nonlinear least squares.
-
-    Args:
-        linear_projection (np.ndarray): Ideal linear
-            projection or path-length samples.
-        target_projection (np.ndarray): Target
-            beam-hardened projection samples paired with
-            ``linear_projection``.
-        num_parameters (int, optional): Total number of fitted parameters.
-                                        Defaults to 5.
-
-    Returns:
-        ndarray: Optimized parameter vector
-            ``[theta_0, theta_1, ..., theta_{num_parameters-1}]``.
-
-    Example:
-        >>> linear_projection = sinogram.ravel()
-        >>> target_projection = sinogram_nonlinear.ravel()
-        >>> fitted_params = fit_beam_hardening_curve(
-        ...     linear_projection, target_projection, num_parameters=5)
-        >>> y_pred = apply_fitted_beam_hardening_curve(
-        ...     sinogram_test, fitted_params)
-    """
-    num_parameters = int(num_parameters)
-    if num_parameters < 2:
-        raise ValueError(
-            'fit_beam_hardening_curve: num_parameters must be at least 2.')
-
-    linear_projection = np.asarray(linear_projection, dtype=np.float64)
-    target_projection = np.asarray(target_projection, dtype=np.float64)
-
-    if linear_projection.size != target_projection.size:
-        raise ValueError(
-            'fit_beam_hardening_curve: Input and target projection arrays must contain the same number of samples.')
-
-    # Treat the inputs as paired samples even when they are not already 1D.
-    linear_projection = linear_projection.ravel()
-    target_projection = target_projection.ravel()
-
-    # Keep positive training pairs
-    valid_mask = (
-        np.isfinite(linear_projection) & np.isfinite(target_projection)
-        & (linear_projection > 1e-6) & (target_projection > 1e-6)
-    )
-    linear_projection = linear_projection[valid_mask]
-    target_projection = target_projection[valid_mask]
-
-    if linear_projection.size == 0:
-        raise ValueError(
-            'fit_beam_hardening_curve: No valid training samples remain.')
-
-    # Default initialization: theta_0 = 1 and all exponential log-weights = 0.
-    initial_params = np.zeros(num_parameters, dtype=np.float64)
-    initial_params[0] = 1.0
-
-    # Fit the filtered projection pairs by nonlinear least squares.
-    optimization_result = scipy.optimize.least_squares(
-        _beam_hardening_curve_residuals,
-        initial_params,
-        args=(linear_projection, target_projection),
-        loss='linear',
-        method='trf',
-        verbose=1,
-    )
-
-    if not optimization_result.success:
-        warnings.warn(
-            f'fit_beam_hardening_curve: Beam-hardening curve fit did not converge: {optimization_result.message}',
-            RuntimeWarning)
-
-    optimized_params = optimization_result.x
-
-    return optimized_params
-
-
-def apply_fitted_beam_hardening_curve(linear_projection, params):
-    """
-    Apply a fitted parametric beam-hardening function.
-
-    This is the inference step after :func:`fit_beam_hardening_curve`.
-    It maps a linear projection to the corresponding beam-hardened
-    projection using the fitted parameter vector:
-
-        f(p) = -log(sum_{i=1}^N exp(theta_i - i * theta_0 * p)).
-
-    Args:
-        linear_projection (np.ndarray): Linear
-            projection values. Arrays of any shape are accepted and the output
-            preserves that shape.
-        params (np.ndarray): Parameter vector
-            ``[theta_0, theta_1, ..., theta_N]``.
-
-    Returns:
-        ndarray: Beam-hardened projection values with the same shape as
-            ``linear_projection``.
-    """
-    linear_projection = np.asarray(linear_projection, dtype=np.float64)
-    params = np.asarray(params, dtype=np.float64).reshape(-1)
-
-    if params.size < 2:
-        raise ValueError(
-            'Expected at least 2 parameters: theta_0 and one log-weight.')
-
-    theta_0 = params[0]
-    theta_rest = params[1:]
-
-    log_sum_exp = np.full_like(linear_projection, -np.inf, dtype=np.float64)
-    for i, theta_i in enumerate(theta_rest, start=1):
-        exponent = theta_i - i * theta_0 * linear_projection
-        log_sum_exp = np.logaddexp(log_sum_exp, exponent)
-
-    return -log_sum_exp
-
-
-def _beam_hardening_curve_residuals(params, linear_projection, target_projection):
-    """
-    Return fitted-minus-target residuals for nonlinear least-squares fitting.
-
-    Args:
-        params (np.ndarray): Current beam-hardening
-            model parameters.
-        linear_projection (np.ndarray): Filtered linear projection samples.
-        target_projection (np.ndarray): Filtered target beam-hardened samples.
-
-    Returns:
-        ndarray: One-dimensional residual vector used by
-            :func:`scipy.optimize.least_squares`.
-    """
-    fitted_projection = apply_fitted_beam_hardening_curve(
-        linear_projection, params)
-    return fitted_projection.ravel() - target_projection.ravel()
