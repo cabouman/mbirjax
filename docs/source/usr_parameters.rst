@@ -155,6 +155,18 @@ voxel_slice_aspect
 Ratio of voxel spacing in slices to voxel spacing in columns.
 This defaults to 1.0, so that the voxel spacing is the same in slices and columns, i.e., the voxels are square looking from the side.
 
+.. _param-use_ror_mask:
+
+use_ror_mask
+""""""""""""
+:Type: float (Defaults to True)
+
+Determines what type of mask is used in the column-row space.
+The mask determines which voxel cylinders are updated and which are not.
+When `use_ror_mask = True`, an eliptical mask is used that inscribes the region of reconstruction.
+When `use_ror_mask = False`, no mask is used, and the entire column-row space is reconstructed.
+When `use_ror_mask = array`, where `array` is a 2D array of 0 and 1's with the same shape as the column-row space.
+
 .. _param-alu_unit:
 
 alu_unit
