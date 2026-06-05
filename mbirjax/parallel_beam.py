@@ -207,18 +207,29 @@ class ParallelBeamModel(TomographyModel):
         L_max = jnp.minimum(1.0, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Allocate the sinogram array.  Size the detector-row axis from the actual
-        # input cylinder, not from projector_params.sinogram_shape, so that a
-        # caller may pass a slice-band of the cylinder (a contiguous subset of
-        # slices) and get back only the corresponding detector rows.  Slice r maps
-        # only to detector row r in parallel beam (the horizontal projection below
-        # mixes channels, never rows), so restricting the input slices restricts
-        # the output rows with no other change.  When the full cylinder is passed
-        # this equals num_det_rows, so single-device behavior is unchanged.  This
-        # is the adjoint of the row-sliced back projection kernel, and is what lets
-        # sharded forward projection stream the slice axis in bands.
+        # Size the detector-row axis from the actual input cylinder, not from
+        # projector_params.sinogram_shape, so that a caller may pass a slice-band
+        # of the cylinder (a contiguous subset of slices) and get back only the
+        # corresponding detector rows.  Slice r maps only to detector row r in
+        # parallel beam (the horizontal projection below mixes channels, never
+        # rows), so restricting the input slices restricts the output rows with no
+        # other change.  When the full cylinder is passed this equals num_det_rows,
+        # so single-device behavior is unchanged.  This is the adjoint of the
+        # row-sliced back projection kernel, and is what lets sharded forward
+        # projection stream the slice axis in bands.
         num_input_slices = voxel_values.shape[1]
-        sinogram_view = jnp.zeros((num_input_slices, num_det_channels))
+
+        # The horizontal projection scatters each pixel's contribution into its
+        # detector channel n.  Build the view CHANNEL-MAJOR -- (channels, slices)
+        # rather than (slices, channels) -- so the scatter writes a CONTIGUOUS row
+        # (stride 1) instead of a column (stride num_det_channels).  A column stride
+        # equal to a power-of-2 num_det_channels (e.g. 256/1024/2048 detectors)
+        # aliases the CPU cache and runs several times slower at large slice counts;
+        # the contiguous row access avoids that entirely and is faster regardless of
+        # the channel count.  Transpose back to (slices, channels) on return (one
+        # cheap pass, fused by XLA) so the output layout and all callers are
+        # unchanged.
+        sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
 
         # Do the projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
@@ -227,9 +238,9 @@ class ParallelBeamModel(TomographyModel):
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view= sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
-        return sinogram_view
+        return sinogram_view_T.T
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -260,18 +271,26 @@ class ParallelBeamModel(TomographyModel):
         L_max = jnp.minimum(1.0, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Allocate the voxel cylinder array.  Size the slice axis from the actual
-        # input view, not from projector_params.sinogram_shape, so that a caller
-        # may pass a row-sliced view (a contiguous subset of detector rows) and
-        # get back only the corresponding recon slices.  Detector row r maps only
-        # to slice r in parallel beam (the horizontal projection below mixes
-        # channels, never rows), so restricting the input rows restricts the
-        # output slices with no other change.  When the full view is passed this
-        # equals num_det_rows, so single-device behavior is unchanged.  This is
-        # what lets sharded back projection stream the slice axis in bands.
+        # Size the slice axis from the actual input view, not from
+        # projector_params.sinogram_shape, so that a caller may pass a row-sliced
+        # view (a contiguous subset of detector rows) and get back only the
+        # corresponding recon slices.  Detector row r maps only to slice r in
+        # parallel beam (the horizontal projection below mixes channels, never
+        # rows), so restricting the input rows restricts the output slices with no
+        # other change.  When the full view is passed this equals num_det_rows, so
+        # single-device behavior is unchanged.  This is what lets sharded back
+        # projection stream the slice axis in bands.
         num_input_rows = sinogram_view.shape[0]
+
+        # The horizontal projection gathers each pixel's detector channel n.  Read
+        # the view CHANNEL-MAJOR -- transpose to (channels, rows) up front so the
+        # per-pixel gather reads a CONTIGUOUS row (stride 1) instead of a column
+        # (stride num_det_channels).  A power-of-2 num_det_channels column stride
+        # aliases the CPU cache and runs several times slower at large row counts;
+        # the contiguous access avoids it (the adjoint of the forward kernel's
+        # channel-major scatter).
+        sinogram_view_T = sinogram_view.T            # (num_det_channels, num_input_rows)
         det_voxel_cylinder = jnp.zeros((num_pixels, num_input_rows))
-        # jax.debug.breakpoint(num_frames=1)
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
@@ -280,7 +299,7 @@ class ParallelBeamModel(TomographyModel):
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
+            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
 
         return det_voxel_cylinder
 
