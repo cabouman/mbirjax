@@ -165,7 +165,7 @@ Determines what type of mask is used in the column-row space.
 The mask determines which voxel cylinders are updated and which are not.
 When `use_ror_mask = True`, an eliptical mask is used that inscribes the region of reconstruction.
 When `use_ror_mask = False`, no mask is used, and the entire column-row space is reconstructed.
-When `use_ror_mask = array`, where `array` is a 2D array of 0 and 1's with the same shape as the column-row space.
+Alternatively, the user can supply a custom mask by setting `use_ror_mask = array`, where `array` is a 2D array of 0's and 1's with the same shape as the column-row space.
 
 .. _param-alu_unit:
 
