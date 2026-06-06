@@ -1559,7 +1559,7 @@ class TomographyModel(ParameterHandler):
                 data[:, g0:g1, :], local_pixels[i],
                 view_indices=global_view_idx, coeff_power=coeff_power)
         return mjs.run_per_device(devices, worker, executor=pool)
-    
+
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):
         """Band length B for streaming the slice axis in sharded back projection.

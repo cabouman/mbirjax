@@ -173,6 +173,8 @@ alu_unit
 """"""""
 :Type: string (Defaults to None)
 
+.. _param-alu_value:
+
 alu_value
 """""""""
 :Type: float (Defaults to 1.0)

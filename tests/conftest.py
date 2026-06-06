@@ -28,6 +28,17 @@ source vs site-packages copy) Python resolves first, and so the flag is set even
 before mbirjax is imported by a test.  The slight redundancy is intentional:
 conftest guards the *test* process regardless of mbirjax import order, while
 mbirjax._device_setup guards normal *library* use.
+
+Device-preference policy for sharding tests
+───────────────────────────────────────────
+Use preferred_devices(n) in test setUp/setUpClass to pick devices:
+
+  1. Real GPUs (jax.devices('gpu')) — used when ≥n GPUs are available.
+  2. Virtual CPU devices (jax.devices('cpu')) — fallback set by XLA_FLAGS below.
+
+Sharding tests automatically exercise real hardware on a GPU cluster and fall
+back to virtual CPUs on a laptop or CI machine.  The tests are identical either
+way.
 """
 import os
 import sys
@@ -81,3 +92,27 @@ os.environ.setdefault(
     "XLA_FLAGS",
     f"--xla_force_host_platform_device_count={_resolve_num_cpu_devices()}"
 )
+
+import jax
+
+
+def preferred_devices(n: int):
+    """Return a list of n devices for sharding tests.
+
+    Prefers real GPUs over virtual CPU devices so that sharding tests exercise
+    real hardware on a GPU cluster and fall back to virtual CPUs on a laptop.
+
+    Returns None if fewer than n GPUs are available when there is at least one
+    GPU and return None if fewer than n CPUs are available and no GPUs are available.
+    """
+    try:
+        gpus = jax.devices('gpu')
+        if len(gpus) >= n:
+            return gpus[:n]
+        return None
+    except RuntimeError:
+        pass
+    cpus = jax.devices('cpu')
+    if len(cpus) >= n:
+        return cpus[:n]
+    return None
