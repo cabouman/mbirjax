@@ -1,0 +1,237 @@
+"""
+experiments/sharding/scaling_tests/vcd_mesh_mem_attribution.py
+──────────────────────────────────────────────────────────────
+Attribute the 1-device-MESH VCD memory overhead, and test WHY it happens.
+
+CONTEXT: on one H100 the sharded (1-device *mesh*) VCD path peaks at ~3.31x the
+plain single-device peak at 504^3 (24.6 vs 7.4 GB) and OOMs at 1008^3 where the
+single-device path fits (50.5 GB).  Reading the code:
+  * Each jitted projector call is internally memory-bounded (it batches pixels by
+    2048 and views by 512), so a single call does NOT scale its transient with the
+    number of pixels.  => the overhead is NOT one big unbounded kernel.
+  * BUT the single-device projector bodies call block_until_ready() per batch
+    (tomography_model.py:1071, :1311) -- backpressure that serializes execution and
+    bounds the in-flight working set.  The SHARDED path has NONE: run_per_device is
+    async by design (thread_execution.py:58-62), the band loops don't block between
+    bands, the per-subset block_until_ready are commented out, and the alpha fix
+    removed the last per-subset host sync.  So the sharded path runs fully async:
+    bands, subsets, and the setup ops overlap, and their transients coexist.
+
+HYPOTHESIS (the leading one): the mesh overhead is JAX "running ahead of itself" --
+async dispatch with no backpressure -- not a structural per-call blowup.  This file
+sets up two single-variable tests to confirm/refute it and to point at the fix.
+
+────────────────────────────────────────────────────────────────────────────────
+TEST 1 — BACKPRESSURE (the decisive one).  Set BLOCK_PROJECTIONS=True to wrap
+  model.sparse_back_project / sparse_forward_project so each returns only after
+  block_until_ready().  Those two methods carry the per-subset loop AND the full-FOV
+  setup ops (direct_recon / forward_project / compute_hessian_diagonal all route
+  through them), so this serializes the whole pipeline -- with NO library edit.
+    Async run-ahead is CONFIRMED iff, vs the BLOCK_PROJECTIONS=False baseline,
+    peak DROPS and wall-time RISES.  (A static working-set problem would move time
+    but not peak.)
+
+TEST 2 — BAND SIZE (the discriminator).  Set BACK_BAND / FORWARD_BAND to force the
+  slice-band length (overriding the default cap, which is ~full at 504^3).  Sweep
+  {None, 64, 16} on the 1-device mesh and watch peak:
+    * smaller band -> LOWER peak  => the slice-axis working set is the lever
+      (fix = make the band a real memory budget at small sizes / n_dev=1).
+    * smaller band -> HIGHER or FLAT peak  => async overlap (more in-flight band
+      ops), corroborating TEST 1.
+
+────────────────────────────────────────────────────────────────────────────────
+HOW TO READ peak: mem_report prints `peak_bytes_in_use` (a high-water mark since
+process start), so the "after recon" value is the run's peak regardless of
+INSTRUMENT.  `bytes_in_use` + the live-array list explain the resident set.
+
+RECOMMENDED MATRIX (edit the config, rerun; each writes its own YAML):
+  A. reference     : MESH=False                              -> no-mesh anchor (~7.4 GB @504^3)
+  B. mesh baseline : MESH=True                               -> reproduce the ~3.3x
+  C. backpressure  : MESH=True, BLOCK_PROJECTIONS=True       -> TEST 1
+  D. band sweep    : MESH=True, BACK_BAND=FORWARD_BAND=64    -> TEST 2
+                     MESH=True, BACK_BAND=FORWARD_BAND=16
+Keep INSTRUMENT=False for A–D (the phase-trace adds its own blocking, which would
+confound the backpressure baseline).  Turn INSTRUMENT=True only when you want the
+per-phase peak curve to localize WHICH op dominates (use a debugger inside that op
+to name the arrays).
+
+No CLI args by design — edit the config block below.
+"""
+import os
+import gc
+import time
+
+# Import mbirjax before jax (it sets the XLA device flags on import); then jax is
+# safe to import at module scope so mem_report can use it.
+import mbirjax
+import jax
+import numpy as np
+
+import scaling_common as sc
+
+
+# ── Run configuration (edit here) ─────────────────────────────────────────────
+SIZE = (504, 504, 504)   # where 3.31x was measured; drop to (252,252,252) for fast iteration
+MAX_ITERATIONS = 1       # the peak is set by setup + the first pass, not iteration count
+SEED = 0
+SHARPNESS = 1.0
+
+MESH = True              # True = 1-device mesh (sharded path); False = plain single-device
+BLOCK_PROJECTIONS = False  # TEST 1: serialize the projectors with block_until_ready()
+FORWARD_BAND = None      # TEST 2: force forward slice-band length (None = default cap)
+BACK_BAND = None         # TEST 2: force back slice-band length (None = default cap)
+
+INSTRUMENT = False       # auto-wrap big phases with mem_report (adds blocking — keep False for A–D)
+TOP_N = 15               # how many of the largest live arrays to list
+
+
+def _nbytes(a):
+    try:
+        return int(a.nbytes)
+    except Exception:       # noqa: BLE001 — some live objects may not expose nbytes
+        return 0
+
+
+def mem_report(label="", device=None):
+    """Print current + peak device bytes and the largest live jax arrays.
+
+    Call at a phase boundary or from the debugger.  Returns peak MB.  On CPU
+    `memory_stats()` may be empty (cur/peak show 0) but the live-array inventory
+    still works.
+    """
+    if device is None:
+        device = jax.devices()[0]
+    try:
+        stats = device.memory_stats() or {}
+    except Exception:       # noqa: BLE001 — CPU backend may not implement memory_stats
+        stats = {}
+    cur = stats.get("bytes_in_use", 0) / 1e6
+    peak = stats.get("peak_bytes_in_use", 0) / 1e6
+
+    arrays = sorted(jax.live_arrays(), key=_nbytes, reverse=True)
+    total = sum(_nbytes(a) for a in arrays) / 1e6
+
+    print(f"\n=== mem_report [{label}] ===")
+    print(f"  device bytes_in_use={cur:10.1f} MB   peak_bytes_in_use={peak:10.1f} MB")
+    print(f"  live jax arrays: {len(arrays)}   sum={total:10.1f} MB   (top {TOP_N}):")
+    for a in arrays[:TOP_N]:
+        mb = _nbytes(a) / 1e6
+        shp = tuple(getattr(a, "shape", ()))
+        dt = getattr(a, "dtype", "?")
+        # NamedSharding (a sharded intermediate) vs SingleDeviceSharding (gathered/plain).
+        shd = type(getattr(a, "sharding", None)).__name__
+        print(f"    {mb:10.1f} MB  shape={shp}  dtype={dt}  sharding={shd}")
+    print("=== end ===\n")
+    return peak
+
+
+def _instrument(model):
+    """Wrap the big vcd_recon phases so mem_report fires before/after each.
+
+    Each wrapped method blocks on its result so the peak is realized before we read
+    it.  NOTE: this blocking serializes the setup phases, so leave INSTRUMENT=False
+    for the backpressure/band tests (it would mask the async baseline).
+    get_forward_model_loss is a staticmethod, but a plain function set as an instance
+    attribute shadows it and is called without `self`, which is what vcd_recon does.
+    """
+    phases = ("direct_recon", "compute_hessian_diagonal", "forward_project",
+              "vcd_partition_iterator", "get_forward_model_loss")
+
+    def make_wrapper(name, orig):
+        def wrapped(*args, **kwargs):
+            mem_report(f"before {name}")
+            result = orig(*args, **kwargs)
+            try:
+                jax.block_until_ready(result)   # accepts pytrees (tuples) too
+            except Exception:                   # noqa: BLE001 — scalars / non-arrays
+                pass
+            mem_report(f"after {name}")
+            return result
+        return wrapped
+
+    for name in phases:
+        setattr(model, name, make_wrapper(name, getattr(model, name)))
+
+
+def _block_projections(model):
+    """TEST 1: make sparse_back_project / sparse_forward_project block on their result.
+
+    This reintroduces the backpressure the single-device bodies have and the sharded
+    path lacks.  These two methods are the ones the per-subset updater and the
+    full-FOV ops call, so wrapping them serializes essentially the whole pipeline
+    without touching library code.  create_vcd_subset_updater captures
+    `self.sparse_*_project` when recon() runs, so patching here (before recon) takes
+    effect inside the subset loop too.
+    """
+    def make_wrapper(orig):
+        def wrapped(*args, **kwargs):
+            result = orig(*args, **kwargs)
+            jax.block_until_ready(result)
+            return result
+        return wrapped
+
+    for name in ("sparse_back_project", "sparse_forward_project"):
+        setattr(model, name, make_wrapper(getattr(model, name)))
+
+
+def run_one():
+    n_views, _, _ = SIZE
+    angles = np.linspace(0, np.pi, n_views, endpoint=False)
+    model = mbirjax.ParallelBeamModel(SIZE, angles)
+    model.set_params(sharpness=SHARPNESS, verbose=1)   # verbose>=1 prints phase logs
+
+    if MESH:
+        # Trivial 1-device mesh -> recon takes the sharded VCD path on one device.
+        model.configure_sharding(jax.devices()[:1])
+        # Force the slice-band lengths if requested (read by _slice_band_length).
+        if BACK_BAND is not None:
+            model.back_project_slice_band = BACK_BAND
+        if FORWARD_BAND is not None:
+            model.forward_project_slice_band = FORWARD_BAND
+
+    if BLOCK_PROJECTIONS:
+        _block_projections(model)
+    if INSTRUMENT:
+        _instrument(model)
+
+    np.random.seed(SEED)
+    sino = np.random.rand(*SIZE).astype(np.float32)     # host array; recon shards at entry
+
+    mem_report("before recon")
+    t0 = time.perf_counter()
+    recon, _ = model.recon(sino, weights=None, max_iterations=MAX_ITERATIONS,
+                           stop_threshold_change_pct=0.0, print_logs=False)
+    jax.block_until_ready(recon)
+    elapsed_ms = (time.perf_counter() - t0) * 1e3
+    peak_mb = mem_report("after recon")
+
+    del recon, sino
+    gc.collect()
+    return elapsed_ms, peak_mb
+
+
+def main():
+    plat, _ = sc.detect_platform()
+    cfg = (f"MESH={MESH}  BLOCK_PROJECTIONS={BLOCK_PROJECTIONS}  "
+           f"BACK_BAND={BACK_BAND}  FORWARD_BAND={FORWARD_BAND}  "
+           f"INSTRUMENT={INSTRUMENT}  SIZE={SIZE}  iters={MAX_ITERATIONS}")
+    print(f"platform={plat}  devices={jax.devices()}")
+    print(cfg)
+
+    elapsed_ms, peak_mb = run_one()
+
+    print(f"\nRESULT [{plat}]: time={elapsed_ms:.0f} ms   peak={peak_mb:.1f} MB   ({cfg})")
+
+    # Record per-config so a matrix of runs does not overwrite itself.
+    tag = (f"mesh{int(MESH)}_block{int(BLOCK_PROJECTIONS)}"
+           f"_bb{BACK_BAND}_fb{FORWARD_BAND}")
+    out = {"op": "vcd_mesh_mem_attribution", "platform": plat,
+           "size": sc.size_label(SIZE), "max_iterations": MAX_ITERATIONS,
+           "mesh": MESH, "block_projections": BLOCK_PROJECTIONS,
+           "back_band": BACK_BAND, "forward_band": FORWARD_BAND,
+           "instrument": INSTRUMENT, "time_ms": elapsed_ms, "peak_mb": peak_mb}
+    sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"vcd_mesh_attrib_{plat}_{tag}.yaml"), out)
+
+
+if __name__ == "__main__":
+    main()
