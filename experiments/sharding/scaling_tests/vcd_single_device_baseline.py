@@ -10,10 +10,15 @@ script measures the *user-facing* ``recon`` on one device at large sizes on BOTH
 checkouts so we can confirm beta-no-mesh matches prerelease (no OOM, similar peak /
 time) before we touch the 1-device *mesh* (sharded-path) memory.
 
-It deliberately does NOT call ``configure_sharding`` — this is the plain
-single-device path (``mesh is None``), exactly what prerelease has and what a normal
-single-GPU user runs.  So the SAME script runs on prerelease and on beta; the banner
-prints which mbirjax is loaded, and the output YAML is named by branch state.
+Two modes via the ``MESH`` toggle (below):
+  * ``MESH=False`` (default) — the plain single-device path (``mesh is None``),
+    exactly what prerelease has and what a normal single-GPU user runs.  The SAME
+    script runs on prerelease and on beta for the no-regression check.
+  * ``MESH=True`` (beta only) — a trivial 1-device mesh, so ``recon`` takes the
+    SHARDED VCD path on one device.  This isolates the "1-device-mesh heaviness"
+    question against the no-mesh run (same arrays, one variable changed).
+The banner prints which mbirjax is loaded and the mode; the output YAML is named by
+branch state and mode (mesh runs get a ``_mesh1d`` suffix, so nothing is overwritten).
 
 Lean by design (big recons are slow): ONE run per size (no warmup/trials sweep —
 peak memory is set by the early full-FOV ops + per-subset peak, not by iteration
@@ -52,6 +57,15 @@ MAX_ITERATIONS = 5          # peak memory is reached early; a few iters suffice
 SEED = 0
 SHARPNESS = 1.0
 
+# MESH toggle (beta only).  False = the plain single-device path (mesh is None) --
+# exactly what prerelease / a normal single-GPU user runs.  True = configure a
+# *trivial 1-device mesh* so recon takes the SHARDED VCD path on ONE device.  This
+# isolates the "1-device-mesh heaviness" question apples-to-apples against the
+# no-mesh run: same arrays, same harness, one variable changed.  Leave False on a
+# prerelease checkout (it has no configure_sharding).  The output YAML name encodes
+# the mode, so a MESH=True run does not overwrite the no-mesh baseline.
+MESH = False
+
 _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
                 "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
                 "FAILED TO CREATE CUFFT")
@@ -60,9 +74,10 @@ _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
 def run_one(size):
     """Single-device recon of a fixed-seed random sinogram; return time + peak mem.
 
-    No configure_sharding -> the plain single-device (mesh is None) path.  A random
-    sinogram is fine: we are measuring the recon's time/peak (shape-driven), not
-    accuracy.
+    MESH=False -> the plain single-device (mesh is None) path (prerelease body).
+    MESH=True  -> a trivial 1-device mesh, so recon takes the sharded VCD path on
+    one device.  A random sinogram is fine: we are measuring the recon's time/peak
+    (shape-driven), not accuracy.
     """
     n_views, n_rows, n_channels = size
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
@@ -70,6 +85,16 @@ def run_one(size):
     model.set_params(sharpness=SHARPNESS, verbose=0)
 
     devs = sc.pick_devices(1)                     # the single device memory is read on
+    if MESH:
+        # Trivial 1-device mesh: mesh is not None, so recon runs the sharded VCD
+        # path (entry-sharding a plain host sinogram, band-streamed projectors,
+        # _qggmrf_prior_sharded) -- on a single device, so the only difference from
+        # the no-mesh run is the code path, not the device count.
+        if not hasattr(model, "configure_sharding"):
+            raise RuntimeError(
+                "MESH=True needs the beta sharded path, but this checkout has no "
+                "configure_sharding (it is prerelease).  Run with MESH=False here.")
+        model.configure_sharding(devs)
     np.random.seed(SEED)
     sino = np.random.rand(*size).astype(np.float32)   # host array; recon shards nothing
 
@@ -91,8 +116,9 @@ def main():
     path = sc.which_mbirjax()                     # prints beta/not-beta banner + path
     plat, _ = sc.detect_platform()
     state, branch = sc.beta_status(path)
+    mode = "1-device-mesh (sharded path)" if MESH else "no-mesh (plain single-device)"
     print(f"  platform={plat}  branch={branch}  ({state})")
-    print(f"  single-device recon (NO sharding) — sizes {[sc.size_label(s) for s in SIZES]}, "
+    print(f"  recon — {mode} — sizes {[sc.size_label(s) for s in SIZES]}, "
           f"{MAX_ITERATIONS} iters, 1 run each")
 
     rows, failures = [], []
@@ -115,11 +141,16 @@ def main():
             break
 
     out = {"op": "vcd_single_device", "platform": plat, "branch": branch,
-           "beta_state": state, "mbirjax_path": path, "max_iterations": MAX_ITERATIONS,
+           "beta_state": state, "path": "1-device-mesh" if MESH else "no-mesh",
+           "mbirjax_path": path, "max_iterations": MAX_ITERATIONS,
            "sizes": [sc.size_label(s) for s in SIZES], "rows": rows, "failures": failures}
     tag = state if state in ("beta", "not-beta") else "unknown"
-    sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"vcd_single_device_{tag}_{plat}.yaml"), out)
-    print("\nDone.  Compare the beta vs prerelease YAMLs for time/peak parity (and no OOM).")
+    # No-mesh keeps the original filename (preserves the captured baselines); the
+    # mesh run gets a "_mesh1d" suffix so the two do not collide.
+    suffix = "_mesh1d" if MESH else ""
+    sc.save_yaml(
+        os.path.join(sc.RESULTS_DIR, f"vcd_single_device_{tag}{suffix}_{plat}.yaml"), out)
+    print("\nDone.  Compare the no-mesh vs 1-device-mesh YAMLs for time/peak (and no OOM).")
 
 
 if __name__ == "__main__":
