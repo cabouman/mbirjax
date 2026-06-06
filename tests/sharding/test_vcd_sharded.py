@@ -219,7 +219,7 @@ class TestShardedRecon(unittest.TestCase):
         if model.mesh is not None:
             # halo_per_subset=True forces the exact (re-extract-every-subset) prior path,
             # which reproduces single-device exactly; the default (False) stages halos once
-            # per pass (prior opt A) and is exact except at gen_pixel_partition's few
+            # per partition instead of per subset and is exact except at gen_pixel_partition's few
             # replicated pixels.
             model._vcd_halo_per_subset = halo_per_subset
         recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
@@ -267,7 +267,7 @@ class TestShardedRecon(unittest.TestCase):
             self.skipTest("no usable device count > 1")
 
     def test_halo_once_per_pass_approximation_is_small(self):
-        """Prior opt A stages the qGGMRF halos ONCE per partition pass instead of per
+        """Slice sharded qGGMRF transfers halos ONCE per partition pass instead of per
         subset.  That is bit-exact except at the few pixels gen_pixel_partition
         REPLICATES to equalize subset lengths (a replicated pixel updated in one subset
         has a stale pass-start halo when its other subset runs).  Quantify that the
