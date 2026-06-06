@@ -45,41 +45,37 @@ WORST_NS = 128         # Phase 1's worst subset-count; Phase 2/3 rows use this
 def cfg(label, **kw):
     """One sweep config.  Defaults match the worker's defaults; override per row."""
     d = {"label": label, "size": SIZE, "mesh": True, "block": False,
-         "iters": 1, "num_subsets": None, "back_band": None,
-         "forward_band": None, "instrument": False}
+         "block_subsets": False, "iters": 1, "num_subsets": None,
+         "back_band": None, "forward_band": None, "instrument": False}
     d.update(kw)
     return d
 
 
+# ── ROUND 2 — subset-state backpressure (the right injection point) ───────────
+# Round 1 showed: pure transient (no leak); peak scales with #subset-updates; blocking
+# the PROJECTORS and shrinking the band did nothing.  So test backpressure on the
+# per-subset STATE chain (block_subsets), at the two worst single-pass points, against
+# their round-1 baselines (re-run here for same-session comparison).
 CONFIGS = [
-    # ── reference anchors ─────────────────────────────────────────────────────
-    cfg("ref_nomesh_it5",       mesh=False, iters=5),               # ~7.4 GB expected
-    cfg("ref_mesh_default_it5", mesh=True,  iters=5),               # the ~24.6 GB case
-    # ── Phase 1 — subset sweep at fixed 1 pass (isolates PER-SUBSET accumulation) ─
-    cfg("p1_ns1",   iters=1, num_subsets=1),
-    cfg("p1_ns8",   iters=1, num_subsets=8),
-    cfg("p1_ns32",  iters=1, num_subsets=32),
-    cfg("p1_ns128", iters=1, num_subsets=128),
-    cfg("p1_ns512", iters=1, num_subsets=512),
-    # ── Phase 2 — pass sweep at fixed subsets (isolates PER-PASS accumulation) ───
-    cfg("p2_it2", iters=2, num_subsets=WORST_NS),
-    cfg("p2_it5", iters=5, num_subsets=WORST_NS),
-    # ── Phase 3 — test the fix on the worst single-pass config ──────────────────
-    cfg("p3_block", iters=1, num_subsets=WORST_NS, block=True),
-    cfg("p3_band16", iters=1, num_subsets=WORST_NS, back_band=16, forward_band=16),
+    cfg("r2_ns1",            iters=1, num_subsets=1),                       # floor (~6.9 GB)
+    cfg("r2_ns128",          iters=1, num_subsets=128),                     # baseline (~17.6)
+    cfg("r2_ns128_blocksub", iters=1, num_subsets=128, block_subsets=True), # the test
+    cfg("r2_ns512",          iters=1, num_subsets=512),                     # baseline (~30.8)
+    cfg("r2_ns512_blocksub", iters=1, num_subsets=512, block_subsets=True), # the test
 ]
 
 # config key -> worker env var
 ENV_MAP = {"size": "VMA_SIZE", "mesh": "VMA_MESH", "block": "VMA_BLOCK",
-           "iters": "VMA_ITERS", "num_subsets": "VMA_NUM_SUBSETS",
-           "back_band": "VMA_BACK_BAND", "forward_band": "VMA_FORWARD_BAND",
-           "instrument": "VMA_INSTRUMENT"}
+           "block_subsets": "VMA_BLOCK_SUBSETS", "iters": "VMA_ITERS",
+           "num_subsets": "VMA_NUM_SUBSETS", "back_band": "VMA_BACK_BAND",
+           "forward_band": "VMA_FORWARD_BAND", "instrument": "VMA_INSTRUMENT"}
 
 
 def build_tag(c):
     """Reconstruct the worker's YAML tag so we can find the file it wrote."""
     return (f"it{c['iters']}_ns{c['num_subsets']}_mesh{int(c['mesh'])}"
-            f"_block{int(c['block'])}_bb{c['back_band']}_fb{c['forward_band']}")
+            f"_block{int(c['block'])}_bs{int(c['block_subsets'])}"
+            f"_bb{c['back_band']}_fb{c['forward_band']}")
 
 
 def find_result(c):
@@ -123,22 +119,22 @@ def _fmt(x, nd=0):
 def _print_summary(rows):
     print(f"\n{'='*78}\nSUMMARY  (peak vs live_end: small-live/large-peak = freed "
           f"transient or reserved\nworkspace; both-large = live accumulation)\n{'='*78}")
-    hdr = (f"{'label':<18} {'mesh':<5} {'ns':>5} {'it':>3} {'blk':<4} "
+    hdr = (f"{'label':<20} {'mesh':<5} {'ns':>5} {'it':>3} {'blk':<4} {'bsub':<5} "
            f"{'bb/fb':>7} {'time_ms':>9} {'peak_MB':>9} {'live_MB':>9}  status")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         band = f"{r['back_band']}/{r['forward_band']}"
-        print(f"{r['label']:<18} {str(r['mesh']):<5} {str(r['num_subsets']):>5} "
-              f"{r['iters']:>3} {str(r['block']):<4} {band:>7} "
-              f"{_fmt(r['time_ms']):>9} {_fmt(r['peak_mb'],1):>9} "
+        print(f"{r['label']:<20} {str(r['mesh']):<5} {str(r['num_subsets']):>5} "
+              f"{r['iters']:>3} {str(r['block']):<4} {str(r['block_subsets']):<5} "
+              f"{band:>7} {_fmt(r['time_ms']):>9} {_fmt(r['peak_mb'],1):>9} "
               f"{_fmt(r['bytes_in_use_end_mb'],1):>9}  {r['status']}")
 
 
 def _write_csv(rows):
     path = os.path.join(RESULTS_DIR, "vcd_mesh_sweep_summary.csv")
     fields = ["label", "size", "mesh", "num_subsets", "iters", "block",
-              "back_band", "forward_band", "instrument",
+              "block_subsets", "back_band", "forward_band", "instrument",
               "time_ms", "peak_mb", "bytes_in_use_end_mb", "status"]
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(path, "w", newline="") as f:

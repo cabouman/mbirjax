@@ -99,7 +99,10 @@ SEED = 0
 SHARPNESS = 1.0
 
 MESH = True              # True = 1-device mesh (sharded path); False = plain single-device
-BLOCK_PROJECTIONS = False  # TEST 1: serialize the projectors with block_until_ready()
+BLOCK_PROJECTIONS = False  # serialize the projectors with block_until_ready()
+BLOCK_SUBSETS = False    # serialize the SUBSET STATE: block (flat_recon, error_sinogram,
+                         # ...) after each subset update (backpressure at the right level
+                         # if the accumulation is the async per-subset state chain)
 FORWARD_BAND = None      # TEST 2: force forward slice-band length (None = default cap)
 BACK_BAND = None         # TEST 2: force back slice-band length (None = default cap)
 
@@ -129,6 +132,8 @@ if "VMA_MESH" in os.environ:
     MESH = _as_bool(os.environ["VMA_MESH"])
 if "VMA_BLOCK" in os.environ:
     BLOCK_PROJECTIONS = _as_bool(os.environ["VMA_BLOCK"])
+if "VMA_BLOCK_SUBSETS" in os.environ:
+    BLOCK_SUBSETS = _as_bool(os.environ["VMA_BLOCK_SUBSETS"])
 if "VMA_FORWARD_BAND" in os.environ:
     FORWARD_BAND = _as_opt_int(os.environ["VMA_FORWARD_BAND"])
 if "VMA_BACK_BAND" in os.environ:
@@ -226,6 +231,30 @@ def _block_projections(model):
         setattr(model, name, make_wrapper(getattr(model, name)))
 
 
+def _block_subsets(model):
+    """Backpressure at the subset-state level: block each subset update's outputs.
+
+    Wraps create_vcd_subset_updater so the per-subset updater it returns blocks on its
+    full return value -- (flat_recon, error_sinogram, ell1, alpha) -- before the loop
+    proceeds.  This serializes the per-subset STATE chain that p3_block (projector
+    outputs only) left running async, so it tests whether the accumulating transient is
+    that chain.  create_vcd_subset_updater is called inside recon(), so patching here
+    (before recon) is picked up.
+    """
+    orig_create = model.create_vcd_subset_updater
+
+    def wrapped_create(*a, **k):
+        updater = orig_create(*a, **k)
+
+        def blocking_updater(*ua, **uk):
+            out = updater(*ua, **uk)
+            jax.block_until_ready(out)
+            return out
+        return blocking_updater
+
+    model.create_vcd_subset_updater = wrapped_create
+
+
 def run_one():
     n_views, _, _ = SIZE
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
@@ -247,6 +276,8 @@ def run_one():
 
     if BLOCK_PROJECTIONS:
         _block_projections(model)
+    if BLOCK_SUBSETS:
+        _block_subsets(model)
     if INSTRUMENT:
         _instrument(model)
 
@@ -274,6 +305,7 @@ def run_one():
 def main():
     plat, _ = sc.detect_platform()
     cfg = (f"MESH={MESH}  BLOCK_PROJECTIONS={BLOCK_PROJECTIONS}  "
+           f"BLOCK_SUBSETS={BLOCK_SUBSETS}  "
            f"BACK_BAND={BACK_BAND}  FORWARD_BAND={FORWARD_BAND}  "
            f"INSTRUMENT={INSTRUMENT}  SIZE={SIZE}  iters={MAX_ITERATIONS}  "
            f"num_subsets={NUM_SUBSETS}")
@@ -288,11 +320,13 @@ def main():
     # Record per-config so a matrix of runs does not overwrite itself.  max_iterations
     # is in the tag because the mesh peak depends on it (it accumulates per iteration).
     tag = (f"it{MAX_ITERATIONS}_ns{NUM_SUBSETS}_mesh{int(MESH)}"
-           f"_block{int(BLOCK_PROJECTIONS)}_bb{BACK_BAND}_fb{FORWARD_BAND}")
+           f"_block{int(BLOCK_PROJECTIONS)}_bs{int(BLOCK_SUBSETS)}"
+           f"_bb{BACK_BAND}_fb{FORWARD_BAND}")
     out = {"op": "vcd_mesh_mem_attribution", "platform": plat,
            "size": sc.size_label(SIZE), "max_iterations": MAX_ITERATIONS,
            "num_subsets": NUM_SUBSETS,
            "mesh": MESH, "block_projections": BLOCK_PROJECTIONS,
+           "block_subsets": BLOCK_SUBSETS,
            "back_band": BACK_BAND, "forward_band": FORWARD_BAND,
            "instrument": INSTRUMENT, "time_ms": elapsed_ms,
            "peak_mb": peak_mb, "bytes_in_use_end_mb": cur_mb}
