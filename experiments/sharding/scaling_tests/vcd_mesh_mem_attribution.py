@@ -21,6 +21,22 @@ HYPOTHESIS (the leading one): the mesh overhead is JAX "running ahead of itself"
 async dispatch with no backpressure -- not a structural per-call blowup.  This file
 sets up two single-variable tests to confirm/refute it and to point at the fix.
 
+FINDING (first GPU pass, 504^3): at MAX_ITERATIONS=1 there is NO blowup -- mesh peak
+6.9 GB ~= no-mesh 7.8 GB, and BLOCK/band change nothing.  The 3.31x only appears at 5
+iters (mesh 24.6 GB) while the no-mesh peak stays flat in iters.  => the overhead
+ACCUMULATES PER ITERATION in the mesh path (1 iter does NOT reproduce it -- my earlier
+default was a ruler error).  So run the matrix at MAX_ITERATIONS>=5.  An iteration sweep
+(1..5) gives the growth curve, and bytes_in_use(end) vs peak distinguishes live-array
+accumulation (both large) from reserved compilation workspace (peak large, live small).
+
+TWO AXES (do not conflate): a VCD "iteration" is one PASS over one PARTITION, and a
+partition has some number of SUBSETS.  More passes != more subsets -- a single pass with
+128 subsets runs 128 async subset updates, while a pass with 1 subset runs one full-FOV
+update.  NUM_SUBSETS forces a single partition of a chosen subset-count, reused every
+pass, so you can sweep subset-count at fixed passes (isolates PER-SUBSET accumulation)
+and passes at fixed subset-count (isolates PER-PASS accumulation) independently.  This is
+the likely real axis if the cause is the async, unblocked per-subset loop.
+
 ────────────────────────────────────────────────────────────────────────────────
 TEST 1 — BACKPRESSURE (the decisive one).  Set BLOCK_PROJECTIONS=True to wrap
   model.sparse_back_project / sparse_forward_project so each returns only after
@@ -72,7 +88,13 @@ import scaling_common as sc
 
 # ── Run configuration (edit here) ─────────────────────────────────────────────
 SIZE = (504, 504, 504)   # where 3.31x was measured; drop to (252,252,252) for fast iteration
-MAX_ITERATIONS = 1       # the peak is set by setup + the first pass, not iteration count
+MAX_ITERATIONS = 5       # IMPORTANT: mesh peak GROWS with iterations (504^3: 1 iter=6.9GB
+                         # vs 5 iter=24.6GB), so 1 iter does NOT reproduce the overhead.
+                         # Use >=5 to see it.  (No-mesh peak is ~flat in iterations.)
+NUM_SUBSETS = None       # None = model's default multi-granular schedule.  Set to an int
+                         # to force ONE partition with that many subsets, used every pass
+                         # (granularity=[N], partition_sequence=[0]).  Sweep this at fixed
+                         # MAX_ITERATIONS to isolate per-subset vs per-pass accumulation.
 SEED = 0
 SHARPNESS = 1.0
 
@@ -83,6 +105,36 @@ BACK_BAND = None         # TEST 2: force back slice-band length (None = default 
 
 INSTRUMENT = False       # auto-wrap big phases with mem_report (adds blocking — keep False for A–D)
 TOP_N = 15               # how many of the largest live arrays to list
+
+
+# --- env overrides (set by the sweep orchestrator vcd_mesh_sweep.py; leave them unset to
+# use the hand-edited values above).  This is an orchestration mechanism — not for typing
+# by hand — so the by-hand "edit a constant and rerun" workflow above is unaffected. ---
+def _as_bool(s):
+    return str(s).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _as_opt_int(s):
+    s = str(s).strip()
+    return None if s.lower() in ("none", "") else int(s)
+
+
+if os.environ.get("VMA_SIZE"):
+    SIZE = tuple(int(x) for x in os.environ["VMA_SIZE"].split(","))
+if os.environ.get("VMA_ITERS"):
+    MAX_ITERATIONS = int(os.environ["VMA_ITERS"])
+if "VMA_NUM_SUBSETS" in os.environ:
+    NUM_SUBSETS = _as_opt_int(os.environ["VMA_NUM_SUBSETS"])
+if "VMA_MESH" in os.environ:
+    MESH = _as_bool(os.environ["VMA_MESH"])
+if "VMA_BLOCK" in os.environ:
+    BLOCK_PROJECTIONS = _as_bool(os.environ["VMA_BLOCK"])
+if "VMA_FORWARD_BAND" in os.environ:
+    FORWARD_BAND = _as_opt_int(os.environ["VMA_FORWARD_BAND"])
+if "VMA_BACK_BAND" in os.environ:
+    BACK_BAND = _as_opt_int(os.environ["VMA_BACK_BAND"])
+if "VMA_INSTRUMENT" in os.environ:
+    INSTRUMENT = _as_bool(os.environ["VMA_INSTRUMENT"])
 
 
 def _nbytes(a):
@@ -122,7 +174,7 @@ def mem_report(label="", device=None):
         shd = type(getattr(a, "sharding", None)).__name__
         print(f"    {mb:10.1f} MB  shape={shp}  dtype={dt}  sharding={shd}")
     print("=== end ===\n")
-    return peak
+    return peak, cur
 
 
 def _instrument(model):
@@ -179,6 +231,10 @@ def run_one():
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
     model = mbirjax.ParallelBeamModel(SIZE, angles)
     model.set_params(sharpness=SHARPNESS, verbose=1)   # verbose>=1 prints phase logs
+    if NUM_SUBSETS is not None:
+        # Force a single partition with NUM_SUBSETS subsets, reused every pass, so
+        # subset-count and pass-count can be swept independently.
+        model.set_params(granularity=[int(NUM_SUBSETS)], partition_sequence=[0])
 
     if MESH:
         # Trivial 1-device mesh -> recon takes the sharded VCD path on one device.
@@ -203,33 +259,38 @@ def run_one():
                            stop_threshold_change_pct=0.0, print_logs=False)
     jax.block_until_ready(recon)
     elapsed_ms = (time.perf_counter() - t0) * 1e3
-    peak_mb = mem_report("after recon")
+    peak_mb, cur_mb = mem_report("after recon")
 
     del recon, sino
     gc.collect()
-    return elapsed_ms, peak_mb
+    return elapsed_ms, peak_mb, cur_mb
 
 
 def main():
     plat, _ = sc.detect_platform()
     cfg = (f"MESH={MESH}  BLOCK_PROJECTIONS={BLOCK_PROJECTIONS}  "
            f"BACK_BAND={BACK_BAND}  FORWARD_BAND={FORWARD_BAND}  "
-           f"INSTRUMENT={INSTRUMENT}  SIZE={SIZE}  iters={MAX_ITERATIONS}")
+           f"INSTRUMENT={INSTRUMENT}  SIZE={SIZE}  iters={MAX_ITERATIONS}  "
+           f"num_subsets={NUM_SUBSETS}")
     print(f"platform={plat}  devices={jax.devices()}")
     print(cfg)
 
-    elapsed_ms, peak_mb = run_one()
+    elapsed_ms, peak_mb, cur_mb = run_one()
 
-    print(f"\nRESULT [{plat}]: time={elapsed_ms:.0f} ms   peak={peak_mb:.1f} MB   ({cfg})")
+    print(f"\nRESULT [{plat}]: time={elapsed_ms:.0f} ms   peak={peak_mb:.1f} MB   "
+          f"live_end={cur_mb:.1f} MB   ({cfg})")
 
-    # Record per-config so a matrix of runs does not overwrite itself.
-    tag = (f"mesh{int(MESH)}_block{int(BLOCK_PROJECTIONS)}"
-           f"_bb{BACK_BAND}_fb{FORWARD_BAND}")
+    # Record per-config so a matrix of runs does not overwrite itself.  max_iterations
+    # is in the tag because the mesh peak depends on it (it accumulates per iteration).
+    tag = (f"it{MAX_ITERATIONS}_ns{NUM_SUBSETS}_mesh{int(MESH)}"
+           f"_block{int(BLOCK_PROJECTIONS)}_bb{BACK_BAND}_fb{FORWARD_BAND}")
     out = {"op": "vcd_mesh_mem_attribution", "platform": plat,
            "size": sc.size_label(SIZE), "max_iterations": MAX_ITERATIONS,
+           "num_subsets": NUM_SUBSETS,
            "mesh": MESH, "block_projections": BLOCK_PROJECTIONS,
            "back_band": BACK_BAND, "forward_band": FORWARD_BAND,
-           "instrument": INSTRUMENT, "time_ms": elapsed_ms, "peak_mb": peak_mb}
+           "instrument": INSTRUMENT, "time_ms": elapsed_ms,
+           "peak_mb": peak_mb, "bytes_in_use_end_mb": cur_mb}
     sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"vcd_mesh_attrib_{plat}_{tag}.yaml"), out)
 
 
