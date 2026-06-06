@@ -259,7 +259,12 @@ def run_one():
                            stop_threshold_change_pct=0.0, print_logs=False)
     jax.block_until_ready(recon)
     elapsed_ms = (time.perf_counter() - t0) * 1e3
-    peak_mb, cur_mb = mem_report("after recon")
+    # Collect unreferenced internal arrays first so live_end reflects what recon
+    # actually RETAINS (not arrays merely awaiting gc).  peak is a high-water mark, so
+    # it is unaffected by gc timing.  (recon/sino are still referenced -> the output
+    # volume legitimately stays; sino is a host array, not a live jax array.)
+    gc.collect()
+    peak_mb, cur_mb = mem_report("after recon (post-gc)")
 
     del recon, sino
     gc.collect()
