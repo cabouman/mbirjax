@@ -92,7 +92,7 @@ class SliceViewer:
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
-        self.datasets = datasets
+        self.datasets = [np.asarray(dataset) for dataset in datasets]  # Convert to numpy arrays to avoid problems with sharded arrays
         self.n_volumes = len(datasets)
         self.title = title
         self.vmin = vmin
