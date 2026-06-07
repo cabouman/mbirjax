@@ -2,18 +2,20 @@
 Tests for sharded FBP filtering (ParallelBeamModel).
 
 Both ``fbp_filter`` and its thin alias ``direct_filter`` are **internal**
-sharded-contract methods: sharded view -> sharded view, with no shard at entry
-and no gather at exit.  Under a mesh the input must already be view-sharded.
-The plain<->sharded boundary lives in the user-facing reconstruction methods
-(``fbp_recon`` / ``direct_recon``), not in the filter.
+sharded-contract methods: under a mesh they return a view-sharded result with no
+gather at exit.  For robustness they shard the input on the view axis at entry
+(a no-op when it is already view-sharded), so a plain sinogram passed directly is
+handled correctly as well; the gather back to plain lives in the user-facing
+reconstruction methods (``fbp_recon`` / ``direct_recon``), not in the filter.
 
 Under view-sharding the ramp filter is per-view, so each device filters its own
 views with no cross-device communication.
 
 These tests check:
   - the single-device (no-mesh) path is bit-exact vs a direct reference filter;
-  - the internal ``fbp_filter`` keeps a pre-sharded sinogram view-sharded
-    (axis 0) with no gather, and matches the single-device result to float noise;
+  - the internal ``fbp_filter`` returns a view-sharded result (axis 0) with no
+    gather, matching the single-device result to float noise, for both a plain
+    and a pre-sharded input;
   - ``direct_filter`` is a thin alias for ``fbp_filter`` (same result).
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
@@ -80,6 +82,27 @@ class TestFbpFilterSharded(unittest.TestCase):
         self.devs = preferred_devices(2)
         if self.devs is None:
             self.skipTest("need >= 2 devices")
+
+    def test_sharded_matches_single_device(self):
+        """A plain sinogram passed directly to fbp_filter under a mesh is sharded
+        at entry, filtered view-sharded, and matches the single-device result."""
+        model, sino = _make_model_and_sino(num_views=8)
+        if model.get_params('recon_shape')[2] % 2 != 0:
+            self.skipTest("num_slices not divisible by 2")
+
+        # Single-device reference (no mesh).
+        ref = np.asarray(model.fbp_filter(sino))
+
+        # Sharded run with a PLAIN input: fbp_filter shards on the view axis at
+        # entry (mirrors fbp_recon) rather than assuming pre-sharded input.
+        model.configure_sharding(self.devs)
+        out = model.fbp_filter(sino)
+
+        # Sharded-contract: output is view-sharded (axis 0), not gathered.
+        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
+        self.assertEqual(out.sharding.spec[0], 'devices')
+
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
     def test_direct_filter_is_fbp_filter_alias(self):
         """direct_filter is a thin internal alias for fbp_filter: same sharded

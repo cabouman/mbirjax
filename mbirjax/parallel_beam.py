@@ -459,6 +459,12 @@ class ParallelBeamModel(TomographyModel):
             # Multi-device: one thread per device, each filtering its own view
             # shard locally (no cross-device data movement).
 
+            # Shard once at entry (no-op cost when already view-sharded) so the
+            # per-device fan-out below sees every mesh device's shard.  Mirrors
+            # fbp_recon's entry-shard; without it a plain input only has a shard
+            # on device 0 and the per-device map misses the rest of the mesh.
+            sinogram = self._shard_sinogram(sinogram)
+
             # Map each device to the local sinogram shard already resident on it.
             dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
 
