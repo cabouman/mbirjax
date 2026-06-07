@@ -106,6 +106,11 @@ BLOCK_SUBSETS = False    # serialize the SUBSET STATE: block (flat_recon, error_
 FORWARD_BAND = None      # TEST 2: force forward slice-band length (None = default cap)
 BACK_BAND = None         # TEST 2: force back slice-band length (None = default cap)
 
+NONCONST_WEIGHTS = False # pass random positive weights -> exercises the per-subset
+                         # weights*error_sinogram transient (and its cleanup .delete)
+POSITIVITY = False       # set positivity_flag -> exercises the positivity-branch
+                         # delta_sinogram recompute
+
 INSTRUMENT = False       # auto-wrap big phases with mem_report (adds blocking — keep False for A–D)
 TOP_N = 15               # how many of the largest live arrays to list
 
@@ -140,6 +145,10 @@ if "VMA_BACK_BAND" in os.environ:
     BACK_BAND = _as_opt_int(os.environ["VMA_BACK_BAND"])
 if "VMA_INSTRUMENT" in os.environ:
     INSTRUMENT = _as_bool(os.environ["VMA_INSTRUMENT"])
+if "VMA_NONCONST_WEIGHTS" in os.environ:
+    NONCONST_WEIGHTS = _as_bool(os.environ["VMA_NONCONST_WEIGHTS"])
+if "VMA_POSITIVITY" in os.environ:
+    POSITIVITY = _as_bool(os.environ["VMA_POSITIVITY"])
 
 
 def _nbytes(a):
@@ -275,6 +284,8 @@ def run_one():
         # Force a single partition with NUM_SUBSETS subsets, reused every pass, so
         # subset-count and pass-count can be swept independently.
         model.set_params(granularity=[int(NUM_SUBSETS)], partition_sequence=[0])
+    if POSITIVITY:
+        model.set_params(positivity_flag=True)
 
     if MESH:
         # Trivial 1-device mesh -> recon takes the sharded VCD path on one device.
@@ -294,10 +305,13 @@ def run_one():
 
     np.random.seed(SEED)
     sino = np.random.rand(*SIZE).astype(np.float32)     # host array; recon shards at entry
+    weights = None
+    if NONCONST_WEIGHTS:
+        weights = np.random.uniform(0.5, 1.5, SIZE).astype(np.float32)  # positive, non-constant
 
     mem_report("before recon")
     t0 = time.perf_counter()
-    recon, _ = model.recon(sino, weights=None, max_iterations=MAX_ITERATIONS,
+    recon, _ = model.recon(sino, weights=weights, max_iterations=MAX_ITERATIONS,
                            stop_threshold_change_pct=0.0, print_logs=False)
     jax.block_until_ready(recon)
     elapsed_ms = (time.perf_counter() - t0) * 1e3
@@ -318,6 +332,7 @@ def main():
     cfg = (f"MESH={MESH}  BLOCK_PROJECTIONS={BLOCK_PROJECTIONS}  "
            f"BLOCK_SUBSETS={BLOCK_SUBSETS}  "
            f"BACK_BAND={BACK_BAND}  FORWARD_BAND={FORWARD_BAND}  "
+           f"NONCONST_WEIGHTS={NONCONST_WEIGHTS}  POSITIVITY={POSITIVITY}  "
            f"INSTRUMENT={INSTRUMENT}  SIZE={SIZE}  iters={MAX_ITERATIONS}  "
            f"num_subsets={NUM_SUBSETS}")
     print(f"platform={plat}  devices={jax.devices()}")
@@ -332,13 +347,15 @@ def main():
     # is in the tag because the mesh peak depends on it (it accumulates per iteration).
     tag = (f"it{MAX_ITERATIONS}_ns{NUM_SUBSETS}_mesh{int(MESH)}"
            f"_block{int(BLOCK_PROJECTIONS)}_bs{int(BLOCK_SUBSETS)}"
-           f"_bb{BACK_BAND}_fb{FORWARD_BAND}")
+           f"_bb{BACK_BAND}_fb{FORWARD_BAND}"
+           f"_nw{int(NONCONST_WEIGHTS)}_pos{int(POSITIVITY)}")
     out = {"op": "vcd_mesh_mem_attribution", "platform": plat,
            "size": sc.size_label(SIZE), "max_iterations": MAX_ITERATIONS,
            "num_subsets": NUM_SUBSETS,
            "mesh": MESH, "block_projections": BLOCK_PROJECTIONS,
            "block_subsets": BLOCK_SUBSETS,
            "back_band": BACK_BAND, "forward_band": FORWARD_BAND,
+           "nonconst_weights": NONCONST_WEIGHTS, "positivity": POSITIVITY,
            "instrument": INSTRUMENT, "time_ms": elapsed_ms,
            "peak_mb": peak_mb, "bytes_in_use_end_mb": cur_mb}
     sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"vcd_mesh_attrib_{plat}_{tag}.yaml"), out)

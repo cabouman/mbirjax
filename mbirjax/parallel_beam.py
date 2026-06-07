@@ -455,7 +455,7 @@ class ParallelBeamModel(TomographyModel):
         # device filters only its LOCAL view-shard's rows — no dependence on how
         # many views a device holds.  See tomography_utils.apply_row_filter.
 
-        if self.mesh is not None:
+        if self.is_sharded:
             # Multi-device: one thread per device, each filtering its own view
             # shard locally (no cross-device data movement).
 

@@ -556,6 +556,20 @@ def _label_volume(size_label):
     return v * r * c
 
 
+def _label_proj_cost(size_label):
+    """Projection compute cost for a 'VxRxC' size: num_voxels × num_views.
+
+    Tomographic forward/back projection touches each voxel once per view, so its
+    cost scales as voxels × views, NOT voxels alone.  For the cubic sweep sizes
+    (N×N×N) this is N⁴ vs the volume's N³ — the extra factor of N (the views axis,
+    the first label component) is why doubling the linear size raises projection
+    time ~16×, not 8×.  Used for the size-sweep TIME ideal curve; MEMORY still
+    scales with volume (resident sino+recon), so it keeps using _label_volume.
+    """
+    v, r, c = (int(x) for x in size_label.split("x"))
+    return (v * r * c) * v   # voxels × views (v is the views axis)
+
+
 def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
                       mem_kind, out_path):
     """Device sweep: speedup and fractional memory vs device count, per size.
@@ -670,19 +684,21 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
         ax1.plot(vols, tms, "o-", label=f"{n} dev")
         ax2.plot(vols, mem, "s-", label=f"{n} dev")
 
-    # Ideal linear-in-size references (time and memory ∝ voxels v·r·c), each
-    # anchored at the average of the smallest size across device counts.
+    # Ideal references, anchored at the average of the smallest size across device
+    # counts.  TIME scales as voxels × views (projection touches each voxel once per
+    # view -> N⁴ for cubic sizes), MEMORY scales as voxels (resident sino+recon -> N³).
+    costs = [_label_proj_cost(s) for s in sizes]
     base_rows = _grid_lookup(grid, sizes[0])
     base_times = [base_rows[n]["min_ms"] for n in device_counts if n in base_rows]
     if base_times:
         base = sum(base_times) / len(base_times)
-        ax1.plot(vols, [base * v / vols[0] for v in vols], "k--", alpha=0.5,
-                 label="ideal (∝ size)")
+        ax1.plot(vols, [base * c / costs[0] for c in costs], "k--", alpha=0.5,
+                 label="ideal (∝ voxels·views)")
     base_mems = [base_rows[n]["mem_mb"] for n in device_counts if n in base_rows]
     if base_mems:
         bm = sum(base_mems) / len(base_mems)
         ax2.plot(vols, [bm * v / vols[0] for v in vols], "k--", alpha=0.5,
-                 label="ideal (∝ size)")
+                 label="ideal (∝ voxels)")
 
     for ax in (ax1, ax2):
         ax.set_xscale("log")

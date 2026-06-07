@@ -79,6 +79,16 @@ def _phantom_sino(model, seed=0):
     return jnp.asarray(rng.standard_normal(shape, dtype=np.float32))
 
 
+def _phantom_weights(model, seed=0):
+    """A reproducible positive weights array of the model's sinogram shape.
+
+    Non-constant weights exercise the ``weighted_error_sinogram = weights * error_sinogram``
+    path (a per-subset view-sharded transient that the cleanup section must free)."""
+    shape = model.get_params('sinogram_shape')
+    rng = np.random.default_rng(seed)
+    return jnp.asarray(rng.uniform(0.5, 1.5, shape).astype(np.float32))
+
+
 def _divisible(model, n):
     """True if the model's sharded sinogram and recon axes both divide n."""
     sino_shape = model.get_params('sinogram_shape')
@@ -214,8 +224,10 @@ class TestShardedRecon(unittest.TestCase):
 
     MAX_ITERS = 6
 
-    def _recon(self, model, sino, seed=0, halo_per_subset=False):
+    def _recon(self, model, sino, seed=0, halo_per_subset=False, weights=None, positivity=False):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
+        if positivity:
+            model.set_params(positivity_flag=True)
         if model.mesh is not None:
             # halo_per_subset=True forces the exact (re-extract-every-subset) prior path,
             # which reproduces single-device exactly; the default (False) stages halos once
@@ -289,6 +301,79 @@ class TestShardedRecon(unittest.TestCase):
             nrmse = np.linalg.norm(once - exact) / np.linalg.norm(exact)
             self.assertLess(nrmse, 2e-3,
                             msg=f"halo-once approximation too large at n_dev={n}: NRMSE={nrmse:.2e}")
+            ran_multi = True
+        if not ran_multi:
+            self.skipTest("no usable device count > 1")
+
+    # --- non-constant weights and positivity: the two extra per-subset transient paths ---
+    # weights*error_sinogram (non-const) and the positivity-branch delta_sinogram recompute
+    # both make extra view-sharded sinos per subset; these gate their correctness (the memory
+    # side is checked separately by the memjump diagnostic on GPU).
+
+    def test_trivial_recon_bit_exact_nonconst_weights(self):
+        """1-device mesh recon with non-constant weights must be bit-exact to single-device."""
+        single = preferred_devices(1)
+        if single is None:
+            self.skipTest("need >= 1 device")
+        m = _make_model()
+        sino, w = _phantom_sino(m), _phantom_weights(m)
+        ref = self._recon(_make_model(), sino, weights=w)
+        sm = _make_model(); sm.configure_sharding(single)
+        out = self._recon(sm, sino, weights=w)
+        self.assertTrue(np.array_equal(out, ref),
+                        msg=f"non-const-weights trivial recon not bit-exact; "
+                            f"max|diff|={np.max(np.abs(out - ref))}")
+
+    def test_trivial_recon_bit_exact_positivity(self):
+        """1-device mesh recon with positivity_flag must be bit-exact to single-device."""
+        single = preferred_devices(1)
+        if single is None:
+            self.skipTest("need >= 1 device")
+        sino = _phantom_sino(_make_model())
+        ref = self._recon(_make_model(), sino, positivity=True)
+        sm = _make_model(); sm.configure_sharding(single)
+        out = self._recon(sm, sino, positivity=True)
+        self.assertTrue(np.array_equal(out, ref),
+                        msg=f"positivity trivial recon not bit-exact; "
+                            f"max|diff|={np.max(np.abs(out - ref))}")
+
+    def test_sharded_recon_matches_single_device_nonconst_weights(self):
+        """2/4/8-device recon with non-constant weights matches single-device to float noise."""
+        m = _make_model()
+        sino, w = _phantom_sino(m), _phantom_weights(m)
+        ref = self._recon(_make_model(), sino, weights=w)
+        ran_multi = False
+        for n in (2, 4, 8):
+            devs = preferred_devices(n)
+            if devs is None:
+                continue
+            model = _make_model()
+            if not _divisible(model, n):
+                continue
+            model.configure_sharding(devs)
+            out = self._recon(model, sino, halo_per_subset=True, weights=w)
+            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                       err_msg=f"non-const-weights recon mismatch at n_dev={n}")
+            ran_multi = True
+        if not ran_multi:
+            self.skipTest("no usable device count > 1")
+
+    def test_sharded_recon_matches_single_device_positivity(self):
+        """2/4/8-device recon with positivity_flag matches single-device to float noise."""
+        sino = _phantom_sino(_make_model())
+        ref = self._recon(_make_model(), sino, positivity=True)
+        ran_multi = False
+        for n in (2, 4, 8):
+            devs = preferred_devices(n)
+            if devs is None:
+                continue
+            model = _make_model()
+            if not _divisible(model, n):
+                continue
+            model.configure_sharding(devs)
+            out = self._recon(model, sino, halo_per_subset=True, positivity=True)
+            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                       err_msg=f"positivity recon mismatch at n_dev={n}")
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
