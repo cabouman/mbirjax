@@ -100,7 +100,16 @@ class TestForwardProjectSharded(unittest.TestCase):
             self.skipTest(f"sharded axes not divisible by {n}")
 
     def test_trivial_sharding_bit_exact(self):
-        """1-device mesh must be bit-exact to the unconfigured single-device path."""
+        """1-device mesh matches the unconfigured single-device path to tight float
+        tolerance.  (Name kept for history; was an exact-equality check.)
+
+        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
+        while both paths coexist; once every geometry runs on placements there is
+        one path and nothing to compare.  Relaxed from exact equality because the
+        banded sharded path reorders non-associative FP sums -> ~1 ULP GPU
+        difference (CPU compiles both identically and stays exact).  A tight
+        tolerance still trips on any real algorithmic drift.
+        """
         single_dev = preferred_devices(1)
         if single_dev is None:
             self.skipTest("need >= 1 device")
@@ -111,8 +120,8 @@ class TestForwardProjectSharded(unittest.TestCase):
         shard_model = _make_model()
         shard_model.configure_sharding(single_dev)
         out = np.asarray(shard_model.forward_project(recon))
-        self.assertTrue(np.array_equal(out, ref),
-                        msg=f"trivial sharding not bit-exact; max|diff|={np.max(np.abs(out-ref))}")
+        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+                                   err_msg="trivial sharding diverged beyond float noise")
 
     def test_sharded_matches_single_device(self):
         """2-device public forward_project matches single-device to float noise and

@@ -355,6 +355,22 @@ gate.
   and switch the jittable single-device / forward assembly to an in-place
   `dynamic_update_slice` accumulator with `donate_argnums` (see the P3 design note).
 
+**Retirement marker convention.**  Code, tests, or docs that exist *only* while the
+legacy single-device path coexists with the sharded/placement path — and should be
+removed once everything runs on placements — are tagged with the fixed, greppable
+phrase **`RETIRE-AFTER-SHARDING`** (general stem `RETIRE-AFTER` for any milestone-
+gated retirement).  Before doing the P6 retirement, `grep -rn "RETIRE-AFTER-SHARDING"`
+to find every site.  Currently tagged:
+  - the 7 `tests/sharding/` *trivial-mesh-vs-single-device* comparison tests
+    (`test_trivial_*bit_exact*` in back/forward projection, fbp_recon, and VCD).
+    These were exact-equality checks; **relaxed to a tight `allclose`** (single-shot
+    `rtol/atol=1e-5`; iterative VCD recon `1e-4`, matching the GPU-proven multi-device
+    sweep sibling) because the banded sharded path reorders non-associative FP sums,
+    so on **GPU** the 1-device mesh differs from the monolithic single-device kernel
+    by ~1 ULP (CPU compiles both identically and stays exact).  Once the legacy path
+    is gone there is a single path and nothing to compare, so they retire.
+  - the `is_sharded` property and its branch sites (already noted at its definition).
+
 ---
 
 ## Decisions & open questions

@@ -154,7 +154,15 @@ class TestShardedPrior(unittest.TestCase):
     """The _qggmrf_prior_sharded orchestrator vs the single-device prior."""
 
     def test_trivial_bit_exact(self):
-        """1-device mesh must be bit-exact to the single-device prior."""
+        """1-device mesh matches the single-device prior to tight float tolerance.
+        (Name kept for history; was an exact-equality check.)
+
+        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
+        while both paths coexist; once every geometry runs on placements there is
+        one path and nothing to compare.  Relaxed from exact equality because the
+        sharded prior reorders non-associative FP sums -> ~1 ULP GPU difference
+        (CPU stays exact).  A tight tolerance still trips on any real drift.
+        """
         single = preferred_devices(1)
         if single is None:
             self.skipTest("need >= 1 device")
@@ -170,9 +178,10 @@ class TestShardedPrior(unittest.TestCase):
         model.configure_sharding(single)
         sharded_flat = model._shard_recon(flat)
         g, h = model._qggmrf_prior_sharded(sharded_flat, idx, params)
-        self.assertTrue(np.array_equal(np.asarray(g), np.asarray(g_ref)),
-                        msg=f"prior grad not bit-exact; max|diff|={np.max(np.abs(np.asarray(g)-np.asarray(g_ref)))}")
-        self.assertTrue(np.array_equal(np.asarray(h), np.asarray(h_ref)))
+        np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref), rtol=1e-5, atol=1e-5,
+                                   err_msg="prior grad diverged beyond float noise")
+        np.testing.assert_allclose(np.asarray(h), np.asarray(h_ref), rtol=1e-5, atol=1e-5,
+                                   err_msg="prior hess diverged beyond float noise")
 
     def test_sharded_matches_single_device_sweep(self):
         """2/4/8-device sharded prior matches the single-device prior to float noise
@@ -240,7 +249,16 @@ class TestShardedRecon(unittest.TestCase):
         return np.asarray(recon)
 
     def test_trivial_recon_bit_exact(self):
-        """1-device mesh recon must be bit-exact to the single-device recon."""
+        """1-device mesh recon matches the single-device recon to modest float
+        tolerance.  (Name kept for history; was an exact-equality check.)
+
+        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
+        while both paths coexist.  Relaxed from exact equality, and to a looser
+        tolerance than the single-shot tests, because VCD is iterative: per-step
+        ~1 ULP FP-reorder differences in the banded sharded path amplify across
+        subsets/passes on GPU (CPU stays exact).  Matches the multi-device sweep
+        sibling's GPU-proven rtol/atol; still trips on any real algorithmic drift.
+        """
         single = preferred_devices(1)
         if single is None:
             self.skipTest("need >= 1 device")
@@ -250,8 +268,8 @@ class TestShardedRecon(unittest.TestCase):
         shard_model = _make_model()
         shard_model.configure_sharding(single)
         out = self._recon(shard_model, sino)
-        self.assertTrue(np.array_equal(out, ref),
-                        msg=f"trivial-sharded recon not bit-exact; max|diff|={np.max(np.abs(out-ref))}")
+        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                   err_msg="trivial-sharded recon diverged beyond float noise")
 
     def test_sharded_recon_matches_single_device_sweep(self):
         """2/4/8-device recon matches single-device to float noise on the EXACT prior
@@ -311,7 +329,12 @@ class TestShardedRecon(unittest.TestCase):
     # side is checked separately by the memjump diagnostic on GPU).
 
     def test_trivial_recon_bit_exact_nonconst_weights(self):
-        """1-device mesh recon with non-constant weights must be bit-exact to single-device."""
+        """1-device mesh recon with non-constant weights matches single-device to
+        modest float tolerance.  (Name kept for history; was exact-equality.)
+
+        RETIRE-AFTER-SHARDING: see test_trivial_recon_bit_exact -- same iterative
+        FP-reorder amplification; relaxed to the GPU-proven sweep tolerance.
+        """
         single = preferred_devices(1)
         if single is None:
             self.skipTest("need >= 1 device")
@@ -320,12 +343,16 @@ class TestShardedRecon(unittest.TestCase):
         ref = self._recon(_make_model(), sino, weights=w)
         sm = _make_model(); sm.configure_sharding(single)
         out = self._recon(sm, sino, weights=w)
-        self.assertTrue(np.array_equal(out, ref),
-                        msg=f"non-const-weights trivial recon not bit-exact; "
-                            f"max|diff|={np.max(np.abs(out - ref))}")
+        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                   err_msg="non-const-weights trivial recon diverged beyond float noise")
 
     def test_trivial_recon_bit_exact_positivity(self):
-        """1-device mesh recon with positivity_flag must be bit-exact to single-device."""
+        """1-device mesh recon with positivity_flag matches single-device to modest
+        float tolerance.  (Name kept for history; was exact-equality.)
+
+        RETIRE-AFTER-SHARDING: see test_trivial_recon_bit_exact -- same iterative
+        FP-reorder amplification; relaxed to the GPU-proven sweep tolerance.
+        """
         single = preferred_devices(1)
         if single is None:
             self.skipTest("need >= 1 device")
@@ -333,9 +360,8 @@ class TestShardedRecon(unittest.TestCase):
         ref = self._recon(_make_model(), sino, positivity=True)
         sm = _make_model(); sm.configure_sharding(single)
         out = self._recon(sm, sino, positivity=True)
-        self.assertTrue(np.array_equal(out, ref),
-                        msg=f"positivity trivial recon not bit-exact; "
-                            f"max|diff|={np.max(np.abs(out - ref))}")
+        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                   err_msg="positivity trivial recon diverged beyond float noise")
 
     def test_sharded_recon_matches_single_device_nonconst_weights(self):
         """2/4/8-device recon with non-constant weights matches single-device to float noise."""
