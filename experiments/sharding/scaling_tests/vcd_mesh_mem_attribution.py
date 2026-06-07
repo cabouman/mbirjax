@@ -110,6 +110,10 @@ NONCONST_WEIGHTS = False # pass random positive weights -> exercises the per-sub
                          # weights*error_sinogram transient (and its cleanup .delete)
 POSITIVITY = False       # set positivity_flag -> exercises the positivity-branch
                          # delta_sinogram recompute
+MEMPROBE = False         # leak localizer: print live big-view-sharded-sino count at each
+                         # sub-step of vcd_subset_updater ([mp <tag>] N).  Compare a
+                         # NONCONST_WEIGHTS=true vs =false run: the tag whose count climbs
+                         # across subsets only for non-const is the leaking op.
 
 INSTRUMENT = False       # auto-wrap big phases with mem_report (adds blocking — keep False for A–D)
 TOP_N = 15               # how many of the largest live arrays to list
@@ -149,6 +153,8 @@ if "VMA_NONCONST_WEIGHTS" in os.environ:
     NONCONST_WEIGHTS = _as_bool(os.environ["VMA_NONCONST_WEIGHTS"])
 if "VMA_POSITIVITY" in os.environ:
     POSITIVITY = _as_bool(os.environ["VMA_POSITIVITY"])
+if "VMA_MEMPROBE" in os.environ:
+    MEMPROBE = _as_bool(os.environ["VMA_MEMPROBE"])
 
 
 def _nbytes(a):
@@ -286,6 +292,8 @@ def run_one():
         model.set_params(granularity=[int(NUM_SUBSETS)], partition_sequence=[0])
     if POSITIVITY:
         model.set_params(positivity_flag=True)
+    if MEMPROBE:
+        model._vcd_memprobe = True   # enables the per-sub-step leak localizer in vcd_subset_updater
 
     if MESH:
         # Trivial 1-device mesh -> recon takes the sharded VCD path on one device.
