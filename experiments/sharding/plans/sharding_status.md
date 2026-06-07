@@ -19,6 +19,55 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-07) — P4 DONE (sharded-memory leak fixed & validated 1–4 GPU); `is_sharded` refactor; NEXT = mesh/no-mesh unification (step 4)
+
+▶ **CURRENT FOCUS (next session): mesh/no-mesh → placement unification** (v2 plan P6 / "step 4").
+P4 is complete: the sharded VCD path is correct and memory-bounded on 1–4 GPUs.  The next
+placement-architecture step is to fold the dual `self.is_sharded` / no-mesh code paths into one
+always-on placement path: `update_error_sinogram` becomes the single error-sino update (like
+`update_recon`), the `is_sharded` guards retire, and the **transient-free cleanup section stays**
+(it does NOT retire — sharded-array reference cycles are inherent; see lessons).  One design call
+to make: does a trivial 1-device placement resolve to `SingleDeviceSharding` (keeps single-device
+cycle-free, no `.delete()` there) or a 1-device `NamedSharding` (uniform, but then single-device
+also pays the cleanup)?  After unification: **P5** (device-config UX, `configure_devices`) and
+**P6** (port placements to cone/translation/multiaxis).  Deferred: hybrid `qggmrf_..._transfer`
+timing; prox-map prior under sharding.
+
+### What landed & was validated this session
+- **Sharded-memory leak — DIAGNOSED, FIXED, VALIDATED (all paths).**  Root cause: jax keeps
+  sharded (`NamedSharding`) arrays in **internal reference cycles**, so per-subset *out-of-place*
+  updates of the view-sharded error sinogram leaked one full sinogram/subset until GC (peak grew
+  with subsets×passes; 504³/5-iter 1-device-mesh 25.8 GB, OOM at 1008³).  Fix (mesh-guarded;
+  single-device untouched): `update_error_sinogram` does the subtract under
+  `@partial(jax.jit, donate_argnames='error_sinogram')` → **in-place** (alpha scaled eagerly to
+  keep trivial-mesh bit-exact); a **single end-of-subset cleanup section** `.delete()`s the
+  eager-op transients (scaled delta; + `weighted_error_sinogram` for non-const weights) after one
+  `block_until_ready` on the returned state.  Forward-projection (`assemble_sharded`) outputs free
+  on refcount, so **positivity needs no extra delete**.  Validated GPU (504³/5-iter/1-device-mesh):
+  const **6.9 GB**, non-const **7.9 GB**, positivity **7.3 GB** (all ≈ baseline, flat); 1008³
+  1-device completes (was OOM).
+- **1–4 GPU scaling validated** (`vcd_recon_gpu.yaml`): 1008³ **1d→4d = 4.49× (super-linear)**,
+  memory shards 1/n_dev (55.5→12.7 GB/dev), correctness vs prerelease **8.79e-7**.
+- **`is_sharded` property** added — single source of truth replacing 21 `self.mesh is None/not None`
+  checks (body changes once at the placement migration; retires at unification).
+- **Size-sweep time-ideal curve fixed**: ∝ voxels·views (projection cost, N⁴), not voxels (N³);
+  memory ideal stays ∝ voxels.  `replot_from_yaml.py` re-renders plots from a saved results YAML.
+- Tests: full `tests/sharding/` + `tests/test_vcd.py` **77 passed** (incl. +4 non-const/positivity:
+  trivial bit-exact + 2/4/8-dev NRMSE).
+
+### Ruler-before-code lesson from this session
+A reported **33.4 GB "non-const leak" was a STALE GPU build** running the pre-fix binary; a fresh
+`pip install -e .` made it bounded (7.9 GB).  We chased it for a while with a temporary `_memprobe`
+localizer (now removed) before catching the stale-build cause.  When GPU memory/behavior
+contradicts the local tests, **verify the build first.**
+
+### Commit state
+The code fix (donation + cleanup + `is_sharded` + tests + curve fix + harness toggles) is committed
+& pushed.  Uncommitted doc updates (Greg commits from PyCharm): `sharding_implementation_plan_v2.md`
+(P4 → DONE), this status handoff, and the `.claude/lessons.md` entry.
+
+---
+
 ## HANDOFF (2026-06-05) — P4 VCD on placements DONE (CPU, ParallelBeam); GPU scaling + hybrid timing are NEXT
 
 ▶ **CURRENT FOCUS (next session): single-device memory / no-regression vs prerelease.**

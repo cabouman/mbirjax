@@ -2318,16 +2318,6 @@ class TomographyModel(ParameterHandler):
             es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
             alpha_values[i] = alpha
 
-            # TEMP leak localizer (per ITERATION; pairs with the per-sub-step probe in
-            # vcd_subset_updater).  Counts live full-size view-sharded sinograms after the
-            # per-iteration stats (get_forward_model_loss etc.).  If this climbs across
-            # iterations while the per-subset probe stays flat, the leak is in the
-            # per-iteration stats, not the subset loop.  Remove when done.
-            if getattr(self, '_vcd_memprobe', False):
-                _ncyc = sum(1 for a in jax.live_arrays()
-                            if a.nbytes > 4e7 and "P('devices', None, None)" in str(a.sharding))
-                print(f"[mp ITER {i}] {_ncyc}", flush=True)
-
             if verbose >= 1:
                 iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
                                                                                                   100 * nmae_update[i],
@@ -2494,20 +2484,6 @@ class TomographyModel(ParameterHandler):
             # time_index = 0
             time_names = []
 
-            # TEMP leak localizer (off unless self._vcd_memprobe is set, e.g. by the
-            # vcd_mesh_mem_attribution harness MEMPROBE toggle).  Prints, at each sub-step,
-            # the count of live full-size view-sharded sinograms -- the per-subset accumulator.
-            # The sub-step whose count climbs across subsets for one path (e.g. non-constant
-            # weights) but not another is where that path's transient leaks.  Remove when done.
-            def _memprobe(tag):
-                if not getattr(self, '_vcd_memprobe', False):
-                    return
-                # Count live view-sharded sinograms; 4e7 catches a 252³ sino (64 MB) while
-                # excluding the small per-subset recon-domain arrays.
-                n = sum(1 for a in jax.live_arrays()
-                        if a.nbytes > 4e7 and "P('devices', None, None)" in str(a.sharding))
-                print(f"[mp {tag}] {n}", flush=True)
-
             # Recon-domain gathers/scatters below (fm_hessian[...], flat_recon[...], update_recon)
             # index the *unsharded* pixel axis of a slice-sharded array.  For the gather to be valid
             # the index array must live on the same devices as the array, so in the sharded path
@@ -2557,7 +2533,6 @@ class TomographyModel(ParameterHandler):
                 weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
             else:
                 weighted_error_sinogram = error_sinogram
-            _memprobe("weighted")
             # weighted_error_sinogram = weighted_error_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2569,7 +2544,6 @@ class TomographyModel(ParameterHandler):
             # Back project to get the gradient
             forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
                                                                output_device=self.main_device)
-            _memprobe("bproj")
             # forward_grad = forward_grad.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2613,7 +2587,6 @@ class TomographyModel(ParameterHandler):
             # time_start = time.time()
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
                                                     output_device=self.sinogram_device)
-            _memprobe("fproj")
             # delta_sinogram = delta_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2625,7 +2598,6 @@ class TomographyModel(ParameterHandler):
                 # Sharded: leave the forward scalars where the reduction produced them (the sino
                 # mesh) and reconcile meshes on-device below; single-device: commit to main_device.
                 output_device=(None if self.is_sharded else self.main_device))
-            _memprobe("linquad")
 
             # Compute optimal update step.
             # The forward-model line-search scalars are reduced over the view-sharded sinogram (the
@@ -2754,7 +2726,6 @@ class TomographyModel(ParameterHandler):
                 if not const_weights:
                     weighted_error_sinogram.delete()
 
-            _memprobe("end")   # after cleanup: if this climbs across subsets, the leaker is uncaught
             return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, times, time_names
 
         return vcd_subset_updater

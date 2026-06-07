@@ -282,3 +282,62 @@ The device-config redesign and the back-projection re-open under it.
 7. **Gitignored `results/` doesn't survive a handoff.**  Scaling numbers and the
    decisions they drive must be written into committed prose (status / plan /
    here), or they evaporate with the session.
+
+## Sharded VCD memory: jax reference cycles + buffer donation (2026-06-07)
+
+The 1-device-mesh / multi-GPU VCD "memory blowup" (504³/5-iter peaked 25.8 GB vs
+6.9 GB single-device; OOM at 1008³) was **not** the band, not pixel-batching, not
+async run-ahead — it was object lifecycle.
+
+- **jax holds sharded (`NamedSharding`) arrays in internal reference cycles** (an
+  `ArrayImpl`'s `__dict__` references its sharding/buffers with back-refs), so they are
+  reclaimed only by the **cyclic GC**, not by refcounting.  Single-device
+  (`SingleDeviceSharding`) arrays free on refcount-0 normally.  So any per-subset (or
+  per-iteration) **out-of-place** update producing a *new* sharded array leaves the
+  stale one alive until a GC runs — and Python's GC is unaware of device-memory pressure
+  (it triggers on object counts), so they accumulate one full array per operation.  Peak
+  grew with #subset-updates (subsets × passes); `bytes_in_use` at the end was tiny
+  (gc-pending) — the tell-tale signature.
+- **Fix = donate for in-place state, `.delete()` for transients.**  Update the
+  persistent state in place via buffer donation —
+  `@partial(jax.jit, donate_argnames='error_sinogram')` returning
+  `error_sinogram - scaled_delta` — exactly as `update_recon` already did for the recon
+  (that recon-vs-sino asymmetry, recon flat / sino leaking, was the diagnostic tell).
+  Explicitly `.delete()` the one-shot **eager-op** transients (the `alpha*delta` scale,
+  the `weights*error` product).  **Forward-projection outputs (from `assemble_sharded` /
+  `make_array_from_single_device_arrays`) free on refcount** and need no delete — the
+  cycle is specific to eager elementwise-op outputs.  Result: peak flat at the
+  single-device floor (const 6.9, non-const 7.9, positivity 7.3 GB), time unchanged,
+  per-device memory still shards 1/n_dev (1008³ 1d→4d **4.49×** super-linear —
+  bandwidth-bound op + smaller per-device working set).
+- **Keep the scale eager (don't fold it into the donated jit).**  Folding to
+  `error - alpha*delta` lets XLA emit a fused multiply-add → last-bit difference →
+  breaks the trivial-mesh bit-exactness test.  A lone subtract can't be FMA-fused.
+- **Donation-engagement gotchas.**  (a) Release aliases first: for constant weights
+  `weighted_error_sinogram IS error_sinogram`, so `= None` it or donation silently falls
+  back to a copy.  (b) Donating 2 inputs for 1 output warns "Some donated buffers were
+  not usable" — benign (surplus still freed) but noisy; donate only the in-place state
+  and `.delete()` the transient to avoid it.  (c) Bare `.delete()` of an array still
+  feeding a pending op risks a silent race — gate it behind one `block_until_ready` on
+  the returned state (every transient is upstream of it).  Consolidate all frees into one
+  end-of-subset cleanup section after that single block.
+- **Diagnostic method that cracked it.**  A per-subset/per-iteration `peak_bytes_in_use`
+  "memjump" trace showed the view-sharded-sino count climbing 1/op; `gc.get_referrers`
+  named the holder (`ArrayImpl.__dict__`); an explicit `gc.collect()` dropped `live_end`
+  to one volume (proving gc-pending cycles).  Pitfalls: a too-short config
+  (`MAX_ITERATIONS=1`) hid the per-iteration accumulation — the *mesh* peak GROWS with
+  iterations (only single-device reaches peak early), suspect the ruler; and
+  `gc.get_referrers` can itself pin objects, confounding a GC-frequency test.
+- **STALE BUILD chimera.**  A reported 33.4 GB "non-constant-weights leak" was a stale
+  GPU binary running the pre-fix code; a fresh `pip install -e .` made it bounded (7.9
+  GB).  When GPU memory/behavior contradicts the local tests, **verify the build first**
+  (editable installs can serve stale compiled state) — it cost a diagnosis detour.
+- **Scaling model (size sweep).**  Projection **time ∝ N⁴ (voxels × views)** — each
+  voxel projects to each view — while **memory ∝ N³ (voxels)** (resident sino+recon).
+  Doubling linear size is ×16 time but only ×8 memory; the size-sweep TIME ideal curve
+  must scale as voxels·views, the MEMORY ideal as voxels.
+- **`is_sharded` over `self.mesh is not None`.**  A single `@property` (body
+  `self.mesh is not None` now, placement-based later) is the one place to change at the
+  mesh→placement migration and the one thing to retire once all geometries shard.  The
+  transient-free **cleanup section does NOT retire at unification** — it's inherent to
+  host-orchestrated sharded arrays (the reference cycle above); only the *guards* go away.

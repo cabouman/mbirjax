@@ -248,7 +248,7 @@ row-crop as parallel beam's band mechanism for now, and build the `(g0, L)`
 interface once in P3 across forward + back with the adjoint round-trip as the
 gate.
 
-### P4 — VCD on placements (Phase E)  🔧 IN PROGRESS — multi-GPU done & validated; sharded-memory leak DIAGNOSED + FIX implemented (validating)
+### P4 — VCD on placements (Phase E)  ✅ DONE — multi-GPU validated (1–4 GPU); sharded-memory leak fixed & validated for all paths (const, non-const weights, positivity)
 - [x] Entry/exit placements for sinogram (view) / recon (slice) / weights (view) via
   `to_sino`/`to_recon` in `vcd_recon` (replace the `device_put(..., main/sinogram_device)`
   gather hazards).
@@ -263,11 +263,14 @@ gate.
   host float (the two multi-device bugs the tests caught).  Audited by a test that
   `vcd_recon`'s pre-exit-gather return stays slice-sharded across all devices.
 - Gate: full recon trivial **bit-exact**; 2/4/8-dev **NRMSE ~6e-7** vs single-device;
-  prior trivial bit-exact + 2/4/8-dev float-match.  `tests/sharding/test_vcd.py`.
-- [x] **GPU multi-device scaling validated** (H100): 1008³ **2→4 dev = 2.20×** (the
-  earlier ≤512³ 4-device flatness was a per-subset size floor, not a defect; it
-  resolves at scale).  Prior-opt A (stage halos once per pass) + the on-device
-  `alpha` replication (zero per-subset host syncs) landed and were re-measured.
+  prior trivial bit-exact + 2/4/8-dev float-match.  `tests/sharding/test_vcd_sharded.py`.
+- [x] **GPU multi-device scaling validated, 1–4 GPU** (H100, `vcd_recon_gpu.yaml`, 10
+  iters): 1008³ **1d→4d = 4.49× — super-linear** (bandwidth-bound op + smaller per-device
+  working set; 2→4d = 2.16×); memory shards cleanly (1d 55.5 → 4d 12.7 GB/dev);
+  correctness vs prerelease **8.79e-7**.  504³ is the size-floor (4d 1.92×, too small to
+  amortize cross-NUMA).  The memory fix ENABLED the 1008³/1d measurement (was OOM).
+  Prior-opt A (stage halos once/pass) + the on-device `alpha` replication (zero
+  per-subset host syncs) remain in place.
 - **Sharded-memory leak — DIAGNOSED & FIXED (the single-device / 1-device-mesh
   no-regression gate).**  Symptom: the sharded path's peak grew ~3.3× the no-mesh peak
   at 504³ (24.6 vs 7.4 GB) and OOM'd at 1008³, while the **default no-mesh path is
@@ -303,12 +306,24 @@ gate.
     **OOM → 56 GB, completes** (no-mesh 53) — **1-GPU no-regression gate MET**; `live_end`
     flat (no accumulation).  Minor: 1008³ mesh ~+6% over no-mesh (per-band/assemble
     transients; benign, shards away at n_dev>1).
-  - *Next:* 1–4 GPU per-device-memory + scaling + correctness (`vcd_recon_scaling.py`,
-    prepared: `[1,2,4]` @ 504³/1008³); then the remaining-paths cleanup below.
-  - *Remaining (same hazard, dormant in the const-weights/no-positivity test path):*
-    give the same treatment to **non-constant weights** (`weighted_error_sinogram =
-    weights*error_sinogram` is a fresh per-subset sino) and the **positivity-branch
-    `delta_sinogram` recompute** before release.
+  - *Consolidated cleanup (done):* the per-subset transient frees are now ONE cleanup
+    section at the end of `vcd_subset_updater` (mesh only): after a single
+    `block_until_ready` on the returned state, delete the scaled `delta_sinogram` and —
+    for **non-constant weights** — the `weighted_error_sinogram` product.  Correctness
+    coverage added (`test_vcd_sharded.py`, +4: non-const & positivity × trivial-bit-exact /
+    2-4-8-dev NRMSE); full `tests/sharding/` + `tests/test_vcd.py` **77 passed**.
+  - *Non-constant weights & positivity — VALIDATED (bounded).*  GPU (504³/5-iter/1-device-mesh):
+    **non-const peak 7.9 GB**, **positivity peak 7.3 GB** — both ≈ const 6.9 GB, flat, no leak.
+    The `weighted_error_sinogram.delete()` bounds non-const; positivity needs **no** extra
+    delete (its `delta_sinogram` recompute and stranded original are forward-projection
+    (`assemble_sharded`) outputs that free on refcount — the cycle is only in *eager-op*
+    outputs).  (An earlier 33.4 GB "non-const leak" was a **stale GPU build** running the
+    pre-fix binary — a fresh `pip install -e .` resolved it; ruler-before-code.  The
+    temporary `_memprobe` localizer added to chase it has been removed.)
+  - *Refactor (done):* `TomographyModel.is_sharded` property is the single source of
+    truth for the sharded code path (replaced 21 `self.mesh is None/not None` checks; the
+    body changes in one place at the mesh→placement migration, and this is what retires
+    at unification).
 - **Also pending:** hybrid timing for the `qggmrf_..._transfer` variant (deferred
   Q3); prox-map prior under sharding (untouched).
 
