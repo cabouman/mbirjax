@@ -2318,6 +2318,16 @@ class TomographyModel(ParameterHandler):
             es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(error_sinogram.size))
             alpha_values[i] = alpha
 
+            # TEMP leak localizer (per ITERATION; pairs with the per-sub-step probe in
+            # vcd_subset_updater).  Counts live full-size view-sharded sinograms after the
+            # per-iteration stats (get_forward_model_loss etc.).  If this climbs across
+            # iterations while the per-subset probe stays flat, the leak is in the
+            # per-iteration stats, not the subset loop.  Remove when done.
+            if getattr(self, '_vcd_memprobe', False):
+                _ncyc = sum(1 for a in jax.live_arrays()
+                            if a.nbytes > 4e7 and "P('devices', None, None)" in str(a.sharding))
+                print(f"[mp ITER {i}] {_ncyc}", flush=True)
+
             if verbose >= 1:
                 iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
                                                                                                   100 * nmae_update[i],
