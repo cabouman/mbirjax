@@ -295,9 +295,16 @@ gate.
     **peak flat at the `ns=1` floor (504³/5-iter: 25.8 → 6.9 GB), no per-subset growth,
     time unchanged (~47 s), no donation warning.**  Also lifts per-device memory at
     `n_dev>1` (raises max-recon-per-GPU), not just the degenerate 1-device mesh.
-  - *Validating:* sharded VCD correctness suite (`tests/sharding/test_vcd_sharded.py`)
-    + single-device regression locally; cluster re-run of the memory sweep
-    (`vcd_mesh_sweep.py`) and 1–4 GPU scaling/correctness next.
+  - *Validated:* local correctness GREEN — `tests/sharding/test_vcd_sharded.py` 8/8
+    (incl. trivial **bit-exact**; the alpha scale is kept eager so the donated update is a
+    pure subtract — folding it in would emit an FMA and break bit-exactness), single-device
+    `test_vcd` regression, single-device-vs-prerelease **5.3e-8 unchanged**.  **GPU 1-device
+    (H100):** 504³/5-iter mesh peak **25.8 → 6.9 GB** (= no-mesh 7.8), 1008³/5-iter mesh
+    **OOM → 56 GB, completes** (no-mesh 53) — **1-GPU no-regression gate MET**; `live_end`
+    flat (no accumulation).  Minor: 1008³ mesh ~+6% over no-mesh (per-band/assemble
+    transients; benign, shards away at n_dev>1).
+  - *Next:* 1–4 GPU per-device-memory + scaling + correctness (`vcd_recon_scaling.py`,
+    prepared: `[1,2,4]` @ 504³/1008³); then the remaining-paths cleanup below.
   - *Remaining (same hazard, dormant in the const-weights/no-positivity test path):*
     give the same treatment to **non-constant weights** (`weighted_error_sinogram =
     weights*error_sinogram` is a fresh per-subset sino) and the **positivity-branch

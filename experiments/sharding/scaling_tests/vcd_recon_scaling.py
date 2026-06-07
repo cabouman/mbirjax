@@ -59,7 +59,7 @@ import numpy as np
 OP_NAME = "vcd_recon"
 
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
-DEVICE_COUNTS = [1, 2, 4, 8]  # [1, 2, 3] to skip a known-bad 4th GPU
+DEVICE_COUNTS = [1, 2, 4]     # cluster has 4 GPUs (2 per NUMA node); 2->4 spans the NUMA split
 
 # Number of VCD iterations per timed reconstruction.  VCD is iterative and much
 # heavier per element than a single projector, so the sizes below are smaller than
@@ -82,19 +82,17 @@ MEM_PREALLOCATE = True     # leave True; flipping it does NOT change peak_bytes_
 MEM_FRACTION = 0.9         # pool fraction (hard cap when preallocating); LOWER it to probe the
                            # capacity floor / OOM threshold, e.g. 0.25 for a ~20 GB cap on an 80 GB GPU
 
-# Problem sizes (n_views, n_rows, n_channels).  n_views and the slice axis
-# (≈ n_rows for parallel beam) must both divide every device count used, else
-# configure_sharding raises and the point is skipped.  Multiples of 12 admit a
-# 3-device ladder; multiples of 16 are the power-of-two sizes.
-SIZES_BY_12 = {
+# Problem sizes (n_views, n_rows, n_channels).  n_views and the slice axis (≈ n_rows
+# for parallel beam) must both divide every device count used, else configure_sharding
+# raises and the point is skipped.  All sizes below divide 1/2/3/4.  GPU uses the
+# non-power-of-2 validation sizes used throughout the sharded-VCD work: 504³ is where
+# the per-subset memory leak was found and fixed; 1008³ is where the 2→4-device 2.20×
+# scaling was measured and where 1-device used to OOM (with the in-place error-sinogram
+# fix it should now complete near the no-mesh ~50 GB).
+SIZES = {
     "cpu": [(48, 48, 48), (96, 96, 96), (192, 192, 192)],
-    "gpu": [(252, 252, 252), (504, 504, 504)],
+    "gpu": [(504, 504, 504), (1008, 1008, 1008)],
 }
-SIZES_BY_16 = {
-    "cpu": [(64, 64, 64), (128, 128, 128), (256, 256, 256)],
-    "gpu": [(256, 256, 256), (512, 512, 512)],
-}
-SIZES = SIZES_BY_12 if 3 in DEVICE_COUNTS else SIZES_BY_16
 
 WARMUP = 1
 TRIALS = 2          # VCD is slow; a couple of timed trials is enough
