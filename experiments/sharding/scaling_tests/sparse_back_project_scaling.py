@@ -519,7 +519,7 @@ def main():
             "platform": plat, "device_label": dev_label, "mbirjax_path": mpath,
             "warmup": WARMUP, "trials": TRIALS,
             "device_counts": device_counts, "sizes": size_labels,
-            "mem_kind": mem_kind, "correctness": corr,
+            "mem_kind": mem_kind, "time_ideal": "voxels_views", "correctness": corr,
             "dev2dev_safe": dev2dev_safe, "topology": topology,
             "grid": grid, "failures": failures_by_size,
         }

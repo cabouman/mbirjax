@@ -658,7 +658,7 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
 
 
 def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
-                    mem_kind, out_path):
+                    mem_kind, out_path, time_ideal="voxels_views"):
     """Size sweep: time and peak memory vs problem size, one curve per device count.
 
     The x-axis is the true problem size in voxels (v·r·c) on a LOG scale, so the
@@ -666,39 +666,73 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
     categorical steps; both panels are then log-log and the scaling slope is
     readable.  Ticks are labeled with the size strings at their true positions.
 
+    Time is plotted in minutes, per-device memory in GB.
+
+    TIME panel: the y-range is chosen per run — top = the smallest power of 10 that
+    holds the largest measured time, bottom = top / 1e4 (four decades) — and the
+    ideal line is anchored at that bottom-left corner, so the data rides above a
+    reference of the EXPECTED slope.  ``time_ideal`` picks that slope:
+      - "voxels_views" (default): projection cost ∝ voxels × views (N⁴ for cubic
+        sizes) — correct for the projectors (back/forward/direct) and VCD, which
+        touch each voxel once per view.
+      - "voxels": ∝ voxels (N³) — correct for fbp_filter, a per-view filter whose
+        cost is the sinogram size, not a projection.
+
+    MEMORY panel: fixed y-range 0.1 .. 100 GB (per-device memory is comparable
+    across runs), with the ∝voxels (N³, resident sino+recon) ideal anchored at
+    0.1 GB at the smallest size.
+
     Args:
         grid (dict): size_label -> list of row dicts, as produced by the driver.
         device_counts (list[int]): one curve per count.
         sizes (list[str]): size labels, in order.
         dev_label (str): device type for the suptitle.
+        time_ideal (str): "voxels_views" (default) or "voxels"; the slope of the
+            time-panel ideal line (see above).
     """
+    if time_ideal not in ("voxels", "voxels_views"):
+        raise ValueError(
+            f"time_ideal must be 'voxels' or 'voxels_views', got {time_ideal!r}")
+
+    # Stored results use ms and MB; plot in the more intuitive minutes and GB.
+    MS_PER_MIN = 60_000.0
+    MB_PER_GB = 1024.0
+
     vols = [_label_volume(s) for s in sizes]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
+    all_tmin = []
     for n in device_counts:
-        tms, mem = [], []
+        tmin, memgb = [], []
         for size_label in sizes:
             row = _grid_lookup(grid, size_label).get(n)
-            tms.append(row["min_ms"] if row else float("nan"))
-            mem.append(row["mem_mb"] if row else float("nan"))
-        ax1.plot(vols, tms, "o-", label=f"{n} dev")
-        ax2.plot(vols, mem, "s-", label=f"{n} dev")
+            tmin.append(row["min_ms"] / MS_PER_MIN if row else float("nan"))
+            memgb.append(row["mem_mb"] / MB_PER_GB if row else float("nan"))
+        all_tmin.extend(tmin)
+        ax1.plot(vols, tmin, "o-", label=f"{n} dev")
+        ax2.plot(vols, memgb, "s-", label=f"{n} dev")
 
-    # Ideal references, anchored at the average of the smallest size across device
-    # counts.  TIME scales as voxels × views (projection touches each voxel once per
-    # view -> N⁴ for cubic sizes), MEMORY scales as voxels (resident sino+recon -> N³).
-    costs = [_label_proj_cost(s) for s in sizes]
-    base_rows = _grid_lookup(grid, sizes[0])
-    base_times = [base_rows[n]["min_ms"] for n in device_counts if n in base_rows]
-    if base_times:
-        base = sum(base_times) / len(base_times)
-        ax1.plot(vols, [base * c / costs[0] for c in costs], "k--", alpha=0.5,
-                 label="ideal (∝ voxels·views)")
-    base_mems = [base_rows[n]["mem_mb"] for n in device_counts if n in base_rows]
-    if base_mems:
-        bm = sum(base_mems) / len(base_mems)
-        ax2.plot(vols, [bm * v / vols[0] for v in vols], "k--", alpha=0.5,
-                 label="ideal (∝ voxels)")
+    # TIME y-range: four decades ending at the smallest power of 10 that holds the
+    # largest measured time.  floor(log10)+1 (not ceil) so a value that is itself a
+    # power of 10 still clears the top spine; fall back to 0.1 .. 1000 if nothing
+    # was measured (all-OOM run).
+    finite_t = [t for t in all_tmin if np.isfinite(t)]
+    t_top = 10.0 ** (np.floor(np.log10(max(finite_t))) + 1) if finite_t else 1000.0
+    t_bottom = t_top / 1e4
+
+    # Ideal references: a fixed-slope line anchored at each panel's BOTTOM-LEFT, so
+    # the data rides above a reference of the expected slope (identical across runs).
+    # TIME slope per `time_ideal`; MEMORY ∝ voxels (resident sino+recon, N³).
+    if time_ideal == "voxels_views":
+        tcost = [_label_proj_cost(s) for s in sizes]   # ∝ voxels × views (N⁴)
+        tlabel = "ideal (∝ voxels·views)"
+    else:
+        tcost = vols                                   # ∝ voxels (N³)
+        tlabel = "ideal (∝ voxels)"
+    ax1.plot(vols, [t_bottom * c / tcost[0] for c in tcost], "k--", alpha=0.5,
+             label=tlabel)
+    ax2.plot(vols, [0.1 * v / vols[0] for v in vols], "k--", alpha=0.5,
+             label="ideal (∝ voxels)")
 
     for ax in (ax1, ax2):
         ax.set_xscale("log")
@@ -708,12 +742,14 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
         ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
 
-    ax1.set_ylabel("min time (ms)")
+    ax1.set_ylim(t_bottom, t_top)
+    ax1.set_ylabel("min execution time (minutes)")
     ax1.set_title("time vs size")
     ax1.legend(title="devices")
 
-    ax2.set_ylabel(f"peak memory (MB) [{mem_kind}]")
-    ax2.set_title("memory vs size")
+    ax2.set_ylim(0.1, 100)
+    ax2.set_ylabel("peak memory (GB)")
+    ax2.set_title("per-device memory vs size")
     ax2.legend(title="devices")
 
     fig.suptitle(f"{op_name} — size sweep — {dev_label}", fontweight="bold")

@@ -58,6 +58,11 @@ import numpy as np
 
 OP_NAME = "fbp_filter"
 
+# Time-ideal slope for the size-sweep plot.  fbp_filter is a PER-VIEW filter whose
+# cost is the sinogram size (∝ voxels, N³) -- unlike the projectors / VCD, which
+# touch each voxel once per view (∝ voxels·views, N⁴, the plotter's default).
+TIME_IDEAL = "voxels"
+
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
 # Problem sizes (n_views, n_rows, n_channels) PER OP — different ops want
 # different sizes.  Both sweeps share these sizes and the device-count ladder
@@ -360,6 +365,7 @@ def main():
         "device_counts": device_counts,
         "sizes": size_labels,
         "mem_kind": mem_kind,
+        "time_ideal": TIME_IDEAL,
         "correctness": corr,
         "grid": grid,
         "failures": failures_by_size,
@@ -372,7 +378,8 @@ def main():
             os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_device_sweep.png"))
         sc.plot_size_sweep(
             OP_NAME, grid, device_counts, size_labels, dev_label, mem_kind,
-            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_size_sweep.png"))
+            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_size_sweep.png"),
+            time_ideal=TIME_IDEAL)
 
     print("\nDone.")
 

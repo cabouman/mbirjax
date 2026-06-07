@@ -444,7 +444,7 @@ def main():
         "mbirjax_path": mpath, "warmup": WARMUP, "trials": TRIALS,
         "max_iterations": MAX_ITERATIONS,
         "device_counts": device_counts, "sizes": size_labels,
-        "mem_kind": mem_kind, "correctness": corr,
+        "mem_kind": mem_kind, "time_ideal": "voxels_views", "correctness": corr,
         "dev2dev_safe": dev2dev_safe, "topology": topology,
         "grid": grid, "failures": failures_by_size,
     }

@@ -34,10 +34,14 @@ def main():
     sizes = r["sizes"]
     dev_label = r.get("device_label", r.get("platform", "?"))
     mem_kind = r.get("mem_kind", "n/a")
+    # Time-ideal slope: the driver records it (fbp_filter is ∝voxels; the
+    # projectors and VCD are ∝voxels·views).  Default to voxels·views for older
+    # YAMLs that predate the field.
+    time_ideal = r.get("time_ideal", "voxels_views")
 
     base = os.path.splitext(path)[0]   # results/<op>_<plat>
     sc.plot_size_sweep(op, grid, device_counts, sizes, dev_label, mem_kind,
-                       base + "_size_sweep.png")
+                       base + "_size_sweep.png", time_ideal=time_ideal)
     sc.plot_device_sweep(op, grid, device_counts, sizes, dev_label, mem_kind,
                          base + "_device_sweep.png")
     print(f"Re-rendered plots from {path}")
