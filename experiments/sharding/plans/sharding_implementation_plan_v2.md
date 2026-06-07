@@ -355,6 +355,36 @@ gate.
   and switch the jittable single-device / forward assembly to an in-place
   `dynamic_update_slice` accumulator with `donate_argnums` (see the P3 design note).
 
+**Unification decision (the "step 4" trivial-placement question) — RESOLVED: Option B,
+one always-on placement path.**  A trivial 1-device placement resolves to a 1-device
+`NamedSharding` (not a `SingleDeviceSharding`), so the single-device case is just the
+degenerate sharded case and the dual `is_sharded` branches collapse into one path.
+Rationale: "no literal regression from prerelease" is the same over-strict invariant as
+"bit-exact" — we accept ~1 ULP (iteratively amplified to ≤1e-4) differences, not byte
+identity.  The per-subset `block_until_ready` + `.delete()` cleanup then runs single-
+device too, but it only stalls *host dispatch*, which is in the noise on production-size
+recons where projection compute dominates; and making the transient cleanup mandatory
+everywhere means one memory strategy, with no single-device-only leak able to slip past.
+Carry these into the implementation:
+  1. **Swap the guard, don't drop it.**  Losing the "verbatim prerelease body" safety net
+     means single-device correctness rides on the donation + eager-scale path, so replace
+     the bit-exact-vs-prerelease check with a **tight `allclose`** single-device-vs-
+     prerelease guard (repurpose `vcd_single_device_baseline.py` to compare at ~1e-4, not
+     exact).
+  2. **Unlocked simplification.**  The "keep alpha out of the donated jit to avoid an FMA"
+     decision existed *only* to preserve trivial-mesh bit-exactness.  Once ~1 ULP is
+     accepted, fold `error_sinogram ← error_sinogram − alpha·delta` into a **single
+     donated FMA jit**, deleting the separate eager `scaled_delta` transient *and* its
+     `.delete()` — the unified update gets simpler than either current path.
+  3. **Heterogeneous recon-CPU / sino-GPU is the one behavior change.**  Option B routes
+     the prior through `_qggmrf_prior_sharded` (two trivial placements) instead of the
+     `qggmrf_..._transfer` fast path, whose *timing* is an existing deferred open question
+     — measure before deleting `_transfer`.  **And: if this heterogeneous case becomes
+     unwieldy** (it forces multiple code paths or other special cases) **we drop it.**  It
+     is only a stop-gap for doing larger recons on a *single* GPU; the real target is large
+     recons on *multiple* GPUs, and that path must not be complicated to keep the stop-gap
+     alive.
+
 **Retirement marker convention.**  Code, tests, or docs that exist *only* while the
 legacy single-device path coexists with the sharded/placement path — and should be
 removed once everything runs on placements — are tagged with the fixed, greppable
