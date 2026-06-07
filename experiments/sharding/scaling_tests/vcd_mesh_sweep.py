@@ -51,17 +51,22 @@ def cfg(label, **kw):
     return d
 
 
-# ── ROUND 2 — subset-state backpressure (the right injection point) ───────────
-# Round 1 showed: pure transient (no leak); peak scales with #subset-updates; blocking
-# the PROJECTORS and shrinking the band did nothing.  So test backpressure on the
-# per-subset STATE chain (block_subsets), at the two worst single-pass points, against
-# their round-1 baselines (re-run here for same-session comparison).
+# ── FIX VALIDATION — in-place donated error-sinogram update ───────────────────
+# Root cause found: jax holds sharded arrays in internal reference cycles, so the
+# out-of-place per-subset error-sinogram update leaked one full view-sharded sino per
+# subset (freed only by gc).  Fix: update_error_sinogram updates it in place via buffer
+# donation (+ explicit .delete() of the transient delta_sinogram).  These runs confirm
+# the sharded (1-device-mesh) peak now matches the no-mesh floor instead of ballooning.
+# Each config runs in its own subprocess, so peaks are clean.  The 504³ pair runs first
+# (fast ~50 s each) for a quick confirm; the 1008³ pair is the capability check (the
+# mesh case used to OOM) and is slower (~7-8 min each) -- Ctrl-C after 504³ if you just
+# want the quick result.  Expected: mesh ≈ no-mesh at both sizes (504³ mesh was 25.8 GB,
+# should now be ~6.9; 1008³ mesh used to OOM, should now complete near the no-mesh ~50 GB).
 CONFIGS = [
-    cfg("r2_ns1",            iters=1, num_subsets=1),                       # floor (~6.9 GB)
-    cfg("r2_ns128",          iters=1, num_subsets=128),                     # baseline (~17.6)
-    cfg("r2_ns128_blocksub", iters=1, num_subsets=128, block_subsets=True), # the test
-    cfg("r2_ns512",          iters=1, num_subsets=512),                     # baseline (~30.8)
-    cfg("r2_ns512_blocksub", iters=1, num_subsets=512, block_subsets=True), # the test
+    cfg("fix_nomesh_504",  mesh=False, iters=5, size="504,504,504"),
+    cfg("fix_mesh_504",    mesh=True,  iters=5, size="504,504,504"),
+    cfg("fix_nomesh_1008", mesh=False, iters=5, size="1008,1008,1008"),
+    cfg("fix_mesh_1008",   mesh=True,  iters=5, size="1008,1008,1008"),
 ]
 
 # config key -> worker env var

@@ -78,6 +78,12 @@ locally on its view-shard and never moves during projection.
   a true **no-op** so the single-device path carries zero overhead.
 - **Adjoint pair** (gather+concat ⊣ slice+sum) → keeps the projectors adjoint →
   the forward/back adjoint round-trip is the correctness gate.
+- **As built (P2/P3):** the side-by-side measurement chose **slice-banding** over
+  pixel-batched cylinders, so `move_cylinders_to_sino` / `sum_cylinders_to_recon`
+  were **removed** and replaced by the banded adjoint pair `sum_band_to_owner`
+  (reduce-scatter, back) / `broadcast_band_to_views` (all-gather, forward) in
+  `_sharding/transfer.py`.  The bullets above describe the original cylinders-direct
+  design (kept for rationale/history).
 
 ### 0c. Streaming = uniform pixel-batching
 
@@ -87,9 +93,12 @@ locally on its view-shard and never moves during projection.
   (bounds `B_p × num_slices` per device).
 - The layer-2 driver is a single uniform pixel-batch loop with the geometry
   kernel injected; no mode-specific band axis.
-- This **replaces Phase D's slice-banding** (pending the side-by-side
-  measurement in P2).  Big-sino host-streaming being out of scope removes the
-  only reason to keep slice-banding.
+- **Superseded — see P2's verdict (KEEP BAND).**  The side-by-side measurement
+  chose slice-banding over pixel-batching (pixel's peak floored at ~1.7–2.7× band
+  for only ~11–16% less time), so the as-built streaming unit is the **slice-band**,
+  not a pixel batch.  `_slice_band_length` sizes it; a per-band compute cap
+  (`_BACK_PROJECT_MAX_BAND_WORK`) also makes a single device stream.  The
+  pixel-batching text above is retained for design rationale only.
 
 ### 0d. Vocabulary — user-facing vs internal
 
@@ -121,7 +130,7 @@ leave two paths lingering), then port to the other geometries.
 - Deferred (intentionally): the broad `device_put → move` migration — it happens
   organically as each path is rewritten (P2/P3/P4), not as upfront churn.
 
-### P2 — Back projection on placements (re-opened Phase D)  ⏳ measuring
+### P2 — Back projection on placements (re-opened Phase D)  ✅ DONE (CPU + GPU)
 - [x] `_sparse_back_project_pixel`: pixel-batched, uses `sum_cylinders_to_recon`;
   first consumer of `recon_placement` + the movement primitives.  Runs **alongside**
   the slice-banded `_sparse_back_project_sharded` via the temporary
@@ -150,14 +159,26 @@ leave two paths lingering), then port to the other geometries.
   `_sharded_back_project_setup` (the factored shared setup) is kept.
 - Anchors (met): trivial bit-exact vs prerelease; n>1 float-noise match.
 
-### P3 — Forward projection on placements (Phase C)  ← NEXT
-- Pixel-batched `move_cylinders_to_sino` forward projection on ParallelBeam.
-- **match-input** per the F2 contract.
-- Correctness gate: forward/back **adjoint round-trip** against the validated P2
-  back projector.
-- **Design in P3: the geometry-neutral "project to a slice band" interface**
-  (see the design note below).  P3 is where it should land, because it must be
-  built for forward + back together so the adjoint round-trip gates it.
+### P3 — Forward projection on placements (Phase C)  ✅ DONE (CPU; standalone GPU forward-scaling sweep optional)
+- [x] **Slice-banded all-gather** forward projection on ParallelBeam — the adjoint
+  of the band back projector (chosen over the pixel-batched `move_cylinders_to_sino`
+  for memory symmetry with back projection, same reasons band beat pixel in P2).
+  New `broadcast_band_to_views` (`_sharding/transfer.py`), the adjoint of
+  `sum_band_to_owner`; `_sparse_forward_project_sharded` + per-band helpers; the
+  parallel-beam forward kernel sizes its output rows from the input slices.
+- [x] **match-input** per the F2 contract (mirror of `back_project`).
+- [x] Correctness gate: forward/back **adjoint round-trip** `<Ax,y>==<x,Aᵀy>` green
+  at 1/2/4/8 devices; trivial bit-exact; prerelease forward baseline match (1.1e-5).
+  Committed (`7461abb`).
+- The superseded full-cylinder primitives `move_cylinders_to_sino` /
+  `sum_cylinders_to_recon` were **removed** (the banded pair supersedes them; see the
+  "as built" note under 0b/0c).
+- The geometry-neutral `(g0, L)` slice-band interface was **designed** here (note
+  below) but not yet built for parallel beam, which keeps its bit-exact external
+  row-crop; the `(g0, L)` kernel lands when the geometries are ported.
+- **Pending (optional):** standalone GPU forward-scaling sweep
+  (`sparse_forward_project_scaling.py`); forward is already exercised on GPU inside
+  the VCD scaling run.
 
 ### Design note — geometry-neutral slice-band projector interface (decided 2026-06-04)
 
@@ -227,7 +248,7 @@ row-crop as parallel beam's band mechanism for now, and build the `(g0, L)`
 interface once in P3 across forward + back with the adjoint round-trip as the
 gate.
 
-### P4 — VCD on placements (Phase E)  ✅ DONE (CPU, ParallelBeam; GPU scaling pending)
+### P4 — VCD on placements (Phase E)  🔧 IN PROGRESS — multi-GPU done & validated; sharded-memory leak DIAGNOSED + FIX implemented (validating)
 - [x] Entry/exit placements for sinogram (view) / recon (slice) / weights (view) via
   `to_sino`/`to_recon` in `vcd_recon` (replace the `device_put(..., main/sinogram_device)`
   gather hazards).
@@ -242,9 +263,47 @@ gate.
   host float (the two multi-device bugs the tests caught).  Audited by a test that
   `vcd_recon`'s pre-exit-gather return stays slice-sharded across all devices.
 - Gate: full recon trivial **bit-exact**; 2/4/8-dev **NRMSE ~6e-7** vs single-device;
-  prior trivial bit-exact + 2/4/8-dev float-match.  `tests/sharding/test_vcd.py` (7).
-- **Pending:** GPU VCD scaling (cluster); hybrid timing for the `qggmrf_..._transfer`
-  variant (deferred Q3); prox-map prior under sharding (untouched).
+  prior trivial bit-exact + 2/4/8-dev float-match.  `tests/sharding/test_vcd.py`.
+- [x] **GPU multi-device scaling validated** (H100): 1008³ **2→4 dev = 2.20×** (the
+  earlier ≤512³ 4-device flatness was a per-subset size floor, not a defect; it
+  resolves at scale).  Prior-opt A (stage halos once per pass) + the on-device
+  `alpha` replication (zero per-subset host syncs) landed and were re-measured.
+- **Sharded-memory leak — DIAGNOSED & FIXED (the single-device / 1-device-mesh
+  no-regression gate).**  Symptom: the sharded path's peak grew ~3.3× the no-mesh peak
+  at 504³ (24.6 vs 7.4 GB) and OOM'd at 1008³, while the **default no-mesh path is
+  fine** (equal-or-better than prerelease).
+  - *Root cause:* **jax keeps sharded (`NamedSharding`) arrays in internal reference
+    cycles** (an `ArrayImpl`'s `__dict__` holds its sharding/buffers and back-refs), so
+    they are freed only by the **cyclic GC**, not by refcount.  The VCD subset loop
+    updated the view-sharded **error sinogram out of place** every subset
+    (`error_sinogram = error_sinogram - alpha*delta_sinogram`), allocating a fresh full
+    sinogram each time; the stale ones (and the transient `delta_sinogram`) piled up —
+    **one full view-sharded sinogram per subset** — until GC, so peak scaled with the
+    number of subset-updates (subsets × passes).  Diagnosis was empirical: an
+    instrumented memjump trace showed the `P('devices',None,None)` (view-sharded sino)
+    count climbing 1/subset, `live_end` only dropping to 512 MB *after* an explicit
+    `gc.collect()`, and `gc.get_referrers` naming the holding `ArrayImpl.__dict__`.
+    The **recon side never leaked** because `update_recon` already updates `flat_recon`
+    **in place via buffer donation** — that asymmetry was the tell.
+  - *Fix (mesh-guarded; single-device path untouched):* new module-level
+    `update_error_sinogram` does `error_sinogram - alpha*delta_sinogram` under
+    `@partial(jax.jit, donate_argnames='error_sinogram')` so XLA updates the error
+    sinogram **in place** (mirrors `update_recon`); the sharded branch of
+    `vcd_subset_updater` releases the constant-weights alias (so the buffer is
+    donatable), calls it, then **explicitly `.delete()`s the transient `delta_sinogram`**
+    (also cycle-held) after a one-line `block_until_ready` for async safety.  Net:
+    **peak flat at the `ns=1` floor (504³/5-iter: 25.8 → 6.9 GB), no per-subset growth,
+    time unchanged (~47 s), no donation warning.**  Also lifts per-device memory at
+    `n_dev>1` (raises max-recon-per-GPU), not just the degenerate 1-device mesh.
+  - *Validating:* sharded VCD correctness suite (`tests/sharding/test_vcd_sharded.py`)
+    + single-device regression locally; cluster re-run of the memory sweep
+    (`vcd_mesh_sweep.py`) and 1–4 GPU scaling/correctness next.
+  - *Remaining (same hazard, dormant in the const-weights/no-positivity test path):*
+    give the same treatment to **non-constant weights** (`weighted_error_sinogram =
+    weights*error_sinogram` is a fresh per-subset sino) and the **positivity-branch
+    `delta_sinogram` recompute** before release.
+- **Also pending:** hybrid timing for the `qggmrf_..._transfer` variant (deferred
+  Q3); prox-map prior under sharding (untouched).
 
 ### P5 — Device-config UX (can land in parallel once P1 fixes what gets configured)
 - `configure_devices(devices=None)` user-facing (None→auto, list→exact,
@@ -285,8 +344,9 @@ gate.
   internal methods are sharded-only.
 - **O4 (divisibility):** warn-with-instructions + `prepare_sino_for_devices` +
   pick-N; pad/crop only on the clean slice/row axis.
-- **Band-vs-pixel criterion (P2):** adopt pixel-batching unless the side-by-side
-  shows a clear memory/time regression on GPU.
+- **Band-vs-pixel criterion (P2) — RESOLVED (2026-06-03): KEEP BAND.**  The
+  side-by-side showed pixel's peak memory floored at ~1.7–2.7× band for only
+  ~11–16% less time, so band stayed and the pixel path was removed.
 - **Open:** exact `B_p` default / floor (set conservatively, refine by sweep);
   `configure_devices` precedence vs `use_gpu`; how `prepare_sino_for_devices`
   returns the crop spec to undo padding on the recon.

@@ -96,7 +96,7 @@ class TomographyModel(ParameterHandler):
         # flag).  In sharded mode each placement's mesh is currently an
         # equal-but-distinct copy of self.mesh.
         #
-        # TODO (P6 — retire the pre-placement device representations): once the
+        # TODO (retire the pre-placement device representations): once the
         # projector and VCD paths consume recon_placement / sino_placement,
         # remove main_device / sinogram_device and mesh / shard_devices; the
         # placements (each owning its mesh) become the single source of device
@@ -1537,7 +1537,7 @@ class TomographyModel(ParameterHandler):
         ``(g0 dynamic, L static)`` and lets each geometry map the band to the rows
         it needs -- all local, since a view-owner holds every row for its own views.
         See the "geometry-neutral slice-band projector interface" design note in
-        sharding_implementation_plan_v2.md (P3).
+        sharding_implementation_plan_v2.md.
 
         Args:
             shard_info (dict): device -> (local view-shard data, its GLOBAL view
@@ -2667,14 +2667,29 @@ class TomographyModel(ParameterHandler):
             # Update sinogram and loss
             # time_names.append('deltsin')
             # time_start = time.time()
-            # delta_sinogram is view-sharded (sino mesh); scale by alpha replicated onto that mesh
-            # (sharded) or by the host float (single-device) -- either way no per-subset host sync
-            # beyond the single-device one that was always there.
+            # Update the error sinogram: error_sinogram <- error_sinogram - alpha * delta_sinogram.
             if self.mesh is not None:
+                # Sharded path: scale eagerly (bit-identical to the single-device line below), then
+                # do the subtract in a buffer-DONATING jit so the error sinogram is updated IN
+                # PLACE.  Without in-place reuse, every subset allocates a fresh view-sharded error
+                # sinogram and the stale ones stay alive in jax's sharded-array reference cycles,
+                # accumulating one full sinogram per subset until gc -- the multi-device memory
+                # blowup.  alpha is replicated onto the sino mesh so the scale stays on-device (no
+                # host sync).  Release the constant-weights alias first (weighted_error_sinogram IS
+                # error_sinogram there) so error_sinogram's buffer is actually donatable.
                 delta_sinogram = self._replicate_scalar(alpha, self.sino_placement) * delta_sinogram
+                weighted_error_sinogram = None
+                new_error_sinogram = update_error_sinogram(error_sinogram, delta_sinogram)
+                # delta_sinogram is a one-shot view-sharded array also held by a reference cycle, so
+                # refcounting won't free it; release its buffer explicitly once the (donated) update
+                # has consumed it.
+                new_error_sinogram.block_until_ready()
+                delta_sinogram.delete()
+                error_sinogram = new_error_sinogram
             else:
+                # Single-device path unchanged (SingleDeviceSharding arrays free on refcount).
                 delta_sinogram = float(alpha) * delta_sinogram
-            error_sinogram = error_sinogram - delta_sinogram
+                error_sinogram = error_sinogram - delta_sinogram
             # error_sinogram = error_sinogram.block_until_ready()
             # times[time_index] += time.time() - time_start
             # time_index += 1
@@ -2911,6 +2926,20 @@ from functools import partial
 def update_recon(cur_flat_recon, cur_indices, cur_delta):
     cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
     return cur_flat_recon
+
+
+@partial(jax.jit, donate_argnames='error_sinogram')
+def update_error_sinogram(error_sinogram, delta_sinogram):
+    # Subtract, DONATING error_sinogram so XLA updates it in place (the same trick update_recon
+    # uses for the recon).  Without in-place reuse each VCD subset allocates a fresh view-sharded
+    # error sinogram, and the stale ones are held alive in jax's internal sharded-array reference
+    # cycles -- so they accumulate (one full sinogram per subset) until garbage collection, which
+    # is what made multi-device memory blow up.
+    # NOTE: this is a PURE subtract -- the alpha scale is applied eagerly by the caller, not folded
+    # in here, so the arithmetic stays bit-identical to the single-device path.  Folding the scale
+    # in lets XLA emit a fused multiply-add, which differs in the last bit and breaks the
+    # trivial-mesh bit-exactness test.
+    return error_sinogram - delta_sinogram
 
 
 @jax.jit

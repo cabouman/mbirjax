@@ -170,6 +170,17 @@ def mem_report(label="", device=None):
 
     print(f"\n=== mem_report [{label}] ===")
     print(f"  device bytes_in_use={cur:10.1f} MB   peak_bytes_in_use={peak:10.1f} MB")
+    # Full allocator stats: pool_bytes / bytes_reserved / peak_pool_bytes /
+    # largest_free_block_bytes / num_allocs distinguish a genuinely-large LIVE working
+    # set from a BFC POOL that grew via many alloc/free cycles and stuck (pool ≫ in_use).
+    if stats:
+        print("  full memory_stats (bytes->MB):")
+        for k in sorted(stats):
+            v = stats[k]
+            if isinstance(v, (int, float)) and "bytes" in k:
+                print(f"    {k:<30} = {v / 1e6:12.1f} MB")
+            else:
+                print(f"    {k:<30} = {v}")
     print(f"  live jax arrays: {len(arrays)}   sum={total:10.1f} MB   (top {TOP_N}):")
     for a in arrays[:TOP_N]:
         mb = _nbytes(a) / 1e6
