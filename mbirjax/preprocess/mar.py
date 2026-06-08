@@ -155,7 +155,7 @@ def _generate_metal_exponent_list(num_metal, max_order):
     return combinations
 
 
-def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
+def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, recon_device, sino_device):
     """
     Segment plastic and metal regions from a reconstruction, project them,
     and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
@@ -164,7 +164,8 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
         recon (jnp.ndarray): Reconstructed image.
         num_metal (int): Number of metal types to segment.
         ct_model: Forward projection model with a `.forward_project()` method.
-        device: JAX device to put the masks on for projection.
+        recon_device: JAX device to put reconstruction-domain arrays on for projection.
+        sino_device: JAX device to put sinogram-domain arrays on for beam-hardening fitting.
 
     Returns:
         plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
@@ -178,12 +179,13 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
 
     # --- Forward project, scale and vectorize plastic ---
-    plastic_sino_est = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+    plastic_sino_est = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, recon_device)).reshape(-1)
+    plastic_sino_est = jax.device_put(plastic_sino_est, sino_device)
 
     # --- Forward project the masked out metal regions ---
     metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
-        m = _forward_project_masked_recon(ct_model, recon, mask, device).reshape(-1)
+        m = _forward_project_masked_recon(ct_model, recon, mask, output_device=sino_device).reshape(-1)
         metal_sino_est.append(m)
 
     return plastic_sino_est, metal_sino_est
@@ -199,6 +201,9 @@ def _forward_project_masked_recon(ct_model, recon, mask, output_device):
     """
     recon_shape = ct_model.get_params('recon_shape')
     num_recon_slices = recon_shape[2]
+    recon_device = ct_model.main_device
+    recon = jax.device_put(recon, recon_device)
+    mask = jax.device_put(mask, recon_device)
 
     active_cylinder_mask = jnp.any(mask.reshape((-1, num_recon_slices)) != 0, axis=1)
     active_indices = jnp.nonzero(active_cylinder_mask, size=None)[0]
@@ -575,12 +580,14 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
             [(1, *t) for t in cross_exponent_list] +
             [(0, *t) for t in metal_exponent_list])
 
-    device = ct_model.main_device
+    recon_device = ct_model.main_device
+    sino_device = ct_model.sinogram_device
     sino_shape = measured_sino.shape
-    measured_sino = measured_sino.reshape(-1)
+    measured_sino = jax.device_put(measured_sino.reshape(-1), sino_device)
 
     # Get normalized sinogram p and [m_0, m_1, ...]
-    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device)
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(
+        recon, num_metal, ct_model, recon_device, sino_device)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     plastic_sino_est = plastic_sino_est / plastic_sino_scale
