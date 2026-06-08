@@ -843,9 +843,9 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
     # (per_view) rises above it as the shard shrinks.  Shown on both platforms.
     ax2.axhline(2.0, ls="--", color="gray", alpha=0.7,
                 label="ideal (2× = read+write)")
-    ax2.set_title("per-device memory ÷ shard size")
+    ax2.set_title("per-device memory ÷ sino shard size")
     if mem_kind == "gpu_peak_per_device":
-        ax2.set_ylabel("peak mem/device ÷ shard")
+        ax2.set_ylabel("peak mem/device ÷ sino shard")
     else:
         # CPU RSS is whole-process / shared RAM, so the ratio is not truly
         # per-device — the y-label flags the metric (the title is kept uniform).

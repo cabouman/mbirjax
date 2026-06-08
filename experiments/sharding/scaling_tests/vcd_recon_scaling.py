@@ -63,7 +63,7 @@ DEVICE_COUNTS = [1, 2, 4]     # cluster has 4 GPUs (2 per NUMA node); 2->4 spans
 # Number of VCD iterations per timed reconstruction.  VCD is iterative and much
 # heavier per element than a single projector, so the sizes below are smaller than
 # the projector drivers' and the iteration count is modest.
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 15
 
 # GPU memory knobs.
 #
@@ -90,11 +90,11 @@ MEM_FRACTION = 0.9         # pool fraction (hard cap when preallocating); LOWER 
 # fix it should now complete near the no-mesh ~50 GB).
 SIZES = {
     "cpu": [(48, 48, 48), (96, 96, 96), (192, 192, 192)],
-    "gpu": [(504, 504, 504), (1008, 1008, 1008)],
+    "gpu": [(1024, 1024, 1024), (1800, 1800, 1800), (2048, 2048, 2048)],
 }
 
-WARMUP = 1
-TRIALS = 2          # VCD is slow; a couple of timed trials is enough
+WARMUP = 0
+TRIALS = 1          # VCD is slow; a couple of timed trials is enough
 
 # Correctness (full single-device recon vs prerelease baseline).  Imported from the
 # capture script so capture and check share one definition (and one RNG sequence).
