@@ -313,6 +313,15 @@ async run-ahead — it was object lifecycle.
 - **Keep the scale eager (don't fold it into the donated jit).**  Folding to
   `error - alpha*delta` lets XLA emit a fused multiply-add → last-bit difference →
   breaks the trivial-mesh bit-exactness test.  A lone subtract can't be FMA-fused.
+  **UPDATE (step-4 Option B):** trivial-mesh is *not* bit-exact on GPU anyway — the
+  banded sharded path reorders non-associative FP sums vs the monolithic single-device
+  kernel, so a ~1 ULP difference is inherent (CPU compiles both identically, so it was
+  exact only there).  We therefore **relaxed the trivial-mesh tests to a tight `allclose`**
+  (1e-5 single-shot / 1e-4 iterated) and will **fold `alpha` back into the donated FMA**
+  during the unification, dropping the separate `scaled_delta` transient + its `.delete()`.
+  Lesson: "bit-exact across two differently-compiled kernels" is the wrong invariant on
+  GPU; use a tight tolerance and reserve exact-equality for same-kernel / data-movement
+  identities.
 - **Donation-engagement gotchas.**  (a) Release aliases first: for constant weights
   `weighted_error_sinogram IS error_sinogram`, so `= None` it or donation silently falls
   back to a copy.  (b) Donating 2 inputs for 1 output warns "Some donated buffers were

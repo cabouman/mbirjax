@@ -19,6 +19,52 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-07b) — Option B decided for step 4; GPU bit-exact tests relaxed; scaling-tests tooling overhaul (plots + archive + harness dedup)
+
+▶ **CURRENT FOCUS (next session): step 4 — mesh/no-mesh → placement unification, now decided as Option B.**
+This session was test/tooling cleanup + the step-4 *decision*; the unification CODE is the next real task.
+**Option B (resolved, v2 plan §P6):** a trivial 1-device placement resolves to a 1-device
+`NamedSharding` → one always-on placement path; the `is_sharded` guards retire; the transient
+cleanup section STAYS (reference cycles are inherent).  Accept ~1 ULP / iterated ≤1e-4 over a
+literal "no prerelease regression" (treated like "bit-exact" — not what we actually want).  Three
+notes to carry: (1) replace the bit-exact-vs-prerelease guard with a **tight `allclose`** (repurpose
+`scaling_tests/vcd_single_device_baseline.py` at ~1e-4); (2) **fold `alpha` into the donated FMA** and
+drop the `scaled_delta` transient + its `.delete()` (the FMA-avoidance existed only for bit-exactness);
+(3) the heterogeneous recon-CPU/sino-GPU path goes through `_qggmrf_prior_sharded` — **measure
+`_transfer` timing before deleting it, and DROP the heterogeneous case if it forces extra code paths**
+(target is multi-GPU, not single-GPU stop-gaps).  Broad hot-path refactor → scope + propose first;
+suite (`tests/sharding/` + `tests/test_vcd.py`) is the gate.
+
+### What landed this session (all committed except where noted)
+- **`fbp_filter` shard-on-entry fix** (`parallel_beam.py`): the internal sharded `fbp_filter` now
+  shards a plain sinogram at entry (mirrors `fbp_recon`); a plain input previously only had a shard
+  on device 0 → per-device fan-out `KeyError`.  Ported test into `tests/sharding/test_fbp.py`; the
+  4 stale top-level `tests/test_sharding_*.py` duplicates were deleted (they collided on a
+  once-per-process warning).
+- **Bit-exact → tight `allclose`** for the 7 trivial-mesh-vs-single-device tests (`tests/sharding/`):
+  they can't be byte-exact on GPU (banded sharded path reorders non-associative FP sums; CPU stays
+  exact).  Single-shot `1e-5`, iterative VCD recon `1e-4` (matched to the GPU-proven multi-device
+  siblings).  All tagged **`RETIRE-AFTER-SHARDING`** (grep stem `RETIRE-AFTER`); convention documented
+  in v2 plan §P6.  They retire when the legacy single-device path is gone.
+- **Scaling-tests tooling overhaul** (`experiments/.../scaling_tests/`, NOT library code):
+  - size-sweep plots now **minutes / GB**, dynamic 4-decade time axis, ideal lines anchored
+    bottom-left, and a **configurable `time_ideal` slope** (`voxels` for fbp, `voxels·views` for
+    projectors/VCD) stored per-driver in the YAML; `replot_from_yaml.py` honors it.
+  - **`scaling_tests/archive/`** holds 8 resolved one-off diagnostics (moved verbatim; each with its
+    conclusion + pointer in `archive/_file_index.md`); the main `_file_index.md` was rewritten
+    purpose-grouped.
+  - **Phase-2 harness dedup**: the 5 scaling drivers now share one harness in `scaling_common.py`
+    (`run_measure_loop`, `build_worker_env`, `build_setup_result`/`print_setup_banner`,
+    `OOM_MARKERS`/`is_oom`, `beta_root`) — each driver is just config + op shims + a `build_and_time`
+    callback (−646/+326 lines).  Standardized across all 5: throttle sampling, traceback-based OOM
+    classification, topology/dev2dev snapshot.  Validated on CPU (fbp/vcd/back run end-to-end;
+    forward/direct import-clean); post-vs-pre-refactor YAMLs compared (correctness identical; only
+    timing noise + the new fields differ).
+  - Still own local `_OOM_MARKERS`/`_beta_root` (out of Phase-2 scope, different structure):
+    `sparse_back_project_single_device_sweep.py`, `vcd_single_device_baseline.py`.
+
+---
+
 ## HANDOFF (2026-06-07) — P4 DONE (sharded-memory leak fixed & validated 1–4 GPU); `is_sharded` refactor; NEXT = mesh/no-mesh unification (step 4)
 
 ▶ **CURRENT FOCUS (next session): mesh/no-mesh → placement unification** (v2 plan P6 / "step 4").

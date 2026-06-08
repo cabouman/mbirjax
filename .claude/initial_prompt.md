@@ -45,18 +45,46 @@ non-const 7.9, positivity 7.3 GB (all flat, no leak); 1008³ 1-device completes 
 1–4 GPU scaling 1008³ **1d→4d = 4.49× super-linear**, memory shards 1/n_dev; correctness
 vs prerelease 8.79e-7; full suite (`tests/sharding/` + `tests/test_vcd.py`) **77 passed**.
 Also landed: the **`is_sharded` property** (single source of truth replacing the
-`self.mesh is None/not None` checks) and a size-sweep TIME-ideal curve fix (∝ voxels·views,
-not voxels).
+`self.mesh is None/not None` checks).
+
+**Since then (committed):**
+- **`fbp_filter` shard-on-entry fix** — the internal sharded `fbp_filter` now shards a plain
+  sinogram at entry (a plain input only had a shard on device 0 → per-device fan-out
+  KeyError); mirrors `fbp_recon`.
+- **Trivial-mesh bit-exact tests relaxed → tight `allclose`** (7 tests in `tests/sharding/`):
+  the 1-device-mesh-vs-single-device comparisons can't be byte-exact on GPU (the banded
+  sharded path reorders non-associative FP sums; CPU compiles identically and stays exact).
+  Single-shot ops `rtol/atol=1e-5`, iterative VCD recon `1e-4`.  All tagged with the fixed
+  searchable phrase **`RETIRE-AFTER-SHARDING`** (grep stem `RETIRE-AFTER`); they retire once
+  the legacy single-device path is gone (nothing left to compare).
+- **Option B unification decision recorded** in v2 plan §P6 (see First task).
+- **`scaling_tests/` tooling overhaul** (experiments only, not library code): size-sweep
+  plots now in **minutes / GB** with a configurable time-ideal slope (`voxels` for fbp,
+  `voxels·views` for projectors/VCD); resolved one-off diagnostics moved to
+  `scaling_tests/archive/`; and the 5 scaling drivers were de-duplicated onto a **shared
+  harness in `scaling_common.py`** (`run_measure_loop`, `build_worker_env`,
+  `build_setup_result`/`print_setup_banner`, `OOM_MARKERS`/`is_oom`).  Side effect: every
+  driver now records per-GPU throttle state + topology + a `time_ideal` field in its YAML.
 
 First task: **step 4 — mesh/no-mesh → placement unification** (v2 plan P6).  Fold the dual
-`is_sharded`/no-mesh code paths into one always-on placement path: `update_error_sinogram`
+`is_sharded`/no-mesh code paths into ONE always-on placement path: `update_error_sinogram`
 becomes the single error-sinogram update (like `update_recon`), the `is_sharded` *guards*
 retire — but the **transient-free cleanup section STAYS** (sharded-array reference cycles
 are inherent to host-orchestrated arrays; donation + `.delete()` don't go away — see the
-lessons section).  One design call to make: does a trivial 1-device placement resolve to a
-plain `SingleDeviceSharding` (keeps single-device cycle-free, no `.delete()`/block there)
-or a 1-device `NamedSharding` (uniform path, but then single-device also pays the cleanup)?
-This is a broad, hot-path refactor → scope and propose before editing; suite is the gate.
+lessons section).  **The design call is RESOLVED → Option B** (v2 plan §P6): a trivial
+1-device placement resolves to a 1-device `NamedSharding` (single uniform path), accepting
+~1 ULP / iterated ≤1e-4 differences over a *literal* "no regression from prerelease" (we
+treat that the same as "bit-exact" — not what we actually want).  Carry three notes into the
+implementation: **(1)** swap the bit-exact-vs-prerelease guard for a **tight `allclose`**
+(repurpose `experiments/.../scaling_tests/vcd_single_device_baseline.py` at ~1e-4); **(2)**
+the "keep alpha out of the donated jit" constraint existed ONLY for bit-exactness, so now
+fold `alpha` into the donated FMA and **drop the `scaled_delta` transient + its `.delete()`**
+(the unified update gets simpler than either current path); **(3)** the heterogeneous
+recon-CPU/sino-GPU path routes the prior through `_qggmrf_prior_sharded` instead of the
+`qggmrf_..._transfer` fast path — **measure its timing before deleting `_transfer`, and DROP
+the heterogeneous case entirely if it forces extra code paths** (the real target is large
+*multi-GPU* recons, not single-GPU stop-gaps).  Broad, hot-path refactor → scope and propose
+before editing; suite (`tests/sharding/` + `tests/test_vcd.py`) is the gate.
 
 Then / deferred: **P5** (device-config UX — `configure_devices`); **P6** (port the
 placement/movement path to cone/translation/multiaxis, and retire
@@ -80,9 +108,11 @@ Reminders:
   gitignored — record decision numbers in committed docs.
 - **Sharded jax arrays sit in reference cycles** → freed only by cyclic GC, not refcount;
   single-device (`SingleDeviceSharding`) arrays free on refcount.  So update persistent
-  sharded state **in place via buffer donation** and **`.delete()` eager-op transients**;
-  don't fold the alpha scale into the donated jit (FMA breaks bit-exactness).  (Full
-  detail in lessons.md.)
+  sharded state **in place via buffer donation** and **`.delete()` eager-op transients**.
+  (The current committed code keeps the alpha scale OUT of the donated jit to stay
+  trivial-mesh bit-exact; **step-4 Option B lifts that** — fold alpha into the donated FMA
+  and drop the `scaled_delta` transient, since we no longer require bit-exactness.  Full
+  detail in lessons.md + v2 plan §P6.)
 - Memory ruler: `peak_bytes_in_use` is the REAL live working set, preallocation-invariant
   (`PREALLOCATE=false` does NOT reveal the capacity floor; lower
   `XLA_PYTHON_CLIENT_MEM_FRACTION` to find the OOM threshold).  Don't extrapolate absolute
