@@ -583,7 +583,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     recon_device = ct_model.main_device
     sino_device = ct_model.sinogram_device
     sino_shape = measured_sino.shape
-    measured_sino = jax.device_put(measured_sino.reshape(-1), sino_device)
+    measured_sino = measured_sino.reshape(-1)
 
     # Get normalized sinogram p and [m_0, m_1, ...]
     plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(
