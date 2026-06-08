@@ -364,13 +364,13 @@ Change 1 (note 2: fold `alpha` into the donated FMA `update_error_sinogram`, dro
 Change 2 (ParallelBeam auto-defaults the *homogeneous* single-device case to a trivial 1-device
 mesh via the new `_supports_sharding()` hook + `_sharding_configured` flag) both landed.  The
 **heterogeneous recon-CPU/sino-GPU 'sinograms' mode stays on the legacy single-device branch**
-(deliberate 2-Keep scope; a CPU+GPU pair is not one mesh), so `_transfer` is untouched and
-note 3 / "2-Drop" is deferred pending the GPU `_transfer`-vs-band-streaming timing.  The flip
-exposed + fixed a partial-view gap (`view_indices` routes to single-device on a trivial mesh,
-raises only on a multi-device mesh).  No-mesh-ParallelBeam tests retired/updated.  Remaining:
-GPU re-validation (Change 1 memory + Change 2 single-GPU no-regression), note 1 (baseline
-tolerance → `allclose` 1e-4, now that MESH=False auto-meshes on beta ParallelBeam), then the
-2-Drop decision.  See `sharding_status.md` HANDOFF (2026-06-08).
+(deliberate 2-Keep scope; a CPU+GPU pair is not one mesh), so `_transfer` is untouched for now.
+The flip exposed + fixed a partial-view gap (`view_indices` routes to single-device on a trivial
+mesh, raises only on a multi-device mesh).  No-mesh-ParallelBeam tests retired/updated.
+**GPU re-validation DONE** (Greg): Change 1 + Change 2 within noise; 8-GPU 1024³/1800³/2048³
+scaling at least as predicted.  **note 1 is informational** (read the baseline at ~1e-4, no code
+change).  **2-Drop DECIDED — drop hybrid** (see §Decisions "Hybrid (2-Drop)" below; execution is
+a P6 task).  See `sharding_status.md` HANDOFF (2026-06-08).
 
 **Unification decision (the "step 4" trivial-placement question) — RESOLVED: Option B,
 one always-on placement path.**  A trivial 1-device placement resolves to a 1-device
@@ -427,8 +427,32 @@ to find every site.  Currently tagged:
   of scope**.
 - **O2 (return contract) — resolved (F2):** user-facing methods match input;
   internal methods are sharded-only.
+- **Hybrid (2-Drop) — RESOLVED (2026-06-08): DROP hybrid** (recon-CPU/sino-GPU
+  'sinograms' mode; supersedes O1's "keep via two trivial placements").  Analytic
+  envelope `scaling_tests/archive/analytic_hybrid_vs_full_envelope.py`: per-device peak
+  ≈ 7 recon-volumes + 8 sino-volumes (≈15 total, matches the 504³ 6.9 GB anchor); hybrid
+  offloads only the recon side → **+19% in N**.  A 2nd GPU gives **+26%** (2^⅓), and
+  slice-subset stitching (`split_sino_recon` top/bottom for cone; overlapping slice
+  subsets for parallel beam) extends ~unboundedly on one GPU and composes with sharding —
+  so the alternatives all meet/beat +19% without the legacy path.  Bonus: hybrid is the
+  only `main_device != sinogram_device` config, so dropping it removes `_transfer`, the
+  `'sinograms'` branch in `set_devices_and_batch_sizes`, and the auto-default `else`-branch,
+  and lets one `self.mesh` represent every ParallelBeam config.  Tradeoff: hybrid was exact,
+  stitching is approximate at the seams (good-enough for single-GPU).  **Execution = P6.**
 - **O4 (divisibility):** warn-with-instructions + `prepare_sino_for_devices` +
-  pick-N; pad/crop only on the clean slice/row axis.
+  pick-N; pad/crop only on the clean slice/row axis.  **Non-divisible shard axes
+  (design, 2026-06-08):** *Views* — pad to a multiple of N and zero the padded views; the
+  pad mask is just `weights = 0` (the weighted error sinogram and line-search sums drop
+  them, and back projection is a reduction over views so zero-weight views are inert).  The
+  same per-shard view masking gives **sharded view-selection** (keep the full view-sharded
+  layout, zero the excluded views — no gather, no divisibility break), useful for
+  view-iterating algorithms like `vcls` on multi-GPU (each device works one local view,
+  masks the rest); it does NOT save compute, so single-device subsetting stays for the
+  compute-saving case.  *Slices* — harder (the prior couples neighboring slices, and for
+  parallel/cone the slice axis is tied to detector rows).  Principle: **pad to a shape the
+  *problem* owns (reproducible), never to a multiple of the *device count* (N-dependent
+  result).**  Options: pick N from divisors of `num_slices`; or problem-level pad + a slice
+  mask the prior respects (reflected BC at the last real slice, padded slices inert).
 - **Band-vs-pixel criterion (P2) — RESOLVED (2026-06-03): KEEP BAND.**  The
   side-by-side showed pixel's peak memory floored at ~1.7–2.7× band for only
   ~11–16% less time, so band stayed and the pixel path was removed.

@@ -69,25 +69,38 @@ changes this session and is **CPU-green** (full suite); the remaining work is on
   gradient entries — passes 5/5 isolated, never builds a model, unrelated to this change.
   Worth seeding — flagged as a side task.)
 
-### NEXT (cluster — Greg)
-1. **GPU re-validation of the unification.**  (a) Change 1: re-confirm the sharded-VCD memory
-   is still flat (504³/5-iter/1-device-mesh const/non-const/positivity ≈ 6.9/7.9/7.3 GB) — the
-   FMA changes the sharded arithmetic, so re-measure peak.  (b) Change 2: the **normal
-   single-GPU ParallelBeam user now runs the 1-device-mesh path by default** — confirm
-   no-regression vs the pre-flip no-mesh path (time + peak) at 504³ and 1008³.  **Fresh
-   `pip install -e .` on the cluster first** (stale editable build burned a whole diagnosis
-   once).
-2. **note(1) — baseline tolerance.**  With 2-Keep, `vcd_single_device_baseline.py` MESH=False
-   on **beta ParallelBeam now auto-meshes (1-device)** — it is no longer the verbatim
-   prerelease body, so beta-vs-prerelease is no longer bit-exact.  Swap that comparison to a
-   **tight `allclose` (~1e-4)**, not exact (the script captures; the comparison/tolerance lives
-   wherever the two runs are diffed — wire the 1e-4 there).
-3. **Then decide 2-Drop** (drop heterogeneous 'sinograms' for ParallelBeam): needs the
-   `_transfer`-vs-band-streaming GPU timing (note 3) — does the 1-device-mesh band-streaming
-   path match/beat the heterogeneous mode for big-recon-on-one-GPU?  If yes, drop heterogeneous
-   + `_transfer` and ParallelBeam collapses to the single placement path.
-4. **P6 proper** retires the `is_sharded` else-branches once cone/translation/multiaxis are
-   ported (the branches are still live for them + for ParallelBeam-heterogeneous under 2-Keep).
+### GPU re-validation — DONE (Greg, cluster)
+- **Change 1 (FMA) + Change 2 (default 1-device mesh): within noise of previous results.**
+  Single-GPU ParallelBeam now runs the 1-device-mesh path by default with no time/memory
+  regression.
+- **8-GPU sharded scaling at 1024³ / 1800³ / 2048³: time and memory scaling at least as good
+  as predicted.**  Confirms the unification holds at the large multi-GPU sizes that are the
+  actual target.
+- **note(1) is informational only** — no code change needed.  With 2-Keep, beta single-device
+  ParallelBeam runs the 1-device-mesh path, so beta-vs-prerelease is ≈1e-4, not bit-exact; the
+  `vcd_single_device_baseline.py` comparison should just be *read* at ~1e-4 tolerance.
+
+### 2-Drop — DECIDED: drop hybrid (recon-CPU/sino-GPU 'sinograms' mode)
+Analytic memory envelope (`scaling_tests/archive/analytic_hybrid_vs_full_envelope.py`) settled
+it without a GPU run.  With per-device peak ≈ 7 recon-volumes + 8 sino-volumes (≈15 total,
+matching the 504³ 6.9 GB anchor), hybrid offloads only the recon side → **+19% in N** on a
+single GPU.  A 2nd GPU gives **+26%** (2^⅓), and slice-subset stitching (`split_sino_recon`
+top/bottom for cone; overlapping slice subsets for parallel beam) extends essentially
+unboundedly on one GPU and composes with sharding for huge fixed-GPU problems — so every
+alternative meets or beats hybrid's +19% without the legacy code.  Hybrid is also the *only*
+`main_device != sinogram_device` config, so dropping it removes `_transfer`, the `'sinograms'`
+branch in `set_devices_and_batch_sizes`, and the auto-default `else`-branch, and lets a single
+`self.mesh` represent every ParallelBeam config — a branch-count reduction across exactly the
+code being unified.  Tradeoff recorded: hybrid was *exact*, stitching is approximate at the
+seams (judged good-enough for single-GPU).  **Execution is a P6 task** (delete the hybrid path
+when the legacy single-device branches retire).
+
+### NEXT
+- **P6** retires the `is_sharded` else-branches once cone/translation/multiaxis are ported (the
+  branches are still live for them under 2-Keep) and executes the hybrid drop above.  Carry the
+  non-divisible-shard-axis design (views: pad + `weights=0` mask, which also gives sharded
+  view-selection; slices: pick-N from divisors, or problem-level pad + prior-aware mask — never
+  pad to a multiple of N) — see v2 plan §P5/§Decisions.
 
 ---
 

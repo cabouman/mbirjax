@@ -47,3 +47,12 @@ exactly what was run.
 - `vcd_shard_vs_noshard.py` — user-facing `recon` head-to-head, no-shard vs shard,
   reporting time / peak memory / NRMSE.  Superseded by `vcd_recon_scaling.py` (pure
   sharded-loop peak) plus the multi-GPU scaling numbers recorded in the docs.
+- `analytic_hybrid_vs_full_envelope.py` — pure-analytic (no JAX) memory envelope:
+  N at OOM for 'full' vs 'hybrid' (recon-CPU/sino-GPU) vs 'sharded(n)', given a GPU
+  budget and sino==recon==N³.  **Decision: DROP hybrid.**  Per-device peak ≈ 7
+  recon-volumes + 8 sino-volumes (≈15 total, matches the 504³ 6.9 GB anchor); hybrid
+  offloads only the recon side → **+19% N** — beaten by a 2nd GPU (+26%, 2^⅓) and by
+  slice-subset stitching (`split_sino_recon` / overlapping subsets, ~unbounded, composes
+  with sharding).  Recorded in `plans/sharding_implementation_plan_v2.md` §Decisions
+  "Hybrid (2-Drop)" and `plans/sharding_status.md` HANDOFF (2026-06-08).  Self-contained
+  (no `scaling_common` import) — runs as-is.
