@@ -213,17 +213,16 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
 
     # Compute thresholds and region scales on the host.  The scales are just
     # masked means because the masks are binary.
-    recon_np = np.asarray(recon)
-    thresholds = multi_threshold_otsu(recon_np, classes=num_metal + 2)
+    recon = np.asarray(recon)
+    thresholds = multi_threshold_otsu(recon, classes=num_metal + 2)
 
     # Plastic: lowest class
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
     # Create masks
-    plastic_mask_np = (recon_np > plastic_low_threshold) & (recon_np <= plastic_metal_threshold)
-    plastic_scale = _compute_binary_mask_scale(recon_np, plastic_mask_np)
-    plastic_mask = jnp.asarray(plastic_mask_np, dtype=recon.dtype)
+    plastic_mask = (recon > plastic_low_threshold) & (recon <= plastic_metal_threshold)
+    plastic_scale = _compute_binary_mask_scale(recon, plastic_mask)
 
     # Metal masks and scaling
     metal_masks = []
@@ -231,10 +230,9 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     for i in range(1, num_metal + 1):  # start from index 1
         lower = thresholds[i]
         upper = thresholds[i + 1] if i + 1 < len(thresholds) else np.inf
-        metal_mask_np = (recon_np > lower) & (recon_np <= upper)
-        metal_mask = jnp.asarray(metal_mask_np, dtype=recon.dtype)
+        metal_mask = (recon > lower) & (recon <= upper)
         metal_masks.append(metal_mask)
-        metal_scales.append(_compute_binary_mask_scale(recon_np, metal_mask_np))
+        metal_scales.append(_compute_binary_mask_scale(recon, metal_mask))
 
     return plastic_mask, metal_masks, plastic_scale, metal_scales
 
