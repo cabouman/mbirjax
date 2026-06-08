@@ -196,6 +196,14 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
             - plastic_scale (float): Scaling factor for plastic region.
             - metal_scales (List[float]): List of scaling factors for each metal region.
     """
+
+    def _compute_binary_mask_scale(image, mask):
+        """Compute the least-squares scale for a binary mask without dense float temporaries."""
+        numerator = np.sum(image, where=mask)
+        denominator = np.count_nonzero(mask)
+        epsilon = 1e-8
+        return float(numerator / (denominator + epsilon))
+
     if num_metal <= 0:
         raise ValueError("num_metal must be positive")
 
@@ -203,26 +211,30 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
                                        bottom_margin=bottom_margin)
 
-    # Compute thresholds using multi-threshold Otsu
-    thresholds = multi_threshold_otsu(recon, classes=num_metal + 2)
+    # Compute thresholds and region scales on the host.  The scales are just
+    # masked means because the masks are binary.
+    recon_np = np.asarray(recon)
+    thresholds = multi_threshold_otsu(recon_np, classes=num_metal + 2)
 
     # Plastic: lowest class
     plastic_low_threshold = thresholds[0]
     plastic_metal_threshold = thresholds[1]
 
     # Create masks
-    plastic_mask = jnp.where((recon > plastic_low_threshold) & (recon <= plastic_metal_threshold), 1.0, 0.0)
-    plastic_scale = mjp.compute_scaling_factor(recon, plastic_mask)
+    plastic_mask_np = (recon_np > plastic_low_threshold) & (recon_np <= plastic_metal_threshold)
+    plastic_scale = _compute_binary_mask_scale(recon_np, plastic_mask_np)
+    plastic_mask = jnp.asarray(plastic_mask_np, dtype=recon.dtype)
 
     # Metal masks and scaling
     metal_masks = []
     metal_scales = []
     for i in range(1, num_metal + 1):  # start from index 1
         lower = thresholds[i]
-        upper = thresholds[i + 1] if i + 1 < len(thresholds) else jnp.inf
-        metal_mask = jnp.where((recon > lower) & (recon <= upper), 1.0, 0.0)
+        upper = thresholds[i + 1] if i + 1 < len(thresholds) else np.inf
+        metal_mask_np = (recon_np > lower) & (recon_np <= upper)
+        metal_mask = jnp.asarray(metal_mask_np, dtype=recon.dtype)
         metal_masks.append(metal_mask)
-        metal_scales.append(mjp.compute_scaling_factor(recon, metal_mask))
+        metal_scales.append(_compute_binary_mask_scale(recon_np, metal_mask_np))
 
     return plastic_mask, metal_masks, plastic_scale, metal_scales
 
