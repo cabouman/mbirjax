@@ -43,15 +43,17 @@ def _make_model_and_sino(num_views=8, num_rows=16, num_channels=64, seed=0):
 
 
 class TestFbpFilterSingleDevice(unittest.TestCase):
-    """No mesh configured: behavior should be plain-in / plain-out and correct."""
+    """Default (auto 1-device mesh) behavior: a plain input is filtered and shape-preserved."""
 
     def test_filter_runs_and_preserves_shape(self):
         model, sino = _make_model_and_sino()
         out = model.fbp_filter(sino)
         self.assertEqual(out.shape, sino.shape)
-        # No mesh -> output is a plain (unsharded) array.
-        self.assertNotIsInstance(getattr(out, 'sharding', None),
-                                 jax.sharding.NamedSharding)
+        # RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh
+        # (Option B), so a plain input is sharded at entry and the output is a (1-device)
+        # NamedSharding -- it was a plain array on the legacy no-mesh path.  Shape is
+        # preserved either way; the sharded-contract output is checked in TestFbpFilterSharded.
+        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
 
     def test_row_batch_non_divisible_matches(self):
         """A row count not divisible by the row-filter batch still filters every

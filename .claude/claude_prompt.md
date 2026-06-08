@@ -68,6 +68,9 @@ with the F1 case study in `.claude/lessons.md`):
   single-variable ablations; name+verify the assumption a fix rests on; sweep,
   don't guess) live in global memory and apply everywhere.
 
-For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, and computational efficiency over stylistic changes.
+For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, 
+and computational efficiency over stylistic changes.
 
-Remember, we're in the curiosity business, so a little bit of exploration and a lot of understanding are much better than a quick fix.
+I value curiosity greatly, so a little bit of exploration and a lot of understanding 
+are much better than a quick fix.  I really want to understand what we're doing, so I need 
+you to discuss options and explain important changes as we go.  

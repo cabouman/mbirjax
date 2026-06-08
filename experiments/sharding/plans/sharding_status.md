@@ -19,6 +19,78 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-08) — step 4 unification LANDED (CPU): Change 1 (FMA fold) + Change 2 (2-Keep: ParallelBeam default trivial 1-device mesh); GPU re-validation + note(1) baseline tolerance are NEXT
+
+▶ **CURRENT FOCUS (next session): GPU re-validation of the step-4 unification, then note(1)
+baseline tolerance + decide 2-Drop.**  Step 4 (Option B) was implemented in two reviewed
+changes this session and is **CPU-green** (full suite); the remaining work is on the cluster.
+
+### What landed (CPU-validated; staged, Greg commits from PyCharm)
+- **Change 1 — the unlocked simplification (v2 §P6 note 2).**  Folded `alpha` into the
+  buffer-donating `update_error_sinogram(error_sinogram, alpha, delta_sinogram)` → a single
+  **fused multiply-add** `e − α·d`.  Dropped the eager `scaled_delta` transient and its
+  `.delete()`; for **constant weights the end-of-subset cleanup section is now empty and
+  skipped** (delta_sinogram is an `assemble_sharded` output → frees on refcount), non-const
+  keeps only `weighted_error_sinogram.delete()`.  The FMA differs from the old eager pre-scale
+  by ~1 ULP — fine now that bit-exactness is not required (the in-suite trivial-mesh tests are
+  already relaxed to `allclose`).  Files: `tomography_model.py` (`update_error_sinogram` + the
+  sharded subtract block + cleanup section).
+- **Change 2 — 2-Keep: ParallelBeam defaults to a trivial 1-device mesh.**  New geometry hook
+  `TomographyModel._supports_sharding()` (base False; **ParallelBeamModel overrides True**).
+  At the end of `set_devices_and_batch_sizes`, when sharding was not explicitly configured and
+  the geometry supports it, the **homogeneous** single-device case (`main_device ==
+  sinogram_device`, i.e. 'full' GPU / 'none' CPU) auto-defaults to a trivial 1-device `Mesh`
+  → `is_sharded` True → one always-on placement path.  New `self._sharding_configured` flag
+  (set in `configure_sharding`) prevents `set_devices_and_batch_sizes` (re-run on every
+  `set_params` recompile) from clobbering an explicit multi-device mesh; the block also
+  re-evaluates each call so a mode flip homogeneous↔heterogeneous sets/clears the auto mesh.
+  - **Heterogeneous recon-CPU/sino-GPU 'sinograms' mode stays on the legacy single-device
+    branch** (a CPU+GPU pair is not one mesh).  So `_transfer` is untouched and note(3)
+    (measure `_transfer`, then 2-Drop) is **deferred** — this is the deliberate 2-Keep scope.
+  - Cone/translation/multiaxis inherit base `_supports_sharding()=False` → stay `mesh=None`
+    (legacy path) until P6.  `MultiAxisParallelModel` extends `TomographyModel` directly (not
+    ParallelBeam), so it is NOT auto-meshed — verified.
+- **Capability gap the flip exposed + fixed: partial-view projection.**  `view_indices` (a
+  subset of views) breaks the equal view-shard, so `sparse_forward_project` /
+  `sparse_back_project` route `view_indices is not None` to the **single-device** impl on a
+  trivial 1-device mesh, and raise `NotImplementedError` only on a real **multi-device** mesh.
+  (Only `vcls.py` and `test_view_batching` pass `view_indices`; both run single-device.)
+- **Tests adapted to the approved default change** (`tests/sharding/`): the no-mesh-ParallelBeam
+  tests assert the old default.  Per decision: `TestNoMeshNoOp` (2 tests) **tagged
+  RETIRE-AFTER-SHARDING + `@unittest.skip`** (the no-mesh branch is now non-ParallelBeam-only,
+  retires at P6); `test_single_device_trivial_placements` **updated** (mesh is now a trivial
+  1-device mesh, not None — placement-triviality assertions unchanged and still pass);
+  `test_fbp.py::test_filter_runs_and_preserves_shape` **updated** (plain input now yields a
+  1-device NamedSharding; shape still preserved).
+- **Verification (CPU):** `tests/sharding/` + `tests/test_vcd.py` **76 passed, 2 skipped**;
+  `test_projectors` / `test_fbp_fdk` / `test_prox` / `test_denoiser` / `test_hsnt` /
+  `test_preprocessing` / `test_utilities` green.  (Pre-existing flake: `test_qggmrf::
+  test_loss_and_gradient` uses unseeded `np.random` + tight default `allclose` on near-zero
+  gradient entries — passes 5/5 isolated, never builds a model, unrelated to this change.
+  Worth seeding — flagged as a side task.)
+
+### NEXT (cluster — Greg)
+1. **GPU re-validation of the unification.**  (a) Change 1: re-confirm the sharded-VCD memory
+   is still flat (504³/5-iter/1-device-mesh const/non-const/positivity ≈ 6.9/7.9/7.3 GB) — the
+   FMA changes the sharded arithmetic, so re-measure peak.  (b) Change 2: the **normal
+   single-GPU ParallelBeam user now runs the 1-device-mesh path by default** — confirm
+   no-regression vs the pre-flip no-mesh path (time + peak) at 504³ and 1008³.  **Fresh
+   `pip install -e .` on the cluster first** (stale editable build burned a whole diagnosis
+   once).
+2. **note(1) — baseline tolerance.**  With 2-Keep, `vcd_single_device_baseline.py` MESH=False
+   on **beta ParallelBeam now auto-meshes (1-device)** — it is no longer the verbatim
+   prerelease body, so beta-vs-prerelease is no longer bit-exact.  Swap that comparison to a
+   **tight `allclose` (~1e-4)**, not exact (the script captures; the comparison/tolerance lives
+   wherever the two runs are diffed — wire the 1e-4 there).
+3. **Then decide 2-Drop** (drop heterogeneous 'sinograms' for ParallelBeam): needs the
+   `_transfer`-vs-band-streaming GPU timing (note 3) — does the 1-device-mesh band-streaming
+   path match/beat the heterogeneous mode for big-recon-on-one-GPU?  If yes, drop heterogeneous
+   + `_transfer` and ParallelBeam collapses to the single placement path.
+4. **P6 proper** retires the `is_sharded` else-branches once cone/translation/multiaxis are
+   ported (the branches are still live for them + for ParallelBeam-heterogeneous under 2-Keep).
+
+---
+
 ## HANDOFF (2026-06-07b) — Option B decided for step 4; GPU bit-exact tests relaxed; scaling-tests tooling overhaul (plots + archive + harness dedup)
 
 ▶ **CURRENT FOCUS (next session): step 4 — mesh/no-mesh → placement unification, now decided as Option B.**

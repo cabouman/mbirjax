@@ -358,6 +358,20 @@ gate.
   and switch the jittable single-device / forward assembly to an in-place
   `dynamic_update_slice` accumulator with `donate_argnums` (see the P3 design note).
 
+**STATUS (2026-06-08): step 4 IMPLEMENTED as "2-Keep" — CPU-green, GPU re-validation pending.**
+Change 1 (note 2: fold `alpha` into the donated FMA `update_error_sinogram`, drop the
+`scaled_delta` transient + its `.delete()`; const-weights cleanup section now empty/skipped) and
+Change 2 (ParallelBeam auto-defaults the *homogeneous* single-device case to a trivial 1-device
+mesh via the new `_supports_sharding()` hook + `_sharding_configured` flag) both landed.  The
+**heterogeneous recon-CPU/sino-GPU 'sinograms' mode stays on the legacy single-device branch**
+(deliberate 2-Keep scope; a CPU+GPU pair is not one mesh), so `_transfer` is untouched and
+note 3 / "2-Drop" is deferred pending the GPU `_transfer`-vs-band-streaming timing.  The flip
+exposed + fixed a partial-view gap (`view_indices` routes to single-device on a trivial mesh,
+raises only on a multi-device mesh).  No-mesh-ParallelBeam tests retired/updated.  Remaining:
+GPU re-validation (Change 1 memory + Change 2 single-GPU no-regression), note 1 (baseline
+tolerance → `allclose` 1e-4, now that MESH=False auto-meshes on beta ParallelBeam), then the
+2-Drop decision.  See `sharding_status.md` HANDOFF (2026-06-08).
+
 **Unification decision (the "step 4" trivial-placement question) — RESOLVED: Option B,
 one always-on placement path.**  A trivial 1-device placement resolves to a 1-device
 `NamedSharding` (not a `SingleDeviceSharding`), so the single-device case is just the

@@ -78,11 +78,15 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = None
         self.prox_data = None
 
-        # Multi-device sharding (opt-in via configure_sharding).  Until then,
-        # mesh is None and the existing single-device code paths are unchanged.
+        # Multi-device sharding.  An explicit configure_sharding() builds a mesh over the
+        # chosen devices and sets _sharding_configured = True.  Absent that, geometries whose
+        # _supports_sharding() is True (ParallelBeam) auto-default the homogeneous single-device
+        # case to a trivial 1-device mesh at the end of set_devices_and_batch_sizes(), so the
+        # placement path is always on; other geometries keep mesh = None (legacy single-device).
         self.mesh = None
         self.shard_devices = None
         self.dev2dev_safe = True   # set empirically in configure_sharding
+        self._sharding_configured = False  # True only after an explicit configure_sharding()
         # recon_placement / sino_placement describe how recon-like and sino-like
         # arrays are distributed across devices.  Each is a Placement, which owns
         # a device list, a sharded axis, AND its own 1-D mesh; _set_placements()
@@ -171,6 +175,17 @@ class TomographyModel(ParameterHandler):
         """
         return self.mesh is not None
 
+    def _supports_sharding(self):
+        """Whether this geometry has the placement/movement projector path implemented.
+
+        Only such geometries auto-default the single-device case to a trivial 1-device mesh
+        (the always-on placement path); the rest stay on the legacy single-device path until
+        their projectors are ported (P6).  Base default is False; ParallelBeamModel overrides
+        to True.  (This does not gate an explicit configure_sharding(), which a caller invokes
+        deliberately.)
+        """
+        return False
+
     def configure_sharding(self, devices=None):
         """
         Configure multi-device sharding over the given devices (opt-in).
@@ -238,6 +253,7 @@ class TomographyModel(ParameterHandler):
         self.shard_devices = devices
         self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
         self.use_gpu = 'sharded'
+        self._sharding_configured = True  # explicit config: set_devices_and_batch_sizes must not override
         self._set_placements()
 
     def _set_placements(self):
@@ -683,6 +699,26 @@ class TomographyModel(ParameterHandler):
             print('mem for all vcd = {}'.format(mem_for_all_vcd))
             print('view_batch_size_for_vmap = {}'.format(self.view_batch_size_for_vmap))
 
+        # Default placement path (Option B): for geometries that support it and were not
+        # explicitly configured with configure_sharding(), run even the single-device case
+        # through a trivial 1-device mesh so there is one always-on placement path.  Only the
+        # HOMOGENEOUS case (recon and sinogram on the SAME device -- the 'full' GPU and 'none'
+        # CPU modes) maps to one mesh; the heterogeneous recon-CPU/sino-GPU 'sinograms' mode
+        # cannot (a CPU+GPU pair is not a single mesh), so it keeps the legacy single-device
+        # path.  This runs after the device selection above and is re-evaluated on every call
+        # (set_params can flip the mode), so it both sets and clears the auto mesh as needed;
+        # an explicit configure_sharding() (multi-device) is preserved untouched.
+        if not self._sharding_configured and self._supports_sharding():
+            from jax.sharding import Mesh
+            if self.main_device == self.sinogram_device:
+                self.mesh = Mesh(np.array([self.main_device]), ('devices',))
+                self.shard_devices = [self.main_device]
+                self.dev2dev_safe = True
+            else:
+                # Heterogeneous 'sinograms' mode: fall back to the legacy single-device path.
+                self.mesh = None
+                self.shard_devices = None
+
         self._set_placements()
         return
 
@@ -1040,9 +1076,19 @@ class TomographyModel(ParameterHandler):
         # expected slice-sharded and the result is returned view-sharded (no gather
         # here; the user-facing forward_project gathers).  Otherwise the
         # single-device path runs unchanged.
-        if self.is_sharded:
+        #
+        # Partial-view projection (view_indices) is single-device-only: a subset of views
+        # breaks the equal view-shard, so the sharded path does not implement it.  On a trivial
+        # 1-device mesh (the auto-default placement path) there is nothing to shard, so fall
+        # through to the single-device implementation; only a real multi-device mesh rejects
+        # view_indices.  (The view-batching callers, e.g. vcls, run single-device.)
+        if self.is_sharded and view_indices is None:
             return self._sparse_forward_project_sharded(
-                voxel_values, pixel_indices, view_indices=view_indices)
+                voxel_values, pixel_indices, view_indices=None)
+        if self.is_sharded and len(self.shard_devices) > 1:
+            raise NotImplementedError(
+                "Sharded forward projection with view_indices is not supported on a "
+                "multi-device mesh (a subset of views breaks the equal view-shard).")
         return self._sparse_forward_project_single_device(
             voxel_values, pixel_indices, view_indices=view_indices,
             output_device=output_device)
@@ -1273,10 +1319,19 @@ class TomographyModel(ParameterHandler):
         # sinogram is expected view-sharded and the result is returned
         # slice-sharded (no gather here; the user-facing back_project gathers).
         # Otherwise the single-device path runs unchanged.
-        if self.is_sharded:
+        #
+        # Partial-view back projection (view_indices) is single-device-only (a subset of views
+        # breaks the equal view-shard).  On a trivial 1-device mesh (the auto-default placement
+        # path) there is nothing to shard, so fall through to the single-device implementation;
+        # only a real multi-device mesh rejects view_indices.  (e.g. vcls runs single-device.)
+        if self.is_sharded and view_indices is None:
             return self._sparse_back_project_sharded(
-                sinogram, pixel_indices, view_indices=view_indices,
+                sinogram, pixel_indices, view_indices=None,
                 coeff_power=coeff_power)
+        if self.is_sharded and len(self.shard_devices) > 1:
+            raise NotImplementedError(
+                "Sharded back projection with view_indices is not supported on a "
+                "multi-device mesh (a subset of views breaks the equal view-shard).")
         return self._sparse_back_project_single_device(
             sinogram, pixel_indices, view_indices=view_indices,
             coeff_power=coeff_power, output_device=output_device)
@@ -2584,20 +2639,18 @@ class TomographyModel(ParameterHandler):
             # Update sinogram and loss
             # Update the error sinogram: error_sinogram <- error_sinogram - alpha * delta_sinogram.
             if self.is_sharded:
-                # Scale eagerly (bit-identical to the single-device line below: keeping the scale out
-                # of the jit avoids a fused multiply-add that would break trivial-mesh bit-exactness),
-                # then subtract in a buffer-DONATING jit so the error sinogram is updated IN PLACE
-                # (without in-place reuse each subset allocates a fresh view-sharded error sinogram
-                # and the stale ones accumulate in jax's sharded-array reference cycles until gc).
-                # alpha is replicated onto the sino mesh so the scale stays on-device.  For constant
-                # weights weighted_error_sinogram IS error_sinogram, so release that alias to make
-                # error_sinogram donatable.  The transient sharded buffers made here (scaled_delta,
-                # and weighted_error_sinogram for non-constant weights) are freed in the single
-                # cleanup section at the end of the subset.
-                scaled_delta = self._replicate_scalar(alpha, self.sino_placement) * delta_sinogram
+                # Update the error sinogram IN PLACE via a buffer-DONATING fused multiply-add
+                # (alpha replicated onto the sino mesh so the scale stays on-device).  In-place
+                # reuse is required because an out-of-place per-subset update allocates a fresh
+                # view-sharded error sinogram each subset, and the stale ones accumulate in jax's
+                # internal sharded-array reference cycles until gc.  For constant weights
+                # weighted_error_sinogram IS error_sinogram, so release that alias to make
+                # error_sinogram donatable.  (Non-constant weights leave a weighted product
+                # transient that is freed in the cleanup section at the end of the subset.)
                 if const_weights:
                     weighted_error_sinogram = None
-                error_sinogram = update_error_sinogram(error_sinogram, scaled_delta)
+                error_sinogram = update_error_sinogram(
+                    error_sinogram, self._replicate_scalar(alpha, self.sino_placement), delta_sinogram)
             else:
                 # Single-device path unchanged (SingleDeviceSharding arrays free on refcount).
                 delta_sinogram = float(alpha) * delta_sinogram
@@ -2607,19 +2660,17 @@ class TomographyModel(ParameterHandler):
             alpha_for_subset = alpha
 
             # === Release this subset's transient sharded buffers (single cleanup site) ===
-            # Eager element-wise ops on sharded arrays -- the alpha*delta scale, and the
-            # weights*error product when weights are non-constant -- produce view-sharded
-            # sinograms that jax holds in internal reference cycles, so refcounting never frees
-            # them and they would pile up one per subset until gc (the multi-device memory
-            # blowup).  Free them explicitly here.  This is race-free: every consumer of these
-            # transients is upstream of the returned (flat_recon, error_sinogram), so once those
-            # are ready the transients are finished being read.  (Forward-projection outputs come
-            # from assemble_sharded and DO free on refcount, so they are not freed here.)
-            if self.is_sharded:
+            # When weights are non-constant, the weights*error_sinogram product is a view-sharded
+            # sinogram that jax holds in an internal reference cycle, so refcounting never frees it
+            # and it would pile up one per subset until gc (the multi-device memory blowup).  Free
+            # it explicitly here.  This is race-free: it is consumed only upstream of the returned
+            # (flat_recon, error_sinogram), so once those are ready it is finished being read.
+            # (The alpha*delta scale is now fused into the donated update_error_sinogram jit, so
+            # there is no separate scaled_delta transient; forward-projection outputs come from
+            # assemble_sharded and DO free on refcount, so neither is freed here.)
+            if self.is_sharded and not const_weights:
                 jax.block_until_ready((flat_recon, error_sinogram))
-                scaled_delta.delete()
-                if not const_weights:
-                    weighted_error_sinogram.delete()
+                weighted_error_sinogram.delete()
 
             return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset
 
@@ -2848,17 +2899,18 @@ def update_recon(cur_flat_recon, cur_indices, cur_delta):
 
 
 @partial(jax.jit, donate_argnames='error_sinogram')
-def update_error_sinogram(error_sinogram, delta_sinogram):
-    # Subtract, DONATING error_sinogram so XLA updates it in place (the same trick update_recon
-    # uses for the recon).  Without in-place reuse each VCD subset allocates a fresh view-sharded
-    # error sinogram, and the stale ones are held alive in jax's internal sharded-array reference
-    # cycles -- so they accumulate (one full sinogram per subset) until garbage collection, which
-    # is what made multi-device memory blow up.
-    # NOTE: this is a PURE subtract -- the alpha scale is applied eagerly by the caller, not folded
-    # in here, so the arithmetic stays bit-identical to the single-device path.  Folding the scale
-    # in lets XLA emit a fused multiply-add, which differs in the last bit and breaks the
-    # trivial-mesh bit-exactness test.
-    return error_sinogram - delta_sinogram
+def update_error_sinogram(error_sinogram, alpha, delta_sinogram):
+    # Fused update error_sinogram <- error_sinogram - alpha * delta_sinogram, DONATING
+    # error_sinogram so XLA updates it in place (the same trick update_recon uses for the recon).
+    # Without in-place reuse each VCD subset allocates a fresh view-sharded error sinogram, and the
+    # stale ones are held alive in jax's internal sharded-array reference cycles -- so they
+    # accumulate (one full sinogram per subset) until garbage collection, which is what made
+    # multi-device memory blow up.
+    # alpha is folded into the jit (rather than eagerly pre-scaling delta_sinogram) so XLA emits a
+    # single fused multiply-add and there is no separate scaled-delta transient to free.  The FMA
+    # differs from an eager pre-scale by ~1 ULP; that is within the placement path's accepted
+    # tolerance (the trivial-mesh path is no longer required to be bit-exact -- see v2 plan P6).
+    return error_sinogram - alpha * delta_sinogram
 
 
 @jax.jit

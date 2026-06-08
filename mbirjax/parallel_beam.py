@@ -89,6 +89,11 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
+    def _supports_sharding(self):
+        """Parallel beam has the placement/movement projector + prior path, so it runs on the
+        always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
+        return True
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.

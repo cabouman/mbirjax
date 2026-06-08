@@ -34,8 +34,16 @@ class TestAxisHooks(unittest.TestCase):
 
 
 class TestNoMeshNoOp(unittest.TestCase):
-    """Without configure_sharding, all hooks are no-ops (mesh is None)."""
+    """Without a mesh, the base-class hooks are no-ops (mesh is None).
 
+    RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh
+    (Option B), so it no longer exercises the no-mesh branch.  That branch survives only
+    for the not-yet-ported geometries (cone / translation / multiaxis) and retires at P6.
+    These tests used ParallelBeam as a convenient concrete model, so they are skipped until
+    the no-mesh path either gets a non-ParallelBeam home or is removed at P6.
+    """
+
+    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only (P6).")
     def test_shard_and_gather_are_noops(self):
         model = _make_model()
         self.assertIsNone(model.mesh)
@@ -46,6 +54,7 @@ class TestNoMeshNoOp(unittest.TestCase):
         self.assertIs(model._shard_recon(sino), sino)
         self.assertIs(model._gather_recon(sino), sino)
 
+    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only (P6).")
     def test_extract_halos_no_mesh(self):
         model = _make_model()
         left, right = model._extract_halos(np.ones((6, 16), dtype=np.float32))
@@ -141,7 +150,11 @@ class TestModelPlacements(unittest.TestCase):
 
     def test_single_device_trivial_placements(self):
         model = _make_model()
-        self.assertIsNone(model.mesh)
+        # ParallelBeam auto-defaults the single-device case to a trivial 1-device mesh
+        # (Option B: one always-on placement path), so it is "sharded" over a single device
+        # and its placements are trivial (1 shard) on that device.
+        self.assertTrue(model.is_sharded)
+        self.assertEqual(len(model.shard_devices), 1)
         for pl, axis in ((model.recon_placement, model.recon_shard_axis()),
                          (model.sino_placement, model.sinogram_shard_axis())):
             self.assertIsNotNone(pl)
