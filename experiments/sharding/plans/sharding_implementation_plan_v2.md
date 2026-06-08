@@ -345,6 +345,9 @@ gate.
   cone-beam lever; parallel-beam sharded axes are sinogram-side).
 
 ### P6 — Port + retire
+- Port the sinogram transpose pattern from `back_project_one_view_to_pixel_batch` 
+  and `forward_project_pixel_batch_to_one_view` in parallel beam to cone / 
+  translation / multiaxis geometries.
 - Port the placement/movement path to cone / translation / multiaxis geometries
   (each implements the `(g0, L)` slice-band projector interface from the P3 design
   note).
