@@ -44,7 +44,6 @@ import os
 import gc
 import sys
 import argparse
-import traceback
 
 import scaling_common as sc
 
@@ -106,11 +105,6 @@ CORRECTNESS_THRESHOLD = 1e-4
 # Per-call subset-shuffle seed (timing determinism); distinct from the correctness
 # seed so the two concerns are independent.
 MEASURE_SEED = 7
-
-# Substrings (upper-cased) that mark a caught failure as memory exhaustion.
-_OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
-                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
-                "FAILED TO CREATE CUFFT")
 
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
@@ -206,30 +200,8 @@ def worker_setup(out_file):
                   f"pct_above={bm['pct_above_threshold']:.6f}%"
                   + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
-    topology = sc.gpu_topology() if plat == "gpu" else {}
-    dev2dev_safe = None
-    if plat == "gpu":
-        try:
-            import jax
-            import mbirjax._sharding as mjs
-            gpus = jax.devices("gpu")
-            if len(gpus) > 1:
-                dev2dev_safe = bool(mjs.is_dev2dev_safe(gpus))
-        except Exception:   # noqa: BLE001 — best effort, never abort setup
-            pass
-
-    pkg_path = os.path.dirname(mbirjax.__file__)
-    beta_state, branch = sc.beta_status(pkg_path)
-    result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
-              "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
-              "correctness": corr, "topology": topology, "dev2dev_safe": dev2dev_safe}
+    result = sc.build_setup_result(plat, max_dev, dev_label, corr)
     sc.write_worker_result(out_file, result)
-    print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
-    if dev2dev_safe is not None:
-        print(f"[setup] dev2dev_safe={dev2dev_safe}"
-              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
-    if topology.get("devices"):
-        print("[setup] GPUs:\n    " + topology["devices"].replace("\n", "\n    "))
 
 
 def worker_measure(size_label, device_counts, warmup, trials, out_file):
@@ -242,9 +214,6 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
     """
     import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
-    desc = sorted(set(device_counts), reverse=True)
-    print(f"\n[measure {size_label}]  device counts (descending): {desc}  "
-          f"({MAX_ITERATIONS} iters)")
 
     # Build the sinogram + the partitions ONCE for this size (shapes/partitions are
     # device-independent; outside the timing loop).
@@ -255,67 +224,25 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
     del ref_model
     gc.collect()
 
-    rows = []
-    failures = []
-    mem_kind = "n/a"
-
-    def _publish():
-        sc.write_worker_result(out_file, {"size": size_label, "mem_kind": mem_kind,
-                                          "rows": rows, "failures": failures})
-
-    for n in desc:
-        devs = sc.pick_devices(n)
-        if devs is None:
-            print(f"  n_devices={n}: not enough devices, skipping")
-            continue
+    def build_and_time(n, devs):
         model = make_model(size, devices=devs)
         if model is None:
-            continue
+            return None
         # vcd_recon logs via self.logger (normally set up by recon/initialize_recon,
         # which we bypass here); give each per-device model a quiet logger.
         model.setup_logger(print_logs=False)
-        try:
-            # Pre-shard the sinogram OUTSIDE the timing loop: measure the loop's
-            # all-gather/reduce-scatter + compute, not the entry scatter.
-            sino_sharded = model._shard_sinogram(sino_np)
-            stats, _ = sc.time_op(
-                lambda: run_vcd(model, sino_sharded, partitions,
-                                partition_sequence, MAX_ITERATIONS),
-                warmup, trials)
-            mem_mb, mem_kind = sc.peak_memory_mb(devs)
-            gpu_state = sc.sample_gpu_state()
-        except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
-            msg = str(e).replace("\n", " ")
-            tb = traceback.format_exc()
-            # Classify OOM from the FULL traceback, not just str(e): an out-of-memory failure
-            # often surfaces as an unrelated-looking error (e.g. numpy "setting an array element
-            # with a sequence") with the real RESOURCE_EXHAUSTED only visible deeper in the stack.
-            is_oom = any(k in tb.upper() for k in _OOM_MARKERS)
-            failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300],
-                             "traceback": tb})
-            print(f"  n_devices={n:2d}  {'OOM' if is_oom else 'ERROR'}: {msg[:120]}")
-            if not is_oom:
-                # Print the real stack so a non-OOM failure isn't silently truncated to one line.
-                print(tb)
-            _publish()
-            if is_oom:
-                print(f"  stopping descent at {size_label}: fewer-device configs "
-                      f"need more per-device memory and would also OOM")
-                break
-            continue
-        hot = sc.throttled_gpus(gpu_state)
-        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb,
-                     "gpu_state": gpu_state, "throttled": bool(hot)})
-        print(f"  n_devices={n:2d}  min={stats['min_ms']:9.1f} ms  "
-              f"mean={stats['mean_ms']:9.1f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
-        if hot:
-            print("  !! THROTTLING — this timing is UNRELIABLE: "
-                  + ", ".join(f"GPU{g['index']}={g['sm_mhz']}MHz@{g['temp_c']}C"
-                              for g in hot))
-        _publish()
-        del model, sino_sharded
-        gc.collect()
-    _publish()
+        # Pre-shard the sinogram OUTSIDE the timing loop: measure the loop's
+        # all-gather/reduce-scatter + compute, not the entry scatter.
+        sino_sharded = model._shard_sinogram(sino_np)
+        stats, _ = sc.time_op(
+            lambda: run_vcd(model, sino_sharded, partitions,
+                            partition_sequence, MAX_ITERATIONS),
+            warmup, trials)
+        mem_mb, mem_kind = sc.peak_memory_mb(devs)
+        return stats, mem_mb, mem_kind
+
+    sc.run_measure_loop(size_label, device_counts, out_file, build_and_time,
+                        header_extra=f"  ({MAX_ITERATIONS} iters)")
 
 
 def run_worker(argv):
@@ -336,31 +263,21 @@ def run_worker(argv):
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
-def _beta_root():
-    """Beta worktree root: three directories up from this file's directory."""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                        os.pardir, os.pardir, os.pardir))
-
-
 def main():
     script = os.path.abspath(__file__)
 
-    beta_root = _beta_root()
-    if not os.path.isdir(os.path.join(beta_root, "mbirjax")):
-        print(f"  WARNING: no mbirjax/ under derived beta root {beta_root}")
-    existing_pp = os.environ.get("PYTHONPATH", "")
-    worker_env = {
-        "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "true" if MEM_PREALLOCATE else "false",
-        "XLA_PYTHON_CLIENT_MEM_FRACTION": str(MEM_FRACTION),
-    }
+    # Each worker inherits the beta worktree on PYTHONPATH + the JAX allocator
+    # knobs (see sc.build_worker_env).  vcd exposes MEM_* so a low MEM_FRACTION can
+    # probe the per-GPU capacity (OOM) threshold.
+    worker_env = sc.build_worker_env(mem_fraction=MEM_FRACTION,
+                                     preallocate=MEM_PREALLOCATE)
     if MEM_FRACTION < 0.9:
         print(f"  CAPACITY PROBE: MEM_FRACTION={MEM_FRACTION} (hard pool cap) — a size that "
               f"exceeds the floor will OOM; that OOM threshold is the honest max-recon-per-GPU.")
 
     print("=" * 72)
     print("  vcd_recon scaling — isolated-subprocess harness (orchestrator)")
-    print(f"  beta root: {beta_root}")
+    print(f"  beta root: {sc.beta_root()}")
     print(f"  iterations per recon: {MAX_ITERATIONS}")
     print("=" * 72)
 
@@ -370,35 +287,9 @@ def main():
     if setup is None:
         print(f"  ERROR: setup worker produced no result (rc={rc}); aborting.")
         return
-    plat = setup["platform"]
-    max_dev = setup["max_devices"]
-    dev_label = setup["device_label"]
-    corr = setup["correctness"]
-    mpath = setup.get("mbirjax_path", "?")
-    beta_state = setup.get("beta_state", "unknown")
-    branch = setup.get("branch")
+    plat, max_dev, dev_label, corr, mpath = sc.print_setup_banner(setup)
     topology = setup.get("topology") or {}
     dev2dev_safe = setup.get("dev2dev_safe")
-    if beta_state == "beta":
-        label = f"*** beta ***  (branch {branch})"
-    elif beta_state == "not-beta":
-        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
-    else:
-        label = "(branch undetermined — verify path manually)"
-    print(f"  mbirjax: {label}   {mpath}")
-    print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
-    if corr.get("baseline_present"):
-        print(f"  vs prerelease baseline: max_abs_diff={corr.get('max_abs_diff')}  "
-              f"pct_above={corr.get('pct_above_threshold')}%"
-              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
-    else:
-        print("  vs prerelease baseline: none present (run the capture script)")
-    if dev2dev_safe is not None:
-        print(f"  dev2dev_safe: {dev2dev_safe}"
-              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
-    if topology.get("topo"):
-        print("  GPU topology (nvidia-smi topo -m):")
-        print("    " + topology["topo"].replace("\n", "\n    "))
 
     sizes = SIZES[plat]
     size_labels = [sc.size_label(s) for s in sizes]

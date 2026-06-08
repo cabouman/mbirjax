@@ -45,7 +45,6 @@ Run from the BETA worktree root:
     python experiments/sharding/scaling_tests/direct_recon_scaling.py
 """
 import os
-import gc
 import sys
 import argparse
 
@@ -91,15 +90,6 @@ CORRECTNESS_SIZE = (80, 48, 64)   # small, fixed, NON-symmetric (distinct views/
                                   # rows/channels) so shape/axis bugs surface;
                                   # comparison is size-independent
 CORRECTNESS_SEED = 1234
-
-# Substrings (upper-cased) that mark a caught failure as memory exhaustion.  The
-# pipeline allocates via BOTH the projector / scatter-add path (back projection)
-# and cuFFT (the filter), so keep the cuFFT-specific markers as well as the
-# generic allocator tokens.
-_OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
-                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
-                "FAILED TO CREATE CUFFT")
-
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
 def make_model(size, devices=None):
@@ -194,13 +184,8 @@ def worker_setup(out_file):
               f"pct_above={m['pct_above_threshold']:.6f}%"
               + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
-    pkg_path = os.path.dirname(mbirjax.__file__)
-    beta_state, branch = sc.beta_status(pkg_path)   # by git branch, not dir name
-    result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
-              "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
-              "correctness": corr}
+    result = sc.build_setup_result(plat, max_dev, dev_label, corr)
     sc.write_worker_result(out_file, result)
-    print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
 
 
 def worker_measure(size_label, device_counts, warmup, trials, out_file):
@@ -213,67 +198,28 @@ def worker_measure(size_label, device_counts, warmup, trials, out_file):
     catch the OOM, record it, and stop the descent.  Results are written
     incrementally so even a hard crash returns the completed configs.
     """
-    # Imported for its IMPORT SIDE EFFECT, not its API (mbirjax is not used by
-    # name in this function; make_model imports it again where it's actually
-    # called).  mbirjax's first import runs mbirjax._device_setup, which sets
-    # XLA_FLAGS=--xla_force_host_platform_device_count from MBIRJAX_NUM_CPU_DEVICES
-    # (the orchestrator sets that env for CPU runs).  That flag only takes effect
-    # if it is in place BEFORE JAX initializes its backend, and scaling_common
-    # imports jax LAZILY — so the first thing that would trigger backend init is
-    # sc.pick_devices(...) just below.  Importing mbirjax here, ahead of that,
-    # guarantees the virtual CPU device count is established; without it the
-    # worker would come up with a single CPU device and every n>1 config would be
-    # skipped (so the whole point of the sweep — multi-device scaling — is lost).
+    # mbirjax's first import runs mbirjax._device_setup (sets the virtual-CPU
+    # device XLA flag), which must precede jax backend init; scaling_common imports
+    # jax lazily and the first trigger is pick_devices() inside run_measure_loop --
+    # so import mbirjax here first.
     import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
-    desc = sorted(set(device_counts), reverse=True)
-    print(f"\n[measure {size_label}]  device counts (descending): {desc}")
     sino_np = make_input(size, seed=0)
-    rows = []
-    failures = []
-    mem_kind = "n/a"
 
-    def _publish():
-        sc.write_worker_result(out_file, {"size": size_label, "mem_kind": mem_kind,
-                                          "rows": rows, "failures": failures})
-
-    for n in desc:
-        devs = sc.pick_devices(n)
-        if devs is None:
-            print(f"  n_devices={n}: not enough devices, skipping")
-            continue
+    def build_and_time(n, devs):
         model = make_model(size, devices=devs)
         if model is None:
-            continue
-        try:
-            # Pre-shard the sinogram and precompute indices OUTSIDE the timing
-            # loop: measure the on-device pipeline (filter + reduce-scatter), not
-            # the entry scatter or the exit gather.
-            sino = model._shard_sinogram(sino_np)
-            idx = make_indices(model)
-            stats, _ = sc.time_op(lambda: run_pipeline(model, sino, idx),
-                                  warmup, trials)
-            mem_mb, mem_kind = sc.peak_memory_mb(devs)
-        except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
-            msg = str(e).replace("\n", " ")
-            is_oom = any(k in msg.upper() for k in _OOM_MARKERS)
-            failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300]})
-            print(f"  n_devices={n:2d}  {'OOM' if is_oom else 'ERROR'}: {msg[:120]}")
-            _publish()
-            if is_oom:
-                print(f"  stopping descent at {size_label}: fewer-device configs "
-                      f"need more per-device memory and would also OOM")
-                break
-            continue
-        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb})
-        print(f"  n_devices={n:2d}  min={stats['min_ms']:8.2f} ms  "
-              f"mean={stats['mean_ms']:8.2f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
-        # Publish partial progress and free this config before the next (larger)
-        # one so peak_bytes_in_use reflects each config alone.
-        _publish()
-        del model, sino
-        gc.collect()   # release device buffers before the next config allocates
-    _publish()
+            return None
+        # Pre-shard the sinogram + precompute indices OUTSIDE the timing loop:
+        # measure the on-device pipeline (filter + reduce-scatter), not the entry
+        # scatter or the exit gather.
+        sino = model._shard_sinogram(sino_np)
+        idx = make_indices(model)
+        stats, _ = sc.time_op(lambda: run_pipeline(model, sino, idx), warmup, trials)
+        mem_mb, mem_kind = sc.peak_memory_mb(devs)
+        return stats, mem_mb, mem_kind
+
+    sc.run_measure_loop(size_label, device_counts, out_file, build_and_time)
 
 
 def run_worker(argv):
@@ -294,37 +240,16 @@ def run_worker(argv):
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
-def _beta_root():
-    """Beta worktree root, derived from this file's location.
-
-    This file is at <beta>/experiments/sharding/scaling_tests/, so the worktree
-    root is three directories up from the file's directory.
-    """
-    return os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                        os.pardir, os.pardir, os.pardir))
-
-
 def main():
     script = os.path.abspath(__file__)
 
-    # Force the beta worktree onto each worker's PYTHONPATH so `import mbirjax`
-    # resolves to beta regardless of how the orchestrator was launched.
-    # Preallocate the pool up front (no per-call growth → clean timing), with
-    # MEM_FRACTION raised so the largest configs don't OOM on the cap;
-    # peak_bytes_in_use still tracks in-use tensors, so memory stays accurate.
-    beta_root = _beta_root()
-    if not os.path.isdir(os.path.join(beta_root, "mbirjax")):
-        print(f"  WARNING: no mbirjax/ under derived beta root {beta_root}")
-    existing_pp = os.environ.get("PYTHONPATH", "")
-    worker_env = {
-        "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
-        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
-    }
+    # Each worker inherits the beta worktree on PYTHONPATH + the JAX allocator
+    # knobs (see sc.build_worker_env).
+    worker_env = sc.build_worker_env()
 
     print("=" * 72)
     print("  direct_recon scaling — isolated-subprocess harness (orchestrator)")
-    print(f"  beta root: {beta_root}")
+    print(f"  beta root: {sc.beta_root()}")
     print("=" * 72)
 
     # 1. Setup worker: platform, device count/label, correctness.
@@ -333,27 +258,7 @@ def main():
     if setup is None:
         print(f"  ERROR: setup worker produced no result (rc={rc}); aborting.")
         return
-    plat = setup["platform"]
-    max_dev = setup["max_devices"]
-    dev_label = setup["device_label"]
-    corr = setup["correctness"]
-    mpath = setup.get("mbirjax_path", "?")
-    beta_state = setup.get("beta_state", "unknown")
-    branch = setup.get("branch")
-    if beta_state == "beta":
-        label = f"*** beta ***  (branch {branch})"
-    elif beta_state == "not-beta":
-        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
-    else:
-        label = "(branch undetermined — verify path manually)"
-    print(f"  mbirjax: {label}   {mpath}")
-    print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
-    if corr.get("baseline_present"):
-        print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
-              f"pct_above={corr['pct_above_threshold']:.6f}%"
-              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
-    else:
-        print("  correctness: no baseline present")
+    plat, max_dev, dev_label, corr, mpath = sc.print_setup_banner(setup)
 
     sizes = SIZES[plat]
     size_labels = [sc.size_label(s) for s in sizes]

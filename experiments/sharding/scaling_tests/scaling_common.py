@@ -26,10 +26,12 @@ Design notes
 """
 
 import os
+import gc
 import sys
 import time
 import resource
 import tempfile
+import traceback
 import subprocess
 import platform as _platform
 
@@ -187,6 +189,213 @@ def write_worker_result(out_file, data):
     with open(tmp, "w") as f:
         _yaml.dump(_to_plain(data), f)
     os.replace(tmp, out_file)
+
+
+# ── Shared scaling-driver harness ─────────────────────────────────────────────
+# The pieces every scaling driver (fbp_filter, sparse_back/forward_project,
+# direct_recon, vcd_recon) shares.  A driver supplies only the op-specific shims
+# (make_model / make_input / run_op / a correctness check) plus its size/device
+# knobs; the orchestration, isolated-subprocess discipline, and measurement loop
+# live here so all ops behave identically.
+
+# Substrings (upper-cased) marking a caught failure as memory exhaustion.  Beyond
+# the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces as
+# "Failed to create cuFFT batched plan with scratch allocator" / "Failed to
+# allocate work area" -- none of the usual OOM tokens (confirmed H100 1624^3/1dev).
+OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
+               "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
+               "FAILED TO CREATE CUFFT")
+
+
+def is_oom(text):
+    """True if ``text`` names a known out-of-memory marker.
+
+    Prefer passing the full traceback rather than ``str(e)``: an OOM often
+    surfaces as an unrelated-looking error (e.g. a numpy "setting an array element
+    with a sequence") with the real RESOURCE_EXHAUSTED only visible deeper in the
+    stack.
+    """
+    up = text.upper()
+    return any(k in up for k in OOM_MARKERS)
+
+
+def beta_root():
+    """Beta worktree root, derived from this file's location.
+
+    scaling_common.py lives at <beta>/experiments/sharding/scaling_tests/, so the
+    worktree root is three directories up from its directory.  The drivers sit in
+    the same directory, so this is the same root they used to derive themselves.
+    """
+    return os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                        os.pardir, os.pardir, os.pardir))
+
+
+def build_worker_env(mem_fraction=0.9, preallocate=True):
+    """Orchestrator side: the environment every worker subprocess inherits.
+
+    Forces the beta worktree onto PYTHONPATH so ``import mbirjax`` resolves to beta
+    regardless of how the orchestrator was launched (PyCharm or CLI), and sets the
+    JAX allocator knobs.  Preallocating the pool up front avoids per-call
+    cudaMalloc growth (clean timing); peak_bytes_in_use still tracks in-use tensors
+    so memory stays accurate.  Lower ``mem_fraction`` to probe the OOM threshold.
+    Warns if no mbirjax/ is found under the derived root.
+    """
+    root = beta_root()
+    if not os.path.isdir(os.path.join(root, "mbirjax")):
+        print(f"  WARNING: no mbirjax/ under derived beta root {root}")
+    existing = os.environ.get("PYTHONPATH", "")
+    return {
+        "PYTHONPATH": root + (os.pathsep + existing if existing else ""),
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "true" if preallocate else "false",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": str(mem_fraction),
+    }
+
+
+def build_setup_result(plat, max_dev, dev_label, corr):
+    """Worker side: assemble + print the standard setup-result dict.
+
+    Records which mbirjax / git branch is loaded, and on GPU snapshots the
+    topology (physical GPUs / interconnect / NUMA -- the allocation-quality
+    variable behind run-to-run multi-device scaling surprises) and the
+    device-to-device safety probe.  ``corr`` is the op-specific correctness dict
+    (already computed and printed by the caller).  Returns the dict to write.
+    """
+    import mbirjax
+    topology = gpu_topology() if plat == "gpu" else {}
+    dev2dev_safe = None
+    if plat == "gpu":
+        try:
+            import jax
+            import mbirjax._sharding as mjs
+            g = jax.devices("gpu")
+            if len(g) > 1:
+                dev2dev_safe = bool(mjs.is_dev2dev_safe(g))
+        except Exception:   # noqa: BLE001 — best effort, never abort setup
+            pass
+    pkg_path = os.path.dirname(mbirjax.__file__)
+    state, branch = beta_status(pkg_path)   # by git branch, not dir name
+    result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
+              "mbirjax_path": pkg_path, "beta_state": state, "branch": branch,
+              "correctness": corr, "topology": topology, "dev2dev_safe": dev2dev_safe}
+    print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
+    if dev2dev_safe is not None:
+        print(f"[setup] dev2dev_safe={dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    if topology.get("devices"):
+        print("[setup] GPUs:\n    " + topology["devices"].replace("\n", "\n    "))
+    return result
+
+
+def print_setup_banner(setup):
+    """Orchestrator side: print the mbirjax / beta / platform / correctness /
+    topology banner from a setup-worker result, and return the common fields
+    ``(plat, max_dev, dev_label, corr, mpath)``.  Topology / dev2dev lines print
+    only when the worker recorded them (GPU runs).
+    """
+    plat = setup["platform"]
+    max_dev = setup["max_devices"]
+    dev_label = setup["device_label"]
+    corr = setup["correctness"]
+    mpath = setup.get("mbirjax_path", "?")
+    state = setup.get("beta_state", "unknown")
+    branch = setup.get("branch")
+    if state == "beta":
+        label = f"*** beta ***  (branch {branch})"
+    elif state == "not-beta":
+        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
+    else:
+        label = "(branch undetermined — verify path manually)"
+    print(f"  mbirjax: {label}   {mpath}")
+    print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
+    if corr.get("baseline_present") and corr.get("max_abs_diff") is not None:
+        print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
+              f"pct_above={corr['pct_above_threshold']:.6f}%"
+              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
+    elif corr.get("baseline_present"):
+        print("  correctness: baseline present (see setup log for details)")
+    else:
+        print("  correctness: no baseline present")
+    dev2dev_safe = setup.get("dev2dev_safe")
+    if dev2dev_safe is not None:
+        print(f"  dev2dev_safe: {dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    topology = setup.get("topology") or {}
+    if topology.get("topo"):
+        print("  GPU topology (nvidia-smi topo -m):")
+        print("    " + topology["topo"].replace("\n", "\n    "))
+    return plat, max_dev, dev_label, corr, mpath
+
+
+def run_measure_loop(size_label, device_counts, out_file, build_and_time,
+                     header_extra=""):
+    """Worker side: the shared device-count descent for one problem size.
+
+    Owns what every op's measure shares: iterate device counts DESCENDING
+    (8->4->2->1, so per-device allocation is ascending within this fresh process
+    and the cumulative peak_bytes_in_use equals each config's own allocation when
+    read right after it), catch/classify failures (an OOM stops the descent --
+    fewer-device configs need MORE per-device memory and would also OOM), sample
+    per-GPU clocks/temps and flag throttling (which silently caps multi-device
+    scaling), publish partial results incrementally (so even a hard crash returns
+    the completed configs), and free device buffers between configs.
+
+    The op supplies ``build_and_time(n, devs)``, which builds its model for this
+    device count, prepares the timed input, times the op, and returns
+    ``(stats, mem_mb, mem_kind)`` -- or ``None`` to skip this device count (e.g.
+    the count does not evenly divide the sharded axes).  Anything it raises is
+    treated as a measurement failure, classified for OOM from the full traceback.
+
+    Returns ``(rows, failures)``; both are also written to ``out_file`` as they grow.
+    """
+    desc = sorted(set(device_counts), reverse=True)
+    print(f"\n[measure {size_label}{header_extra}]  "
+          f"device counts (descending): {desc}")
+    rows, failures = [], []
+    mem_kind = "n/a"
+
+    def _publish():
+        write_worker_result(out_file, {"size": size_label, "mem_kind": mem_kind,
+                                       "rows": rows, "failures": failures})
+
+    for n in desc:
+        devs = pick_devices(n)
+        if devs is None:
+            print(f"  n_devices={n}: not enough devices, skipping")
+            continue
+        try:
+            timed = build_and_time(n, devs)
+        except Exception as e:   # noqa: BLE001 — harness: never abort the sweep
+            msg = str(e).replace("\n", " ")
+            tb = traceback.format_exc()
+            oom = is_oom(tb)   # classify from the FULL stack, not just str(e)
+            failures.append({"n_devices": n, "oom": oom, "error": msg[:300],
+                             "traceback": tb})
+            print(f"  n_devices={n:2d}  {'OOM' if oom else 'ERROR'}: {msg[:120]}")
+            if not oom:
+                print(tb)   # don't silently truncate a real failure to one line
+            _publish()
+            if oom:
+                print(f"  stopping descent at {size_label}: fewer-device configs "
+                      f"need more per-device memory and would also OOM")
+                break
+            continue
+        if timed is None:   # op signalled "skip this device count"
+            continue
+        stats, mem_mb, mem_kind = timed
+        gpu_state = sample_gpu_state()
+        hot = throttled_gpus(gpu_state)
+        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb,
+                     "gpu_state": gpu_state, "throttled": bool(hot)})
+        print(f"  n_devices={n:2d}  min={stats['min_ms']:9.1f} ms  "
+              f"mean={stats['mean_ms']:9.1f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
+        if hot:
+            print("  !! THROTTLING — this timing is UNRELIABLE: "
+                  + ", ".join(f"GPU{g['index']}={g['sm_mhz']}MHz@{g['temp_c']}C"
+                              for g in hot))
+        _publish()
+        gc.collect()   # release this config's device buffers before the next
+    _publish()
+    return rows, failures
 
 
 # ── Device / platform detection ───────────────────────────────────────────────

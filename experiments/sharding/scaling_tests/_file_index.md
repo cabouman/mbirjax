@@ -25,13 +25,21 @@ by purpose below.  Resolved one-off diagnostics live in `archive/` (see
   baseline I/O, speedup/mem-fraction annotators, subprocess orchestration
   (`run_worker`), the size/device-sweep matplotlib plots, and a GPU topology/clock/temp
   snapshot (so allocation quality and thermal throttling are recorded, not mistaken for
-  code regressions).  Per-op problem-size sets live in each driver, not here.
+  code regressions).  It also hosts the **shared driver harness** every scaling driver
+  builds on, so a driver is just config + op shims: `OOM_MARKERS`/`is_oom`, `beta_root`,
+  `build_worker_env`, `build_setup_result` (worker side) + `print_setup_banner`
+  (orchestrator side), and `run_measure_loop` (the device-count descent — OOM stop,
+  throttle sampling, incremental publish, gc — driven by a per-op `build_and_time`
+  callback).  Per-op problem-size sets live in each driver, not here.
 
 ## Scaling + correctness drivers (one per op)
-Isolated-subprocess harness: a JAX-free orchestrator spawns fresh `--mode setup`
-(platform/devices + correctness) and `--mode measure` (one size, device counts
-descending) workers, then writes a YAML grid + a device-sweep and a size-sweep plot.
-Top-of-file knobs: `SIZES`, `DEVICE_COUNTS`, `WARMUP`/`TRIALS`, correctness size/seed.
+Isolated-subprocess harness (in `scaling_common`): a JAX-free orchestrator spawns fresh
+`--mode setup` (platform/devices + correctness) and `--mode measure` (one size, device
+counts descending) workers, then writes a YAML grid + a device-sweep and a size-sweep
+plot.  Each driver supplies only its op shims (`make_model` / `make_input` / `run_op` /
+a correctness check) + a `build_and_time` callback; the orchestration and measurement
+loop live in `scaling_common`.  Top-of-file knobs: `SIZES`, `DEVICE_COUNTS`,
+`WARMUP`/`TRIALS`, correctness size/seed.
 - `fbp_filter_scaling.py` — `ParallelBeamModel.fbp_filter` (view-sharded ramp filter).
 - `sparse_back_project_scaling.py` — sharded back projection (reduce-scatter); times
   the internal op on a pre-sharded sinogram (slice-sharded out, no gather).  Heaviest
