@@ -13,7 +13,8 @@ Orient first by reading, in order:
    my assumptions).
 2. `experiments/sharding/plans/sharding_status.md` — read the **▶ CURRENT FOCUS**
    block at the top of the latest handoff first (that's the live next-step), then
-   skim the rest of that handoff.
+   skim the rest of that handoff.  Note that the plans are not set in stone; they
+   evolve through collaborative dialog between the two of us.
 3. `experiments/sharding/plans/sharding_implementation_plan_v2.md` — §0 design
    summary + the placement phases P1–P6 (forward plan; the old
    `sharding_implementation_plan.md` is the completed-work record + principles).
@@ -48,26 +49,17 @@ Also landed: the **`is_sharded` property** (single source of truth replacing the
 `self.mesh is None/not None` checks).
 
 **Since then (committed):**
-- **`fbp_filter` shard-on-entry fix** — the internal sharded `fbp_filter` now shards a plain
-  sinogram at entry (a plain input only had a shard on device 0 → per-device fan-out
-  KeyError); mirrors `fbp_recon`.
-- **Trivial-mesh bit-exact tests relaxed → tight `allclose`** (7 tests in `tests/sharding/`):
-  the 1-device-mesh-vs-single-device comparisons can't be byte-exact on GPU (the banded
-  sharded path reorders non-associative FP sums; CPU compiles identically and stays exact).
-  Single-shot ops `rtol/atol=1e-5`, iterative VCD recon `1e-4`.  All tagged with the fixed
-  searchable phrase **`RETIRE-AFTER-SHARDING`** (grep stem `RETIRE-AFTER`); they retire once
-  the legacy single-device path is gone (nothing left to compare).
+- **`fbp_filter` shard-on-entry fix** — the internal sharded `fbp_filter`; mirrors `fbp_recon`.
+- **Trivial-mesh bit-exact tests relaxed → tight `allclose`** (7 tests in `tests/sharding/`).  
+  All tagged with the fixed searchable phrase **`RETIRE-AFTER-SHARDING`** (grep stem 
+  `RETIRE-AFTER`); they retire once the legacy single-device path is gone.
 - **Option B unification decision recorded** in v2 plan §P6 (see First task).
-- **`scaling_tests/` tooling overhaul** (experiments only, not library code): size-sweep
-  plots now in **minutes / GB** with a configurable time-ideal slope (`voxels` for fbp,
-  `voxels·views` for projectors/VCD); resolved one-off diagnostics moved to
-  `scaling_tests/archive/`; and the 5 scaling drivers were de-duplicated onto a **shared
-  harness in `scaling_common.py`** (`run_measure_loop`, `build_worker_env`,
-  `build_setup_result`/`print_setup_banner`, `OOM_MARKERS`/`is_oom`).  Side effect: every
-  driver now records per-GPU throttle state + topology + a `time_ideal` field in its YAML.
+- **`scaling_tests/` tooling overhaul** (experiments only, not library code).
 
-First task: **step 4 — mesh/no-mesh → placement unification** (v2 plan P6).  Fold the dual
-`is_sharded`/no-mesh code paths into ONE always-on placement path: `update_error_sinogram`
+First task: **step 4 — mesh/no-mesh → placement unification** (v2 plan P6).  This task is 
+outlined below but needs further discussion and planning to refine how to implement the
+unified path for ParallelBeam while the remaining geometries remain unsharded prior to **P6**.
+Outline: Fold the dual `is_sharded`/no-mesh code paths into ONE always-on placement path: `update_error_sinogram`
 becomes the single error-sinogram update (like `update_recon`), the `is_sharded` *guards*
 retire — but the **transient-free cleanup section STAYS** (sharded-array reference cycles
 are inherent to host-orchestrated arrays; donation + `.delete()` don't go away — see the
@@ -81,8 +73,8 @@ the "keep alpha out of the donated jit" constraint existed ONLY for bit-exactnes
 fold `alpha` into the donated FMA and **drop the `scaled_delta` transient + its `.delete()`**
 (the unified update gets simpler than either current path); **(3)** the heterogeneous
 recon-CPU/sino-GPU path routes the prior through `_qggmrf_prior_sharded` instead of the
-`qggmrf_..._transfer` fast path — **measure its timing before deleting `_transfer`, and DROP
-the heterogeneous case entirely if it forces extra code paths** (the real target is large
+`qggmrf_..._transfer` fast path — **measure its timing before deleting `_transfer`, and consider 
+DROPPING the heterogeneous case entirely if it forces extra code paths** (the real target is large
 *multi-GPU* recons, not single-GPU stop-gaps).  Broad, hot-path refactor → scope and propose
 before editing; suite (`tests/sharding/` + `tests/test_vcd.py`) is the gate.
 
@@ -116,7 +108,8 @@ Reminders:
 - Memory ruler: `peak_bytes_in_use` is the REAL live working set, preallocation-invariant
   (`PREALLOCATE=false` does NOT reveal the capacity floor; lower
   `XLA_PYTHON_CLIENT_MEM_FRACTION` to find the OOM threshold).  Don't extrapolate absolute
-  MB across sizes.  Projection **time ∝ N⁴ (voxels×views), memory ∝ N³ (voxels)**.
+  MB across sizes.  Projection **time ∝ N⁴ (voxels×views), memory ∝ N³ (voxels)**.  There
+  are memory utilities in `mbirjax/memory_stats.py`.
 - `CUDA_ERROR_NOT_PERMITTED` from `cuda_vmm_allocator.cc` is a BENIGN warning (silenced by
   default via `TF_CPP_MIN_LOG_LEVEL=2` in `mbirjax/_device_setup.py`).  Real errors are
   `E`/`F` or a Python traceback.
