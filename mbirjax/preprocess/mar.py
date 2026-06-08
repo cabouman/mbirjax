@@ -183,10 +183,34 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
     # --- Forward project the masked out metal regions ---
     metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
-        m = ct_model.forward_project(jax.device_put(mask * recon, device)).reshape(-1)
+        m = _forward_project_masked_recon(ct_model, recon, mask, device).reshape(-1)
         metal_sino_est.append(m)
 
     return plastic_sino_est, metal_sino_est
+
+
+def _forward_project_masked_recon(ct_model, recon, mask, output_device):
+    """
+    Forward project ``mask * recon`` without materializing the full masked reconstruction.
+
+    The projector operates on 2D row/column pixel indices and all slices for each index.  For a sparse metal mask,
+    it is much cheaper to gather only the voxel cylinders touched by the mask, multiply those gathered values by
+    the gathered mask, and call sparse_forward_project directly.
+    """
+    recon_shape = ct_model.get_params('recon_shape')
+    num_recon_slices = recon_shape[2]
+
+    active_cylinder_mask = jnp.any(mask.reshape((-1, num_recon_slices)) != 0, axis=1)
+    active_indices = jnp.nonzero(active_cylinder_mask, size=None)[0]
+
+    if len(active_indices) == 0:
+        sinogram_shape = ct_model.get_params('sinogram_shape')
+        return jnp.zeros(sinogram_shape, dtype=recon.dtype, device=output_device)
+
+    recon_values = ct_model.get_voxels_at_indices(recon, active_indices)
+    mask_values = ct_model.get_voxels_at_indices(mask, active_indices)
+    masked_recon_values = recon_values * mask_values
+    return ct_model.sparse_forward_project(masked_recon_values, active_indices, output_device=output_device)
 
 
 def _get_column_H(col_index, plastic_sino_est, metal_sino_est, H_exponent_list):
