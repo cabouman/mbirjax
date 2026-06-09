@@ -74,8 +74,8 @@ def main():
     W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
     H = H.reshape(num_materials, gt_hyper_projection.shape[-1])
 
-    frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum()
-    gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum() / frob_loss
+    gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum()
+    frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum() / gt_loss
     newton_loss = np.inf
 
     # Refine using nonnegative attenuation loss
@@ -105,7 +105,7 @@ def main():
             W_temp = np.maximum(W_newt - learning_rate * dW, 1e-10)
             H_temp = np.maximum(H_newt - learning_rate * dH, 1e-10)
             proj = W_temp @ H_temp
-            temp_loss = (np.exp(-proj) + T * proj).sum() / frob_loss
+            temp_loss = (np.exp(-proj) + T * proj).sum() / gt_loss
             if temp_loss > newton_loss:
                 break
             W_newt = W_temp
@@ -122,7 +122,7 @@ def main():
         W_mu = W_mu * W_mult
         H_mu = H_mu * H_mult
         mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
-        mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / frob_loss
+        mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / gt_loss
 
         # Compute least squares estimate of material coefficients for current projections
         theta_newt = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
@@ -153,10 +153,10 @@ def main():
                                   mult_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :],
                                   gt_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :]],
                         labels=[f'Noisy (Dosage: {dosage_rate})',
-                                f'Frobenius (Rel Loss: 1.00000)',
+                                f'Frobenius (Rel Loss: {frob_loss:.5f})',
                                 f'Denoised Newton (Rel Loss: {newton_loss:.5f})',
                                 f'Denoised MU (Rel Loss: {mult_loss:.5f})',
-                                f'Ground Truth (Rel Loss: {gt_loss:.5f})'],
+                                f'Ground Truth'],
                         title=f'Single pixel spectra (attenuation) for noisy and denoised data\nIteration: {i+1}/{N}',
                         x_label='wavelength index',
                         y_label='attenuation',
@@ -169,10 +169,10 @@ def main():
                                   np.exp(-mult_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :]),
                                   np.exp(-gt_hyper_projection[0, display_pix_idx[0], display_pix_idx[1], :])],
                         labels=[f'Noisy (Dosage: {dosage_rate})',
-                                f'Frobenius (Rel Loss: 1.00000)',
+                                f'Frobenius (Rel Loss: {frob_loss:.5f})',
                                 f'Denoised Newton (Rel Loss: {newton_loss:.5f})',
                                 f'Denoised MU (Rel Loss: {mult_loss:.5f})',
-                                f'Ground Truth (Rel Loss: {gt_loss:.5f})'],
+                                f'Ground Truth'],
                         title=f'Single pixel spectra (transmission) for noisy and denoised data\nIteration: {i+1}/{N}',
                         x_label='wavelength index',
                         y_label='transmission',
