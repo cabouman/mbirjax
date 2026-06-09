@@ -101,6 +101,12 @@ when the legacy single-device branches retire).
   non-divisible-shard-axis design (views: pad + `weights=0` mask, which also gives sharded
   view-selection; slices: pick-N from divisors, or problem-level pad + prior-aware mask — never
   pad to a multiple of N) — see v2 plan §P5/§Decisions.
+- **Adjacent (standalone, not gating P-phases): settable view parameters — retire `view_indices`.**
+  Lift `view_params_array` from a closed-over constant (`projectors.py:57`) to a runtime arg +
+  a dedicated `set_view_parameters()` (cheap, no recompile, shape-invariant).  De-hacks `vcls`,
+  lets P6 delete the multi-device `view_indices` `NotImplementedError`, enables multi-GPU `vcls`,
+  and generalizes to motion/trajectory.  Full design + intended docstring (incl. the per-call-arg
+  form): v2 plan §Adjacent tasks.
 
 ---
 

@@ -420,6 +420,43 @@ to find every site.  Currently tagged:
 
 ---
 
+## Migration state & branch-retirement map (2026-06-08)
+
+**Three device representations still coexist** (mid-migration); the placements are the
+intended survivor:
+
+| Representation | Role | Fate |
+|---|---|---|
+| `main_device` / `sinogram_device` | scalar single-device pins (pre-sharding) | retire at P6 |
+| `mesh` / `shard_devices` | device set + the `is_sharded` gate | retire at P6 (folds into placements) |
+| `recon_placement` / `sino_placement` | each owns its mesh + sharded axis | **survivor** — single source of device layout |
+
+After 2-Keep, **ParallelBeam-homogeneous** auto-populates `mesh` + placements (trivial 1-device
+mesh) and runs the placement path; everything else still uses the legacy representations.
+
+**Branch-retirement map** — the live legacy paths and the *gate* that retires each (they differ):
+
+| Live branch / artifact | Kept alive by | Retires when |
+|---|---|---|
+| `is_sharded` **else**-branches (VCD, projector routers) | unported geometries **+** ParallelBeam-heterogeneous | geometries ported (P6) **and** hybrid dropped |
+| `RETIRE-AFTER-SHARDING` tests | the legacy single-device path | that path is gone (P6) |
+| multi-device `view_indices` `NotImplementedError` | the `view_indices` mechanism | **settable view params lands** (§Adjacent tasks) |
+| `self.mesh` + `NamedSharding(self.mesh, …)` sites | mesh-as-gate representation | placements become sole layout (P6) |
+| `_transfer`, `'sinograms'` mode, auto-default `else`-branch | hybrid existing | **hybrid drop** (decided → P6) |
+
+**Footgun to carry into P6: `is_sharded` and `n_devices > 1` have DECOUPLED.**  Pre-2-Keep they
+were synonyms; now `is_sharded` is ~always True for ParallelBeam, so every `is_sharded` site must
+be re-read for *which question it asks* — "do I have a placement?" (almost always yes) vs "do I
+have ≥2 physical devices?" (`len(shard_devices) > 1`).  The `view_indices` fix was the first place
+this bit (it tests `len(shard_devices) > 1`, not `is_sharded`); it won't be the last.
+
+**Sequencing.**  Settable-view-params (§Adjacent) and the geometry port both *feed* the deletions,
+so the deletions (legacy branches, `self.mesh`, `RETIRE-AFTER` tests, hybrid) come **last** in P6.
+**P5** (device-config UX + device-count-aware `set_devices_and_batch_sizes` + divisibility) is
+largely **parallelizable** alongside.
+
+---
+
 ## Decisions & open questions
 
 - **O1 (heterogeneous placement) — reframed/resolved.**  recon-CPU / sino-GPU via
@@ -448,7 +485,9 @@ to find every site.  Currently tagged:
   layout, zero the excluded views — no gather, no divisibility break), useful for
   view-iterating algorithms like `vcls` on multi-GPU (each device works one local view,
   masks the rest); it does NOT save compute, so single-device subsetting stays for the
-  compute-saving case.  *Slices* — harder (the prior couples neighboring slices, and for
+  compute-saving case.  **Superseded for `vcls` by settable view parameters** (a small-view
+  model + `set_view_parameters`; see §Adjacent tasks) — masking is only a fallback if a
+  *full*-view model must select.  *Slices* — harder (the prior couples neighboring slices, and for
   parallel/cone the slice axis is tied to detector rows).  Principle: **pad to a shape the
   *problem* owns (reproducible), never to a multiple of the *device count* (N-dependent
   result).**  Options: pick N from divisors of `num_slices`; or problem-level pad + a slice
@@ -468,3 +507,75 @@ to find every site.  Currently tagged:
 - F1 FBP filter (`apply_row_filter`) — already view-sharded, no cylinder motion.
 - Cross-cutting principles, hardware facts, and the completed-work record in
   `sharding_implementation_plan.md`.
+
+---
+
+## Adjacent tasks (not gating the P-phases)
+
+### Settable view parameters — retire `view_indices` (standalone, adjacent to P6)
+
+**Decision (2026-06-08): DO IT (option "b"), standalone for now.**  Replace the
+`view_indices` mechanism with **settable view parameters**.  The only nontrivial user of
+`view_indices` is `vcls` (per-view back projection, `view_indices=[i]` to slice the frozen
+angle table) — a hack: the natural op "project at angle θ" is expressed as "index my baked
+angles at i."
+
+**Mechanism.**  Today `create_projectors` (`projectors.py:57`) **closes over**
+`view_params_array`, baking it into the jitted projectors, so changing it forces a recompile;
+`view_indices` is a runtime arg that indexes the baked array.  The *kernels* already take
+`single_view_params` as an argument, so only the whole-array closure capture bakes it.  Lift
+`view_params_array` from a **closed-over constant to a runtime argument** of the jitted
+projectors: shape is static, only values change → **no recompile across parameter changes**.
+Expose via a dedicated **`set_view_parameters()`** (geometry-general via `view_params_name`;
+assert `num_views` unchanged — a *count* change is a geometry change, route through
+`set_params`).  NOT `set_params`, whose `recompile_flag` path is exactly what we avoid.
+
+**Why (beyond de-hacking `vcls`).**
+- Retires the multi-device sharded `view_indices` `NotImplementedError` branch (a view *subset*
+  breaks the equal view-shard; with settable params there is no subset).  So **P6 can delete
+  that branch** instead of building masked subsetting.
+- Enables a clean **multi-GPU `vcls`**: a `num_views = n_dev` model, view-sharded one-per-device,
+  `set_view_parameters` to the `n` angles each step — no masking, no wasted compute.
+- Generalizes to **motion correction / variable trajectory / streaming acquisition** (on the
+  radar; not the near-term driver).
+
+**Risks.**  Confirm no *other* angle-derived quantity is baked per geometry (`geometry_params`
+— cone may carry per-view source/detector geometry; FBP weights).  Dynamic-angle constant-fold
+perf cost is O(num_views) vs O(N⁴) projection → negligible (measure before keeping any
+baked/dynamic dual mode).  Threads the array through every projector entry point (incl. sharded
+paths) across all geometries — localized to `projectors.py` + the model API, but not a one-liner.
+
+**Sequencing.**  Standalone; land before/independent of P6; supersedes the O4 `weights=0`
+view-masking idea for `vcls`.
+
+**Intended `set_view_parameters` docstring (capture the per-call form here for implementation):**
+```text
+Replace the view-dependent parameters (angles for parallel/cone beam, translation vectors for
+translation, etc.) used by the projectors, WITHOUT rebuilding them.
+
+The view parameters are a runtime input to the jitted projectors (not a baked constant), so
+this is a cheap value update: it does NOT recompile, provided the number of views is unchanged
+(a change in view count is a geometry change -- use set_params for that). Use it to vary the
+acquisition geometry on the fly -- e.g. vcls iterating one view at a time, or motion correction
+perturbing per-view angles between iterations.
+
+Args:
+    view_params: array shaped like the model's current view-parameter array (first axis =
+        num_views); only the values may differ, not the shape.
+
+Per-call alternative (not yet implemented): the same flexibility can be exposed by accepting
+view_params as an optional argument to forward_project / back_project / the sparse_* projectors,
+so a caller can vary the parameters per call without mutating model state. That form is more
+functional (no "is my state current?" question) but changes every projector signature; the
+setter is the minimal-churn entry point, and the two can coexist (the setter just updates the
+stored array the projectors read).
+```
+
+### Seed test RNGs — solidify the suite (standalone)
+
+Several tests use **unseeded `np.random`** with tight default `allclose`, so they flake when a
+value lands near zero (confirmed: `tests/test_qggmrf.py::test_loss_and_gradient` passes 5/5 in
+isolation but intermittently fails in the full suite — it builds no model, so it is unrelated to
+the sharding work).  Sweep the test tree for unseeded RNG and **seed deterministically**
+(`np.random.default_rng(<fixed>)`, as the sharding suite already does), and/or add a small `atol`
+where the comparison is near zero, so the gate is reproducible.  Low priority, high tidiness.
