@@ -181,6 +181,7 @@ def main():
 
             plt.close('all')
 
+    # Plot MSE of spectra reconstructions across iterations
     plt.figure(figsize=(10, 6))
     plt.plot(D_newt, label='Newton')
     plt.plot(D_mu, label='Multiplicative')
@@ -188,8 +189,34 @@ def main():
     plt.ylabel('MSE')
     plt.title('Mean Squared Error of Spectra Reconstructions')
     plt.legend()
+    plt.ylim(0, 0.005)
     plt.tight_layout()
     plt.savefig(f'example_1_nonnegative_attenuation_loss_distance_to_material_basis_{gt_hyper_projection.shape[-1]}.png')
+
+    # Plot reconstructed spectra
+    plot_spectra(spectra=[(theta_newt @ H_newt)[0],
+                          (theta_newt @ H_newt)[1],
+                          (theta_newt @ H_newt)[2],
+                          (theta_mu @ H_mu)[0],
+                          (theta_mu @ H_mu)[1],
+                          (theta_mu @ H_mu)[2],
+                          material_basis[0],
+                          material_basis[1],
+                          material_basis[2]],
+                labels=["Ni Recon (Newton)", "Cu Recon (Newton)", "Al Recon (Newton)",
+                        "Ni Recon (MU)", "Cu Recon (MU)", "Al Recon (MU)",
+                        "Ni Basis", "Cu Basis", "Al Basis"],
+                title='Material attenuation spectra reconstructions',
+                x_label='wavelength index',
+                y_label='attenuation',
+                filename=f'example_1_nonnegative_attenuation_loss_spectra_reconstruction.png')
+
+    # Plot reconstructed material coefficient maps
+    plot_images(images=[(W_newt @ np.linalg.pinv(theta_newt)).reshape(detector_rows, detector_columns, num_materials),
+                        (W_mu @ np.linalg.pinv(theta_mu)).reshape(detector_rows, detector_columns, num_materials)],
+                titles=[f'Fig (a): Newton material coefficient maps\nIteration: {N}',
+                        f'Fig (b): Multiplicative material coefficient maps\nIteration: {N}]'],
+                filename='example_1_nonnegative_attenuation_loss_material_maps.png')
 
     # Save GIFs of projections and spectra across iterations
     if verbose > 1:
