@@ -684,6 +684,7 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         if verbose >= 1:
             print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
         recon, _ = recon_function(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
+        del corrected_sinogram
 
         if verbose >= 2:
             print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
