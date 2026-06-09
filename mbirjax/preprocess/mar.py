@@ -467,7 +467,8 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
     return theta
 
 
-def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
+def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms,
+                              num_metal_terms, p_normalization, gamma, sino_shape):
     """
     Perform beam hardening correction on the plastic sinogram.
 
@@ -515,8 +516,10 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
     # Enforce non-negativity on the residual sinogram (plastic + cross terms)
     y_minus_Sm = jnp.maximum(y_minus_Sm, 0)
 
-    # Compute median of plastic coefficients (used to define a stabilization floor)
-    median_plastic_coef = jnp.median(Sp)
+    # Compute a representative median of plastic coefficients (used to define a stabilization floor).
+    # Taking the median over the full sinogram can require very large temporary buffers, so use the first view.
+    num_det_pixels = sino_shape[1] * sino_shape[2]
+    median_plastic_coef = jnp.median(Sp[:num_det_pixels])
     Sp_floor = gamma * median_plastic_coef
 
     # A negative median would be non-physical and may indicate instability in the algorithm
@@ -599,7 +602,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
 
     # Compute the corrected plastic sinogram
     plastic_sino_corrected = _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list,
-                                                       num_cross_terms, num_metal_terms, plastic_sino_scale, gamma)
+                                                       num_cross_terms, num_metal_terms, plastic_sino_scale, gamma, sino_shape)
 
     # Compute and apply the scaling of the corrected plastic sino
     plastic_sino_corrected_scale = _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, plastic_sino_corrected)
