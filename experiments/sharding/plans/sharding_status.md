@@ -1025,10 +1025,15 @@ is immune.
 
 ## Worktrees
 
+Consolidated to a **single** working tree (2026-06-08):
+
 | Path | Branch | Role |
 |------|--------|------|
-| `…/Research/mbirjax/` | `greg/parallel_tests` | Research / prior art. Tag `research-snapshot-2026-05-29`. To be deleted eventually — migrate first. |
-| `…/Research/mbirjax_sharding/` | `greg/parallel_sharding` | Beta (this tree). New work. |
+| `…/Research/mbirjax/` | `greg/parallel_sharding` | The repo — single worktree. All work. |
+
+The old research worktree (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`)
+was removed and its **local** branch deleted; it still exists on the remote
+`cabouman/mbirjax` if its prior art is ever needed.
 
 ## Design in one line
 

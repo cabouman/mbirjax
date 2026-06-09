@@ -58,7 +58,7 @@ Location: `experiments/sharding/scaling_tests/`.  From the **beta worktree root*
 
 ```bash
 source /Users/gbuzzard/miniforge3/etc/profile.d/conda.sh && conda activate mbirjax
-cd <beta-root>                       # …/Research/mbirjax_sharding
+cd <repo-root>                       # …/Research/mbirjax
 PYTHONPATH="$PWD" python experiments/sharding/scaling_tests/fbp_filter_scaling.py
 #   --size-set {quick,medium,large}   problem-size preset (default quick)
 #   --device-counts 1 2 4 8           device sweep (default: power-of-2 ladder)
