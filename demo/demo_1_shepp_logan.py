@@ -25,7 +25,7 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-model_type = 'cone'  # 'cone' or 'parallel'
+model_type = 'parallel'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
@@ -45,7 +45,8 @@ angles = params['angles']
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
 mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
-
+# import gc
+# gc.collect()
 """**Initialize for the reconstruction**"""
 
 # ####################

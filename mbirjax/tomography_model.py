@@ -341,6 +341,45 @@ class TomographyModel(ParameterHandler):
                 return n
         return 1
 
+    @staticmethod
+    def _platform_label(device):
+        """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
+        return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
+
+    def _device_report(self):
+        """A 'N x PLATFORM [(sharded)]' summary of the recon devices, for the recon log.
+
+        ``(sharded)`` marks the placement path (``is_sharded``), regardless of device count, so a
+        single-device PLACEMENT recon (e.g. ParallelBeam) is distinguished from a single-device
+        LEGACY recon (a geometry not yet ported) -- a real difference until P6.  When automatic
+        selection left GPUs idle because the device count cannot divide both sharded axes, the
+        reason is appended so idle hardware is never silent.
+        """
+        if self.is_sharded:
+            devices = self.shard_devices
+            suffix = ' (sharded)'
+        else:
+            devices = [self.main_device]
+            suffix = ''
+        n = len(devices)
+        platform = self._platform_label(devices[0])
+        report = '{} x {}{}'.format(n, platform, suffix)
+        # Automatic GPU selection that left devices idle (axes not divisible by more): explain why.
+        if self.is_sharded and not self._sharding_configured and platform == 'GPU':
+            try:
+                n_available = len(jax.devices('gpu'))
+            except RuntimeError:
+                n_available = n
+            if n_available > n:
+                sinogram_shape = self.get_params('sinogram_shape')
+                recon_shape = self.get_params('recon_shape')
+                num_views = sinogram_shape[self.sinogram_shard_axis() % len(sinogram_shape)]
+                num_slices = recon_shape[self.recon_shard_axis() % len(recon_shape)]
+                report += (' (using {} of {} GPUs: {} is the largest device count dividing both '
+                           'num_views={} and num_slices={}; pad an axis to a divisible shape to use '
+                           'more)'.format(n, n_available, n, num_views, num_slices))
+        return report
+
     def _set_placements(self):
         """Build recon_placement / sino_placement from the current device config.
 
@@ -2028,7 +2067,7 @@ class TomographyModel(ParameterHandler):
         if first_iteration == 0 or self.logger is None:
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
         self.logger.info('MBIRJAX Version = {}'.format(self.version))
-        self.logger.info('GPU used for: {}'.format(self.use_gpu))
+        self.logger.info('Reconstruction devices: {}'.format(self._device_report()))
 
         # Generate set of voxel partitions
         recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])

@@ -19,12 +19,12 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-09) — hybrid path REMOVED (Steps 1/1b/2) + device-config cleanup; band sizing RESOLVED (keep n_dev²); NEXT = P5 Step 3 (configure_devices + pick-N)
+## HANDOFF (2026-06-09) — hybrid path REMOVED + P5 Step 3 DONE (configure_devices + auto multi-GPU, GPU-validated); band sizing RESOLVED; NEXT = P5 Step 4 (divisibility)
 
-▶ **CURRENT FOCUS (next session): P5 Step 3 — `configure_devices(None|int|list)` + device-count-aware
-auto (pick-N) + a rebuilt (device-count-only) memory estimate.**  The hybrid drop + device-selection
-cleanup are DONE and CPU-green; auto still tops out at ONE device, so the defining P5 capability
-(auto multi-GPU) is the remaining work.
+▶ **CURRENT FOCUS (next session): P5 Step 4 — divisibility** (let auto USE a non-dividing device
+count via padding + a `weights=0` mask on views / pick-N on slices, + `prepare_sino_for_devices`).
+The hybrid drop, the device-config UX (Step 3), and the device report (Step 5) are DONE; Step 3 is
+**GPU-validated** (default ParallelBeam recon auto-shards and agrees with the single-GPU baseline).
 
 ### What landed this session (CPU-green; staged, Greg commits from PyCharm)
 - **Hybrid recon-CPU/sino-GPU ('sinograms') path REMOVED — the whole chain (pulled forward from P6):**
@@ -49,10 +49,29 @@ cleanup are DONE and CPU-green; auto still tops out at ONE device, so the defini
   layout).  `set_devices_and_batch_sizes` comment reframed into its two jobs (choose device / establish
   layout); `_set_placements` always runs (trivial single-device placements when mesh is None — the legacy
   path, retiring at P6).
-- **Doc-accuracy:** `set_devices_and_batch_sizes` no longer sets any batch size → the `_and_batch_sizes` name
-  is vestigial; rename to `set_devices` folded into Step 3.
-- **Verification (CPU):** `tests/sharding/` + `test_vcd` + `test_qggmrf` (+ projectors/fbp_fdk earlier) green
-  throughout — 80 passed / 2 skipped / 7 subtests at Step 2.
+- **Doc-accuracy:** `set_devices_and_batch_sizes` no longer set any batch size → renamed to `set_devices`.
+- **P5 Step 3 — device-config UX + auto multi-GPU (GPU-validated):** `configure_devices(devices=None|int|list)`
+  (None→auto pick-N, int→first N of the default platform, list[int]→indices, list[device]→exact) resolves then
+  delegates to `configure_sharding` (pinned).  Auto (`use_gpu='automatic'/'full'`) now **shards by default on a
+  multi-GPU box**: `_auto_device_count` picks the largest N dividing `gcd(num_views, num_slices)` — **no floor**
+  (GPU sweeps showed near-linear scaling; over-sharding a small problem is mild).  **GPU-only**: on CPU it stays
+  single-device regardless of CPU-device count, so the suite is unchanged.  Decoupling audit clean (only the
+  `view_indices` guards mean ≥2 devices; they already use `len(shard_devices) > 1`).  **GPU run: a default
+  ParallelBeam recon auto-shards and AGREES WITH THE SINGLE-GPU BASELINE.**  (Behavior change: existing
+  multi-GPU scripts now shard without calling `configure_sharding`.)
+- **P5 Step 5 — device report (most of it):** the recon log now prints `Reconstruction devices: N x PLATFORM
+  [(sharded)]` via `_device_report` — `(sharded)` marks the placement path (`is_sharded`), so a 1-device
+  PLACEMENT recon (`1 x CPU (sharded)`) is distinguished from a 1-device LEGACY recon (`1 x CPU`); covers
+  CPU/GPU/multi-device, and appends a "why N" note when auto left GPUs idle (axes not divisible by more).
+  Replaces the old `GPU used for: full/none/sharded` line that conflated platform with sharding.
+- **Viewer nit (interim):** `gc.collect()` at the end of `slice_viewer`.  The TkAgg backend leaves orphaned
+  tkinter objects that `plt.close` doesn't fully release; a later automatic GC during a sharded recon (whose
+  reference-cycle arrays trigger gen-2 collection) finalized them with no Tk mainloop → repeated, benign
+  "main thread is not in main loop" in `__del__`.  Collecting on the main thread at viewer close pre-empts it
+  (confirmed: an explicit collect there is clean and removes the mid-recon noise).  Root cause is the viewer's
+  Tk teardown; a viewer overhaul is on Greg's list.
+- **Verification (CPU):** `tests/sharding/` + `test_vcd` + `test_qggmrf` + `test_projectors` + `test_fbp_fdk`
+  green throughout (76/2/7 on sharding+vcd; 8/26 projectors+fbp).
 
 ### Band sizing — RESOLVED (GPU, H100×4, 2026-06-09): KEEP the n_dev² default; budget-driven sizing DROPPED
 New harness `experiments/sharding/scaling_tests/sparse_back_project_band_sweep.py` (multi-device band sweep;
@@ -68,16 +87,18 @@ hypothesis that bigger bands cut the multi-device time wall is REFUTED.  ⇒ **d
 YAMLs under results/ (gitignored); table in the session log.
 
 ### NEXT — P5 (see v2 plan §P5)
-- **Step 3 (centerpiece):** `configure_devices(devices=None|int|list)` (None→auto pick-N, int→count,
-  list→devices/indices) on top of `_apply_mesh`; make auto **device-count-aware** (today it always builds a
-  1-device mesh) — pick N = largest divisor of gcd(num_views, num_slices) ≤ n_available with per-device work
-  above a floor; rebuild a small device-count memory estimate; rename `set_devices_and_batch_sizes`→`set_devices`.
-  **Audit `is_sharded` vs `len(shard_devices) > 1` here** — auto goes multi-device, so the decoupling footgun activates.
-- **Step 4:** divisibility — auto NEVER raises (picks a compatible N); views pad + `weights=0` mask +
-  `prepare_sino_for_devices`; slices pick-N from divisors.  (configure_sharding keeps raising on an EXPLICIT mismatch.)
-- **Step 5:** always-on "devices in use + why N" report at recon time.
-- Carry: the hybrid drop is DONE here; remaining legacy `is_sharded` else-branches + `pixel_indices_worker` /
-  `partition_worker` retire at P6 with the geometry port.
+- **Step 4 (the remaining P5 capability):** divisibility — today auto picks the largest *dividing* N (down to 1),
+  so a non-dividing axis (e.g. prime `num_views`) idles GPUs.  Let auto USE a non-dividing N: **views** — pad to a
+  multiple of N and zero the padded views (`weights=0`); **slices** — pick-N from divisors, or problem-level pad +
+  a prior-aware mask.  Add `prepare_sino_for_devices(sino, weights, n)`.  Pad to a shape the PROBLEM owns
+  (reproducible), never to a multiple of the device count.  (`configure_sharding`/`configure_devices` keep raising
+  on an EXPLICIT non-dividing request.)
+- **Step 5 polish (minor):** `_handle_jax_error`'s `on_gpu` still keys on `use_gpu != 'none'`; switch it to the
+  device platform (like `_device_report`) so explicit CPU sharding (`configure_sharding` sets use_gpu='sharded')
+  doesn't print GPU guidance for a CPU OOM.
+- Carry: the hybrid drop is DONE; remaining legacy `is_sharded` else-branches + `pixel_indices_worker` /
+  `partition_worker` retire at P6 with the geometry port.  `scaling_common` still owns a duplicate `is_oom`
+  (de-dup via a lazy import — deferred).
 
 ---
 
