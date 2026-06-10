@@ -355,6 +355,16 @@ class TomographyModel(ParameterHandler):
         """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
         return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
 
+    def _recon_devices(self):
+        """The devices the reconstruction actually runs on.
+
+        The shard devices when sharded (the placement path), else the single main device (legacy
+        path).  This is the truth for "where does the recon run" -- use it rather than
+        ``main_device``, which is not updated by ``configure_sharding`` and so can be stale (e.g. it
+        stays a GPU after sharding explicitly onto CPU devices).
+        """
+        return self.shard_devices if self.is_sharded else [self.main_device]
+
     def _device_report(self):
         """A 'N x PLATFORM [(sharded)]' summary of the recon devices, for the recon log.
 
@@ -364,12 +374,8 @@ class TomographyModel(ParameterHandler):
         selection left GPUs idle because the device count cannot divide both sharded axes, the
         reason is appended so idle hardware is never silent.
         """
-        if self.is_sharded:
-            devices = self.shard_devices
-            suffix = ' (sharded)'
-        else:
-            devices = [self.main_device]
-            suffix = ''
+        devices = self._recon_devices()
+        suffix = ' (sharded)' if self.is_sharded else ''
         n = len(devices)
         platform = self._platform_label(devices[0])
         report = '{} x {}{}'.format(n, platform, suffix)
@@ -2155,7 +2161,13 @@ class TomographyModel(ParameterHandler):
         # Classify from the FULL traceback, not just str(e): an out-of-memory error often surfaces
         # as an unrelated-looking error with the real RESOURCE_EXHAUSTED buried deeper in the stack.
         if is_oom(traceback.format_exc()):
-            log_oom_guidance(self.logger, on_gpu=(self.use_gpu != 'none'))
+            # Derive on-GPU from the actual recon device platform, not the use_gpu string: CPU
+            # sharding (configure_sharding / the _auto_shard_cpu opt-in) sets use_gpu='sharded', which
+            # is NOT a GPU run, so 'use_gpu != none' would wrongly print GPU guidance for a CPU OOM.
+            recon_devices = self._recon_devices()
+            on_gpu = bool(recon_devices) and recon_devices[0] is not None \
+                and self._platform_label(recon_devices[0]) == 'GPU'
+            log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,

@@ -9,14 +9,37 @@ otherwise, via conftest).
 """
 import unittest
 import math
+import io
+import logging
 
 # Import mbirjax before jax (device-setup-first ordering).
 import mbirjax
 
 import numpy as np
 import jax
+from jax.errors import JaxRuntimeError
 
 from conftest import preferred_devices
+
+
+def _capture_jax_error_guidance(model, message):
+    """Drive ``model._handle_jax_error`` with a fake ``JaxRuntimeError(message)`` and return the
+    text it logged.  The error is raised inside an ``except`` block so ``traceback.format_exc()``
+    (which ``_handle_jax_error`` inspects to classify OOM) sees the message; ``_handle_jax_error``
+    re-raises, which we swallow."""
+    buf = io.StringIO()
+    model.logger = logging.getLogger('test_oom_%d' % id(model))
+    model.logger.handlers = [logging.StreamHandler(buf)]
+    model.logger.setLevel(logging.ERROR)
+    model.logger.propagate = False
+    try:
+        try:
+            raise JaxRuntimeError(message)
+        except JaxRuntimeError as e:
+            model._handle_jax_error(e)
+    except JaxRuntimeError:
+        pass
+    return buf.getvalue()
 
 
 def _make_model(num_views=8):
@@ -255,6 +278,39 @@ class TestModelPlacements(unittest.TestCase):
         sino = np.ones((8, 4, 16), dtype=np.float32)
         self.assertEqual(model._shard_sinogram(sino).sharding,
                          model.sino_placement.shard_structure(3))
+
+
+class TestOomGuidance(unittest.TestCase):
+    """_handle_jax_error: an OOM yields platform-appropriate recovery guidance (derived from the
+    recon device platform, NOT the use_gpu string); a non-OOM error re-raises with no memory advice."""
+
+    def test_oom_guidance_matches_recon_platform(self):
+        model = _make_model()   # single device pinned; platform = whatever this host runs on
+        out = _capture_jax_error_guidance(model, 'XLA: RESOURCE_EXHAUSTED: Out of memory')
+        if model._platform_label(model._recon_devices()[0]) == 'GPU':
+            self.assertIn('GPU memory', out)
+        else:
+            self.assertIn('CPU memory', out)
+
+    def test_cpu_sharding_oom_gives_cpu_guidance(self):
+        # Bug-lock: CPU sharding sets use_gpu='sharded', but an OOM there must give CPU guidance,
+        # because on_gpu is derived from the recon device platform, not the use_gpu string.  Works on
+        # a GPU host too (configure_sharding onto CPU devices makes the recon devices CPU even though
+        # main_device stays a GPU) -- this is exactly the _recon_devices vs main_device distinction.
+        cpu_devs = jax.devices('cpu')[:2]
+        if len(cpu_devs) < 2:
+            self.skipTest('need >= 2 CPU devices')
+        model = _make_model()
+        model.configure_sharding(cpu_devs)
+        self.assertEqual(model.use_gpu, 'sharded')
+        out = _capture_jax_error_guidance(model, 'RESOURCE_EXHAUSTED')
+        self.assertIn('CPU memory', out)
+        self.assertNotIn('GPU memory', out)
+
+    def test_non_oom_error_reraised_without_memory_guidance(self):
+        model = _make_model()
+        out = _capture_jax_error_guidance(model, 'XLA computation has a shape mismatch')
+        self.assertNotIn('Insufficient', out)   # no memory guidance for a non-OOM error
 
 
 if __name__ == "__main__":
