@@ -45,8 +45,7 @@ angles = params['angles']
 # View the sinogram
 title = 'Original sinogram \nUse the sliders to change the view or adjust the intensity range.\nRight click the image to see options.'
 mj.slice_viewer(sinogram, data_dicts=params, slice_axis=0, title=title, slice_label='View')
-# import gc
-# gc.collect()
+
 """**Initialize for the reconstruction**"""
 
 # ####################
