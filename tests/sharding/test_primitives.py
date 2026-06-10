@@ -164,21 +164,45 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertEqual(model.mesh.devices.size, 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
-    def test_divisibility_error(self):
-        """A device count that doesn't divide a sharded axis raises clearly.
-
-        With num_views=8 (sinogram view axis) and 3 devices, the sinogram-axis
-        divisibility check fires first; the message names the sharded axis.
+    def test_divisibility_warns_then_shard_raises(self):
+        """A device count that doesn't divide a sharded axis WARNS at configure time and RAISES
+        clearly at the actual sharding op.  Deferred (not eager) so selection is order-independent --
+        a shape fixed up before the recon still works (see test_divisibility_resolved_by_shape_change).
+        num_views=8 is not divisible by 3 devices.
         """
         devs = preferred_devices(3)
         if devs is None:
             self.skipTest("need >= 3 devices")
-        model = self._make_model()  # num_views = 8, not divisible by 3
-        with self.assertRaises(ValueError) as ctx:
+        model = self._make_model()
+        with self.assertWarns(UserWarning):
             model.configure_sharding(devs)
+        sino = np.zeros(model.get_params('sinogram_shape'), dtype=np.float32)
+        with self.assertRaises(ValueError) as ctx:
+            model._shard_sinogram(sino)
         msg = str(ctx.exception)
         self.assertIn("divisible", msg)
-        self.assertIn("sinogram axis", msg)
+        self.assertIn("sinogram", msg)
+
+    def test_divisibility_resolved_by_shape_change(self):
+        """Order-independence: selecting devices that don't divide the CURRENT recon, then changing
+        recon_shape to a compatible one, yields a working shard.  configure_sharding only warns (does
+        not block), and the hard check is at the sharding op, so the later fix rescues it.
+        """
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        model = self._make_model()                          # num_views = 8 (divisible by 2)
+        rows, cols, _ = model.get_params('recon_shape')
+        model.set_params(recon_shape=(rows, cols, 5))        # 5 slices: NOT divisible by 2
+        with self.assertWarns(UserWarning):
+            model.configure_sharding(devs)
+        with self.assertRaises(ValueError):
+            model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
+        # Fix the slice count; the same user-selected devices now shard cleanly.
+        model.set_params(recon_shape=(rows, cols, 4))
+        out = model._shard_recon(np.zeros((rows * cols, 4), dtype=np.float32))
+        self.assertEqual(len(model.shard_devices), 2)
+        self.assertEqual(out.shape, (rows * cols, 4))
 
 
 if __name__ == "__main__":

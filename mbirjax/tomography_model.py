@@ -206,7 +206,8 @@ class TomographyModel(ParameterHandler):
           * ``sequence of jax devices`` -- use exactly those devices.
 
         Sharding requires the device count to evenly divide both the sharded sinogram axis (views)
-        and recon axis (slices); an incompatible EXPLICIT request raises (see configure_sharding).
+        and recon axis (slices).  A count incompatible with the CURRENT shapes only warns (the shapes
+        may still change before the recon); the reconstruction raises if it is still incompatible.
 
         Args:
             devices (None, int, or sequence of ints / jax devices): see above.
@@ -252,7 +253,10 @@ class TomographyModel(ParameterHandler):
 
         Sharding scheme (uniform across geometries): sinogram-like objects are
         sharded by **view** (axis 0) and recon-like objects by **slice**, so the
-        device count must evenly divide both ``num_views`` and ``num_slices``.
+        device count must evenly divide both ``num_views`` and ``num_slices``.  A
+        count incompatible with the CURRENT shapes only **warns** here (they may
+        still change before the recon); the hard error is raised when an array is
+        actually sharded (so selection is order-independent).
 
         Passing ``devices=None`` (or a single device) sets up a trivial 1-device
         mesh, so single-device operation is just the degenerate sharded case and
@@ -273,44 +277,27 @@ class TomographyModel(ParameterHandler):
         if n_devices < 1:
             raise ValueError("configure_sharding requires at least one device.")
 
-        # Divisibility requirement: the sharded axis of each array type must be
-        # evenly divisible by the device count (each device owns an equal,
-        # contiguous block).  Which axis that is comes from the axis-declaration
-        # hooks (single source of truth), not hardcoded here, so a geometry that
-        # overrides the hooks gets the matching check for free.
-        sinogram_shape = self.get_params('sinogram_shape')
-        recon_shape = self.get_params('recon_shape')
-        sino_axis = self.sinogram_shard_axis() % len(sinogram_shape)
-        recon_axis = self.recon_shard_axis() % len(recon_shape)
-        num_sino_shard = sinogram_shape[sino_axis]   # views, by default
-        num_recon_shard = recon_shape[recon_axis]    # slices, by default
-        if num_sino_shard % n_devices != 0:
-            raise ValueError(
-                f"Sharding requires the sharded sinogram axis "
-                f"(axis {sino_axis}, size {num_sino_shard}) to be divisible by "
-                f"the number of devices ({n_devices}).  Pad/crop that axis or "
-                f"choose a compatible device count."
-            )
-        if num_recon_shard % n_devices != 0:
-            raise ValueError(
-                f"Sharding requires the sharded recon axis "
-                f"(axis {recon_axis}, size {num_recon_shard}) to be divisible by "
-                f"the number of devices ({n_devices}).  Pad/crop that axis or "
-                f"choose a compatible device count."
-            )
+        # Divisibility: each array's sharded axis must be evenly divisible by the device count
+        # (equal contiguous shards).  The current shapes may still change before reconstruction
+        # (e.g. scale_recon_shape), so we only WARN here and defer the hard error to the actual
+        # sharding op (_shard_on_axis).  This keeps selection order-independent: a config that does
+        # not fit the current shapes but is fixed up before the recon still works.
+        msg = self._divisibility_warning(n_devices)
+        if msg:
+            warnings.warn('configure_sharding: ' + msg)
 
         self.use_gpu = 'sharded'
-        self._apply_mesh(devices, pin=True)
+        self._apply_mesh(devices, user_selected=True)
 
-    def _apply_mesh(self, devices, pin):
+    def _apply_mesh(self, devices, user_selected):
         """Build the device mesh and placements from ``devices`` (a 1-D mesh over them).
 
-        Shared by the explicit configure_sharding() (pin=True) and the automatic single-device
-        default in set_devices() (pin=False).
+        Shared by the explicit configure_sharding() (user_selected=True) and the automatic default
+        in set_devices() (user_selected=False).
 
         Args:
             devices (sequence of jax devices): devices to shard across (length 1 = trivial mesh).
-            pin (bool): if True, mark the configuration as explicit, so set_devices
+            user_selected (bool): if True, mark the configuration as user-selected so set_devices
                 will not override it; if False, leave it overridable so a later set_params (which
                 re-runs set_devices) can re-evaluate the device layout.
         """
@@ -321,8 +308,34 @@ class TomographyModel(ParameterHandler):
         self.mesh = Mesh(np.array(devices), ('devices',))
         self.shard_devices = devices
         self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
-        self._sharding_configured = pin
+        self._sharding_configured = user_selected
         self._set_placements()
+
+    def _divisibility_warning(self, n_devices):
+        """Message (or None) if ``n_devices`` does not evenly divide a sharded axis of the CURRENT
+        shapes.
+
+        Used for an EARLY, non-blocking warning (configure_sharding, or a geometry change to a
+        user-selected config); the HARD error is raised later at the actual sharding op
+        (_shard_on_axis).  Warning rather than raising here keeps device selection order-independent:
+        a config that doesn't fit the current shapes but is fixed up before reconstruction (e.g. a
+        later scale_recon_shape) still works, regardless of the order of the configure/set_params
+        calls.  Which axis is sharded comes from the axis-declaration hooks (single source of truth).
+        """
+        sinogram_shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
+        sino_axis = self.sinogram_shard_axis() % len(sinogram_shape)
+        recon_axis = self.recon_shard_axis() % len(recon_shape)
+        bad = []
+        if sinogram_shape[sino_axis] % n_devices != 0:
+            bad.append('sinogram axis {} (size {})'.format(sino_axis, sinogram_shape[sino_axis]))
+        if recon_shape[recon_axis] % n_devices != 0:
+            bad.append('recon axis {} (size {})'.format(recon_axis, recon_shape[recon_axis]))
+        if not bad:
+            return None
+        return ('{} devices do not evenly divide {}.  Resolve before reconstruction (make the axis '
+                'a multiple of {}, or choose a compatible device count); the reconstruction will '
+                'raise if it is still incompatible.'.format(n_devices, ' and '.join(bad), n_devices))
 
     def _auto_device_count(self, n_available):
         """Largest device count <= n_available that evenly divides BOTH sharded axes.
@@ -448,7 +461,7 @@ class TomographyModel(ParameterHandler):
         """
         return -1
 
-    def _shard_on_axis(self, x, axis):
+    def _shard_on_axis(self, x, axis, what='array'):
         """Distribute array ``x`` across the mesh along ``axis`` (no-op if no mesh).
 
         When ``self.mesh`` is None (single-device, not configured) ``x`` is
@@ -460,10 +473,19 @@ class TomographyModel(ParameterHandler):
         copies directly when device-to-device transfer is safe on this hardware
         and routes through host memory otherwise (see mbirjax._sharding).
 
+        This is the single chokepoint where entry arrays are sharded, so it is also
+        where the equal-shard divisibility requirement is enforced with a clear
+        error: the sharded axis must be divisible by the device count.  Selection
+        (configure_*/set_params) only WARNS about divisibility; the hard check lands
+        here, at the actual op, so it is order-independent and the message is clear
+        rather than a cryptic XLA shard error.  (A no-op for a single device, since
+        any size is divisible by 1.)
+
         Args:
             x: a JAX (or numpy) array to distribute.
             axis (int): the axis of ``x`` to partition across devices; may be
                 negative (counted from the end).
+            what (str): human label for ``x`` in the divisibility error message.
 
         Returns:
             The array in the requested NamedSharding (or ``x`` unchanged when no
@@ -472,6 +494,13 @@ class TomographyModel(ParameterHandler):
         if not self.is_sharded:
             return x
         axis = axis % x.ndim
+        n_dev = len(self.shard_devices)
+        if x.shape[axis] % n_dev != 0:
+            raise ValueError(
+                'Cannot shard the {} across {} devices: its sharded axis (size {}) is not '
+                'divisible by {}.  Change the geometry so that axis is a multiple of {}, or select '
+                'a compatible device count with configure_devices().'.format(
+                    what, n_dev, x.shape[axis], n_dev, n_dev))
         spec = [None] * x.ndim
         spec[axis] = 'devices'
         sharding = jax.sharding.NamedSharding(
@@ -504,7 +533,7 @@ class TomographyModel(ParameterHandler):
 
     def _shard_sinogram(self, sinogram):
         """Distribute a sinogram-like array in its native (per-geometry) sharding."""
-        return self._shard_on_axis(sinogram, self.sinogram_shard_axis())
+        return self._shard_on_axis(sinogram, self.sinogram_shard_axis(), what='sinogram (view axis)')
 
     def _gather_sinogram(self, sinogram):
         """Gather a sharded sinogram back to a single uncommitted array."""
@@ -512,7 +541,7 @@ class TomographyModel(ParameterHandler):
 
     def _shard_recon(self, recon):
         """Distribute a recon-like array (3-D or flat) in its native sharding."""
-        return self._shard_on_axis(recon, self.recon_shard_axis())
+        return self._shard_on_axis(recon, self.recon_shard_axis(), what='reconstruction (slice axis)')
 
     def _gather_recon(self, recon):
         """Gather a sharded recon back to a single uncommitted array."""
@@ -727,11 +756,11 @@ class TomographyModel(ParameterHandler):
         # auto-select here.  Auto SHARDS across all GPUs whose count divides both sharded axes (pick-N,
         # _auto_device_count) -- and across CPU devices too when the _auto_shard_cpu opt-in is set
         # (off by default; see __init__).  One GPU / one CPU / opt-out -> a trivial 1-device mesh.
-        # pin=False keeps it overridable, so a later set_params re-evaluates the layout (e.g. a
-        # 'full' <-> 'none' mode flip, or a sinogram_shape change that changes the divisible count).
-        # Geometries not yet ported leave self.mesh = None and fall back to trivial single-device
-        # placements in _set_placements (the legacy path, retiring at P6).  _set_placements() runs in
-        # all branches (via _apply_mesh or directly).
+        # user_selected=False keeps it overridable, so a later set_params re-evaluates the layout
+        # (e.g. a 'full' <-> 'none' mode flip, or a sinogram_shape change that changes the divisible
+        # count).  Geometries not yet ported leave self.mesh = None and fall back to trivial
+        # single-device placements in _set_placements (the legacy path, retiring at P6).
+        # _set_placements() runs in all branches (via _apply_mesh or directly).
         if not self._sharding_configured and self._supports_sharding():
             if self.use_gpu == 'full' and len(gpus) > 1:
                 auto_pool = list(gpus)
@@ -741,12 +770,20 @@ class TomographyModel(ParameterHandler):
                 auto_pool = None
             if auto_pool is not None:
                 n = self._auto_device_count(len(auto_pool))   # largest count dividing both sharded axes
-                self._apply_mesh(auto_pool[:n], pin=False)
+                self._apply_mesh(auto_pool[:n], user_selected=False)
                 if n > 1:
                     self.use_gpu = 'sharded'
             else:
-                self._apply_mesh([self.main_device], pin=False)
+                self._apply_mesh([self.main_device], user_selected=False)
         else:
+            # User-selected config (or an unported geometry).  If a geometry change has made a
+            # user-selected multi-device config no longer divide the sharded axes, warn early; the
+            # hard error is still deferred to the sharding op (_shard_on_axis), so order-independence
+            # holds (a later compatible shape change rescues it).
+            if self._sharding_configured and self.is_sharded and len(self.shard_devices) > 1:
+                msg = self._divisibility_warning(len(self.shard_devices))
+                if msg:
+                    warnings.warn(msg)
             self._set_placements()
         return
 
