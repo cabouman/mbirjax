@@ -495,6 +495,18 @@ largely **parallelizable** alongside.
 - **Band-vs-pixel criterion (P2) — RESOLVED (2026-06-03): KEEP BAND.**  The
   side-by-side showed pixel's peak memory floored at ~1.7–2.7× band for only
   ~11–16% less time, so band stayed and the pixel path was removed.
+- **Band length / budget-driven sizing — RESOLVED (2026-06-09): KEEP the
+  `slices_per_dev/n_dev²` default; do NOT build budget-driven band sizing.**  A
+  multi-device band sweep (H100×4; `sparse_back_project_band_sweep.py`, band ∈
+  {auto, slices_per_dev//{1,2,4}}, n_dev=1/2/4, 512³/1024³) showed **time is flat
+  across band** (bigger bands if anything slightly slower) while **memory strongly
+  favors the smaller auto bands** (1024³/n=4: full-shard band = 2.08× auto's peak
+  for identical time).  Multi-device scaling is band-independent and near-linear
+  (1024³ auto 2.10×/3.73× at n=1/2/4).  So small bands are a free memory win and
+  the hypothesis that bigger bands would relieve the multi-device time wall is
+  refuted ⇒ the earlier "make band sizing memory-budget-driven" idea is dropped,
+  and any P5 memory estimate is for device-COUNT selection only.  (A CPU hint that
+  bigger bands were faster at 256³/n=2 did not replicate on GPU.)
 - **Open:** exact `B_p` default / floor (set conservatively, refine by sweep);
   `configure_devices` precedence vs `use_gpu`; how `prepare_sino_for_devices`
   returns the crop spec to undo padding on the recon.

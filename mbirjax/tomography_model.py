@@ -4,8 +4,7 @@ import warnings
 import inspect
 import os
 from collections import namedtuple
-import subprocess
-import re
+import traceback
 from typing import Literal, Union, overload
 import datetime
 import time  # Used for debugging/performance tuning
@@ -24,6 +23,7 @@ import jax.numpy as jnp
 
 import mbirjax as mj
 from mbirjax import ParameterHandler
+from mbirjax._utils import is_oom, log_oom_guidance
 # Internal sharding primitives (see _sharding), accessed with the `mjs` prefix.
 # Importing the SUBMODULE directly (not aliasing the top-level `mbirjax` and
 # reaching submodules as attributes) is safe even mid-import of mbirjax: it
@@ -81,7 +81,7 @@ class TomographyModel(ParameterHandler):
         # Multi-device sharding.  An explicit configure_sharding() builds a mesh over the
         # chosen devices and sets _sharding_configured = True.  Absent that, geometries whose
         # _supports_sharding() is True (ParallelBeam) auto-default the homogeneous single-device
-        # case to a trivial 1-device mesh at the end of set_devices_and_batch_sizes(), so the
+        # case to a trivial 1-device mesh at the end of set_devices(), so the
         # placement path is always on; other geometries keep mesh = None (legacy single-device).
         self.mesh = None
         self.shard_devices = None
@@ -110,16 +110,12 @@ class TomographyModel(ParameterHandler):
         self.recon_placement = None
         self.sino_placement = None
 
-        # The following may be adjusted based on memory in set_devices_and_batch_sizes()
+        # The following may be adjusted based on memory in set_devices()
         self.view_batch_size_for_vmap = 512
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
-        self.gpu_memory = 0
-        self.cpu_memory = 0
-        self.mem_required_for_gpu = 0
-        self.mem_required_for_cpu = 0
-        self.use_gpu = 'none'  # This is set in set_devices_and_batch_sizes based on memory and get_params('use_gpu')
-        self.set_devices_and_batch_sizes()
+        self.use_gpu = 'none'  # This is set in set_devices based on get_params('use_gpu')
+        self.set_devices()
         self.create_projectors()
         try:
             __version__ = version("mbirjax")
@@ -186,6 +182,55 @@ class TomographyModel(ParameterHandler):
         """
         return False
 
+    def configure_devices(self, devices=None):
+        """
+        Configure which devices the reconstruction runs on (the user-facing control surface).
+
+        Resolves ``devices`` to a concrete device list and PINS that configuration (set_devices()
+        will not override it on a later set_params):
+
+          * ``None``  -- automatic: shard across all available GPUs whose count divides both sharded
+            axes (see :meth:`_auto_device_count`); if no GPU is available, use a single CPU device.
+            This is the explicit, pinned form of the choice ``use_gpu='automatic'`` makes by default.
+          * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs).
+          * ``sequence of ints`` -- use those indices into the default device list (``jax.devices()``).
+          * ``sequence of jax devices`` -- use exactly those devices.
+
+        Sharding requires the device count to evenly divide both the sharded sinogram axis (views)
+        and recon axis (slices); an incompatible EXPLICIT request raises (see configure_sharding).
+
+        Args:
+            devices (None, int, or sequence of ints / jax devices): see above.
+
+        Returns:
+            Nothing; sets the device mesh and placements (see :meth:`configure_sharding`).
+        """
+        self.configure_sharding(self._resolve_devices(devices))
+
+    def _resolve_devices(self, devices):
+        """Resolve the configure_devices() ``devices`` argument to a concrete device list."""
+        def default_pool():
+            try:
+                g = list(jax.devices('gpu'))
+                if g:
+                    return g
+            except RuntimeError:
+                pass
+            return list(jax.devices('cpu'))
+
+        if devices is None:
+            pool = default_pool()
+            on_gpu = bool(pool) and pool[0].platform == 'gpu'
+            n = self._auto_device_count(len(pool)) if on_gpu else 1
+            return pool[:n]
+        if isinstance(devices, (int, np.integer)):
+            return default_pool()[:int(devices)]
+        devices = list(devices)
+        if devices and all(isinstance(d, (int, np.integer)) for d in devices):
+            all_devices = jax.devices()
+            return [all_devices[int(i)] for i in devices]
+        return devices
+
     def configure_sharding(self, devices=None):
         """
         Configure multi-device sharding over the given devices (opt-in).
@@ -212,8 +257,6 @@ class TomographyModel(ParameterHandler):
             Nothing; sets ``self.mesh``, ``self.shard_devices``,
             ``self.dev2dev_safe``, and ``self.use_gpu = 'sharded'``.
         """
-        from jax.sharding import Mesh
-
         if devices is None:
             devices = jax.devices()[:1]
         devices = list(devices)
@@ -247,14 +290,56 @@ class TomographyModel(ParameterHandler):
                 f"choose a compatible device count."
             )
 
-        # 1-D mesh; the axis name 'devices' is referenced by the PartitionSpecs
-        # used when sharding sinogram (view axis) and recon (slice axis).
+        self.use_gpu = 'sharded'
+        self._apply_mesh(devices, pin=True)
+
+    def _apply_mesh(self, devices, pin):
+        """Build the device mesh and placements from ``devices`` (a 1-D mesh over them).
+
+        Shared by the explicit configure_sharding() (pin=True) and the automatic single-device
+        default in set_devices() (pin=False).
+
+        Args:
+            devices (sequence of jax devices): devices to shard across (length 1 = trivial mesh).
+            pin (bool): if True, mark the configuration as explicit, so set_devices
+                will not override it; if False, leave it overridable so a later set_params (which
+                re-runs set_devices) can re-evaluate the device layout.
+        """
+        from jax.sharding import Mesh
+        devices = list(devices)
+        # 1-D mesh; the axis name 'devices' is referenced by the PartitionSpecs used when sharding
+        # the sinogram (view axis) and recon (slice axis).
         self.mesh = Mesh(np.array(devices), ('devices',))
         self.shard_devices = devices
         self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
-        self.use_gpu = 'sharded'
-        self._sharding_configured = True  # explicit config: set_devices_and_batch_sizes must not override
+        self._sharding_configured = pin
         self._set_placements()
+
+    def _auto_device_count(self, n_available):
+        """Largest device count <= n_available that evenly divides BOTH sharded axes.
+
+        Automatic device selection (use_gpu='automatic'/'full' on a multi-GPU box) shards across
+        this many devices.  N must divide the sharded sinogram axis (views) and recon axis (slices)
+        so each device owns an equal contiguous block (the equal-shard requirement of
+        configure_sharding), so the largest admissible N is the divisor of their gcd closest to
+        n_available.  There is NO per-device size floor (decided 2026-06-09 from the GPU band/scale
+        sweeps): sharding's value is capacity + near-linear speedup at the sizes that matter, and
+        over-sharding a small problem is only a mild overhead.  Non-dividing device counts are
+        handled by padding/masking (a later step), not here.
+
+        Returns 1 for unsupported geometries, n_available <= 1, or when nothing > 1 divides both axes.
+        """
+        if n_available <= 1 or not self._supports_sharding():
+            return 1
+        sinogram_shape = self.get_params('sinogram_shape')
+        recon_shape = self.get_params('recon_shape')
+        num_sino = sinogram_shape[self.sinogram_shard_axis() % len(sinogram_shape)]
+        num_recon = recon_shape[self.recon_shard_axis() % len(recon_shape)]
+        g = int(np.gcd(int(num_sino), int(num_recon)))
+        for n in range(n_available, 0, -1):
+            if g % n == 0:
+                return n
+        return 1
 
     def _set_placements(self):
         """Build recon_placement / sino_placement from the current device config.
@@ -271,7 +356,7 @@ class TomographyModel(ParameterHandler):
             self.recon_placement = mjs.Placement(devices, axis=recon_axis)
             self.sino_placement = mjs.Placement(devices, axis=sino_axis)
         else:
-            # Single-device.  This runs at the end of set_devices_and_batch_sizes
+            # Single-device.  This runs at the end of set_devices
             # (which has just set both devices) or configure_sharding (mesh path
             # above), so the devices are always concrete here.
             assert self.main_device is not None and self.sinogram_device is not None, \
@@ -540,186 +625,68 @@ class TomographyModel(ParameterHandler):
         hessian = mjs.assemble_sharded(hess_owned, (num_indices, num_slices), structure)
         return gradient, hessian
 
-    def set_devices_and_batch_sizes(self):
+    def set_devices(self):
         """
-        Determine how much memory is required for each of projections, all the sinograms needed for vcd, and all
-        the recons needed for vcd, then determine whether to use the GPU for projections only, or for all sinograms,
-        or for the entire reconstruction, or nothing.
+        Determine whether to run the reconstruction entirely on the GPU (when one is available) or
+        entirely on the CPU, and set the corresponding devices.
 
         This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
-        'automatic', 'full', 'sinograms', 'none'
+        'automatic', 'full', 'none'
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
-        # Get the cpu and any gpus
+        # This does two things:
+        #   (1) Choose the physical device(s): the whole reconstruction runs on the GPU when one is
+        #       available and the user has not forced CPU, otherwise on the CPU.  We deliberately do
+        #       NOT estimate whether the problem fits -- an over-large recon surfaces as an OOM at
+        #       recon time, where _handle_jax_error guides the user (add GPUs, shrink, split, or CPU).
+        #   (2) Establish how arrays are laid out on those device(s) -- the placement block below +
+        #       _set_placements (which always runs and builds recon_placement / sino_placement).
         cpus = jax.devices('cpu')
-        gb = 1024 ** 3
         use_gpu = self.get_params('use_gpu')
         try:
             gpus = jax.devices('gpu')
-            gpu_memory_stats = gpus[0].memory_stats()
-            gpu_memory = float(gpu_memory_stats['bytes_limit']) - float(gpu_memory_stats['bytes_in_use'])
-            gpu_memory /= gb
         except RuntimeError:
-            if use_gpu not in ['automatic', 'none']:
-                warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
-                              "Use 'set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
             gpus = []
-            gpu_memory = 0
-        self.gpu_memory = gpu_memory
+        gpu_available = len(gpus) > 0
+        if not gpu_available and use_gpu not in ['automatic', 'none']:
+            warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
+                          "Use set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
 
-        # Estimate the CPU memory available
-        cpu_memory = 0
-        try:
-            # On SLURM at Purdue, we can parse the job info to determine the allocated memory
-            status = subprocess.run(['scontrol', 'show', 'job', os.environ['SLURM_JOB_ID']], check=True, text=True,
-                                    capture_output=True)
-            # status.stdout is an output string with multiple lines, one of which looks like this:
-            #   ReqTRES=cpu=42,mem=386400M,node=1,billing=1,gres/gpu=1
-            # Use a regular expression to capture the digits and one letter between 'mem=' and ',node'
-            pattern = r"mem=(\d+)([A-Za-z]),node"
-            match = re.search(pattern, status.stdout)
-            if match:
-                number = int(match.group(1))  # Capture the digits
-                letter = match.group(2)  # Capture the letter
-                # Convert the indicated memory to GB
-                scales = ['K', 'M', 'G', 'T']
-                scale_factor = scales.index(letter) - scales.index('G')
-                cpu_memory = number * (1024 ** scale_factor)
-
-        except Exception:  # If anything goes wrong, we'll just continue without detailed CPU memory info.
-            pass
-
-        if cpu_memory == 0:
-            cpu_memory_stats = mj.get_memory_stats(print_results=False)[-1]
-            cpu_memory = float(cpu_memory_stats['bytes_limit']) - float(cpu_memory_stats['bytes_in_use'])
-            cpu_memory /= gb
-        self.cpu_memory = cpu_memory
-
-        # Get basic parameters
-        sinogram_shape = self.get_params('sinogram_shape')
-        num_views, num_det_rows, num_det_channels = sinogram_shape
-        recon_shape = self.get_params('recon_shape')
-        num_slices = recon_shape[2]
-
-        zero = jnp.zeros(1)
-        bits_per_byte = 8
-        mem_per_entry = float(str(zero.dtype)[5:]) / bits_per_byte / gb  # Parse floatXX to get the number of bits
-        mem_per_cylinder = num_slices * mem_per_entry
-
-        # Make an empirical estimate of memory used per projection (on H100 as of 2025):
-        # vmap works in parallel over a batch of views, so we have view_batch_size_for_vmap * mem_per_view,
-        # with a rough floor on the number of channels, all multiplied by a constant factor from the implementation of
-        # the projectors.
-        mem_per_view_with_floor = mem_per_entry * num_det_rows * max(num_det_channels, 512)
-        cone_beam_projection_factor = 16  # This says cone beam but is very similar for parallel beam
-        mem_per_projection =  cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-        mem_per_voxel_batch = mem_per_cylinder * self.transfer_pixel_batch_size
-
-        # Make an estimate of the memory needed to do all sinogram processing and projections on gpu
-        # To do all sinos on the GPU, we use the greater of the following two since sino_reps_for_vcd includes
-        # copies of the sino that are not used during projection:
-        #       sino_reps_for_vcd * mem_per_sinogram + mem_per_voxel_batch
-        #       mem_for_minimal_vcd_sinos + mem_per_projection + mem_per_voxel_batch
-        sino_reps_for_vcd = 6  # error sinogram, weights, weighted error sinogram, delta sinogram, 2 intermediate copies
-        sino_reps_minimal = 3  # error sinogram, weights, weighted error sinogram
-        mem_per_sinogram = mem_per_entry * num_views * num_det_rows * num_det_channels
-
-        # The memory when all sinograms are on GPU appears to have a floor on detector rows.
-        mem_per_sinogram_with_floor = mem_per_entry * num_views * max(num_det_rows, 100) * num_det_channels
-        mem_for_vcd_sinos_gpu = sino_reps_for_vcd * mem_per_sinogram_with_floor
-        mem_for_minimal_vcd_sinos_gpu = sino_reps_minimal * mem_per_sinogram_with_floor
-
-        mem_for_all_sinos_on_gpu = max(mem_for_vcd_sinos_gpu, mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
-
-        # Reducing vmap batch size can reduce memory, but reducing below 128 = 512 / 4 increases time substantially.
-        # Estimate the memory required in the minimal case.
-        mem_for_minimal_sinos_on_gpu = max(mem_for_vcd_sinos_gpu, mem_for_minimal_vcd_sinos_gpu + mem_per_projection / 4) + mem_per_voxel_batch
-
-        mem_per_recon = mem_per_entry * np.prod(recon_shape)
-        recon_reps_for_vcd = 6
-        mem_for_all_vcd = recon_reps_for_vcd * mem_per_recon + mem_for_all_sinos_on_gpu - mem_per_voxel_batch
-
-        frac_gpu_mem_to_use = 0.9
-        gpu_memory_to_use = frac_gpu_mem_to_use * gpu_memory
-
-        # 'full':  Everything on GPU
-        if use_gpu == 'full' or (mem_for_all_vcd < gpu_memory_to_use and use_gpu not in ['none', 'sinograms']):
-            self.main_device, self.sinogram_device = gpus[0], gpus[0]
-            self.use_gpu = 'full'
-            mem_required_for_gpu = mem_for_all_vcd
-            mem_required_for_cpu = 2 * mem_per_recon + 2 * mem_per_sinogram  # recon plus sino and weights
-
-        # 'sinograms': All sinos and projections on GPU.  Adjust projection vmap batch size if needed.
-        elif use_gpu == 'sinograms' or (mem_for_minimal_sinos_on_gpu < gpu_memory_to_use and use_gpu not in ['none']):
-            self.main_device, self.sinogram_device = cpus[0], gpus[0]
-            self.use_gpu = 'sinograms'
-            mem_avail_for_projection = gpu_memory_to_use - mem_per_voxel_batch - mem_for_minimal_vcd_sinos_gpu
-            projection_scale = min(1, mem_avail_for_projection / mem_per_projection)
-            max_view_batch_size = int(self.view_batch_size_for_vmap * projection_scale)
-            num_batches = np.ceil(num_views / max_view_batch_size).astype(int)
-            self.view_batch_size_for_vmap = np.ceil(num_views / num_batches).astype(int)
-
-            # Recalculate the memory per projection with the new batch size
-            mem_per_projection = cone_beam_projection_factor * self.view_batch_size_for_vmap * mem_per_view_with_floor
-
-            mem_required_for_gpu = max(mem_for_vcd_sinos_gpu,
-                                       mem_for_minimal_vcd_sinos_gpu + mem_per_projection) + mem_per_voxel_batch
-            mem_required_for_cpu = recon_reps_for_vcd * mem_per_recon + 2 * mem_per_sinogram  # All recons plus sino and weights
-
-        # 'projections': Only projections on GPU.  No longer supported.
-        elif use_gpu == 'projections':
+        # 'projections' (GPU-only projections, CPU-resident data) is no longer supported.
+        if use_gpu == 'projections':
             raise ValueError("use_gpu == 'projections' is no longer supported.")
 
-        # 'none': All on CPU
+        # (1) Choose the device.  'full': everything on the GPU.  'none': everything on the CPU.
+        # (The former hybrid 'sinograms' mode -- recon on CPU, sinograms on GPU -- has been removed.)
+        if gpu_available and use_gpu != 'none':
+            self.main_device, self.sinogram_device = gpus[0], gpus[0]
+            self.use_gpu = 'full'
         else:
-            if gpu_memory > 0:
-                warnings.warn('MBIRJAX is installed with cuda, but there is not enough GPU memory to use cuda. This may lead to a fatal error.')
-
             self.main_device, self.sinogram_device = cpus[0], cpus[0]
             self.use_gpu = 'none'
 
-            mem_required_for_gpu = 0
-            mem_required_for_cpu = mem_for_all_vcd
-
-        if cpu_memory < mem_required_for_cpu:
-            warnings.warn('CPU memory may be insufficient for this problem.  This may lead to a fatal error.')
-
-        self.mem_required_for_gpu = mem_required_for_gpu
-        self.mem_required_for_cpu = mem_required_for_cpu
-
-        verbose = self.get_params('verbose')
-        if verbose >= 2:
-            print('mem per recon = {}'.format(mem_per_recon))
-            print('mem per sino = {}'.format(mem_per_sinogram))
-            print('mem per projection = {}'.format(mem_per_projection))
-            print('mem for vcd sinograms = {}'.format(mem_for_vcd_sinos_gpu))
-            print('mem for all sinos on gpu = {}'.format(mem_for_all_sinos_on_gpu))
-            print('mem for all vcd = {}'.format(mem_for_all_vcd))
-            print('view_batch_size_for_vmap = {}'.format(self.view_batch_size_for_vmap))
-
-        # Default placement path (Option B): for geometries that support it and were not
-        # explicitly configured with configure_sharding(), run even the single-device case
-        # through a trivial 1-device mesh so there is one always-on placement path.  Only the
-        # HOMOGENEOUS case (recon and sinogram on the SAME device -- the 'full' GPU and 'none'
-        # CPU modes) maps to one mesh; the heterogeneous recon-CPU/sino-GPU 'sinograms' mode
-        # cannot (a CPU+GPU pair is not a single mesh), so it keeps the legacy single-device
-        # path.  This runs after the device selection above and is re-evaluated on every call
-        # (set_params can flip the mode), so it both sets and clears the auto mesh as needed;
-        # an explicit configure_sharding() (multi-device) is preserved untouched.
+        # (2) Establish the device layout.  Geometries that implement the placement/movement
+        # projector path (_supports_sharding -> ParallelBeam) run an ALWAYS-ON placement path; unless
+        # the caller has already pinned a configuration with configure_sharding()/configure_devices(),
+        # auto-select here.  On a multi-GPU box auto SHARDS across all GPUs whose count divides both
+        # sharded axes (pick-N, _auto_device_count); on one GPU or on CPU it is a trivial 1-device
+        # mesh.  pin=False keeps it overridable, so a later set_params re-evaluates the layout (e.g. a
+        # 'full' <-> 'none' mode flip, or a sinogram_shape change that changes the divisible count).
+        # Geometries not yet ported leave self.mesh = None and fall back to trivial single-device
+        # placements in _set_placements (the legacy path, retiring at P6).  _set_placements() runs in
+        # all branches (via _apply_mesh or directly).
         if not self._sharding_configured and self._supports_sharding():
-            from jax.sharding import Mesh
-            if self.main_device == self.sinogram_device:
-                self.mesh = Mesh(np.array([self.main_device]), ('devices',))
-                self.shard_devices = [self.main_device]
-                self.dev2dev_safe = True
+            if self.use_gpu == 'full' and len(gpus) > 1:
+                n = self._auto_device_count(len(gpus))   # largest count dividing both sharded axes
+                self._apply_mesh(list(gpus[:n]), pin=False)
+                if n > 1:
+                    self.use_gpu = 'sharded'
             else:
-                # Heterogeneous 'sinograms' mode: fall back to the legacy single-device path.
-                self.mesh = None
-                self.shard_devices = None
-
-        self._set_placements()
+                self._apply_mesh([self.main_device], pin=False)
+        else:
+            self._set_placements()
         return
 
     def get_recon_dict(self, recon_params=None, notes=None, save_log=True, save_model=True, str_format=False):
@@ -1635,7 +1602,11 @@ class TomographyModel(ParameterHandler):
         vmap-over-views buffer both scale with B, and so does each slice-owner's
         reduce-scatter gather) at the cost of more, smaller projector calls -- but
         experiment sweeps over B showed time is essentially flat across B on GPUs,
-        so smaller B is close to a free memory win.
+        so smaller B is close to a free memory win.  (A 2026-06-09 multi-device
+        sweep -- H100x4, n_dev=1/2/4, 512^3/1024^3 -- confirmed this in the
+        high-n_dev / cross-NUMA regime: time flat across B, while a full-shard band
+        cost up to ~2x the peak for identical time, so the n_dev^2 default is kept
+        and budget-driven band sizing was rejected.)
 
         Default, two upper bounds (take the smaller) plus a lower floor:
           * reduce-gather bound ``slices_per_dev / n_dev``.  This is the elegant
@@ -1757,7 +1728,7 @@ class TomographyModel(ParameterHandler):
         """
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
-            self.set_devices_and_batch_sizes()
+            self.set_devices()
             self.create_projectors()
 
     def verify_valid_params(self):
@@ -1770,11 +1741,10 @@ class TomographyModel(ParameterHandler):
         super().verify_valid_params()
         use_gpu = self.get_params('use_gpu')
 
-        if use_gpu not in ['automatic', 'full', 'sinograms', 'none']:
+        if use_gpu not in ['automatic', 'full', 'none']:
             error_message = "use_gpu must be one of \n"
-            error_message += " 'automatic' (code will try to determine problem size and use gpu appropriately),\n'"
+            error_message += " 'automatic' (use the gpu when one is available, otherwise the cpu),\n"
             error_message += " 'full' (use gpu for all calculations),\n"
-            error_message += " 'sinograms' (use gpu for projections and all copies of sinogram needed for vcd),\n"
             error_message += " 'none' (do not use gpu at all)."
             raise ValueError(error_message)
 
@@ -2059,8 +2029,6 @@ class TomographyModel(ParameterHandler):
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
         self.logger.info('MBIRJAX Version = {}'.format(self.version))
         self.logger.info('GPU used for: {}'.format(self.use_gpu))
-        self.logger.info('Estimated GPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_gpu, self.gpu_memory))
-        self.logger.info('Estimated CPU memory required = {:.3f} GB, available = {:.3f} GB'.format(self.mem_required_for_cpu, self.cpu_memory))
 
         # Generate set of voxel partitions
         recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])
@@ -2120,27 +2088,19 @@ class TomographyModel(ParameterHandler):
 
     def _handle_jax_error(self, e):
         """
-        Internal helper method to handle JAX errors.
+        Log a JAX runtime error, adding out-of-memory recovery guidance when applicable, then re-raise.
+
         Args:
             e (JaxRuntimeError): The error to handle
 
         Returns:
-            Nothing, but re-raises JaxRuntimeError.
+            Nothing, but re-raises the error.
         """
-
         self.logger.error(e)
-        if self.gpu_memory > 0:
-            if self.mem_required_for_gpu / self.gpu_memory < self.mem_required_for_cpu / self.cpu_memory:
-                self.logger.error('Insufficient memory for jax (likely insufficient CPU memory)')
-            else:
-                self.logger.error('Insufficient memory for jax (likely insufficient GPU memory)')
-                if self.use_gpu == 'full':
-                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='sinograms') before calling recon")
-                elif self.use_gpu == 'sinograms':
-                    self.logger.error(">>> You may try using ct_model.set_params(use_gpu='none') before calling recon")
-        else:
-            self.logger.error('Insufficient memory for jax (insufficient CPU memory)')
-
+        # Classify from the FULL traceback, not just str(e): an out-of-memory error often surfaces
+        # as an unrelated-looking error with the real RESOURCE_EXHAUSTED buried deeper in the stack.
+        if is_oom(traceback.format_exc()):
+            log_oom_guidance(self.logger, on_gpu=(self.use_gpu != 'none'))
         raise e
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
@@ -2546,14 +2506,9 @@ class TomographyModel(ParameterHandler):
                         flat_recon, pixel_indices, qggmrf_params, staged_halos=staged_halos)
                 else:
                     with jax.default_device(self.main_device):
-                        if self.sinogram_device != self.main_device and len(pixel_indices) < self.transfer_pixel_batch_size:
-                            prior_grad, prior_hess = (
-                                mj.qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices,
-                                                                               qggmrf_params, self.main_device, self.sinogram_device))
-                        else:
-                            prior_grad, prior_hess = (
-                                mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                               qggmrf_params))
+                        prior_grad, prior_hess = (
+                            mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
+                                                                      qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 prior_hess = 1 / (sigma_prox ** 2)

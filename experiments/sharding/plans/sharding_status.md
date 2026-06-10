@@ -19,6 +19,68 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-09) — hybrid path REMOVED (Steps 1/1b/2) + device-config cleanup; band sizing RESOLVED (keep n_dev²); NEXT = P5 Step 3 (configure_devices + pick-N)
+
+▶ **CURRENT FOCUS (next session): P5 Step 3 — `configure_devices(None|int|list)` + device-count-aware
+auto (pick-N) + a rebuilt (device-count-only) memory estimate.**  The hybrid drop + device-selection
+cleanup are DONE and CPU-green; auto still tops out at ONE device, so the defining P5 capability
+(auto multi-GPU) is the remaining work.
+
+### What landed this session (CPU-green; staged, Greg commits from PyCharm)
+- **Hybrid recon-CPU/sino-GPU ('sinograms') path REMOVED — the whole chain (pulled forward from P6):**
+  - *Step 1:* dropped the `'sinograms'` selection tier from `set_devices_and_batch_sizes`; auto is now
+    **GPU-present → 'full', else 'none' (don't predict)** — an over-large recon OOMs-and-guides at recon
+    time instead of silently falling back to CPU.  `'sinograms'`/`'projections'` now raise; legal `use_gpu`
+    = automatic/full/none.  Homogeneous-always collapsed the auto-mesh else-branch (mesh always set for PB).
+  - *Step 1b:* pruned the now-decision-irrelevant memory estimate (inaccurate for the new code) — locals +
+    `self.gpu_memory/cpu_memory/mem_required_*` + the SLURM scontrol parse + verbose prints + pre-flight CPU
+    warning + "Estimated memory required" logs; removed dead `subprocess`/`re` imports.
+    `set_devices_and_batch_sizes` shrank ~150→~40 lines.
+  - *Step 2:* deleted the dead `_transfer` plumbing — `qggmrf_gradient_and_hessian_at_indices_transfer`
+    (qggmrf.py) + the `sinogram_device != main_device` dispatch in `vcd_subset_updater`.
+- **Error handling reworked:** shared `OOM_MARKERS` + `is_oom()` + `log_oom_guidance()` in `mbirjax/_utils.py`
+  (cluster-proven markers incl. cuFFT-OOM).  `_handle_jax_error` classifies via `is_oom(traceback.format_exc())`
+  and emits memory guidance ONLY on a real OOM (other JaxRuntimeErrors re-raise unlabeled); keys on
+  `use_gpu != 'none'` (covers 'sharded').  `scaling_common` still owns a duplicate copy — de-dup via a LAZY
+  `from mbirjax._utils import is_oom` inside the function (a top-level import would break its
+  device-setup-first ordering); deferred.
+- **Refactor:** extracted `_apply_mesh(devices, pin)` — shared by `configure_sharding` (pin=True,
+  use_gpu='sharded') and the auto block (pin=False, overridable so a set_params mode-flip re-evaluates the
+  layout).  `set_devices_and_batch_sizes` comment reframed into its two jobs (choose device / establish
+  layout); `_set_placements` always runs (trivial single-device placements when mesh is None — the legacy
+  path, retiring at P6).
+- **Doc-accuracy:** `set_devices_and_batch_sizes` no longer sets any batch size → the `_and_batch_sizes` name
+  is vestigial; rename to `set_devices` folded into Step 3.
+- **Verification (CPU):** `tests/sharding/` + `test_vcd` + `test_qggmrf` (+ projectors/fbp_fdk earlier) green
+  throughout — 80 passed / 2 skipped / 7 subtests at Step 2.
+
+### Band sizing — RESOLVED (GPU, H100×4, 2026-06-09): KEEP the n_dev² default; budget-driven sizing DROPPED
+New harness `experiments/sharding/scaling_tests/sparse_back_project_band_sweep.py` (multi-device band sweep;
+reuses scaling_common, captures eff_band/#bands) swept band ∈ {auto, slices_per_dev//{1,2,4}} at n_dev=1/2/4
+on 512³ & 1024³.  **Verdict: auto wins — time is FLAT across band (within ~1-11%; bigger bands if anything
+slightly slower), while memory strongly favors the smaller auto bands** (1024³/n=4: div1 = 2.08× auto's peak
+for identical time; 1024³/n=1: auto 10.5 GB vs div1 28.1 GB = 2.67×).  Multi-device scaling is
+band-independent and near-linear (1024³ auto: 19490→9272→5228 ms = 2.10×/3.73× at n=1/2/4).  So the
+`slices_per_dev/n_dev²` default (small bands = free memory win, no time cost) is well-tuned, and the
+hypothesis that bigger bands cut the multi-device time wall is REFUTED.  ⇒ **drop the deferred
+"memory-budget-driven band sizing" idea; the Step-3 memory estimate is for device-COUNT selection only.**
+(The CPU hint that div1 was ~13% faster at 256³/n=2 did NOT replicate on GPU — CPU-memory-hierarchy specific.)
+YAMLs under results/ (gitignored); table in the session log.
+
+### NEXT — P5 (see v2 plan §P5)
+- **Step 3 (centerpiece):** `configure_devices(devices=None|int|list)` (None→auto pick-N, int→count,
+  list→devices/indices) on top of `_apply_mesh`; make auto **device-count-aware** (today it always builds a
+  1-device mesh) — pick N = largest divisor of gcd(num_views, num_slices) ≤ n_available with per-device work
+  above a floor; rebuild a small device-count memory estimate; rename `set_devices_and_batch_sizes`→`set_devices`.
+  **Audit `is_sharded` vs `len(shard_devices) > 1` here** — auto goes multi-device, so the decoupling footgun activates.
+- **Step 4:** divisibility — auto NEVER raises (picks a compatible N); views pad + `weights=0` mask +
+  `prepare_sino_for_devices`; slices pick-N from divisors.  (configure_sharding keeps raising on an EXPLICIT mismatch.)
+- **Step 5:** always-on "devices in use + why N" report at recon time.
+- Carry: the hybrid drop is DONE here; remaining legacy `is_sharded` else-branches + `pixel_indices_worker` /
+  `partition_worker` retire at P6 with the geometry port.
+
+---
+
 ## HANDOFF (2026-06-08) — step 4 unification LANDED (CPU): Change 1 (FMA fold) + Change 2 (2-Keep: ParallelBeam default trivial 1-device mesh); GPU re-validation + note(1) baseline tolerance are NEXT
 
 ▶ **CURRENT FOCUS (next session): GPU re-validation of the step-4 unification, then note(1)

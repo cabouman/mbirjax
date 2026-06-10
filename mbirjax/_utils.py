@@ -6,6 +6,43 @@ import copy
 
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
+# Substrings (matched case-insensitively) that mark a caught error as an out-of-memory (OOM)
+# failure.  Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces as
+# "Failed to create cuFFT batched plan with scratch allocator" / "Failed to allocate work area" --
+# none of the usual OOM tokens (confirmed on H100 at 1624^3 / 1 device).
+OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
+               "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
+               "FAILED TO CREATE CUFFT")
+
+
+def is_oom(text):
+    """Return True if ``text`` contains a known out-of-memory marker.
+
+    Prefer passing the full traceback rather than ``str(e)``: an OOM often surfaces as an
+    unrelated-looking error (e.g. a numpy "setting an array element with a sequence") with the
+    real RESOURCE_EXHAUSTED only visible deeper in the stack.
+    """
+    up = text.upper()
+    return any(marker in up for marker in OOM_MARKERS)
+
+
+def log_oom_guidance(logger, on_gpu):
+    """Log guidance for recovering from an out-of-memory error.
+
+    Args:
+        logger: a logging.Logger to which the guidance is written (at error level).
+        on_gpu (bool): True if the reconstruction was running on a GPU (rather than the CPU).
+    """
+    if on_gpu:
+        logger.error(">>> Insufficient GPU memory: the reconstruction does not fit on the GPU(s).  You may try:")
+        logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_sharding(...)")
+        logger.error(">>>   - reducing recon_shape (e.g. via set_params or auto_set_recon_geometry)")
+        logger.error(">>>   - reconstructing the volume in slice subsets")
+        logger.error(">>>   - running on the cpu with ct_model.set_params(use_gpu='none') before calling recon")
+    else:
+        logger.error(">>> Insufficient CPU memory: try reducing recon_shape, or run where more memory is available.")
+
+
 # Update to include new geometries that should be included in the tests suite
 _geometry_types_for_tests = ['parallel', 'anisotropic_parallel', 'cone', 'anisotropic_cone', 'helical_cone', 'translation', 'anisotropic_translation']
 
@@ -59,7 +96,7 @@ _reconstruction_defaults_dict = {
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
-    'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'sinograms', 'none'
+    'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'none'
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
     'use_ror_mask': Param(True, False),
 }
