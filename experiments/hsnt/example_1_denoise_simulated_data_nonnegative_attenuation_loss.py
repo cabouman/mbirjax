@@ -62,6 +62,7 @@ def main():
                                                                            dosage_rate=dosage_rate,
                                                                            material_density=material_density,
                                                                            verbose=verbose)
+    noisy_hyper_projection = np.nan_to_num(noisy_hyper_projection, nan=0.0, posinf=0.0, neginf=0.0)  # Replace any NaNs or infs with zeros
     T = np.exp(-noisy_hyper_projection).reshape(-1, gt_hyper_projection.shape[-1])
 
     # Perform hyperspectral denoising (dehydrate + rehydrate)
@@ -76,7 +77,6 @@ def main():
 
     gt_loss = (np.exp(-gt_hyper_projection) + T.reshape(gt_hyper_projection.shape) * gt_hyper_projection).sum()
     frob_loss = (np.exp(-frob_hyper_projection) + T.reshape(gt_hyper_projection.shape) * frob_hyper_projection).sum() / gt_loss
-    newton_loss = np.inf
 
     # Refine using nonnegative attenuation loss
     W_newt = np.random.rand(*W.shape)
