@@ -18,6 +18,41 @@ from mbirjax.hsnt import dehydrate, rehydrate, generate_hyper_data
 from plot_utils import plot_images, plot_spectra
 
 
+def newton_update(W, H, T):
+    X = W @ H
+    Z = np.exp(-X)
+    init_loss = (Z + T * X).sum()
+
+    dL_dW = (T - Z) @ H.T
+    dL_dH = W.T @ (T - Z)
+
+    d2L_dW2 = Z @ H.T**2
+    d2L_dH2 = W.T**2 @ Z
+
+    dW = dL_dW / (d2L_dW2 + 1e-10)
+    dH = dL_dH / (d2L_dH2 + 1e-10)
+
+    for learning_rate in np.logspace(0.5, -3, 15):
+        W_temp = np.maximum(W - learning_rate * dW, 1e-10)
+        H_temp = np.maximum(H - learning_rate * dH, 1e-10)
+        X_temp = W_temp @ H_temp
+        temp_loss = (np.exp(-X_temp) + T * X_temp).sum()
+        if temp_loss < init_loss:
+            W = W_temp
+            H = H_temp
+            break
+
+    return W, H
+
+def multiplicative_update(W, H, T):
+    Z = np.exp(-W @ H)
+
+    W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+    H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+
+    return W * W_mult, H * H_mult
+
+
 def main():
     # Simulation parameters
     num_angles = 1  # Number of projection angles
@@ -89,38 +124,12 @@ def main():
         print(f'Iteration {i + 1}/{N}')
 
         # Newton update
-        Z_newt = np.exp(-W_newt @ H_newt)
-
-        dL_dA = (T - Z_newt) @ H_newt.T
-        dL_dB = W_newt.T @ (T - Z_newt)
-
-        d2L_dA2 = Z_newt @ H_newt.T**2
-        d2L_dB2 = W_newt.T**2 @ Z_newt
-
-        dW = dL_dA / (d2L_dA2 + 1e-10)
-        dH = dL_dB / (d2L_dB2 + 1e-10)
-
-        # Compute learning rate using line search
-        for learning_rate in np.logspace(-2, 0, 5):
-            W_temp = np.maximum(W_newt - learning_rate * dW, 1e-10)
-            H_temp = np.maximum(H_newt - learning_rate * dH, 1e-10)
-            proj = W_temp @ H_temp
-            temp_loss = (np.exp(-proj) + T * proj).sum() / gt_loss
-            if temp_loss > newton_loss:
-                break
-            W_newt = W_temp
-            H_newt = H_temp
-            newton_hyper_projection = proj.reshape(gt_hyper_projection.shape)
-            newton_loss = temp_loss
+        W_newt, H_newt = newton_update(W_newt, H_newt, T)
+        newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
+        newton_loss = (np.exp(-newton_hyper_projection) + T.reshape(gt_hyper_projection.shape) * newton_hyper_projection).sum() / gt_loss
 
         # Multiplicative update
-        Z_mu = np.exp(-W_mu @ H_mu)
-
-        W_mult = ((Z_mu @ H_mu.T) / (T @ H_mu.T) + 1) / 2
-        H_mult = ((W_mu.T @ Z_mu) / (W_mu.T @ T) + 1) / 2
-
-        W_mu = W_mu * W_mult
-        H_mu = H_mu * H_mult
+        W_mu, H_mu = multiplicative_update(W_mu, H_mu, T)
         mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
         mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / gt_loss
 
