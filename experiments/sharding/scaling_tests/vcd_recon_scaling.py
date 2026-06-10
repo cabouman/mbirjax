@@ -142,10 +142,16 @@ def build_partitions(ref_model, sino_np, max_iterations):
     reused for every device count of this size so partition construction is not
     re-timed and is identical across device counts.
     """
+    weights = get_weights(sino_np.shape)
     (_sino, _weights, _init, partitions, partition_sequence,
      _granularity, _reg) = ref_model.initialize_recon(
-        sino_np, weights=None, max_iterations=max_iterations, print_logs=False)
+        sino_np, weights=weights, max_iterations=max_iterations, print_logs=False)
     return partitions, partition_sequence
+
+
+def get_weights(sino_shape):
+    """Return a numpy array of all 1s in the shape of sino."""
+    return np.ones(sino_shape)
 
 
 def run_vcd(model, sino_sharded, partitions, partition_sequence, max_iterations):
@@ -156,10 +162,11 @@ def run_vcd(model, sino_sharded, partitions, partition_sequence, max_iterations)
     its own direct_recon init (part of the realistic per-recon cost).  Returns the
     slice-sharded recon (no exit gather).
     """
+    weights = get_weights(sino_sharded.shape)
     np.random.seed(MEASURE_SEED)
     recon, _stats = model.vcd_recon(
         sino_sharded, partitions, partition_sequence,
-        stop_threshold_change_pct=0.0, weights=None, init_recon=None)
+        stop_threshold_change_pct=0.0, weights=weights, init_recon=None)
     return recon
 
 
