@@ -44,7 +44,12 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     """Small parallel-beam model.  num_det_rows -> num recon slices, so keeping it
     divisible by 2/4/8 lets the slice axis shard across those device counts."""
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
-    return mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
+    # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
+    # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
+    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
+    model.configure_devices(1)
+    return model
 
 
 def _qggmrf_params(model):

@@ -70,8 +70,17 @@ The hybrid drop, the device-config UX (Step 3), and the device report (Step 5) a
   "main thread is not in main loop" in `__del__`.  Collecting on the main thread at viewer close pre-empts it
   (confirmed: an explicit collect there is clean and removes the mid-recon noise).  Root cause is the viewer's
   Tk teardown; a viewer overhaul is on Greg's list.
+- **GPU run surfaced test-only failures (fixed) + CPU auto-shard opt-in.**  On a 4-GPU box a *bare*
+  `_make_model()` now auto-shards to 4, so sharding tests that used it as a single-device REFERENCE
+  failed (count assertion; trivial-bit-exact became 4-vs-1).  Fix: the bare-model test helpers now
+  pin one device (`configure_devices(1)`) — restoring the exact pre-Step-3 reference, hardware-independent;
+  the multi-device tests still override with their own `configure_sharding`.  Added `test_auto_device_count`
+  (CPU unit test of pick-N).  Also added the **`_auto_shard_cpu` opt-in** (default False): lets AUTO shard
+  across CPU devices (auto is GPU-only otherwise — a multi-CPU-device host is usually a virtual/test
+  artifact); for CI coverage of the auto end-to-end path on CPU (`test_auto_shards_cpu_when_enabled`) and
+  future real CPU-cluster use.  GPU-validated: default ParallelBeam recon agrees with the single-GPU baseline.
 - **Verification (CPU):** `tests/sharding/` + `test_vcd` + `test_qggmrf` + `test_projectors` + `test_fbp_fdk`
-  green throughout (76/2/7 on sharding+vcd; 8/26 projectors+fbp).
+  green throughout; sharding suite 76/2 with 4 virtual CPU devices (incl. the new auto-shard tests).
 
 ### Band sizing — RESOLVED (GPU, H100×4, 2026-06-09): KEEP the n_dev² default; budget-driven sizing DROPPED
 New harness `experiments/sharding/scaling_tests/sparse_back_project_band_sweep.py` (multi-device band sweep;
@@ -94,11 +103,13 @@ YAMLs under results/ (gitignored); table in the session log.
   (reproducible), never to a multiple of the device count.  (`configure_sharding`/`configure_devices` keep raising
   on an EXPLICIT non-dividing request.)
 - **Step 5 polish (minor):** `_handle_jax_error`'s `on_gpu` still keys on `use_gpu != 'none'`; switch it to the
-  device platform (like `_device_report`) so explicit CPU sharding (`configure_sharding` sets use_gpu='sharded')
-  doesn't print GPU guidance for a CPU OOM.
+  device platform (like `_device_report`) so CPU sharding (`configure_sharding`/`_auto_shard_cpu` set
+  use_gpu='sharded') doesn't print GPU guidance for a CPU OOM.  (Now more reachable via `_auto_shard_cpu`.)
 - Carry: the hybrid drop is DONE; remaining legacy `is_sharded` else-branches + `pixel_indices_worker` /
   `partition_worker` retire at P6 with the geometry port.  `scaling_common` still owns a duplicate `is_oom`
-  (de-dup via a lazy import — deferred).
+  (de-dup via a lazy import — deferred).  New adjacent task (v2 plan): **CPU-cluster auto-sharding** — measure
+  real-cluster performance and adapt auto to differentiate virtual CPUs from a real CPU cluster (mature the
+  `_auto_shard_cpu` flag into a proper policy).
 
 ---
 

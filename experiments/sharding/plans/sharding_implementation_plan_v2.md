@@ -591,3 +591,24 @@ isolation but intermittently fails in the full suite — it builds no model, so 
 the sharding work).  Sweep the test tree for unseeded RNG and **seed deterministically**
 (`np.random.default_rng(<fixed>)`, as the sharding suite already does), and/or add a small `atol`
 where the comparison is near zero, so the gate is reproducible.  Low priority, high tidiness.
+
+### CPU-cluster auto-sharding — investigate performance + virtual-vs-real-CPU policy (standalone)
+
+Automatic sharding is **GPU-only by default**: a normal CPU host exposes one jax device, a
+multi-CPU-device setup is usually a virtual/test artifact (`XLA_FLAGS`
+`--xla_force_host_platform_device_count`), and virtual-CPU sharding is bandwidth-bound — so a bare
+model stays single-device on CPU.  An opt-in flag, **`self._auto_shard_cpu`** (default `False`,
+2026-06-09), lets automatic selection shard across CPU devices too (the auto block treats `cpus` as
+the pick-N pool when it is set); `configure_devices(n)` / `configure_sharding(cpu_devices)` already
+do explicit CPU sharding without it.  The flag exists for (a) CI coverage of the auto end-to-end
+path on CPU (`test_auto_shards_cpu_when_enabled`) and (b) future use on real multi-core / CPU-cluster
+hosts.
+
+**To investigate:** measure sharded-recon performance on a real CPU cluster (true cores / sockets,
+not virtual devices) — does multi-CPU-device sharding actually speed up the VCD recon (the embarrassingly
+parallel `fbp_filter` already scaled near-linearly across virtual CPUs; projectors/VCD scaled less
+well), and where is the crossover?  Then **adapt auto-selection to differentiate virtual CPUs from a
+real CPU cluster** (e.g. NUMA / socket / true-core topology vs an `XLA_FLAGS`-forced virtual count)
+so auto can shard CPU *only when it pays* — promoting `_auto_shard_cpu` from an experimental flag to a
+proper, possibly default-on, policy with a clean API (a method or a `use_gpu='automatic'`-style
+setting) rather than a raw attribute + `set_devices()` call.

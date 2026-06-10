@@ -87,6 +87,15 @@ class TomographyModel(ParameterHandler):
         self.shard_devices = None
         self.dev2dev_safe = True   # set empirically in configure_sharding
         self._sharding_configured = False  # True only after an explicit configure_sharding()
+        # Opt-in: let AUTOMATIC selection shard across CPU devices too (off by default).  Auto
+        # sharding is GPU-only by default because a normal CPU host exposes ONE jax device -- a
+        # multi-CPU-device setup is usually a virtual/test artifact (XLA_FLAGS), and virtual-CPU
+        # sharding is bandwidth-bound.  On a real multi-core/CPU-cluster host it may pay off; set
+        # this True (then call set_devices(), or set it before the recon) to auto-shard on CPU.
+        # EXPERIMENTAL: CPU-cluster performance is not yet characterized (see the plan's adjacent
+        # task on differentiating virtual CPUs from a real CPU cluster).  Explicit CPU sharding via
+        # configure_devices(n)/configure_sharding(cpu_devices) does NOT need this flag.
+        self._auto_shard_cpu = False
         # recon_placement / sino_placement describe how recon-like and sino-like
         # arrays are distributed across devices.  Each is a Placement, which owns
         # a device list, a sharded axis, AND its own 1-D mesh; _set_placements()
@@ -709,17 +718,24 @@ class TomographyModel(ParameterHandler):
         # (2) Establish the device layout.  Geometries that implement the placement/movement
         # projector path (_supports_sharding -> ParallelBeam) run an ALWAYS-ON placement path; unless
         # the caller has already pinned a configuration with configure_sharding()/configure_devices(),
-        # auto-select here.  On a multi-GPU box auto SHARDS across all GPUs whose count divides both
-        # sharded axes (pick-N, _auto_device_count); on one GPU or on CPU it is a trivial 1-device
-        # mesh.  pin=False keeps it overridable, so a later set_params re-evaluates the layout (e.g. a
+        # auto-select here.  Auto SHARDS across all GPUs whose count divides both sharded axes (pick-N,
+        # _auto_device_count) -- and across CPU devices too when the _auto_shard_cpu opt-in is set
+        # (off by default; see __init__).  One GPU / one CPU / opt-out -> a trivial 1-device mesh.
+        # pin=False keeps it overridable, so a later set_params re-evaluates the layout (e.g. a
         # 'full' <-> 'none' mode flip, or a sinogram_shape change that changes the divisible count).
         # Geometries not yet ported leave self.mesh = None and fall back to trivial single-device
         # placements in _set_placements (the legacy path, retiring at P6).  _set_placements() runs in
         # all branches (via _apply_mesh or directly).
         if not self._sharding_configured and self._supports_sharding():
             if self.use_gpu == 'full' and len(gpus) > 1:
-                n = self._auto_device_count(len(gpus))   # largest count dividing both sharded axes
-                self._apply_mesh(list(gpus[:n]), pin=False)
+                auto_pool = list(gpus)
+            elif self.use_gpu == 'none' and self._auto_shard_cpu and len(cpus) > 1:
+                auto_pool = list(cpus)
+            else:
+                auto_pool = None
+            if auto_pool is not None:
+                n = self._auto_device_count(len(auto_pool))   # largest count dividing both sharded axes
+                self._apply_mesh(auto_pool[:n], pin=False)
                 if n > 1:
                     self.use_gpu = 'sharded'
             else:

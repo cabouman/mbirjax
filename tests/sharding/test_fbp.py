@@ -37,13 +37,16 @@ def _make_model_and_sino(num_views=8, num_rows=16, num_channels=64, seed=0):
     """A small parallel-beam model plus a random sinogram of matching shape."""
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
+    # Pin a single device so the bare model is a deterministic single-device reference regardless of
+    # GPU count (auto-sharding now uses all GPUs by default); the sharded tests configure their own.
+    model.configure_devices(1)
     rng = np.random.default_rng(seed)
     sino = jnp.asarray(rng.random((num_views, num_rows, num_channels), dtype=np.float32))
     return model, sino
 
 
 class TestFbpFilterSingleDevice(unittest.TestCase):
-    """Default (auto 1-device mesh) behavior: a plain input is filtered and shape-preserved."""
+    """Single-device (pinned 1-device mesh) behavior: a plain input is filtered and shape-preserved."""
 
     def test_filter_runs_and_preserves_shape(self):
         model, sino = _make_model_and_sino()
