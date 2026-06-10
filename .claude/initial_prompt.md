@@ -1,8 +1,8 @@
 
 
 This is the mbirjax CT reconstruction project — multi-GPU/CPU sharding work in the
-`mbirjax` worktree on branch `greg/parallel_sharding`.  This is now the **single**
-working tree (the old dual-worktree setup was consolidated): the research branch
+`mbirjax` worktree on branch `greg/parallel_sharding`.  This is the **single** working
+tree (the old dual-worktree setup was consolidated): the research branch
 `greg/parallel_tests` is retired — its worktree was removed and its local branch
 deleted (it still exists on the remote `cabouman/mbirjax` if ever needed).
 
@@ -15,55 +15,61 @@ Orient first by reading, in order:
 2. `experiments/sharding/plans/sharding_status.md` — the latest HANDOFF (current
    state + NEXT).  Plans evolve through our dialog; they are not set in stone.
 3. `experiments/sharding/plans/sharding_implementation_plan_v2.md` — forward plan.
-   Read §0 design summary, the **§Migration state & branch-retirement map** (the
-   two tables: device representations + what retires when), §P5/§P6, and
-   §Adjacent tasks.  (`sharding_implementation_plan.md` = completed-work record +
-   principles.)
+   Read §0 design summary, the **§Migration state & branch-retirement map**, §P5/§P6,
+   §Decisions, and §Adjacent tasks.  (`sharding_implementation_plan.md` = completed-work
+   record + principles.)
 4. Skim `.claude/lessons.md` — the jax/GPU/placement/measurement playbook
    ("Sharded VCD memory: reference cycles + buffer donation" is the load-bearing one).
 Verify claims against current code; memory/docs may lag.
 
-**Where we are (2026-06-08).**  The placement architecture is live, and **step 4
-(Option B / "2-Keep") is DONE and GPU-validated** (8 GPUs to 2048³; single-GPU within
-noise of the old path): ParallelBeam now runs the always-on placement path by default
-(homogeneous single-device auto-defaults to a trivial 1-device mesh via
-`_supports_sharding()` + `_sharding_configured`).  **Hybrid (recon-CPU/sino-GPU) is
-DECIDED for drop** (the +19% N it buys is beaten by a 2nd GPU / slice-subset stitching;
-analysis archived).  The dual `is_sharded` else-branches still exist — they retire at P6
-(for the unported geometries + hybrid).
+**Where we are (2026-06-10).**  The placement architecture is live and ParallelBeam runs
+the always-on placement path.  This session: **hybrid (recon-CPU/sino-GPU 'sinograms') is
+REMOVED** (selection tier + `_transfer` plumbing gone; auto is "GPU present → 'full', else
+'none'", no pre-flight memory guess — an over-large recon OOMs-and-guides at recon time).
+**P5 is mostly DONE & GPU-validated:** `configure_devices(None|int|list)`; **auto shards by
+default across all dividing GPUs** (`_auto_device_count`, no floor; GPU-only — CPU is the
+`_auto_shard_cpu` opt-in); an always-on `_device_report` ("N x PLATFORM [(sharded)]");
+**order-independent divisibility** (config/geometry-change WARN, the hard clear error is at
+the shard chokepoint `_shard_on_axis`).  **Band sizing RESOLVED** (GPU sweep: keep the
+`n_dev²` default; budget-driven sizing rejected).  `set_devices_and_batch_sizes` renamed
+`set_devices`.
 
-**Next (see status NEXT + v2 §P6/§P5/§Adjacent):**
-- **P6** — port cone/translation/multiaxis to the placement/movement path, then the
-  cascade of deletions (legacy single-device branches, `self.mesh`, `RETIRE-AFTER`
-  tests, **hybrid drop**: `_transfer` + `'sinograms'` + the auto-default else-branch).
-- **P5** (parallelizable) — `configure_devices`; make `set_devices_and_batch_sizes`
-  device-count-aware (today it only inspects `gpus[0]`); divisibility (pick-N, or
-  pad+mask — views easy via `weights=0`, slices hard; pad to the problem, never to N).
-- **Adjacent / standalone** — settable view parameters (retire the `view_indices`
-  hack; lift `view_params_array` from closure to a runtime arg + `set_view_parameters`);
-  seed test RNGs to solidify the suite.
-- **Carry into P6:** `is_sharded` and `n_devices > 1` have **decoupled** — re-read each
+**Next (see status NEXT + v2 §P5/§P6/§Adjacent):**
+- **P5 Step 4 (the last P5 piece) — divisibility *padding*** so a non-dividing axis uses
+  more than 1 device: **views** pad + `weights=0` mask (easy) + `prepare_sino_for_devices`;
+  **slices** pick-N / problem-level pad + prior-aware mask (hard — likely defer).  Pad to a
+  shape the problem owns, never to a multiple of N.  *Needs careful design — start fresh.*
+- **P6** — port cone/translation/multiaxis to the placement/movement path, then the cascade
+  of deletions (legacy `is_sharded` else-branches, `self.mesh`, `RETIRE-AFTER` tests,
+  `pixel_indices_worker`/`partition_worker`).  NOTE: the hybrid drop is already DONE here
+  (no longer a P6 item).  Also deferred to P6: device-aware `scale_recon_shape`/
+  `auto_set_recon_geometry` (cone lever).
+- **Adjacent / standalone** — settable view parameters (retire the `view_indices` hack; lift
+  `view_params_array` from closure to a runtime arg + `set_view_parameters`); seed test RNGs;
+  **CPU-cluster auto-sharding** (measure real-cluster perf; mature `_auto_shard_cpu`).
+- **Carry into P6:** `is_sharded` and `n_devices > 1` are **decoupled** — re-read each
   `is_sharded` site for which question it asks (`len(shard_devices) > 1` for "≥2 devices").
 
 Reminders:
 - Commit workflow: I commit from PyCharm — **stage only / write DRAFT commit messages;
   never run `git commit`.**  Run tests with
   `source /Users/gbuzzard/miniforge3/etc/profile.d/conda.sh && conda activate mbirjax`;
-  sharding tests in `tests/sharding/` (sharded VCD file is `test_vcd_sharded.py`).
-- I run GPU/large recons on the cluster; **flag GPU items.**  After editing mbirjax the
-  cluster needs a fresh `pip install -e .` — a stale editable build once impersonated a
-  "leak"; when GPU behavior contradicts local tests, suspect the build first.  Cluster
-  cards can thermally throttle — pre-flight `nvidia-smi dmon`.  `results/` and
-  `baselines/` are gitignored — record decision numbers in committed docs.
+  sharding tests in `tests/sharding/` (`MBIRJAX_NUM_CPU_DEVICES=4` to exercise multi-device
+  on CPU; sharded VCD file is `test_vcd_sharded.py`).
+- I run GPU/large recons on the cluster; **flag GPU items.**  Auto-sharding end-to-end only
+  runs on real multi-GPU (CPU CI covers explicit `configure_sharding` + the `_auto_device_count`
+  unit test + the `_auto_shard_cpu` opt-in).  After editing mbirjax the cluster needs a fresh
+  `pip install -e .` — a stale build once impersonated a "leak".  Cards thermally throttle —
+  pre-flight `nvidia-smi dmon`.  `results/`/`baselines/` are gitignored — record decisions in docs.
 - **Sharded jax arrays sit in reference cycles** (freed by cyclic GC, not refcount;
-  `SingleDeviceSharding` frees on refcount).  Update persistent sharded state **in place
-  via buffer donation**, `.delete()` eager-op transients.  This is permanent, not a
-  step-4 scaffold (`update_error_sinogram` is now a donated FMA with `alpha` folded in).
-- Correctness gate is **`allclose` ~1e-4**, not bit-exactness (the relaxation that
-  underwrites the one-path direction).
-- Memory ruler: `peak_bytes_in_use` is the REAL live set, preallocation-invariant
-  (`PREALLOCATE=false` does NOT reveal the floor; lower `XLA_PYTHON_CLIENT_MEM_FRACTION`
-  to find OOM).  Projection **time ∝ N⁴, memory ∝ N³**.  Utils in `mbirjax/memory_stats.py`.
+  `SingleDeviceSharding` frees on refcount).  Update persistent sharded state **in place via
+  buffer donation**, `.delete()` eager-op transients (`update_error_sinogram` is a donated FMA).
+  This also surfaced a viewer bug: `slice_viewer` now `del`s + `gc.collect()`s so TkAgg's
+  orphaned tk objects aren't finalized by a later GC during a sharded recon.
+- Correctness gate is **`allclose` ~1e-4**, not bit-exactness.
+- OOM/error handling: `is_oom` + `log_oom_guidance` in `mbirjax/_utils.py`; `_handle_jax_error`
+  guides only on a real OOM and keys on the recon device platform (`_recon_devices`), not `use_gpu`.
+- Memory ruler: `peak_bytes_in_use` is the REAL live set, preallocation-invariant (lower
+  `XLA_PYTHON_CLIENT_MEM_FRACTION` to find OOM).  Projection **time ∝ N⁴, memory ∝ N³**.
 - `CUDA_ERROR_NOT_PERMITTED` from `cuda_vmm_allocator.cc` is BENIGN (silenced by
-  `TF_CPP_MIN_LOG_LEVEL=2` in `mbirjax/_device_setup.py`).  Real errors are `E`/`F` or a
-  Python traceback.
+  `TF_CPP_MIN_LOG_LEVEL=2` in `mbirjax/_device_setup.py`).  Real errors are `E`/`F` or a traceback.

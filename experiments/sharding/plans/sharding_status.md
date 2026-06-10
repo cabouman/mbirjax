@@ -79,8 +79,18 @@ The hybrid drop, the device-config UX (Step 3), and the device report (Step 5) a
   across CPU devices (auto is GPU-only otherwise — a multi-CPU-device host is usually a virtual/test
   artifact); for CI coverage of the auto end-to-end path on CPU (`test_auto_shards_cpu_when_enabled`) and
   future real CPU-cluster use.  GPU-validated: default ParallelBeam recon agrees with the single-GPU baseline.
+- **Error-handling + divisibility polish (Polish 1 & 2).**  `_handle_jax_error` now derives on-GPU from
+  the actual recon device platform (new `_recon_devices()`, reused by `_device_report`), not the `use_gpu`
+  string, so CPU sharding (`use_gpu='sharded'`) gets CPU OOM guidance; added `TestOomGuidance` (the OOM path
+  had no coverage).  Divisibility is now **order-independent**: the HARD check moved to the shard chokepoint
+  `_shard_on_axis` (a clear error covering every entry point — recon / prox_map both branches / direct_recon /
+  fbp_recon / forward / back), while `configure_sharding` and a user-selected geometry change only **warn**
+  (shapes may still be fixed before recon).  Shared `_divisibility_warning`; renamed `_apply_mesh`
+  `pin`→`user_selected` (kept `_sharding_configured`).  Tests: divisibility warns-then-raises +
+  resolved-by-shape-change.
 - **Verification (CPU):** `tests/sharding/` + `test_vcd` + `test_qggmrf` + `test_projectors` + `test_fbp_fdk`
-  green throughout; sharding suite 76/2 with 4 virtual CPU devices (incl. the new auto-shard tests).
+  green throughout; sharding suite 82/2 with 4 virtual CPU devices (incl. the new auto-shard, OOM, and
+  divisibility tests).
 
 ### Band sizing — RESOLVED (GPU, H100×4, 2026-06-09): KEEP the n_dev² default; budget-driven sizing DROPPED
 New harness `experiments/sharding/scaling_tests/sparse_back_project_band_sweep.py` (multi-device band sweep;
@@ -100,11 +110,11 @@ YAMLs under results/ (gitignored); table in the session log.
   so a non-dividing axis (e.g. prime `num_views`) idles GPUs.  Let auto USE a non-dividing N: **views** — pad to a
   multiple of N and zero the padded views (`weights=0`); **slices** — pick-N from divisors, or problem-level pad +
   a prior-aware mask.  Add `prepare_sino_for_devices(sino, weights, n)`.  Pad to a shape the PROBLEM owns
-  (reproducible), never to a multiple of the device count.  (`configure_sharding`/`configure_devices` keep raising
-  on an EXPLICIT non-dividing request.)
-- **Step 5 polish (minor):** `_handle_jax_error`'s `on_gpu` still keys on `use_gpu != 'none'`; switch it to the
-  device platform (like `_device_report`) so CPU sharding (`configure_sharding`/`_auto_shard_cpu` set
-  use_gpu='sharded') doesn't print GPU guidance for a CPU OOM.  (Now more reachable via `_auto_shard_cpu`.)
+  (reproducible), never to a multiple of the device count.  (Today a non-dividing config WARNS then raises at the
+  shard op — Polish 2; Step 4 lets a non-dividing *view* axis be USED via padding instead of rejected.)
+- **Polish (both DONE):** ~~`_handle_jax_error` on_gpu from platform~~ and ~~user-selected re-validation on
+  geometry change~~ — landed (platform-derived OOM guidance; order-independent divisibility, warn-at-config /
+  raise-at-shard-op).
 - Carry: the hybrid drop is DONE; remaining legacy `is_sharded` else-branches + `pixel_indices_worker` /
   `partition_worker` retire at P6 with the geometry port.  `scaling_common` still owns a duplicate `is_oom`
   (de-dup via a lazy import — deferred).  New adjacent task (v2 plan): **CPU-cluster auto-sharding** — measure

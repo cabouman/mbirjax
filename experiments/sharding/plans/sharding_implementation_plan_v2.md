@@ -328,21 +328,32 @@ gate.
   Q3); prox-map prior under sharding (untouched).
 
 ### P5 — Device-config UX (can land in parallel once P1 fixes what gets configured)
-- `configure_devices(devices=None)` user-facing (None→auto, list→exact,
-  int→count); sets the placements.  Keep an explicit-pin flag.
-- **Automatic selection in `set_devices_and_batch_sizes`:** choose N = largest
-  device count that divides both sharded axes *and* keeps per-device work above a
-  floor (handles small-problem→fewer-devices + divisibility together); re-validate
-  and warn on a geometry change that breaks the fit.
-- `use_gpu='sharded'` as the incremental opt-in / internal state; `'automatic'`
-  shards by default **after P4**.
-- **Divisibility:** warn loudly *with fix instructions* (never silently idle
-  GPUs); `prepare_sino_for_devices(sino, weights, n)` helper for the clean
-  slice/row axis; view axis → choose a dividing N (uneven shards unavailable —
-  JAX equal-shard restriction).
-- **Always-on "hardware in use + why" report** at recon time.
-- `auto_set_recon_geometry` / `scale_recon_shape` made device-aware (mainly a
-  cone-beam lever; parallel-beam sharded axes are sinogram-side).
+
+**STATUS (2026-06-09): mostly DONE; only divisibility *padding* (Step 4) + the device-aware geometry
+scaling remain.**  Method renamed `set_devices_and_batch_sizes` → `set_devices` (it no longer sets
+batch sizes).
+
+- [x] `configure_devices(devices=None|int|list)` user-facing (None→auto pick-N, int→count,
+  list→indices/devices); resolves then delegates to `configure_sharding` (the user-selected/pinned
+  flag is `_sharding_configured`).
+- [x] **Automatic selection in `set_devices`:** N = largest count dividing both sharded axes
+  (`_auto_device_count`, gcd of the axes).  **No per-device work floor** (RESOLVED 2026-06-09 from
+  the GPU sweeps — over-sharding a small problem is only a mild overhead).  Re-validate on a geometry
+  change: a user-selected config that no longer fits **warns** (the hard error is at the shard op —
+  see Divisibility); auto re-picks a compatible N on every recompile.
+- [x] `use_gpu='sharded'` internal state; `'automatic'` **shards by default** on a multi-GPU box
+  (GPU-validated).  GPU-only by default; CPU auto-sharding is the opt-in `_auto_shard_cpu` (see the
+  CPU-cluster adjacent task).
+- **Divisibility:** [x] warn-with-fix-instructions, **order-independent** — `configure_sharding` and a
+  user-selected geometry change only **warn**; the hard, clear error is raised at the shard chokepoint
+  `_shard_on_axis` (covers every entry point), so a config fixed up before the recon works regardless
+  of call order.  [ ] **(Step 4, remaining)** `prepare_sino_for_devices(sino, weights, n)` + padding to
+  *use* a non-dividing N: **views** pad + `weights=0` mask; **slices** pick-N / problem-level pad +
+  prior-aware mask.  Pad to a shape the problem owns, never to a multiple of the device count.
+- [x] **Always-on "devices in use + why" report** at recon time (`_device_report`:
+  `N x PLATFORM [(sharded)]` + a "why N" note when auto left GPUs idle).
+- [ ] `auto_set_recon_geometry` / `scale_recon_shape` made device-aware — **deferred to P6/geometry**
+  (mainly a cone-beam lever; parallel-beam sharded axes are sinogram-side).
 
 ### P6 — Port + retire
 - Port the sinogram transpose pattern from `back_project_one_view_to_pixel_batch` 
