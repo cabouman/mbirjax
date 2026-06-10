@@ -1,10 +1,7 @@
 
 
 This is the mbirjax CT reconstruction project — multi-GPU/CPU sharding work in the
-`mbirjax` worktree on branch `greg/parallel_sharding`.  This is the **single** working
-tree (the old dual-worktree setup was consolidated): the research branch
-`greg/parallel_tests` is retired — its worktree was removed and its local branch
-deleted (it still exists on the remote `cabouman/mbirjax` if ever needed).
+`mbirjax` worktree on branch `greg/parallel_sharding`.  
 
 Orient first by reading, in order:
 1. `.claude/claude_prompt.md` — collaboration style + workflow (investigate and
