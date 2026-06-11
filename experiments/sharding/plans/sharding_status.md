@@ -55,10 +55,21 @@ devices with the fully-padded-shard guard, (6) move `_extract_halos`/`_stage_hal
   basis (M3 Max, 2 virtual CPU devices = the `_device_setup` cap, 8-iter VCD via
   `vcd_recon_scaling.py`, YAML in results/): **256³ 1.30×** (50.2→38.6 s), 128³ 0.83×, 64³ 0.64×
   (+2.9 s absolute) — win where time matters, seconds where it doesn't; small sizes use LESS RSS
-  sharded (64³ 1.49→1.07 GB).  Suite cost: legacy suite 154→290 s (~1.9×) at conftest's 8 virtual
-  devices — accepted for coverage (option if it grates: drop conftest to 4, the CPU sweet spot).
-  `test_auto_shards_cpu_when_enabled` → `test_auto_shards_cpu_by_default` (default + opt-out);
-  conftest "keep in sync" comment fixed (8-vs-2 divergence is deliberate).
+  sharded (64³ 1.49→1.07 GB).  Suite cost: legacy suite 154→290 s (~1.9×) at 8 virtual devices →
+  **Greg dropped tests/conftest.py's cap to 2** (matches the library cap; every bare-model test
+  still runs the 2-device sharded path; the 4/8-device sweep legs skip unless
+  `MBIRJAX_NUM_CPU_DEVICES=4`/`8` raises it — the documented sharding-suite command uses 4).
+  `test_auto_shards_cpu_when_enabled` → `test_auto_shards_cpu_by_default` (default + opt-out).
+- **GPU suite noise DIAGNOSED + quieted (test-only, conftest setdefaults).**  (a) The
+  `E ... CUDA_ERROR_OUT_OF_MEMORY "Failed to allocate 59.38GiB"` lines at suite start are XLA's
+  preallocation BACK-OFF: 59.38 GiB = 0.75 × 79.2 GiB (the default 75% grab on an 80 GB H100),
+  retries exactly 0.9× each (53.45/48.10/43.29/38.96) until it fits — meaning GPU 0 already had
+  ~40 GiB occupied at suite start (another process / leftover; nvidia-smi worth a glance).  Benign
+  for the suite; fix = `XLA_PYTHON_CLIENT_PREALLOCATE=false` in tests/conftest.py (tests time
+  nothing; no 75%-of-every-GPU grab, no E-noise, polite on shared nodes).  (b) The benign VMM
+  `W ... CUDA_ERROR_NOT_PERMITTED` lines showed in pytest because tests/conftest.py imports jax
+  BEFORE mbirjax, so `_device_setup`'s `TF_CPP_MIN_LOG_LEVEL=2` setdefault came too late for the
+  test process; conftest now sets it itself pre-import.  Both overridable (setdefault).
 - **The flip flushed out (and we fixed): `configure_sharding`/`configure_devices` on UNPORTED
   geometries.**  test_view_batching: parallel failed on the designed multi-device
   `view_indices` NotImplementedError → pinned `configure_devices(1)` in the test (view batching

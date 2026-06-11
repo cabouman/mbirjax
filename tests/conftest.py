@@ -43,11 +43,13 @@ way.
 import os
 import sys
 
-# Deliberately HIGHER than mbirjax/_device_setup.py's DEFAULT_MAX_CPU_DEVICES (2):
-# the library default is a conservative performance cap for users, while the test
-# suite wants enough virtual devices (8) to exercise multi-device sharding layouts
-# (2/4/8-device sweeps) on CPU.  The resolution policy below otherwise mirrors
-# mbirjax._device_setup.
+# Matches mbirjax/_device_setup.py's DEFAULT_MAX_CPU_DEVICES (2): with auto-sharding
+# on by default, every bare-model test already exercises the multi-device sharded path
+# at 2 devices, and capping at 2 keeps the suite time acceptable (8 virtual devices ran
+# the legacy suite ~1.9x slower on tiny, overhead-bound test problems).  The 4/8-device
+# sweep legs in tests/sharding/ skip at this cap -- raise the env override for a fuller
+# sweep (e.g. MBIRJAX_NUM_CPU_DEVICES=4 pytest tests/sharding/).  The resolution policy
+# below otherwise mirrors mbirjax._device_setup.
 DEFAULT_MAX_CPU_DEVICES = 2
 
 
@@ -96,6 +98,22 @@ os.environ.setdefault(
     "XLA_FLAGS",
     f"--xla_force_host_platform_device_count={_resolve_num_cpu_devices()}"
 )
+
+# Quiet the benign jaxlib C++ chatter in the TEST process.  This conftest imports jax
+# below -- BEFORE any test imports mbirjax -- so mbirjax._device_setup's own
+# TF_CPP_MIN_LOG_LEVEL setdefault comes too late here, and pytest runs on GPU show the
+# harmless VMM "CUDA_ERROR_NOT_PERMITTED ... will retry with simpler handle types"
+# W-lines that normal library use hides.  Level 2 drops INFO+WARNING, keeps ERROR.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+# Don't preallocate a GPU memory pool for the test process.  The default behavior grabs
+# 75% of EVERY visible GPU at backend init and, when a device is partially occupied
+# (another job / leftover allocation), logs an ERROR-level back-off sequence
+# ("Failed to allocate 59.38GiB ... 53.45GiB ...", each retry 0.9x the last) before
+# succeeding with whatever fits -- alarming noise in a green run, and impolite on shared
+# nodes.  Tests are small and time nothing, so on-demand allocation costs them nothing.
+# setdefault keeps this overridable for deliberate memory experiments.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
 
