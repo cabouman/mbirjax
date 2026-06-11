@@ -53,6 +53,13 @@ loop live in `scaling_common`.  Top-of-file knobs: `SIZES`, `DEVICE_COUNTS`,
   partitions (built outside the timed region); slice-sharded out, no gather.  Smaller
   `SIZES` (iterative); `MAX_ITERATIONS`, `MEM_*` knobs; seeds the global RNG per call
   for reproducibility.
+- `stage2_padded_slices_gpu_validation.py` — one-shot GPU validation of SLICE padding
+  (P5 Step 4 Stage 2) at realistic scale: default 1024×1023×1024 (1023 slices pad on
+  2/4/8 GPUs), multi-GPU padded recon vs single-GPU reference (NRMSE gate 1e-3; the
+  residual is the documented halo-once band, the padding itself is exactly inert),
+  `device_summary` padding note, per-device peaks, host-RSS no-copy check.  Multi-GPU
+  runs FIRST (peak_bytes_in_use is process-cumulative per device).  CPU-smoke-tested
+  at toy size (4 virtual devices, 7→8 slices: NRMSE 9.2e-4, RSS delta 0).
 
 ## Capture-baseline scripts (run ONCE on a prerelease checkout)
 Each writes `baselines/<op>.{npy,yaml}` (one platform-agnostic reference; CPU/GPU

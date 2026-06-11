@@ -132,10 +132,12 @@ P5 is now COMPLETE pending GPU validation.
   baseline.
 - Full test suite on a multi-GPU box (test_prox + test_view_batching fixes; flush anything
   else the GPU default exposes).  [In progress per Greg 2026-06-11.]
-- NEW (Stage 2): a real recon with a NON-dividing slice count on multi-GPU vs the single-GPU
-  baseline (e.g. 1023 or 1009 slices on 4/8 GPUs — exercises slice+row padding, the interface
-  mask, and the d2d band path with a padded last shard); perf sanity that the slice/row padding
-  is in the noise; `device_summary` shows "slices padded S→S_pad".
+- NEW (Stage 2): **run `scaling_tests/stage2_padded_slices_gpu_validation.py`** (one shot, no
+  args; ~20 min on 4×H100) — a 1024×1023×1024 multi-GPU padded recon vs the single-GPU
+  reference (NRMSE gate 1e-3; exercises slice+row padding, the interface mask, and the d2d
+  band path with a padded last shard at real shard sizes), plus `device_summary`'s
+  "slices padded 1023->1024" note, per-device peaks, and the host-RSS no-copy check.
+  CPU-smoke-tested at toy size.
 
 ---
 
