@@ -125,13 +125,14 @@ class TestFbpFilterSharded(unittest.TestCase):
         via_fbp = model.fbp_filter(sharded_in, output_sharded=True)
         via_direct = model.direct_filter(sharded_in, output_sharded=True)
 
-        # Same device-form output (view-sharded, no gather) and same values to float
-        # noise (exact equality is never the gate for computed floats: GPU kernels can
-        # reorder summation even between two calls of one executable).
+        # Same device-form output (view-sharded, no gather) and same values at the
+        # suite's single-shot 1e-5 gate (exact equality is never the gate for computed
+        # floats: GPU kernels can reorder summation even between two calls of one
+        # executable).
         self.assertIsInstance(via_direct.sharding, jax.sharding.NamedSharding)
         self.assertEqual(via_direct.sharding.spec[0], 'devices')
         np.testing.assert_allclose(np.asarray(via_direct), np.asarray(via_fbp),
-                                   rtol=1e-6, atol=1e-6)
+                                   rtol=1e-5, atol=1e-5)
 
     def test_sharded_input_output_sharded_stays_sharded(self):
         """A pre-sharded sinogram with output_sharded=True stays sharded (no

@@ -327,9 +327,13 @@ async run-ahead — it was object lifecycle.
   (separate executables even for identical programs/shapes; GPU autotuning differs ~1 ULP),
   and not even for one executable run twice (GPU scatter-add atomics reorder summation).
   CPU happens to compile/run deterministically, so a bit-exact test written and passed on
-  CPU is exactly the kind that fails first on the GPU suite.  Gate computed floats at a
-  tight allclose (1e-6-ish single-shot; a genuinely wrong/stale value misses by orders of
-  magnitude).  Exact equality remains correct for exactly two things: (1) DATA MOVEMENT
+  CPU is exactly the kind that fails first on the GPU suite.  Gate computed floats at the
+  suite's single-shot 1e-5 (a genuinely wrong/stale value misses by orders of magnitude).
+  MEASURED calibration (2xH100, 2026-06-11): same-executable run-to-run GPU noise on the
+  forward projector reached ~8e-6 RELATIVE (~70 ULP; scatter-add atomics reorder hundreds
+  of per-detector-element contributions) — so 1e-6 is TOO TIGHT for anything touching the
+  projectors; pure elementwise kernels (qGGMRF cylinder) are safe at 1e-6.  Exact equality
+  remains correct for exactly two things: (1) DATA MOVEMENT
   identities (shard/gather/assemble round trips, halo extraction, stored-parameter echo —
   bytes in = bytes out, no arithmetic; a tolerance would mask corruption), and
   (2) CONSTRUCTED-ZERO invariants (padded entries == 0.0 — the "exactly inert" spec;

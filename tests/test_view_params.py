@@ -35,13 +35,15 @@ import jax.numpy as jnp
 
 
 def _assert_roundtrip_equal(testcase, restored, original, msg):
-    """Same-executable restoration check, at tight float tolerance.
+    """Same-executable restoration check, at the suite's single-shot float gate.
 
     Exact equality is never the right gate for COMPUTED floats (project rule):
-    even one executable's run-to-run results can differ on GPU (scatter-add
-    atomics reorder summation).  Tight closeness still proves the restoration --
-    a stale or wrong value would miss by orders of magnitude."""
-    np.testing.assert_allclose(restored, original, rtol=1e-6, atol=1e-6, err_msg=msg)
+    even one executable's run-to-run results differ on GPU -- scatter-add atomics
+    reorder the many per-detector-element contributions, with MEASURED run-to-run
+    noise up to ~8e-6 relative (2xH100, 2026-06-11).  1e-5 is the established
+    single-shot projector gate; a stale or wrong value would miss by orders of
+    magnitude."""
+    np.testing.assert_allclose(restored, original, rtol=1e-5, atol=1e-5, err_msg=msg)
 
 
 class TestSetViewParameters(unittest.TestCase):
