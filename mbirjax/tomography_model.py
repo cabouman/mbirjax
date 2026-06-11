@@ -982,16 +982,16 @@ class TomographyModel(ParameterHandler):
         warnings.warn('Back projector not implemented for TomographyModel.')
         return None
 
-    def forward_project(self, recon):
+    def forward_project(self, recon, output_sharded=False):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method: its output sharding **matches its
-        input** (mirroring :meth:`back_project`).  A plain recon is sharded at
-        entry, forward-projected, and the sinogram is gathered to a plain array at
-        exit.  A slice-sharded recon stays on-device: the sinogram is returned
-        view-sharded with no gather, so callers composing on-device (e.g. the VCD
-        loop) pay no host round-trip.  Internally the work is the same all-gather
+        This is a **user-facing** method.  The input may be plain or sharded
+        (a plain recon is sharded at entry); the OUTPUT form is chosen by
+        ``output_sharded``, independent of where the input lives.  By default the
+        sinogram is gathered to a plain array; with ``output_sharded=True`` it is
+        returned view-sharded so callers composing on-device (e.g. the VCD loop)
+        pay no host round-trip.  Internally the work is the same all-gather
         either way (see :meth:`sparse_forward_project`); only the exit differs.
 
         Note:
@@ -1000,19 +1000,19 @@ class TomographyModel(ParameterHandler):
 
         Args:
             recon (jnp array): The 3D reconstruction array.
+            output_sharded (bool, optional): If False (default), return a plain
+                array.  If True, return the internal device form (view-sharded
+                across the model's devices; on an unsharded model this is the
+                same single-device array either way).
 
         Returns:
-            jnp array: The resulting 3D sinogram -- plain if the input was plain,
-            view-sharded if the input was a sharded array.
+            jnp array: The resulting 3D sinogram -- plain by default,
+            view-sharded if ``output_sharded=True``.
         """
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
 
         if self.is_sharded:
-            # Decide the exit handling from the ORIGINAL input (before the entry
-            # shard, which would make any input look sharded).
-            input_is_sharded = isinstance(getattr(recon, 'sharding', None),
-                                          jax.sharding.NamedSharding)
             recon = self._shard_recon(recon)            # no-op if already sharded
             # Extracting cylinders from a slice-sharded volume keeps the slice
             # sharding (the index is on the unsharded row/col axes), so this yields
@@ -1020,26 +1020,26 @@ class TomographyModel(ParameterHandler):
             voxel_values = self.get_voxels_at_indices(recon, full_indices)
             # All-gather forward projection -> view-sharded sinogram.
             sinogram = self.sparse_forward_project(voxel_values, full_indices)
-            if input_is_sharded:
-                return sinogram                          # match input: stay sharded
-            return self._gather_sinogram(sinogram)       # plain in -> plain out
+            if output_sharded:
+                return sinogram                          # keep the device form
+            return self._gather_sinogram(sinogram)       # default: plain output
 
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
         return self.sparse_forward_project(voxel_values, full_indices,
                                            output_device=self.sinogram_device)
 
-    def back_project(self, sinogram):
+    def back_project(self, sinogram, output_sharded=False):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method: its output sharding **matches its
-        input**.  A plain sinogram is sharded at entry, back-projected, and the
-        recon is gathered to a plain array at exit.  A sharded (NamedSharding)
-        sinogram stays on-device: the recon is returned as a slice-sharded 3-D
-        array with no gather, so callers composing on-device (e.g. a sharded FBP
-        init for the VCD loop) pay no host round-trip.  Internally the work is
-        the same reduce-scatter either way (see :meth:`sparse_back_project`); only
-        the exit handling differs.
+        This is a **user-facing** method.  The input may be plain or sharded
+        (a plain sinogram is sharded at entry); the OUTPUT form is chosen by
+        ``output_sharded``, independent of where the input lives.  By default the
+        recon is gathered to a plain array; with ``output_sharded=True`` it is
+        returned as a slice-sharded 3-D array so callers composing on-device
+        (e.g. a sharded FBP init for the VCD loop) pay no host round-trip.
+        Internally the work is the same reduce-scatter either way (see
+        :meth:`sparse_back_project`); only the exit handling differs.
 
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
@@ -1047,28 +1047,28 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (jnp array): 3D jax array containing sinogram.
+            output_sharded (bool, optional): If False (default), return a plain
+                array.  If True, return the internal device form (slice-sharded
+                across the model's devices; on an unsharded model this is the
+                same single-device array either way).
 
         Returns:
-            jnp array: The reconstructed 3D volume — plain if the input was plain,
-            slice-sharded if the input was a sharded array.
+            jnp array: The reconstructed 3D volume — plain by default,
+            slice-sharded if ``output_sharded=True``.
         """
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
 
         if self.is_sharded:
-            # Decide the exit handling from the ORIGINAL input (before the entry
-            # shard, which would make any input look sharded).
-            input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
-                                          jax.sharding.NamedSharding)
             sinogram = self._shard_sinogram(sinogram)   # no-op if already sharded
             # Reduce-scatter back projection -> slice-sharded cylinder.
             recon_cylinder = self.sparse_back_project(sinogram, full_indices)
-            if input_is_sharded:
-                # Match input: keep the recon sharded (no host round-trip).
+            if output_sharded:
+                # Keep the recon sharded (no host round-trip).
                 return self._assemble_recon_volume_sharded(
                     recon_cylinder, recon_shape, row_index, col_index)
-            # Plain input: gather the cylinder and scatter into a plain volume.
+            # Default: gather the cylinder and scatter into a plain volume.
             recon_cylinder = self._gather_recon(recon_cylinder)
             recon = jnp.zeros(recon_shape)
             recon = recon.at[row_index, col_index].set(recon_cylinder)
@@ -2078,7 +2078,8 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                     output_sharded=False):
         """
         Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
         implementation details are geometry specific, and direct_recon may not be available for all geometries.
@@ -2087,6 +2088,9 @@ class TomographyModel(ParameterHandler):
             sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
             view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
+            output_sharded (bool, optional): If False (default), return a plain array.  If True, return
+                the internal device form (slice-sharded on a sharded model; on an unsharded model the
+                output is the same single-device array either way).
 
         Returns:
             recon (jax array): The reconstructed volume after direct reconstruction.
@@ -2095,7 +2099,8 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         return jnp.zeros(recon_shape, device=self.main_device)
 
-    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                      output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
@@ -2103,6 +2108,9 @@ class TomographyModel(ParameterHandler):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            output_sharded (bool, optional): If False (default), return a plain array.  If True, return
+                the internal device form (view-sharded on a sharded model; on an unsharded model the
+                output is the same single-device array either way).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
@@ -2208,7 +2216,7 @@ class TomographyModel(ParameterHandler):
         raise e
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
-              compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
+              compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True, output_sharded=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -2226,6 +2234,9 @@ class TomographyModel(ParameterHandler):
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
             logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
+            output_sharded (bool, optional): If False (default), return a plain reconstruction array.
+                If True, return the internal device form (slice-sharded across the model's devices,
+                no exit gather); on an unsharded model the output is the same either way.
 
         Returns:
             (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
@@ -2274,7 +2285,10 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
-        recon = jax.device_put(recon, device=self.main_device)
+        if not output_sharded:
+            # Default exit: gather to a plain single-device array (a no-op placement
+            # on an unsharded model; the exit gather on a sharded one).
+            recon = jax.device_put(recon, device=self.main_device)
         return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
@@ -2330,10 +2344,10 @@ class TomographyModel(ParameterHandler):
 
         scale_recon_to_sinogram = True if init_recon is None else False
         if init_recon is None:
-            # Initialize VCD recon, and error sinogram.  With a sharded sinogram, direct_recon's
-            # match-input contract returns a slice-sharded init (no gather).
+            # Initialize VCD recon, and error sinogram.  output_sharded=True keeps the init in
+            # the internal device form (slice-sharded when sharding is on; no gather).
             self.logger.info('Starting direct recon for initial reconstruction')
-            init_recon = self.direct_recon(sinogram)
+            init_recon = self.direct_recon(sinogram, output_sharded=True)
         elif isinstance(init_recon, int):
             init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
 
@@ -2351,8 +2365,10 @@ class TomographyModel(ParameterHandler):
 
         # Initialize VCD recon and error sinogram using the init_recon
         # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
+        # output_sharded=True keeps the error sinogram in the device form (view-sharded when
+        # sharding is on; no gather between the forward projection and the loop).
         self.logger.info('Initializing error sinogram')
-        error_sinogram = self.forward_project(init_recon)
+        error_sinogram = self.forward_project(init_recon, output_sharded=True)
         if not constant_weights:
             weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
         else:
@@ -2789,7 +2805,7 @@ class TomographyModel(ParameterHandler):
         return loss
 
     def prox_map(self, prox_input, sinogram, sigma_prox=None, weights=None, init_recon=None, do_initialization=True, stop_threshold_change_pct=0.2,
-                 max_iterations=3, first_iteration=0, logfile_path='./logs/prox.log', print_logs=True):
+                 max_iterations=3, first_iteration=0, logfile_path='./logs/prox.log', print_logs=True, output_sharded=False):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -2807,6 +2823,9 @@ class TomographyModel(ParameterHandler):
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
+            output_sharded (bool, optional): If False (default), return a plain reconstruction array.
+                If True, return the internal device form (no exit gather); on an unsharded model the
+                output is the same either way.
 
         Returns:
             (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
@@ -2867,6 +2886,10 @@ class TomographyModel(ParameterHandler):
 
         notes = 'Prox completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
+        if not output_sharded:
+            # Default exit: gather to a plain single-device array (a no-op placement
+            # on an unsharded model, where vcd_recon already left it on main_device).
+            recon = jax.device_put(recon, device=self.main_device)
         return recon, recon_dict
 
     @staticmethod

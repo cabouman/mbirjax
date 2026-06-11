@@ -57,8 +57,20 @@ the v2 plan, the (g0,L) design note, and O2/O4 were updated.  **No library code 
   so it survives this.  Cone consequence: NO row padding, forward inertness free.
 
 ### NEXT (in order; each stage lands CPU-green for review)
-- **Stage 0 — contract:** `output_sharded` kwarg + internal rerouting (vcd_recon init ~2336 /
-  forward ~2355, fbp_recon's filter, vcls ~167) + match-input test updates.  No padding yet.
+- **Stage 0 — contract: ✅ DONE (same session, CPU-green).**  `output_sharded=False` kwarg on
+  forward_project / back_project / direct_recon / direct_filter / fbp_filter / fbp_recon / recon /
+  prox_map (+ fdk_* and the cone/translation/multiaxis overrides, threaded through to back_project;
+  accepted-for-uniformity on their single-device filters).  Internal rerouting: vcd_recon's
+  direct_recon init + forward_project pass output_sharded=True; fbp_recon's pipeline calls
+  fbp_filter/back_project with True (exit decided in ONE place).  `fbp_filter`/`direct_filter` are
+  now user-facing (default gathers; they were internal-sharded-contract).  vcls untouched (its
+  plain single-device calls behave identically under the default).  Tests updated: the 4 match-input
+  tests became output_sharded-contract tests (+ inverse checks: sharded input + default → plain);
+  `tests/sharding/` 82/2 green with 4 virtual CPU devices; test_vcd / test_projectors / test_fbp_fdk /
+  test_prox / test_denoiser / test_qggmrf / test_hsnt / test_preprocessing / test_utilities green.
+  NOTE for Stage 1 (found, not fixed): `initialize_recon` ~2144 device_puts the sinogram to
+  `sinogram_device` when its first device differs — a SHARDED sinogram into recon() would be
+  silently gathered there; the Stage-1 pad-aware entry should own that placement instead.
 - **Stage 1 — views:** pad metadata + pad-aware entry + forward mask + real-count corrections +
   auto ignores views + the shape-source audit + tests (zero-invariant, prime-num_views vs
   single-device 1e-4, adjoint w/ padding, streaming layout).

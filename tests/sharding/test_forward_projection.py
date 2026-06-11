@@ -13,7 +13,8 @@ These tests check:
   - single-device (no-mesh) forward projection is plain-in / plain-out;
   - trivial 1-device sharding is BIT-EXACT vs the single-device path;
   - 2/4/8-device sharding matches single-device to float noise;
-  - match-input: a sharded recon returns a view-sharded sinogram (no gather);
+  - output_sharded=True returns a view-sharded sinogram (no gather), and the
+    default returns a plain array regardless of input placement;
   - sparse_forward_project keeps the result view-sharded (no gather inside);
   - the forward/back adjoint identity holds across device counts;
   - a view subset (view_indices != None) is rejected in sharded mode.
@@ -144,9 +145,33 @@ class TestForwardProjectSharded(unittest.TestCase):
                                  jax.sharding.NamedSharding)
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
-    def test_sharded_input_returns_sharded_sino(self):
-        """Match-input contract: forward_project of a SHARDED recon returns a
-        view-sharded sinogram (no gather) matching the plain single-device sinogram."""
+    def test_output_sharded_returns_sharded_sino(self):
+        """output_sharded=True returns a view-sharded sinogram (no gather) even for
+        a PLAIN input, matching the plain single-device sinogram -- the output form
+        is chosen by the kwarg, independent of input placement."""
+        model = _make_model()
+        self._check_divisible(model, 2)
+        recon = _random_recon(model)
+        ref = np.asarray(model.forward_project(recon))     # single-device plain
+
+        shard_model = _make_model()
+        shard_model.configure_sharding(self.devs)
+        out = shard_model.forward_project(recon, output_sharded=True)
+
+        # The device form: a view-sharded sinogram.
+        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
+        self.assertEqual(tuple(out.shape),
+                         tuple(shard_model.get_params('sinogram_shape')))
+        view_axis = shard_model.sinogram_shard_axis() % out.ndim
+        self.assertEqual(out.sharding.spec[view_axis], 'devices')
+        for ax in range(out.ndim):
+            if ax != view_axis:
+                self.assertIsNone(out.sharding.spec[ax])
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+
+    def test_sharded_input_default_returns_plain(self):
+        """The default (output_sharded=False) gathers to a plain array even when
+        the INPUT is sharded -- output form does not depend on input placement."""
         model = _make_model()
         self._check_divisible(model, 2)
         recon = _random_recon(model)
@@ -156,16 +181,8 @@ class TestForwardProjectSharded(unittest.TestCase):
         shard_model.configure_sharding(self.devs)
         sharded_recon = shard_model._shard_recon(recon)
         out = shard_model.forward_project(sharded_recon)
-
-        # Sharded in -> sharded out: a view-sharded sinogram.
-        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
-        self.assertEqual(tuple(out.shape),
-                         tuple(shard_model.get_params('sinogram_shape')))
-        view_axis = shard_model.sinogram_shard_axis() % out.ndim
-        self.assertEqual(out.sharding.spec[view_axis], 'devices')
-        for ax in range(out.ndim):
-            if ax != view_axis:
-                self.assertIsNone(out.sharding.spec[ax])
+        self.assertNotIsInstance(getattr(out, 'sharding', None),
+                                 jax.sharding.NamedSharding)
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
     def test_internal_returns_view_sharded(self):

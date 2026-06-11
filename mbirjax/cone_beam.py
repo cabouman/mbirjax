@@ -879,10 +879,13 @@ class ConeBeamModel(TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
-        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                     output_sharded=False):
+        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
+                              output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                      output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
@@ -890,13 +893,17 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
+                single-device until the placement port, so the output is the same either way.
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
-        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
+        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
+                               output_sharded=output_sharded)
 
-    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                   output_sharded=False):
         """
         Perform FDK filtering on the given sinogram.
 
@@ -904,6 +911,8 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
+                single-device until the placement port, so the output is the same either way.
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FDK filtering.
@@ -1003,7 +1012,8 @@ class ConeBeamModel(TomographyModel):
         
         return recon
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
+    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                  output_sharded=False):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -1016,6 +1026,8 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
+                single-device until the placement port, so the output is the same either way.
 
         Returns:
             recon (jax array): The reconstructed volume after FDK reconstruction.
@@ -1024,7 +1036,7 @@ class ConeBeamModel(TomographyModel):
         filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
 
         # Apply backprojection
-        recon = self.back_project(filtered_sinogram)
+        recon = self.back_project(filtered_sinogram, output_sharded=output_sharded)
         
         # Slice dependent filtering for helical recon
         view_params_array = self.get_params('view_params_array')

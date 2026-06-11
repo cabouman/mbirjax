@@ -1,21 +1,21 @@
 """
 Tests for sharded FBP filtering (ParallelBeamModel).
 
-Both ``fbp_filter`` and its thin alias ``direct_filter`` are **internal**
-sharded-contract methods: under a mesh they return a view-sharded result with no
-gather at exit.  For robustness they shard the input on the view axis at entry
-(a no-op when it is already view-sharded), so a plain sinogram passed directly is
-handled correctly as well; the gather back to plain lives in the user-facing
-reconstruction methods (``fbp_recon`` / ``direct_recon``), not in the filter.
+Both ``fbp_filter`` and its thin alias ``direct_filter`` are **user-facing**:
+the input may be plain or view-sharded (a plain input is sharded on the view
+axis at entry), and the OUTPUT form is chosen by the ``output_sharded`` kwarg —
+a plain (gathered) array by default, the view-sharded device form when True.
+Pipelined internal callers (``fbp_recon`` / ``direct_recon``) pass
+``output_sharded=True`` so the filter output never round-trips through the host.
 
 Under view-sharding the ramp filter is per-view, so each device filters its own
 views with no cross-device communication.
 
 These tests check:
-  - the single-device (no-mesh) path is bit-exact vs a direct reference filter;
-  - the internal ``fbp_filter`` returns a view-sharded result (axis 0) with no
+  - the single-device path filters and preserves shape, returning a plain array;
+  - ``output_sharded=True`` returns a view-sharded result (axis 0) with no
     gather, matching the single-device result to float noise, for both a plain
-    and a pre-sharded input;
+    and a pre-sharded input; the default returns a plain array;
   - ``direct_filter`` is a thin alias for ``fbp_filter`` (same result).
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
@@ -52,11 +52,11 @@ class TestFbpFilterSingleDevice(unittest.TestCase):
         model, sino = _make_model_and_sino()
         out = model.fbp_filter(sino)
         self.assertEqual(out.shape, sino.shape)
-        # RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh
-        # (Option B), so a plain input is sharded at entry and the output is a (1-device)
-        # NamedSharding -- it was a plain array on the legacy no-mesh path.  Shape is
-        # preserved either way; the sharded-contract output is checked in TestFbpFilterSharded.
-        self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
+        # Default output_sharded=False: a plain (gathered) array, regardless of the
+        # trivial 1-device mesh the model runs on.  The device form is checked in
+        # TestFbpFilterSharded via output_sharded=True.
+        self.assertNotIsInstance(getattr(out, 'sharding', None),
+                                 jax.sharding.NamedSharding)
 
     def test_row_batch_non_divisible_matches(self):
         """A row count not divisible by the row-filter batch still filters every
@@ -89,45 +89,50 @@ class TestFbpFilterSharded(unittest.TestCase):
             self.skipTest("need >= 2 devices")
 
     def test_sharded_matches_single_device(self):
-        """A plain sinogram passed directly to fbp_filter under a mesh is sharded
-        at entry, filtered view-sharded, and matches the single-device result."""
+        """A plain sinogram into fbp_filter under a mesh is sharded at entry and
+        matches the single-device result; the default returns a plain array and
+        output_sharded=True returns the view-sharded device form."""
         model, sino = _make_model_and_sino(num_views=8)
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
 
-        # Single-device reference (no mesh).
+        # Single-device reference.
         ref = np.asarray(model.fbp_filter(sino))
 
-        # Sharded run with a PLAIN input: fbp_filter shards on the view axis at
-        # entry (mirrors fbp_recon) rather than assuming pre-sharded input.
         model.configure_sharding(self.devs)
-        out = model.fbp_filter(sino)
 
-        # Sharded-contract: output is view-sharded (axis 0), not gathered.
+        # Default: plain (gathered) output.
+        out_plain = model.fbp_filter(sino)
+        self.assertNotIsInstance(getattr(out_plain, 'sharding', None),
+                                 jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
+
+        # output_sharded=True: the device form, view-sharded on axis 0.
+        out = model.fbp_filter(sino, output_sharded=True)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
         self.assertEqual(out.sharding.spec[0], 'devices')
-
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
     def test_direct_filter_is_fbp_filter_alias(self):
-        """direct_filter is a thin internal alias for fbp_filter: same sharded
-        contract (sharded view in -> sharded view out), same values."""
+        """direct_filter is a thin alias for fbp_filter: same contract
+        (output form chosen by output_sharded), same values."""
         model, sino = _make_model_and_sino(num_views=8)
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
 
         model.configure_sharding(self.devs)
         sharded_in = model._shard_sinogram(sino)
-        via_fbp = model.fbp_filter(sharded_in)
-        via_direct = model.direct_filter(sharded_in)
+        via_fbp = model.fbp_filter(sharded_in, output_sharded=True)
+        via_direct = model.direct_filter(sharded_in, output_sharded=True)
 
-        # Same sharded-contract output (view-sharded, no gather) and same values.
+        # Same device-form output (view-sharded, no gather) and same values.
         self.assertIsInstance(via_direct.sharding, jax.sharding.NamedSharding)
         self.assertEqual(via_direct.sharding.spec[0], 'devices')
         np.testing.assert_array_equal(np.asarray(via_direct), np.asarray(via_fbp))
 
-    def test_sharded_input_passes_through_sharded(self):
-        """A pre-sharded sinogram stays sharded (no gather) and is correct."""
+    def test_sharded_input_output_sharded_stays_sharded(self):
+        """A pre-sharded sinogram with output_sharded=True stays sharded (no
+        gather) and is correct; with the default it is gathered to plain."""
         model, sino = _make_model_and_sino(num_views=8)
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
@@ -135,9 +140,14 @@ class TestFbpFilterSharded(unittest.TestCase):
 
         model.configure_sharding(self.devs)
         sharded_in = model._shard_sinogram(sino)
-        out = model.fbp_filter(sharded_in)
+        out = model.fbp_filter(sharded_in, output_sharded=True)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+
+        out_plain = model.fbp_filter(sharded_in)
+        self.assertNotIsInstance(getattr(out_plain, 'sharding', None),
+                                 jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
 
 
 if __name__ == "__main__":

@@ -372,65 +372,62 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         _warn_view_batch_size_deprecated(view_batch_size)
-        return self.fbp_recon(sinogram, filter_name=filter_name)
+        return self.fbp_recon(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
-        This is a thin **internal** alias for :meth:`fbp_filter` and shares its
-        sharded contract: it does NOT shard at entry or gather at exit.  Under a
-        mesh the input must already be view-sharded and the output stays
-        view-sharded; with no mesh the array is filtered directly.  The
-        plain<->sharded boundary lives in the user-facing reconstruction methods
-        (``fbp_recon`` / ``direct_recon``), not here.
+        This is a thin alias for :meth:`fbp_filter` and shares its contract: the
+        input may be plain or view-sharded (a plain input is sharded at entry
+        when sharding is on), and the OUTPUT form is chosen by ``output_sharded``
+        — plain by default, the view-sharded device form when True.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
-                Under a mesh it must already be view-sharded.
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
+            output_sharded (bool, optional): If False (default), return a plain
+                array.  If True, return the view-sharded device form (on an
+                unsharded model the output is the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering, in
-            the same (view) sharding as the input (or a plain array when no mesh
-            is configured).
+            filtered_sinogram (jax array): The sinogram after FBP filtering --
+            plain by default, view-sharded if ``output_sharded=True``.
         """
         _warn_view_batch_size_deprecated(view_batch_size)
-        return self.fbp_filter(sinogram, filter_name=filter_name)
+        return self.fbp_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """
         Perform FBP filtering on the given sinogram.
 
-        This is an **internal** sharded-contract method.  It does NOT shard at
-        entry or gather at exit: when a mesh is configured the input is expected
-        to already be view-sharded (each device holds a contiguous block of
-        views), and the filtered sinogram is returned in that same view sharding.
-        Keeping the data on-device lets pipelined callers (``fbp_recon`` /
-        ``direct_recon`` followed by back projection) run with zero host
-        transfer.  The plain<->sharded boundary lives in the user-facing wrappers
-        (``direct_filter`` / ``fbp_recon`` / ``direct_recon``), which shard at
-        entry and unshard at exit.  Under the view-sharding scheme the ramp
-        filter is per-view, so each device filters its own views with no
-        cross-device communication.  When no mesh is configured this simply
-        filters the (single-device) array directly.
+        This is a **user-facing** method.  The input may be plain or view-sharded
+        (a plain input is sharded on the view axis at entry when sharding is on);
+        the OUTPUT form is chosen by ``output_sharded``: plain by default, the
+        view-sharded device form when True.  Pipelined internal callers
+        (``fbp_recon`` / ``direct_recon`` followed by back projection) pass
+        ``output_sharded=True`` so the data stays on-device with zero host
+        transfer.  Under the view-sharding scheme the ramp filter is per-view, so
+        each device filters its own views with no cross-device communication.
+        When no mesh is configured this simply filters the (single-device) array
+        directly.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
-                Under a mesh it must already be view-sharded (the user-facing
-                wrappers establish this).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored — the row
                 filter kernel (tomography_utils.apply_row_filter) sets its own
                 batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
+            output_sharded (bool, optional): If False (default), return a plain
+                array.  If True, return the view-sharded device form (on an
+                unsharded model the output is the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering, in
-            the same (view) sharding as the input (or a plain array when no mesh
-            is configured).
+            filtered_sinogram (jax array): The sinogram after FBP filtering --
+            plain by default, view-sharded if ``output_sharded=True``.
         """
         _warn_view_batch_size_deprecated(view_batch_size)
 
@@ -499,9 +496,11 @@ class ParallelBeamModel(TomographyModel):
 
         # No post-scaling: the voxel factor and pi/num_views were folded into the
         # filter above, so each device's kernel output is already fully scaled.
-        return filtered_sinogram
+        if output_sharded:
+            return filtered_sinogram                     # keep the device form
+        return self._gather_sinogram(filtered_sinogram)  # default: plain output
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -510,43 +509,41 @@ class ParallelBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
-        This is a **user-facing** method: its output sharding **matches its
-        input**.  When a mesh is configured it shards the sinogram on the view
-        axis once at entry, then runs the on-device pipeline — ``fbp_filter``
-        (internal: sharded view -> sharded view) followed by ``back_project``
-        (which, given sharded input, returns a slice-sharded recon).  The data
-        stays resident on its devices throughout (zero intermediate host
-        transfer).  If the original input was a plain array the recon is gathered
-        at exit (plain in -> plain out); if it was already sharded the recon is
-        returned slice-sharded (no host round-trip), so a sharded FBP result can
-        feed a sharded consumer (e.g. the VCD init).  With no mesh configured the
-        shard/gather are no-ops and the array flows through unchanged.
+        This is a **user-facing** method.  The input may be plain or sharded
+        (a plain sinogram is sharded on the view axis once at entry when sharding
+        is on); the OUTPUT form is chosen by ``output_sharded``.  Internally the
+        pipeline stays on-device throughout — ``fbp_filter`` then
+        ``back_project``, both called with ``output_sharded=True`` (zero
+        intermediate host transfer).  By default the recon is gathered to a plain
+        array at exit; with ``output_sharded=True`` it is returned slice-sharded
+        (no host round-trip), so a sharded FBP result can feed a sharded consumer
+        (e.g. the VCD init).  With no mesh configured the shard/gather are no-ops
+        and the array flows through unchanged.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
+            output_sharded (bool, optional): If False (default), return a plain
+                array.  If True, return the slice-sharded device form (on an
+                unsharded model the output is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume — plain if the input was
-            plain, slice-sharded if the input was a sharded array.
+            recon (jax array): The reconstructed volume — plain by default,
+            slice-sharded if ``output_sharded=True``.
         """
         _warn_view_batch_size_deprecated(view_batch_size)
-        # Decide the exit handling from the ORIGINAL input (before the entry
-        # shard, which would make any input look sharded).
-        input_is_sharded = isinstance(getattr(sinogram, 'sharding', None),
-                                      jax.sharding.NamedSharding)
 
-        # Shard once at entry so the internal fbp_filter receives view-sharded
-        # data (no-op when no mesh is configured or already sharded).
+        # Shard once at entry so the filter receives view-sharded data (no-op
+        # when no mesh is configured or already sharded).
         sinogram = self._shard_sinogram(sinogram)
 
-        # Internal pipeline stage: sharded view -> sharded view, no host transfer.
-        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name)
+        # Internal pipeline stage: keep the device form, no host transfer.
+        filtered_sinogram = self.fbp_filter(sinogram, filter_name=filter_name,
+                                            output_sharded=True)
 
-        # back_project matches its input: the filtered sinogram is sharded, so it
-        # returns a slice-sharded recon (no gather inside).  Match fbp_recon's own
-        # input: gather to plain only if the original sinogram was plain.
-        recon = self.back_project(filtered_sinogram)
-        return recon if input_is_sharded else self._gather_recon(recon)
+        # Keep the recon in the device form through the pipeline; the exit
+        # handling below is the single place the output form is decided.
+        recon = self.back_project(filtered_sinogram, output_sharded=True)
+        return recon if output_sharded else self._gather_recon(recon)
 

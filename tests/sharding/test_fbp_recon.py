@@ -2,25 +2,26 @@
 Tests for the end-to-end sharded FBP pipeline (ParallelBeamModel.fbp_recon /
 direct_recon) -- Phase F2.
 
-fbp_recon is **user-facing** and follows the match-input contract: its output
-sharding mirrors its input.  Under a mesh it shards the sinogram on the view
-axis once at entry, then runs the on-device pipeline:
+fbp_recon is **user-facing**: the input may be plain or sharded (a plain
+sinogram is sharded on the view axis once at entry), and the OUTPUT form is
+chosen by the ``output_sharded`` kwarg.  Under a mesh it runs the on-device
+pipeline:
 
-    fbp_filter (internal: sharded view -> sharded view)
-        -> back_project (match-input: sharded sino -> slice-sharded recon)
+    fbp_filter(output_sharded=True) (sharded view -> sharded view)
+        -> back_project(output_sharded=True) (sharded sino -> slice-sharded recon)
 
 The data stays resident on its devices throughout (zero intermediate host
-transfer).  If the original input was plain, the recon is gathered at exit
-(plain in -> plain out); if it was already sharded, the recon is returned
-slice-sharded (no host round-trip).  direct_recon simply delegates to fbp_recon.
+transfer).  By default the recon is gathered to a plain array at exit; with
+output_sharded=True it is returned slice-sharded (no host round-trip).
+direct_recon simply delegates to fbp_recon.
 
 These tests check:
   - single-device (no-mesh) fbp_recon / direct_recon is plain-in / plain-out;
   - a trivial 1-device mesh is BIT-EXACT vs the unconfigured single-device path
     (the prerelease regression gate);
-  - 2/4/8-device sharding matches single-device to float noise; a PLAIN input
-    returns a plain (gathered) recon, a SHARDED input returns a slice-sharded
-    recon (match-input);
+  - 2/4/8-device sharding matches single-device to float noise; the default
+    returns a plain (gathered) recon, output_sharded=True returns a
+    slice-sharded recon;
   - the no-intermediate-gather invariant: the sinogram handed to back_project
     inside fbp_recon is view-sharded (axis 0), i.e. the filter output never
     round-trips through the host.
@@ -141,10 +142,10 @@ class TestFbpReconSharded(unittest.TestCase):
                                  jax.sharding.NamedSharding)
         np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
-    def test_sharded_input_returns_sharded_recon(self):
-        """Match-input: a SHARDED sinogram into fbp_recon / direct_recon returns
-        a slice-sharded recon (no gather) matching the plain single-device recon
-        to float noise."""
+    def test_output_sharded_returns_sharded_recon(self):
+        """output_sharded=True on fbp_recon / direct_recon returns a slice-sharded
+        recon (no gather) matching the plain single-device recon to float noise --
+        even for a PLAIN input (the kwarg, not the input placement, decides)."""
         model = _make_model()
         self._check_divisible(model, 2)
         sino = _random_sino(model)
@@ -152,17 +153,22 @@ class TestFbpReconSharded(unittest.TestCase):
 
         shard_model = _make_model()
         shard_model.configure_sharding(self.devs)
-        sharded_in = shard_model._shard_sinogram(sino)
         recon_axis = shard_model.recon_shard_axis()
         for fn_name in ('fbp_recon', 'direct_recon'):
-            out = getattr(shard_model, fn_name)(sharded_in)
+            out = getattr(shard_model, fn_name)(sino, output_sharded=True)
             self.assertIsInstance(
                 out.sharding, jax.sharding.NamedSharding,
-                msg=f"{fn_name} should return sharded recon for sharded input")
+                msg=f"{fn_name} should return a sharded recon for output_sharded=True")
             ax = recon_axis % out.ndim
             self.assertEqual(out.sharding.spec[ax], 'devices')
             np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"{fn_name} sharded-in mismatch")
+                                       err_msg=f"{fn_name} output_sharded mismatch")
+        # And the inverse: a SHARDED input with the default still returns plain.
+        sharded_in = shard_model._shard_sinogram(sino)
+        out = shard_model.fbp_recon(sharded_in)
+        self.assertNotIsInstance(getattr(out, 'sharding', None),
+                                 jax.sharding.NamedSharding)
+        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
 
     def test_no_intermediate_gather(self):
         """The sinogram fbp_recon hands to back_project must still be view-sharded

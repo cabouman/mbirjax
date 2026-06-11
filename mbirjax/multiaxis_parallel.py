@@ -459,16 +459,20 @@ class MultiAxisParallelModel(TomographyModel):
     # =========================================================================
     # This is a novel extension of the standard ramp filter in ParallelBeamModel.
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE):
-        return self.fbp_recon(sinogram, filter_name, view_batch_size)
+    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
+                     output_sharded=False):
+        return self.fbp_recon(sinogram, filter_name, view_batch_size, output_sharded=output_sharded)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """
         Filters the sinogram using a Velocity-Weighted Directional 1D Ramp filter.
         The filter magnitude and orientation are determined by the local
         angular velocity vector: [d_azimuth, d_elevation].
 
         Novelty: Generalizes the standard ramp filter in ParallelBeamModel to account for elevation motion.
+
+        ``output_sharded`` is accepted for API uniformity; this model runs single-device
+        until the placement port, so the output is the same either way.
         """
         num_views, num_rows, num_channels = sinogram.shape
         angles = self.get_params('angles')  # (num_views, 2) -> [azimuth, elevation]
@@ -524,9 +528,9 @@ class MultiAxisParallelModel(TomographyModel):
         # step size is already baked into the 'directional_ramp' via d_ang.
         return filtered_sinogram
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None):
+    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         filtered_sinogram = self.fbp_filter(sinogram, filter_name, view_batch_size)
-        return self.back_project(filtered_sinogram)
+        return self.back_project(filtered_sinogram, output_sharded=output_sharded)
 
 
 # Backward-compatible public API name used throughout docs/examples.
