@@ -248,6 +248,45 @@ row-crop as parallel beam's band mechanism for now, and build the `(g0, L)`
 interface once in P3 across forward + back with the adjoint round-trip as the
 gate.
 
+**Anchor rule (added 2026-06-11, from the P5 Step 4 padding design).**  Physical
+coordinates come from PROBLEM shapes + GLOBAL indices; input lengths size loops and
+allocations only, never coordinates:
+`z(k_global) = Δ_slice · (k_global − (S_real − 1)/2) + shift`, with
+`S_real = projector_params.recon_shape[2]` (params — always REAL) and
+`k_global = g0 + k_local` (`shift` stays each geometry's private term, per the table
+above).  Today the z-based kernels derive that center from the INPUT cylinder length
+(`voxel_cylinder.shape[0]`) — a latent identity (the full cylinder is always passed, so
+length == recon_shape[2]) that the `(g0, L)` port AND slice padding both break, the same
+way: a sub-band or padded length shifts every *real* coordinate by half the length
+difference times Δ.  Sourcing the anchor from params is **bit-exact today** (identical
+value on full cylinders) ⇒ a zero-risk mechanical edit at the port.  Sites:
+`cone_beam.py` 390→402, 434, 997; `translation_model.py` 315→360;
+`multiaxis_parallel.py` 207→225 (+ its validity clip at 254).  **Corollary:** padded or
+device-count-dependent shapes never enter `projector_params` or any jit closure/static —
+for correctness (anchor shift) and for the recompile discipline above.  **P6 choice to
+record, not decide:** cone's validity clip (`cone_beam.py:448`, multiaxis 254) could clip
+at `S_real` in GLOBAL terms, making padded slices exactly inert in-kernel for free — vs
+keeping kernel validity band-local and masking outside; interacts with cone's
+inert-padding vs enlarge-the-volume semantics (§P5 Step 4 notes).
+
+**Forward banding is ACCUMULATION, not concatenation (noted 2026-06-11; design lands at
+P6).**  Banding is clean on an operator's OUTPUT side and needs a SUM on its INPUT side.
+Back projection bands its *output* — each slice band is computed independently from the
+full resident view, so concatenation is valid for every geometry.  Forward projection
+bands its *input* — and outside parallel beam a slice band does NOT project to a fixed
+row band of a view (cone: pixel-dependent, overlapping row ranges), so view-owners must
+ACCUMULATE per-band full-view partials (`view += forward(band_k)` — the in-place donated
+accumulator already filed above is exactly this) instead of concatenating row-bands.
+The current `_forward_project_all_bands` row-concat (tomography_model ~1341; "each
+detector row has a single producer") is the parallel-beam slice↔row identity at work —
+keep concat as parallel beam's assembly (smaller transients, no add pass) and make the
+band assembly per-geometry at the port (concat-by-row-range | accumulate).  Adjointness
+holds either way (forward = Σ_b P_b ⊣ back = stack of P_bᵀ), so the round-trip gate is
+unaffected.  Padding interaction: under accumulation, zero padded slices contribute zero
+automatically — cone needs NO row padding and gets forward inertness free; the Stage-1
+view mask is applied POST-assembly per view-owner precisely so it survives this
+concat→accumulate change.
+
 ### P4 — VCD on placements (Phase E)  ✅ DONE — multi-GPU validated (1–4 GPU); sharded-memory leak fixed & validated for all paths (const, non-const weights, positivity)
 - [x] Entry/exit placements for sinogram (view) / recon (slice) / weights (view) via
   `to_sino`/`to_recon` in `vcd_recon` (replace the `device_put(..., main/sinogram_device)`
@@ -331,7 +370,7 @@ gate.
 
 **STATUS (2026-06-09): mostly DONE; only divisibility *padding* (Step 4) + the device-aware geometry
 scaling remain.**  Method renamed `set_devices_and_batch_sizes` → `set_devices` (it no longer sets
-batch sizes).
+batch sizes).  **(Step 4 design DECIDED 2026-06-11 — see §"P5 Step 4 — divisibility padding" below.)**
 
 - [x] `configure_devices(devices=None|int|list)` user-facing (None→auto pick-N, int→count,
   list→indices/devices); resolves then delegates to `configure_sharding` (the user-selected/pinned
@@ -347,13 +386,108 @@ batch sizes).
 - **Divisibility:** [x] warn-with-fix-instructions, **order-independent** — `configure_sharding` and a
   user-selected geometry change only **warn**; the hard, clear error is raised at the shard chokepoint
   `_shard_on_axis` (covers every entry point), so a config fixed up before the recon works regardless
-  of call order.  [ ] **(Step 4, remaining)** `prepare_sino_for_devices(sino, weights, n)` + padding to
-  *use* a non-dividing N: **views** pad + `weights=0` mask; **slices** pick-N / problem-level pad +
-  prior-aware mask.  Pad to a shape the problem owns, never to a multiple of the device count.
+  of call order.  [ ] **(Step 4, remaining)** padding to *use* a non-dividing N — **design DECIDED
+  2026-06-11**, staged plan in §"P5 Step 4 — divisibility padding" below (the `weights=0`-mask and
+  "problem-owned shape" ideas recorded here earlier are superseded there: the mask moved to the
+  sharded forward output, and the principle is refined to "padding must be exactly inert").
 - [x] **Always-on "devices in use + why" report** at recon time (`_device_report`:
   `N x PLATFORM [(sharded)]` + a "why N" note when auto left GPUs idle).
 - [ ] `auto_set_recon_geometry` / `scale_recon_shape` made device-aware — **deferred to P6/geometry**
   (mainly a cone-beam lever; parallel-beam sharded axes are sinogram-side).
+
+### P5 Step 4 — divisibility padding (design DECIDED 2026-06-11; staged implementation)
+
+**Goal:** auto uses ALL available devices; a non-dividing axis is padded, and the padding is
+**exactly inert** — results independent of device count and pad amount.  This refines the earlier
+"pad to a shape the problem owns" principle: *pad however the devices need, but make the padding
+exactly inert* (inertness is the reproducibility that principle was protecting).
+
+**Core decisions (each worked through against the code, 2026-06-10/11 sessions):**
+- **Masked forward output, NOT `weights=0`.**  The invariant: *padded views/rows/slices of every
+  array are identically zero, always* — zero-fill at entry + a validity mask multiplied into the
+  sharded forward-projection output (ONE site, applied post-assembly per view-owner; skipped when
+  nothing is padded).  Then every downstream consumer — weighted or unweighted — is automatically
+  clean, and the donated-FMA error-sino update preserves the invariant.  `weights=0` was REJECTED:
+  it would force materializing a full weights array (the const-weights path keeps `weights` as the
+  scalar `1`, tomography_model ~2317 — a 32 GB-scale regression) and still miss the *unweighted*
+  reductions (`get_forward_model_loss`'s `mean` ~2785; the const-weights initial alpha ~2360).
+- **Contract: explicit `output_sharded=False` kwarg; match-input RETIRED (amends O2/F2).**
+  Default = a plain array in the problem's REAL shape (gather + crop); `True` = the internal device
+  form (sharded, possibly padded).  Inputs stay auto-detected (plain → pad+shard at entry; prepared
+  → used as-is).  One rule, every user-facing method: *padded shapes never escape unless explicitly
+  requested.*  (`True` on an unsharded model just returns the trivial-placement form — no error.)
+- **Params answer "what is the problem?"; placements answer "what is on the devices?".**
+  `get_params('sinogram_shape')`/`recon_shape` ALWAYS return real shapes — save/load, projector
+  geometry (`projector_params` is baked from get_params), FBP `π/num_views`, and metric
+  normalizations stay correct for free.  The **placements own the padded global shape, each shard's
+  global index range (its `g0`), and the real counts**; sharded plumbing asks the placement, never
+  get_params.  **Every padding mask is the one predicate `k_global < real_count`** evaluated over a
+  shard's global range — geometry-independent, correct by construction.
+- **`prepare_sino_for_devices(sinogram, weights=None)`** — PUBLIC model method (padding is also
+  applied automatically at entry for plain inputs).  Per-shard host→device streaming: `device_put`
+  each device's host slice; the last shard transfers its partial slice into a zero-initialized
+  device buffer, so **zero-padding is free and no padded host copy ever exists** (only transient =
+  one shard on one device).  Two-axis-aware from day one (views in Stage 1, rows in Stage 2, same
+  API).  Also the natural future hook for streaming from disk (per-shard memmap reads).  A stale
+  prepared array after a device-config change is caught by the `_shard_on_axis` hard error (message
+  to recognize the case: "re-run prepare_sino_for_devices").
+
+**Stage 0 — the contract change (no padding yet; lands alone, suite-gated):**
+`output_sharded` on `forward_project` (~985) / `back_project` (~1031) / `direct_recon` (~2081) /
+`fbp_recon` / `fbp_filter` / `direct_filter` / `recon` (~2210) / `prox_map`; reroute internal
+callers to `True` (vcd_recon's `direct_recon` init ~2336 + `forward_project` ~2355; fbp_recon's
+internal filter call, parallel_beam ~545; `vcls.py:167` gets the explicit kwarg); update the
+match-input tests; amend O2/F2 here and in §Decisions.
+
+**Stage 1 — views:**
+- Pad metadata derived at layout time (`set_devices`/`_apply_mesh`, re-derived every recompile):
+  padded view count, padded `view_params_array` (replicate the last entry — values irrelevant,
+  output masked; shape-compatible with the settable-view-params task), per-device view mask.  All
+  inactive/None when views divide — the common case carries zero new work.
+- Pad-aware `_shard_sinogram` entry; `_shard_on_axis`'s hard error stays as the backstop.
+- The forward view-mask (post-assembly per view-owner in `_sparse_forward_project_sharded`
+  ~1248–1306 — placed AFTER assembly so it survives the P6 concat→accumulate change).
+- Real-count corrections: `π/num_views` (parallel_beam ~455), `get_forward_model_loss` mean +
+  `total_loss`'s `sinogram.size` (~2453); the Hessian's const-weights `ones_like` transient
+  (~2392) gets the view mask.
+- Auto: `_auto_device_count` ignores views (largest N ≤ available dividing `num_slices`); the
+  views divisibility WARN retires; `_device_report` notes "views padded V→V_pad".
+- **Shape-source audit:** classify every `sinogram_shape`/`num_views` read as (a) problem-shape —
+  params, keep (kernel geometry, FBP scale, metrics); (b) device-shape — switch to the placement
+  (sharded dispatch ~1228, `assemble_sharded` global shape ~1304–1306, the weights/entry shape
+  checks ~1793/~2549); (c) input-length-used-as-coordinate-anchor — the P6 kernel sites (see the
+  anchor rule in the (g0, L) design note).  A get_params shape in sharded plumbing is a code smell.
+- Tests: the zero-invariant through a full recon; prime-`num_views` recon + fbp_recon vs
+  single-device at the 1e-4 gate; adjoint round-trip with padding; entry-streaming shard layout +
+  zero tail (sino and weights); `_auto_device_count` unit test; fm_rmse vs an unpadded reference.
+
+**Stage 2 — slices (ParallelBeam: slices + det rows pad TOGETHER — the kernel-shape tie; equality
+is enforced at parallel_beam ~124, and the slice↔row map is index-identity, so padding both ends
+by the same count is exact — no center arithmetic on that axis):**
+- Forced-zero padded slices: zero the init's padded slices; slice mask on the VCD update in
+  `update_recon` (broadcast multiply); `jnp.where`-guarded division (padded slices have zero
+  forward AND zero prior Hessian).
+- Padded rows zero-data / zero-weight from the entry streaming.  Real slices' footprint bleed into
+  padded rows is influence-free (w=0), and the measured data never had those rows — the real-slice
+  subproblem is EXACTLY the unpadded one (survives `delta_voxel != delta_pixel`).
+- **qGGMRF slice mask** — the careful piece: zero the coupling across the real/padded boundary and
+  reproduce reflected BC at the last real slice; formulated like the existing `left_halo`/
+  `right_halo` deltas but as a MID-SHARD mask (the boundary sits inside the last shard).
+  Kernel-level proposal to review with Greg before implementation.
+- Auto ignores slices too → auto = all available devices; the "why N" report note retires for
+  ParallelBeam.
+- Tests: N-independence (padded ≡ unpadded recon, allclose); prior boundary test (reflected BC at
+  the last real slice; padded slices stay exactly zero); guarded-division NaN check.
+
+**GPU items (Greg, cluster):** partial-shard assembly over the d2d path; perf sanity that padding
++ mask are in the noise; host-RSS check that `prepare_sino_for_devices` makes no host copy.
+
+**Notes:** `compute_hessian_diagonal`'s legacy `output_device` kwarg is reconciled with
+`output_sharded` at P6, not now; `prox_map` stays main_device-pinned (placement-awareness is P6
+scope) but gets the kwarg for signature uniformity; cone/translation/multiaxis pick all of this up
+at the P6 port — cone pads slices WITHOUT row padding (its rows aren't tied to slices, and under
+forward-accumulation zero padded slices are inert for free) and chooses there between
+inert-padding and enlarge-the-volume semantics for the padded slices.
 
 ### P6 — Port + retire
 - Port the sinogram transpose pattern from `back_project_one_view_to_pixel_batch` 
@@ -368,6 +502,14 @@ batch sizes).
   `entries_per_cylinder_batch` slice-batching** (subsumed by the outer band loop)
   and switch the jittable single-device / forward assembly to an in-place
   `dynamic_update_slice` accumulator with `donate_argnums` (see the P3 design note).
+- **(2026-06-11, from the P5 Step 4 design)** The geometry port also picks up: the
+  **anchor rule** (kernel centers from problem shapes + global indices, not input
+  lengths — bit-exact mechanical fix; sites listed in the design-note amendment) and
+  **per-geometry forward-band assembly** (parallel = row-concat, z-based = accumulate;
+  see "Forward banding is ACCUMULATION" in the design note); cone decides inert-padding
+  vs enlarge-the-volume semantics for padded slices, and whether its validity clip goes
+  global-`S_real` (in-kernel inertness) or stays band-local; reconcile
+  `compute_hessian_diagonal`'s legacy `output_device` with `output_sharded`.
 
 **STATUS (2026-06-08): step 4 IMPLEMENTED as "2-Keep" — CPU-green, GPU re-validation pending.**
 Change 1 (note 2: fold `alpha` into the donated FMA `update_error_sinogram`, drop the
@@ -473,8 +615,15 @@ largely **parallelizable** alongside.
 - **O1 (heterogeneous placement) — reframed/resolved.**  recon-CPU / sino-GPU via
   two *separate* trivial placements; the reverse (sino-CPU / recon-GPU) is **out
   of scope**.
-- **O2 (return contract) — resolved (F2):** user-facing methods match input;
-  internal methods are sharded-only.
+- **O2 (return contract) — resolved (F2): match-input — AMENDED 2026-06-11 (P5 Step 4):
+  match-input is RETIRED in favor of an explicit `output_sharded=False` kwarg on
+  user-facing methods.**  Default `False` = a plain array in the problem's REAL shape
+  (gather + crop); `True` = the internal device form (sharded, possibly padded).  Inputs
+  stay auto-detected.  Why: padding makes sharded sino-domain shapes non-problem shapes
+  (`V_pad`), so under match-input the *output shape* would depend on the *input
+  placement*; an explicit argument beats inference.  Internal callers (vcd_recon's init
+  chain, fbp_recon's filter, PnP chains) pass `True` and stay on-device.  Internal
+  methods remain sharded-only, unchanged.
 - **Hybrid (2-Drop) — RESOLVED (2026-06-08): DROP hybrid** (recon-CPU/sino-GPU
   'sinograms' mode; supersedes O1's "keep via two trivial placements").  Analytic
   envelope `scaling_tests/archive/analytic_hybrid_vs_full_envelope.py`: per-device peak
@@ -503,6 +652,12 @@ largely **parallelizable** alongside.
   *problem* owns (reproducible), never to a multiple of the *device count* (N-dependent
   result).**  Options: pick N from divisors of `num_slices`; or problem-level pad + a slice
   mask the prior respects (reflected BC at the last real slice, padded slices inert).
+  **SUPERSEDED 2026-06-11 by §P5 Step 4:** the views mask moved from `weights=0` to the
+  *sharded forward output* (one site; `weights=0` would materialize a full weights array and
+  still miss the unweighted reductions), slices resolved as forced-zero + a qGGMRF boundary
+  mask + zero-weight padded rows, and the principle is refined to **"padding must be exactly
+  inert"** — once inert, padding to a multiple of N is harmless because the result is provably
+  N-independent (inertness is what "problem-owned shape" was protecting).
 - **Band-vs-pixel criterion (P2) — RESOLVED (2026-06-03): KEEP BAND.**  The
   side-by-side showed pixel's peak memory floored at ~1.7–2.7× band for only
   ~11–16% less time, so band stayed and the pixel path was removed.

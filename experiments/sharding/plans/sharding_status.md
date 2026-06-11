@@ -19,6 +19,54 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-11) — P5 Step 4 DESIGNED end-to-end (no code yet); NEXT = implement Stage 0 (the output_sharded contract)
+
+▶ **CURRENT FOCUS: implement P5 Step 4 per the new v2-plan section "P5 Step 4 — divisibility
+padding" (stages 0/1/2).**  This session was DESIGN ONLY, worked through with Greg and approved;
+the v2 plan, the (g0,L) design note, and O2/O4 were updated.  **No library code changed.**
+
+### Decisions (full detail in v2 §P5 Step 4 + the design-note amendments — read those first)
+- **"Padding must be exactly inert"** (refines "problem-owned shape" — inertness is what it was
+  protecting; once inert, pad-to-multiple-of-N is provably N-independent).  Mechanism: zero-fill
+  at entry + a validity mask on the **sharded forward-projection output** (ONE site, post-assembly
+  per view-owner) ⇒ padded entries of every array are identically zero, always; all downstream
+  consumers (weighted or not) are automatically clean.  `weights=0` REJECTED — it would kill the
+  const-weights scalar path (`weights = 1`, tomography_model ~2317; a 32 GB-scale regression) and
+  still miss the unweighted reductions (loss mean ~2785, const-weights init alpha ~2360).
+- **Contract: match-input RETIRED → explicit `output_sharded=False` kwarg** on user-facing methods
+  (O2 amended).  Default = plain, REAL-shape (gather+crop); `True` = device form (padded).  Inputs
+  auto-detected.  Padded shapes never escape unless explicitly requested.
+- **Params = problem, placements = devices.**  `get_params` shapes are ALWAYS real (projector
+  geometry, FBP `π/num_views`, metrics correct for free); the **placements own the padded global
+  shape, per-shard global ranges (g0), and real counts**; every mask is `k_global < real_count`.
+  Stage 1 includes a **shape-source audit** of every `sinogram_shape`/`num_views` read.
+- **`prepare_sino_for_devices(sino, weights=None)`** public + automatic at entry; per-shard
+  host→device streaming (last shard partial into zero-initialized device buffer) ⇒ zero-pad free,
+  **no padded host copy ever exists**; two-axis-aware from day one; future disk-streaming hook.
+- **Slices (Stage 2, ParallelBeam):** slices + det rows pad together (equality enforced,
+  parallel_beam ~124; index-identity map ⇒ exact).  Forced-zero padded slices (init zero + update
+  mask + `jnp.where`-guarded division) + zero-weight padded rows + a **qGGMRF mid-shard boundary
+  mask** (reflected BC at the last real slice — kernel proposal for review BEFORE implementing).
+- **Anchor rule (P6, recorded in the (g0,L) design note):** kernel physical coordinates from
+  problem shapes + GLOBAL indices, never input cylinder lengths — the z-based geometries' latent
+  identity (cone 390/402/434/997, translation 315/360, multiaxis 207/225/254) breaks under BOTH
+  banding and padding; params-sourced anchor is bit-exact today (mechanical fix at the port).
+- **Forward banding is ACCUMULATION, not concat** (input-side banding needs a sum; cone can't
+  row-concat — `_forward_project_all_bands`'s concat ~1341 is the parallel identity at work).
+  Parallel keeps concat; assembly is per-geometry at P6.  The Stage-1 view mask is POST-assembly
+  so it survives this.  Cone consequence: NO row padding, forward inertness free.
+
+### NEXT (in order; each stage lands CPU-green for review)
+- **Stage 0 — contract:** `output_sharded` kwarg + internal rerouting (vcd_recon init ~2336 /
+  forward ~2355, fbp_recon's filter, vcls ~167) + match-input test updates.  No padding yet.
+- **Stage 1 — views:** pad metadata + pad-aware entry + forward mask + real-count corrections +
+  auto ignores views + the shape-source audit + tests (zero-invariant, prime-num_views vs
+  single-device 1e-4, adjoint w/ padding, streaming layout).
+- **Stage 2 — slices:** forced-zero + qGGMRF boundary mask (review first) + auto = all devices.
+- **GPU items (Greg):** partial-shard assembly over d2d; perf sanity; host-RSS no-copy check.
+
+---
+
 ## HANDOFF (2026-06-09) — hybrid path REMOVED + P5 Step 3 DONE (configure_devices + auto multi-GPU, GPU-validated); band sizing RESOLVED; NEXT = P5 Step 4 (divisibility)
 
 ▶ **CURRENT FOCUS (next session): P5 Step 4 — divisibility** (let auto USE a non-dividing device
