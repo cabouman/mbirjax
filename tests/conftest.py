@@ -48,7 +48,7 @@ import sys
 # suite wants enough virtual devices (8) to exercise multi-device sharding layouts
 # (2/4/8-device sweeps) on CPU.  The resolution policy below otherwise mirrors
 # mbirjax._device_setup.
-DEFAULT_MAX_CPU_DEVICES = 4
+DEFAULT_MAX_CPU_DEVICES = 2
 
 
 def _performance_core_count():
