@@ -19,11 +19,15 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-11) — P5 Step 4 DESIGNED end-to-end (no code yet); NEXT = implement Stage 0 (the output_sharded contract)
+## HANDOFF (2026-06-11) — P5 Step 4 designed + Stages 0–1 LANDED (CPU-green); use_gpu instance var retired; docs corrected + multi-GPU page planned; NEXT = Stage 2 (qGGMRF boundary mask — propose before implementing)
 
-▶ **CURRENT FOCUS: implement P5 Step 4 per the new v2-plan section "P5 Step 4 — divisibility
-padding" (stages 0/1/2).**  This session was DESIGN ONLY, worked through with Greg and approved;
-the v2 plan, the (g0,L) design note, and O2/O4 were updated.  **No library code changed.**
+▶ **CURRENT FOCUS (next session): P5 Step 4 Stage 2 — slice padding** (see the Stage 2 bullet in
+NEXT below: start with the kernel-level qGGMRF mask proposal for Greg's review).  This session:
+the full Step 4 design (recorded in v2 §P5 Step 4 + the (g0,L) design-note amendments + O2/O4),
+then **Stage 0 (output_sharded contract) and Stage 1 (view padding) IMPLEMENTED and CPU-green**
+(sharding suite 95/2 incl. 13 new padding tests; all single-device suites green), plus the
+`self.use_gpu` retirement (+ public `device_summary`) and the sphinx-docs corrections/plan.
+GPU validation of all of it is pending (GPUs were down — see GPU items below).
 
 ### Decisions (full detail in v2 §P5 Step 4 + the design-note amendments — read those first)
 - **"Padding must be exactly inert"** (refines "problem-owned shape" — inertness is what it was
@@ -116,7 +120,22 @@ the v2 plan, the (g0,L) design note, and O2/O4 were updated.  **No library code 
   The instance variable's last real reader was removed at Polish 1 (platform-derived OOM
   guidance); its remaining reads were set_devices reading its own writes (now the local
   `on_gpu`).  Tests assert `is_sharded` instead of the string.
-- **Stage 2 — slices:** forced-zero + qGGMRF boundary mask (review first) + auto = all devices.
+- **Docs detour (same session): corrections DONE + multi-GPU page PLANNED.**  Fixed the two
+  actively-wrong entries (`usr_parameters.rst` use_gpu — removed-'sinograms' value; the
+  `demos_and_faqs.rst` larger-recons FAQ — described the removed hybrid); added a "Device
+  Configuration" section to `usr_tomography_model.rst` (configure_devices /
+  prepare_sino_for_devices / device_summary; sphinx build clean).  The new `usr_multi_gpu.rst`
+  page + full alignment review is PLANNED in v2 §Adjacent tasks ("Sphinx docs: multi-GPU page"),
+  to be written AFTER P6 (avoids the parallel-beam-only caveat churn).  **Vocabulary rule
+  (Greg): use "sharding" sparingly in docs and introduce it clearly — speak in terms of multiple
+  GPUs increasing memory capacity and reducing time.**
+- **Stage 2 — slices (NEXT):** forced-zero padded slices + zero-weight padded rows + the
+  **qGGMRF mid-shard boundary mask** (reflected BC at the last real slice; padded slices inert;
+  guarded division) + auto = all devices.  **Start with a kernel-level proposal against
+  `qggmrf_grad_and_hessian_per_cylinder` for Greg's review BEFORE implementing** — the careful
+  piece; fresh-context read of `mbirjax/qggmrf.py` (the halo formulation `left_halo`/`right_halo`
+  is the closest existing machinery, but this boundary sits MID-shard, so it is a mask, not a
+  halo).  Design recap: v2 plan §P5 Step 4 Stage 2 + §Decisions O4 supersession note.
 - **GPU items (Greg):** partial-shard assembly over d2d (incl. the new pad-shard entry); perf
   sanity (mask + padding in the noise); host-RSS check that prepare_sino_for_devices makes no
   host copy; a real padded multi-GPU recon vs the single-GPU baseline.
