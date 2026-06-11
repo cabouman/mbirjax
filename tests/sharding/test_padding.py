@@ -19,9 +19,14 @@ The result must be independent of the padding: every operation on a non-dividing
 view count must match the single-device result to the same tolerances as the
 dividing case, and padded entries must be exactly zero.
 
-num_views=7 (prime) guarantees padding at every device count > 1; num_det_rows=8
-keeps the slice axis divisible by 2/4/8 (slices must still divide -- slice
-padding is a later step).
+num_views=7 (prime) guarantees VIEW padding at every device count > 1;
+num_det_rows=8 keeps the slice axis dividing for those tests, isolating the view
+machinery.  SLICE padding (P5 Step 4 Stage 2) is tested separately below
+(TestQggmrfInterfaceMask for the kernel; TestPaddedSlices end-to-end with a prime
+slice count): forced-zero padded slices (entry zero-fill), the back-projector
+output mask (_mask_padded_slices, the postcondition mirror of the forward view
+mask), detector rows padding with the slices (parallel beam row r <-> slice r),
+and the qGGMRF interface mask reproducing reflected BC at the last real slice.
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
 devices otherwise).
@@ -297,6 +302,255 @@ class TestPaddedVcdRecon(unittest.TestCase):
         out = self._recon(model_prep, sino, prepared=True)
         np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
                                    err_msg="prepared-input recon diverged from plain-input recon")
+
+
+class TestPaddedSlices(unittest.TestCase):
+    """End-to-end SLICE padding (P5 Step 4 Stage 2): a prime slice count (7) pads at
+    every device count > 1, and detector rows pad with the slices.  The results must
+    be independent of the padding (match the single-device reference at the same
+    tolerances as the dividing case) and the device-form padded slices must be
+    EXACTLY zero (the forced-zero invariant -- established by entry zero-fill +
+    the back-projector output mask + the qGGMRF interface mask, with no division
+    guard anywhere: the padded VCD update is -0/positive = 0 by construction)."""
+
+    NUM_VIEWS = 8
+    NUM_ROWS = 7        # prime -> num_slices = 7 pads at every device count > 1
+    NUM_CHANNELS = 32
+    MAX_ITERS = 6
+
+    def _make_model(self):
+        angles = jnp.linspace(0, jnp.pi, self.NUM_VIEWS, endpoint=False)
+        model = mbirjax.ParallelBeamModel(
+            (self.NUM_VIEWS, self.NUM_ROWS, self.NUM_CHANNELS), angles)
+        model.configure_devices(1)
+        return model
+
+    def _sino(self, seed=0):
+        rng = np.random.default_rng(seed)
+        return jnp.asarray(rng.standard_normal(
+            (self.NUM_VIEWS, self.NUM_ROWS, self.NUM_CHANNELS), dtype=np.float32))
+
+    def _sharded_models(self, max_n=4):
+        for n in (2, 3, 4):
+            if n > max_n:
+                continue
+            devs = preferred_devices(n)
+            if devs is None:
+                continue
+            model = self._make_model()
+            model.configure_sharding(devs)
+            yield n, model
+
+    def test_projectors_and_hessian_match_single_device(self):
+        ref_model = self._make_model()
+        sino = self._sino()
+        ref_back = np.asarray(ref_model.back_project(sino))
+        rng = np.random.default_rng(2)
+        recon_shape = ref_model.get_params('recon_shape')
+        recon = jnp.asarray(rng.standard_normal(recon_shape, dtype=np.float32))
+        ref_fwd = np.asarray(ref_model.forward_project(recon))
+        ref_hess = np.asarray(ref_model.compute_hessian_diagonal())
+        ran = False
+        for n, model in self._sharded_models():
+            back = np.asarray(model.back_project(sino))
+            np.testing.assert_allclose(back, ref_back, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"back_project mismatch at n_dev={n}")
+            fwd = np.asarray(model.forward_project(recon))
+            np.testing.assert_allclose(fwd, ref_fwd, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"forward_project mismatch at n_dev={n}")
+            hess = np.asarray(model.compute_hessian_diagonal())
+            np.testing.assert_allclose(hess, ref_hess, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"hessian mismatch at n_dev={n}")
+            ran = True
+        if not ran:
+            self.skipTest("no usable device count > 1")
+
+    def test_fbp_recon_matches_single_device(self):
+        sino = self._sino(seed=3)
+        ref = np.asarray(self._make_model().fbp_recon(sino))
+        ran = False
+        for n, model in self._sharded_models():
+            out = np.asarray(model.fbp_recon(sino))
+            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+                                       err_msg=f"fbp_recon mismatch at n_dev={n}")
+            ran = True
+        if not ran:
+            self.skipTest("no usable device count > 1")
+
+    def _recon(self, model, sino, weights=None, seed=0):
+        np.random.seed(seed)  # fix partitions + subset order so modes are comparable
+        if model.mesh is not None:
+            # Force the EXACT per-subset halo path: the default stages halos once per
+            # partition pass, which is exact except at gen_pixel_partition's few replicated
+            # pixels (a documented ~2e-3 approximation, tested separately in
+            # test_vcd_sharded).  This test gates the PADDING machinery at 1e-4, so it
+            # must not absorb that unrelated approximation.
+            model._vcd_halo_per_subset = True
+        recon, _ = model.recon(sino, weights=weights, max_iterations=self.MAX_ITERS,
+                               stop_threshold_change_pct=0.0, print_logs=False)
+        return np.asarray(recon)
+
+    def test_vcd_recon_matches_single_device(self):
+        """Padded-slice VCD (const and non-const weights) matches the single-device
+        recon: the qGGMRF interface mask reproduces reflected BC at the last real
+        slice, so the result is independent of the padding."""
+        sino = self._sino(seed=4)
+        rng = np.random.default_rng(5)
+        weights = jnp.asarray(rng.uniform(
+            0.5, 1.5, (self.NUM_VIEWS, self.NUM_ROWS, self.NUM_CHANNELS)).astype(np.float32))
+        ref_const = self._recon(self._make_model(), sino)
+        ref_wts = self._recon(self._make_model(), sino, weights=weights)
+        self.assertTrue(np.all(np.isfinite(ref_const)))
+        ran = False
+        for n, model in self._sharded_models():
+            out = self._recon(model, sino)
+            self.assertTrue(np.all(np.isfinite(out)), msg=f"NaN/inf at n_dev={n}")
+            np.testing.assert_allclose(out, ref_const, rtol=1e-4, atol=1e-4,
+                                       err_msg=f"const-weights recon mismatch at n_dev={n}")
+            model_w = next(m for k, m in self._sharded_models(max_n=n) if k == n)
+            out_w = self._recon(model_w, sino, weights=weights)
+            np.testing.assert_allclose(out_w, ref_wts, rtol=1e-4, atol=1e-4,
+                                       err_msg=f"weighted recon mismatch at n_dev={n}")
+            ran = True
+        if not ran:
+            self.skipTest("no usable device count > 1")
+
+    def test_padded_slices_exactly_zero_in_device_form(self):
+        """The forced-zero invariant, verified at the exits that expose the device
+        form: padded slices of the back projection and of a full VCD recon are
+        EXACTLY zero (no drift -- every update adds exact zeros there)."""
+        sino = self._sino(seed=6)
+        ran = False
+        for n, model in self._sharded_models():
+            back = model.back_project(sino, output_sharded=True)
+            if back.shape[-1] == self.NUM_ROWS:
+                continue   # this count happens not to pad; nothing to check
+            back_np = np.asarray(back)
+            self.assertTrue(np.all(back_np[..., self.NUM_ROWS:] == 0.0),
+                            msg=f"back-projection padded slices not exactly zero at n_dev={n}")
+            np.random.seed(0)
+            recon, _ = model.recon(sino, max_iterations=3, stop_threshold_change_pct=0.0,
+                                   print_logs=False, output_sharded=True)
+            recon_np = np.asarray(recon)
+            self.assertTrue(np.all(recon_np[..., self.NUM_ROWS:] == 0.0),
+                            msg=f"recon padded slices not exactly zero at n_dev={n}")
+            self.assertTrue(np.all(np.isfinite(recon_np)))
+            ran = True
+        if not ran:
+            self.skipTest("no padded device count available")
+
+
+class TestQggmrfInterfaceMask(unittest.TestCase):
+    """Kernel-level slice-padding mask (P5 Step 4 Stage 2), with NO mesh.
+
+    The qGGMRF inter-slice term builds delta[j] = difference across the interface
+    between local slices j-1 and j (j = 0..L are the L+1 interfaces of an L-slice
+    cylinder, including both boundary interfaces).  Reflected BC at a true edge is
+    implemented as a ZERO boundary delta, so a multiplicative interface mask IS the
+    reflected boundary condition relocated to an arbitrary interface: masking every
+    interface whose higher-index global slice is padded (g0 + j < num_real_slices)
+    reproduces reflected BC at the last REAL slice -- even mid-shard -- makes the
+    padded slices' gradient exactly zero, and leaves their Hessian positive (the
+    b_tilde(0) terms), so the VCD denominator never forms 0/0.
+    """
+
+    def _qggmrf_params(self):
+        model = _make_model()
+        qggmrf_nbr_wts, sigma_x, p, q, T = model.get_params(
+            ['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
+        b = mbirjax.get_b_from_nbr_wts(qggmrf_nbr_wts)
+        return (b, sigma_x, p, q, T)
+
+    def test_masked_padded_cylinder_matches_truncated_real(self):
+        """One cylinder, boundary MID-shard: the masked kernel on the zero-padded
+        cylinder must equal the unmasked kernel on the truncated real cylinder
+        (bit-exact on the real slices), with exactly-zero gradient and finite
+        positive Hessian on the padded slices."""
+        params = self._qggmrf_params()
+        rng = np.random.default_rng(3)
+        L, k = 10, 6                       # local slices, real slices (pad = 4, mid-shard boundary)
+        v_real = jnp.asarray(rng.standard_normal(k).astype(np.float32))
+        v_pad = jnp.concatenate([v_real, jnp.zeros(L - k, dtype=jnp.float32)])
+        # Single shard at g0 = 0: valid iff the interface's higher-index slice is real.
+        mask = jnp.asarray((np.arange(L + 1) < k).astype(np.float32))
+
+        # Reference: the unpadded cylinder with reflected BC at both true edges.
+        g_ref, h_ref = mbirjax.qggmrf_grad_and_hessian_per_cylinder(
+            v_real, params, v_real[0], v_real[-1])
+        # Masked padded cylinder (right_val is the reflected padded tail; masked anyway).
+        g_pad, h_pad = mbirjax.qggmrf_grad_and_hessian_per_cylinder(
+            v_pad, params, v_pad[0], v_pad[-1], interface_mask=mask)
+
+        # Real slices: identical values, element for element (same elementwise op chain).
+        self.assertTrue(np.array_equal(np.asarray(g_pad[:k]), np.asarray(g_ref)),
+                        msg="real-slice gradient changed under padding+mask")
+        self.assertTrue(np.array_equal(np.asarray(h_pad[:k]), np.asarray(h_ref)),
+                        msg="real-slice Hessian changed under padding+mask")
+        # Padded slices: gradient exactly zero; Hessian finite and strictly positive
+        # (b_tilde(0) terms -- this is what keeps the VCD division well-posed with no guard).
+        self.assertTrue(np.all(np.asarray(g_pad[k:]) == 0.0),
+                        msg="padded-slice gradient not exactly zero")
+        h_tail = np.asarray(h_pad[k:])
+        self.assertTrue(np.all(np.isfinite(h_tail)) and np.all(h_tail > 0.0),
+                        msg="padded-slice Hessian not finite-positive")
+
+    def test_masked_shards_with_halos_match_unpadded_reference(self):
+        """Two shards with halos, boundary mid-LAST-shard: per-shard masked results
+        must reproduce the full unpadded reference on the real slices (the
+        at_indices level -- cylinder term + in-slice term + halos + mask together)."""
+        params = self._qggmrf_params()
+        num_rows = num_cols = 4
+        P = num_rows * num_cols
+        L, S_real = 5, 8                   # 2 shards x 5 slices = 10 padded, boundary at shard1 local 3
+        rng = np.random.default_rng(5)
+        flat_real = jnp.asarray(rng.standard_normal((P, S_real), dtype=np.float32))
+        flat_pad = jnp.concatenate([flat_real, jnp.zeros((P, 2 * L - S_real), dtype=jnp.float32)], axis=1)
+        idx = jnp.arange(P)
+
+        # Full unpadded reference (reflected BC at both true edges).
+        g_full, h_full = mbirjax.qggmrf_gradient_and_hessian_at_indices(
+            flat_real, (num_rows, num_cols, S_real), idx, params)
+
+        shard0, shard1 = flat_pad[:, :L], flat_pad[:, L:]
+        # The one predicate: interface j of a shard starting at g0 is valid iff g0 + j < S_real.
+        mask0 = jnp.asarray(((0 + np.arange(L + 1)) < S_real).astype(np.float32))  # all-ones (fully real)
+        mask1 = jnp.asarray(((L + np.arange(L + 1)) < S_real).astype(np.float32))
+
+        # Shard 0: true left edge, interior right boundary (halo = first slice of shard 1, real).
+        g0_, h0_ = mbirjax.qggmrf_gradient_and_hessian_at_indices(
+            shard0, (num_rows, num_cols, L), idx, params,
+            left_halo=None, right_halo=flat_pad[:, L], interface_mask=mask0)
+        # Shard 1: interior left boundary (halo = last slice of shard 0), true right edge.
+        g1_, h1_ = mbirjax.qggmrf_gradient_and_hessian_at_indices(
+            shard1, (num_rows, num_cols, L), idx, params,
+            left_halo=flat_pad[:, L - 1], right_halo=None, interface_mask=mask1)
+
+        k1 = S_real - L                    # real slices local to shard 1
+        np.testing.assert_allclose(np.asarray(g0_), np.asarray(g_full[:, :L]), rtol=1e-6, atol=1e-6,
+                                   err_msg="shard 0 gradient diverged from unpadded reference")
+        np.testing.assert_allclose(np.asarray(h0_), np.asarray(h_full[:, :L]), rtol=1e-6, atol=1e-6,
+                                   err_msg="shard 0 Hessian diverged from unpadded reference")
+        np.testing.assert_allclose(np.asarray(g1_[:, :k1]), np.asarray(g_full[:, L:]), rtol=1e-6, atol=1e-6,
+                                   err_msg="shard 1 real-slice gradient diverged from unpadded reference")
+        np.testing.assert_allclose(np.asarray(h1_[:, :k1]), np.asarray(h_full[:, L:]), rtol=1e-6, atol=1e-6,
+                                   err_msg="shard 1 real-slice Hessian diverged from unpadded reference")
+        # Padded columns: gradient exactly zero, Hessian finite-positive.
+        self.assertTrue(np.all(np.asarray(g1_[:, k1:]) == 0.0))
+        h_tail = np.asarray(h1_[:, k1:])
+        self.assertTrue(np.all(np.isfinite(h_tail)) and np.all(h_tail > 0.0))
+
+    def test_all_ones_mask_is_identity(self):
+        """An all-ones mask must be bit-identical to no mask (the uniform-trace form
+        used for fully-real shards when the slice axis is padded)."""
+        params = self._qggmrf_params()
+        rng = np.random.default_rng(7)
+        v = jnp.asarray(rng.standard_normal(6).astype(np.float32))
+        ones = jnp.ones(7, dtype=jnp.float32)
+        g0_, h0_ = mbirjax.qggmrf_grad_and_hessian_per_cylinder(v, params, v[0], v[-1])
+        g1_, h1_ = mbirjax.qggmrf_grad_and_hessian_per_cylinder(v, params, v[0], v[-1],
+                                                                interface_mask=ones)
+        self.assertTrue(np.array_equal(np.asarray(g0_), np.asarray(g1_)))
+        self.assertTrue(np.array_equal(np.asarray(h0_), np.asarray(h1_)))
 
 
 if __name__ == "__main__":

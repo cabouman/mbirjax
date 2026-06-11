@@ -94,6 +94,16 @@ class ParallelBeamModel(TomographyModel):
         always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
         return True
 
+    def _sino_row_padding(self):
+        """Parallel beam ties detector row r to recon slice r (the kernels mix channels,
+        never rows; recon_shape[2] == sinogram_shape[1] is enforced in
+        verify_valid_params), so when the recon slice axis is padded for sharding the
+        sinogram's row axis must present the SAME padded length: the entry placement
+        zero-fills the row tail, keeping it exactly inert.  No padding -> None."""
+        if self.is_sharded and self.recon_placement.is_padded:
+            return 1, self.recon_placement.real_size, self.recon_placement.padded_size
+        return None
+
     def verify_valid_params(self):
         """
         Check that all parameters are compatible for a reconstruction.

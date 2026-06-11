@@ -164,54 +164,66 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertEqual(model.mesh.devices.size, 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
-    def test_divisibility_warns_then_shard_raises(self):
-        """A device count that doesn't divide the sharded RECON axis WARNS at configure time and
-        RAISES clearly at the actual sharding op.  Deferred (not eager) so selection is
-        order-independent -- a shape fixed up before the recon still works (see
-        test_divisibility_resolved_by_shape_change).  The VIEW axis no longer warns or raises: a
-        non-dividing view count is zero-padded instead (num_views=8 over 3 devices pads to 9).
-        num_slices=4 is not divisible by 3 devices, so the recon side still warns + raises.
+    def test_non_dividing_axes_pad_instead_of_raising(self):
+        """Neither sharded axis constrains the device count anymore (P5 Step 4 Stage 2):
+        a non-dividing view count AND a non-dividing slice count are zero-padded to the
+        device form, with the tails exactly zero.  num_views=8 over 3 devices pads to 9;
+        num_slices=4 over 3 devices pads to 6 (an explicitly configured count may even
+        leave the last shard fully padded -- correct, just wasteful; AUTO skips those).
+        For parallel beam the detector rows pad with the slices (row r <-> slice r), so
+        the sino device form is (9, 6, channels).
         """
         devs = preferred_devices(3)
         if devs is None:
             self.skipTest("need >= 3 devices")
         model = self._make_model()
         num_slices = model.get_params('recon_shape')[2]
-        self.assertNotEqual(num_slices % 3, 0)   # the warning below comes from the recon axis
-        with self.assertWarns(UserWarning):
-            model.configure_sharding(devs)
-        # The view axis PADS instead of raising: 8 views -> 9 (3 per device), zero tail.
+        num_rows = model.get_params('sinogram_shape')[1]
+        self.assertNotEqual(num_slices % 3, 0)
+        model.configure_sharding(devs)   # no warning, no raise: padding handles both axes
+        # Views pad 8 -> 9 and rows pad with the slices; all padded entries exactly zero.
         sino = np.ones(model.get_params('sinogram_shape'), dtype=np.float32)
         sharded = model._shard_sinogram(sino)
-        self.assertEqual(sharded.shape[0], 9)
-        # The recon (slice) axis still raises clearly at the shard op.
+        self.assertEqual(sharded.shape, (9, 6, sino.shape[2]))
+        sharded_np = np.asarray(sharded)
+        np.testing.assert_array_equal(sharded_np[8:], 0.0)
+        np.testing.assert_array_equal(sharded_np[:, num_rows:, :], 0.0)
+        np.testing.assert_array_equal(np.asarray(model._gather_sinogram(sharded)), sino)
+        # Slices pad 4 -> 6 with a zero tail, and the exit gather crops back.
         rows, cols, _ = model.get_params('recon_shape')
-        with self.assertRaises(ValueError) as ctx:
-            model._shard_recon(np.zeros((rows * cols, num_slices), dtype=np.float32))
-        msg = str(ctx.exception)
-        self.assertIn("divisible", msg)
-        self.assertIn("reconstruction", msg)
+        flat = np.ones((rows * cols, num_slices), dtype=np.float32)
+        sharded_recon = model._shard_recon(flat)
+        self.assertEqual(sharded_recon.shape, (rows * cols, 6))
+        np.testing.assert_array_equal(np.asarray(sharded_recon)[:, num_slices:], 0.0)
+        np.testing.assert_array_equal(np.asarray(model._gather_recon(sharded_recon)), flat)
 
-    def test_divisibility_resolved_by_shape_change(self):
-        """Order-independence: selecting devices that don't divide the CURRENT recon, then changing
-        recon_shape to a compatible one, yields a working shard.  configure_sharding only warns (does
-        not block), and the hard check is at the sharding op, so the later fix rescues it.
+    def test_shape_change_rederives_padding(self):
+        """Order-independence under padding: a user-selected device count is kept across
+        shape changes, and the pad metadata is re-derived from the new shapes on every
+        recompile -- a non-dividing slice count pads, a dividing one carries no padding.
+        Also: a STALE device-form array from the previous (padded) layout is rejected
+        with a clear error once the new layout no longer pads, even though its size
+        happens to divide the device count (the silent-wrong-results corner from
+        Stage 1, closed by the entry shape check).
         """
         devs = preferred_devices(2)
         if devs is None:
             self.skipTest("need >= 2 devices")
         model = self._make_model()                          # num_views = 8 (divisible by 2)
         rows, cols, _ = model.get_params('recon_shape')
-        model.set_params(recon_shape=(rows, cols, 5))        # 5 slices: NOT divisible by 2
-        with self.assertWarns(UserWarning):
-            model.configure_sharding(devs)
-        with self.assertRaises(ValueError):
-            model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
-        # Fix the slice count; the same user-selected devices now shard cleanly.
+        model.set_params(recon_shape=(rows, cols, 5))        # 5 slices over 2 devices: pads to 6
+        model.configure_sharding(devs)
+        out = model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
+        self.assertEqual(out.shape, (rows * cols, 6))
+        stale_device_form = np.zeros((rows * cols, 6), dtype=np.float32)
+        # Change to a dividing slice count: same devices, no padding, real shapes only.
         model.set_params(recon_shape=(rows, cols, 4))
-        out = model._shard_recon(np.zeros((rows * cols, 4), dtype=np.float32))
         self.assertEqual(len(model.shard_devices), 2)
+        out = model._shard_recon(np.zeros((rows * cols, 4), dtype=np.float32))
         self.assertEqual(out.shape, (rows * cols, 4))
+        # The stale 6-slice device form (6 divides 2!) must NOT shard silently.
+        with self.assertRaises(ValueError):
+            model._shard_recon(stale_device_form)
 
 
 if __name__ == "__main__":

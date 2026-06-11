@@ -195,27 +195,48 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model.recon_placement.devices, [model.main_device])
         self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
 
-    def test_auto_device_count_picks_largest_dividing(self):
-        # Auto multi-GPU selection: _auto_device_count(k) is the largest n <= k that divides the
-        # sharded RECON axis (num_slices).  The view axis does NOT constrain it -- a non-dividing
-        # view axis is zero-padded (inert), so any n works there.  CPU-testable (pure arithmetic),
-        # so it covers the GPU-only auto-sharding selection without needing real GPUs.
+    def test_auto_device_count_uses_all_devices(self):
+        # Auto selection (P5 Step 4 Stage 2): _auto_device_count(k) uses ALL k available
+        # devices -- neither sharded axis constrains the count (non-dividing view/slice
+        # counts are zero-padded, exactly inert) -- EXCEPT a count whose last shard would
+        # be entirely padding (a wasted device), which falls to the next smaller count.
+        # CPU-testable (pure arithmetic), so it covers the auto-sharding selection
+        # without needing real GPUs.
         model = _make_model()
         num_slices = int(model.get_params('recon_shape')[2])
-        for k in (1, 2, 3, 4, 8):
-            expected = max((n for n in range(1, k + 1) if num_slices % n == 0), default=1)
-            self.assertEqual(model._auto_device_count(k), expected)
+
+        def expected(k):
+            for n in range(k, 0, -1):
+                shard = -(-num_slices // n)
+                if num_slices > (n - 1) * shard:   # last shard holds >= 1 real slice
+                    return n
+            return 1
+
+        for k in (1, 2, 3, 4, 5, 8, 16, 20):
+            self.assertEqual(model._auto_device_count(k), expected(k))
+        # num_slices is the max useful count (one real slice per shard); beyond it the
+        # extra shards would be fully padded, so auto caps there.
+        self.assertEqual(model._auto_device_count(num_slices), num_slices)
+        self.assertEqual(model._auto_device_count(2 * num_slices), num_slices)
         self.assertEqual(model._auto_device_count(0), 1)   # no devices -> 1
-        # The view axis does not constrain the count: a prime view count changes nothing.
-        rows, cols, _ = model.get_params('recon_shape')
+        # A prime view count changes nothing (views never constrain): the count matches
+        # the same slice-count formula regardless of num_views.
         prime_views_model = mbirjax.ParallelBeamModel(
             (7, model.get_params('sinogram_shape')[1], model.get_params('sinogram_shape')[2]),
             np.linspace(0, np.pi, 7, endpoint=False))
         prime_views_model.configure_devices(1)
-        n_slices_p = int(prime_views_model.get_params('recon_shape')[2])
-        for k in (2, 4):
-            expected = max((n for n in range(1, k + 1) if n_slices_p % n == 0), default=1)
-            self.assertEqual(prime_views_model._auto_device_count(k), expected)
+        self.assertEqual(int(prime_views_model.get_params('recon_shape')[2]), num_slices)
+        for k in (2, 3, 4):
+            self.assertEqual(prime_views_model._auto_device_count(k), expected(k))
+        # Fully-padded-shard guard: 5 slices on 4 devices would shard as ceil(5/4)=2 with
+        # the last shard all padding -> falls to 3 (shards of 2: 2+2+1 real).
+        rows, cols, _ = model.get_params('recon_shape')
+        model5 = mbirjax.ParallelBeamModel(
+            (8, 5, model.get_params('sinogram_shape')[2]),
+            np.linspace(0, np.pi, 8, endpoint=False))
+        model5.configure_devices(1)
+        self.assertEqual(int(model5.get_params('recon_shape')[2]), 5)
+        self.assertEqual(model5._auto_device_count(4), 3)
 
     def test_auto_shards_cpu_by_default(self):
         # AUTOMATIC selection shards across CPU devices BY DEFAULT (_auto_shard_cpu=True,

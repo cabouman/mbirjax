@@ -465,6 +465,11 @@ match-input tests; amend O2/F2 here and in §Decisions.
 is enforced at parallel_beam ~124, and the slice↔row map is index-identity, so padding both ends
 by the same count is exact — no center arithmetic on that axis):**
 
+**STATUS: ✅ IMPLEMENTED 2026-06-11b per the amended design below — CPU-green (see the status
+handoff for the landing details + the one pulled-forward item: `compute_hessian_diagonal` got
+`output_sharded` NOW, not at P6, because the padded device shape would otherwise leak from a
+user-facing default).  GPU validation pending.**
+
 *AMENDED 2026-06-11b (kernel proposal reviewed with Greg; designed cone-ready, not parallel-only):*
 - **qGGMRF kernel = interface delta-mask** (the careful piece, approved).  In
   `qggmrf_grad_and_hessian_per_cylinder`, `delta[j]` (length L+1) is the difference across the
@@ -522,8 +527,10 @@ by the same count is exact — no center arithmetic on that axis):**
 **GPU items (Greg, cluster):** partial-shard assembly over the d2d path; perf sanity that padding
 + mask are in the noise; host-RSS check that `prepare_sino_for_devices` makes no host copy.
 
-**Notes:** `compute_hessian_diagonal`'s legacy `output_device` kwarg is reconciled with
-`output_sharded` at P6, not now; ~~`prox_map` stays main_device-pinned~~ **prox_map is
+**Notes:** ~~`compute_hessian_diagonal`'s legacy `output_device` kwarg is reconciled with
+`output_sharded` at P6, not now~~ **superseded 2026-06-11b: it got `output_sharded` with Stage 2**
+(the padded device shape would have leaked from its user-facing default; `output_device` is kept,
+applying to the gathered/legacy output, and fully retires at P6); ~~`prox_map` stays main_device-pinned~~ **prox_map is
 placement-correct as of 2026-06-11b** (prox_input routes through the recon entry placement and the
 prox branch uses the replicated recon_indices — the prox prior is pointwise, so no halos; found by
 a GPU failure under default auto-sharding); cone/translation/multiaxis pick all of this up

@@ -19,16 +19,54 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-11b) — Stage 2 design REVIEWED+AMENDED (cone-ready); prox sharded-fix landed; `_auto_shard_cpu=True` default (measured); configure_sharding geometry guard; NEXT = Stage 2 implementation (kernel first)
+## HANDOFF (2026-06-11b) — P5 Step 4 Stage 2 IMPLEMENTED (CPU-green): slice padding + qGGMRF interface mask + projector postcondition masks; prox sharded-fix; `_auto_shard_cpu=True` default (measured); NEXT = GPU validation, then P6
 
-▶ **CURRENT FOCUS (next session): IMPLEMENT P5 Step 4 Stage 2** per the amended design in
-**v2 §P5 Step 4 Stage 2 (the "AMENDED 2026-06-11b" block — read it first; it supersedes this
-summary)**: (1) qGGMRF **interface delta-mask** kernel + unit test FIRST, then (2) the
-**back-projector output mask** `_mask_padded_slices` (mirror of `_mask_padded_views`; the VCD loop
-needs NO edits), (3) two-axis entry/exit (rows pad with slices; crops; the Q4 entry shape
-tightening), (4) real-count normalizations × rows + `_sino_ones_device_form` rows, (5) auto = all
-devices with the fully-padded-shard guard, (6) move `_extract_halos`/`_stage_halos`/
-`_qggmrf_prior_sharded` → `qggmrf.py` (explicit-args signatures).  Land CPU-green for review.
+▶ **CURRENT FOCUS (next session): GPU validation of Stage 2 + Stages 0–1 (the GPU items below),
+then P6** (geometry port + deletion cascade; design anchors recorded in the (g0,L) design note).
+P5 is now COMPLETE pending GPU validation.
+
+### Stage 2 IMPLEMENTED this session (per the v2 "AMENDED 2026-06-11b" block; all CPU-green)
+- **qGGMRF interface delta-mask** (`qggmrf.py`): optional `interface_mask` on
+  `qggmrf_grad_and_hessian_per_cylinder` / `..._at_indices` — multiplies the L+1 inter-slice
+  deltas; predicate `(g0 + j < S_real)` per shard; reflected BC relocated to the mid-shard
+  boundary; real slices BIT-EXACT (tested), padded gradient exactly 0, padded Hessian positive
+  (no 0/0, no `where` anywhere).  Masks built per layout and CACHED
+  (`_qggmrf_interface_masks`, invalidated in `_set_placements`) — never a per-subset device_put.
+- **Projector postconditions**: `_mask_padded_slices` on the sharded back-projector output
+  (post-assembly per slice-owner — the exact mirror of `_mask_padded_views`); forward assembles
+  rows = input slice count (device form).  The VCD loop needed NO edits — forward_grad, Hessian
+  diagonal, and the direct/fbp init are all back-projections.
+- **Two-axis entry/exit**: `_pad_shard_on_axis` gained `row_pad` (rows zero-fill per shard,
+  on-device, no padded host copy); `_sino_row_padding()` geometry hook (base None;
+  **ParallelBeamModel** pads rows with slices); `_shard_recon` pad-aware; `_gather_recon` /
+  `_gather_sinogram` crop slices/rows; `prepare_sino_for_devices` is two-axis via the same entry.
+  **Q4 entry tightening**: non-padded entries validate exact axis size with an error naming
+  `prepare_sino_for_devices` (closes the stale-prepared silent-shard corner — tested).
+- **Device-form shape audit**: every `num_recon_slices` read in device-shape context now derives
+  from the ARRAY (`get_voxels_at_indices`, vcd reshapes, `_assemble_recon_volume_sharded`,
+  hessian reshape, prior assemble); `_recon_device_shape()` helper; init_recon/prox_input shape
+  checks accept real OR device form; recon()/prox_map exits gather+crop via `_gather_recon`.
+  **`compute_hessian_diagonal` got `output_sharded` NOW** (pulled forward from P6): its sharded
+  default would otherwise LEAK a padded shape; vcd passes True, public default crops.
+- **Normalizations**: `pad_active` covers row padding; pm_loss/total_loss use the cropped real
+  volume + real sizes; `_sino_ones_device_form` zeros padded rows; auto-reg subsample crops rows.
+- **Auto = all devices** + fully-padded-shard guard (skip N whose last shard is all padding —
+  one-line rule, ceil-division); slices warn-then-raise RETIRED (`_divisibility_warning` deleted);
+  `_device_report` adds "slices padded S→S_pad" + reworded why-N note.
+- **Module move (Greg)**: `extract_halos` / `stage_halos` / `qggmrf_gradient_and_hessian_sharded`
+  now live in `qggmrf.py` as explicit-args, model-free functions (qggmrf ← `_sharding`, no cycle);
+  the model keeps 3 thin wrappers supplying placement state.
+- **Tests** (`tests/sharding/`, 103/2 green @ 4 virtual CPUs): `TestQggmrfInterfaceMask` (3:
+  bit-exact truncated-vs-masked cylinder, two-shard halo+mask vs unpadded reference, all-ones
+  identity); `TestPaddedSlices` (4: projectors+hessian / fbp_recon / VCD const+weighted at 1e-4
+  vs single device with prime slices=7 — exact halo path, the halo-once ~2e-3 approximation is
+  tested separately and nearly bit me; exact-zero invariant on device-form back-projection AND
+  full recon); primitives' two divisibility tests REWRITTEN to pad-instead-of-raise +
+  stale-device-form rejection; hooks auto-count test rewritten to the all-devices rule.
+- **Carry/notes**: explicitly-configured counts MAY create a fully padded shard (correct, wasteful
+  — only AUTO skips them); choose-N-vs-communication policy discussion → P6.
+
+### Stage 2 design decisions (reviewed with Greg this session; full detail in the v2 block)
 
 ### Stage 2 design decisions (reviewed with Greg this session; full detail in the v2 block)
 - **Delta-mask = reflected BC relocated**: reflected BC is already implemented as `delta=0` at an
@@ -92,8 +130,12 @@ devices with the fully-padded-shard guard, (6) move `_extract_halos`/`_stage_hal
 - Stages 0–1 items (unchanged): partial-shard d2d assembly; perf sanity (masks+padding in noise);
   host-RSS no-copy check for prepare_sino_for_devices; padded multi-GPU recon vs single-GPU
   baseline.
-- NEW: full test suite on a multi-GPU box (test_prox + test_view_batching fixes; flush anything
-  else the GPU default exposes).
+- Full test suite on a multi-GPU box (test_prox + test_view_batching fixes; flush anything
+  else the GPU default exposes).  [In progress per Greg 2026-06-11.]
+- NEW (Stage 2): a real recon with a NON-dividing slice count on multi-GPU vs the single-GPU
+  baseline (e.g. 1023 or 1009 slices on 4/8 GPUs — exercises slice+row padding, the interface
+  mask, and the d2d band path with a padded last shard); perf sanity that the slice/row padding
+  is in the noise; `device_summary` shows "slices padded S→S_pad".
 
 ---
 
