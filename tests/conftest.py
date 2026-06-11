@@ -43,7 +43,11 @@ way.
 import os
 import sys
 
-# Keep in sync with mbirjax/_device_setup.py DEFAULT_MAX_CPU_DEVICES.
+# Deliberately HIGHER than mbirjax/_device_setup.py's DEFAULT_MAX_CPU_DEVICES (2):
+# the library default is a conservative performance cap for users, while the test
+# suite wants enough virtual devices (8) to exercise multi-device sharding layouts
+# (2/4/8-device sweeps) on CPU.  The resolution policy below otherwise mirrors
+# mbirjax._device_setup.
 DEFAULT_MAX_CPU_DEVICES = 8
 
 

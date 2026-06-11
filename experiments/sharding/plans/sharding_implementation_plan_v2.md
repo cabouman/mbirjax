@@ -464,30 +464,73 @@ match-input tests; amend O2/F2 here and in §Decisions.
 **Stage 2 — slices (ParallelBeam: slices + det rows pad TOGETHER — the kernel-shape tie; equality
 is enforced at parallel_beam ~124, and the slice↔row map is index-identity, so padding both ends
 by the same count is exact — no center arithmetic on that axis):**
-- Forced-zero padded slices: zero the init's padded slices; slice mask on the VCD update in
-  `update_recon` (broadcast multiply); `jnp.where`-guarded division (padded slices have zero
-  forward AND zero prior Hessian).
-- Padded rows zero-data / zero-weight from the entry streaming.  Real slices' footprint bleed into
-  padded rows is influence-free (w=0), and the measured data never had those rows — the real-slice
-  subproblem is EXACTLY the unpadded one (survives `delta_voxel != delta_pixel`).
-- **qGGMRF slice mask** — the careful piece: zero the coupling across the real/padded boundary and
-  reproduce reflected BC at the last real slice; formulated like the existing `left_halo`/
-  `right_halo` deltas but as a MID-SHARD mask (the boundary sits inside the last shard).
-  Kernel-level proposal to review with Greg before implementation.
-- Auto ignores slices too → auto = all available devices; the "why N" report note retires for
-  ParallelBeam.
-- Tests: N-independence (padded ≡ unpadded recon, allclose); prior boundary test (reflected BC at
-  the last real slice; padded slices stay exactly zero); guarded-division NaN check.
+
+*AMENDED 2026-06-11b (kernel proposal reviewed with Greg; designed cone-ready, not parallel-only):*
+- **qGGMRF kernel = interface delta-mask** (the careful piece, approved).  In
+  `qggmrf_grad_and_hessian_per_cylinder`, `delta[j]` (length L+1) is the difference across the
+  interface between global slices (g0+j−1, g0+j); reflected BC is *already implemented as*
+  `delta = 0` at an edge interface, so a multiplicative mask **is** reflected BC relocated to an
+  arbitrary interface: `interface_mask[j] = (g0 + j < S_real)` (valid iff the interface's RIGHT
+  slice is real — the one predicate again).  Real-slice outputs are bit-exact vs the unpadded
+  cylinder (same values, same op order); handles mid-shard, shard-aligned, and fully-padded-shard
+  cases with no special cases; composes with the halos (which stay).  New optional
+  `interface_mask=None` arg threaded through `qggmrf_gradient_and_hessian_at_indices`
+  (vmap in_axes None — one (L+1,) mask shared per shard); masks built from
+  `padded_shard_ranges()` and CACHED per recompile (per the staged-halos lesson, never a
+  per-subset device_put).  When padded, every shard gets a mask (all-ones for fully-real shards,
+  uniform traces); unpadded → None everywhere (common case zero-cost).
+- **Prior Hessian at padded slices stays POSITIVE** (deliberate refinement of the earlier
+  "zero prior Hessian + where-guard" wording): masked deltas contribute `b_tilde(0)` to the
+  Hessian and 0 to the gradient, so the VCD denominator at a padded slice is `0 + positive` and
+  `delta = −0/positive = −0.0` **exactly, by construction** — no 0/0 is ever manufactured, hence
+  **no `jnp.where` guard, no division mask, no update_recon mask, no init-zeroing site** (Greg:
+  `where` is slow on large arrays; here nothing is needed at all).
+- **Inertness is a projector POSTCONDITION** (Greg's reframe): `_mask_padded_slices` on the
+  sharded **back-projector output**, post-assembly per slice-owner — the exact mirror of Stage 1's
+  `_mask_padded_views` on the forward output.  Each sharded projector guarantees its own output is
+  inert in the padded region; `forward_grad`, `compute_hessian_diagonal`, and the direct/fbp init
+  are all back-projections, so **the VCD loop needs no edits**.  Under parallel beam the
+  slice↔row identity makes this defense (padded rows/slices are structurally zero); under cone
+  (P6) it is LOAD-BEARING — back projection bleeds real rows into padded slices, and this one
+  site is what zeroes them.  No forward-input mask: recon padded slices stay exactly zero by
+  induction (entry zero-fill + masked back projections + kernel-masked prior ⇒ updates add
+  exactly ±0.0, no drift mechanism); enforced by an exact-zero invariant test, not a hot-path op.
+- Padded rows zero-data / zero-weight from the entry streaming (two-axis `prepare_sino_for_devices`;
+  rows pad to match S_pad for kernel-shape compatibility, NOT for divisibility — the row axis is
+  unsharded).  Real slices' footprint bleed into padded rows is influence-free (w=0), and the
+  measured data never had those rows — the real-slice subproblem is EXACTLY the unpadded one
+  (survives `delta_voxel != delta_pixel`).  `_sino_ones_device_form` predicate extends to rows;
+  real-count normalizations extend from V_real·R·C to V_real·R_real·C.
+- **Entry shape tightening (Stage-1 carry, folded in):** entry requires input shape == params real
+  shape OR == the placement's padded device shape, with an error naming
+  `prepare_sino_for_devices` — closes the silent-wrong-results corner where a stale prepared
+  array happens to divide a new device count.
+- **Module move:** `_extract_halos` / `_stage_halos` / `_qggmrf_prior_sharded` move to
+  `qggmrf.py` as module functions with EXPLICIT arguments (placement, shard axis, staged halos,
+  interface masks — no model state); thin model wrappers remain.  Import direction is clean
+  (qggmrf ← _sharding; no cycle).
+- Auto ignores slices too → auto = all available devices, EXCEPT skip any N whose last shard
+  would be entirely padded (fall to the next smaller N); the "why N" report note retires for
+  ParallelBeam; report adds "slices padded S→S_pad".  (The broader choose-N-vs-communication
+  policy discussion belongs to P6.)
+- Tests: kernel unit (masked kernel on padded cylinder vs unmasked on truncated real cylinder —
+  real slices bit-exact on CPU, padded grad exactly 0, padded Hessian finite-positive);
+  N-independence (prime num_slices recon at 2/3/4 dev vs single device, 1e-4); exact-zero
+  invariant (padded recon slices == 0.0 after a full VCD recon); no-NaN check; padded-recon ==
+  unpadded-recon (the reflected-BC check).
 
 **GPU items (Greg, cluster):** partial-shard assembly over the d2d path; perf sanity that padding
 + mask are in the noise; host-RSS check that `prepare_sino_for_devices` makes no host copy.
 
 **Notes:** `compute_hessian_diagonal`'s legacy `output_device` kwarg is reconciled with
-`output_sharded` at P6, not now; `prox_map` stays main_device-pinned (placement-awareness is P6
-scope) but gets the kwarg for signature uniformity; cone/translation/multiaxis pick all of this up
+`output_sharded` at P6, not now; ~~`prox_map` stays main_device-pinned~~ **prox_map is
+placement-correct as of 2026-06-11b** (prox_input routes through the recon entry placement and the
+prox branch uses the replicated recon_indices — the prox prior is pointwise, so no halos; found by
+a GPU failure under default auto-sharding); cone/translation/multiaxis pick all of this up
 at the P6 port — cone pads slices WITHOUT row padding (its rows aren't tied to slices, and under
 forward-accumulation zero padded slices are inert for free) and chooses there between
-inert-padding and enlarge-the-volume semantics for the padded slices.
+inert-padding and enlarge-the-volume semantics for the padded slices (the Stage-2 design above is
+already cone-ready: the back-projector output mask is the load-bearing site under cone).
 
 ### P6 — Port + retire
 - Port the sinogram transpose pattern from `back_project_one_view_to_pixel_batch` 
@@ -767,15 +810,18 @@ where the comparison is near zero, so the gate is reproducible.  Low priority, h
 
 ### CPU-cluster auto-sharding — investigate performance + virtual-vs-real-CPU policy (standalone)
 
-Automatic sharding is **GPU-only by default**: a normal CPU host exposes one jax device, a
-multi-CPU-device setup is usually a virtual/test artifact (`XLA_FLAGS`
-`--xla_force_host_platform_device_count`), and virtual-CPU sharding is bandwidth-bound — so a bare
-model stays single-device on CPU.  An opt-in flag, **`self._auto_shard_cpu`** (default `False`,
-2026-06-09), lets automatic selection shard across CPU devices too (the auto block treats `cpus` as
-the pick-N pool when it is set); `configure_devices(n)` / `configure_sharding(cpu_devices)` already
-do explicit CPU sharding without it.  The flag exists for (a) CI coverage of the auto end-to-end
-path on CPU (`test_auto_shards_cpu_when_enabled`) and (b) future use on real multi-core / CPU-cluster
-hosts.
+**UPDATE 2026-06-11b: `self._auto_shard_cpu` defaults to `True`** — automatic selection now shards
+across CPU devices exactly like GPUs (platform-uniform auto policy; a platform-dependent policy is
+how "sharded + X" gaps stayed invisible to the CPU suite — the prox bug was exactly that).  The
+library's `_device_setup` cap (2 virtual CPU devices) is the conservative perf knob; measured
+(M3 Max, 2 devices, 8-iter VCD): 1.30× at 256³ (and better at larger sizes), 0.83× at 128³, 0.64×
+at 64³ — a real win where time matters, a few absolute seconds where it does not, and LOWER peak
+RSS sharded at small sizes.  Suite cost: the legacy test suite (8 virtual devices from
+tests/conftest.py) went 154 s → 290 s (~1.9×, tiny overhead-bound problems) — accepted for the
+coverage.  Set the flag `False` to opt out (`test_auto_shards_cpu_by_default` covers default and
+opt-out).
+
+Remaining (the original second half):
 
 **To investigate:** measure sharded-recon performance on a real CPU cluster (true cores / sockets,
 not virtual devices) — does multi-CPU-device sharding actually speed up the VCD recon (the embarrassingly

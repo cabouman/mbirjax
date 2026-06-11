@@ -19,6 +19,73 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-11b) — Stage 2 design REVIEWED+AMENDED (cone-ready); prox sharded-fix landed; `_auto_shard_cpu=True` default (measured); configure_sharding geometry guard; NEXT = Stage 2 implementation (kernel first)
+
+▶ **CURRENT FOCUS (next session): IMPLEMENT P5 Step 4 Stage 2** per the amended design in
+**v2 §P5 Step 4 Stage 2 (the "AMENDED 2026-06-11b" block — read it first; it supersedes this
+summary)**: (1) qGGMRF **interface delta-mask** kernel + unit test FIRST, then (2) the
+**back-projector output mask** `_mask_padded_slices` (mirror of `_mask_padded_views`; the VCD loop
+needs NO edits), (3) two-axis entry/exit (rows pad with slices; crops; the Q4 entry shape
+tightening), (4) real-count normalizations × rows + `_sino_ones_device_form` rows, (5) auto = all
+devices with the fully-padded-shard guard, (6) move `_extract_halos`/`_stage_halos`/
+`_qggmrf_prior_sharded` → `qggmrf.py` (explicit-args signatures).  Land CPU-green for review.
+
+### Stage 2 design decisions (reviewed with Greg this session; full detail in the v2 block)
+- **Delta-mask = reflected BC relocated**: reflected BC is already implemented as `delta=0` at an
+  edge interface, so masking `delta[j]` by `(g0 + j < S_real)` IS the boundary condition at an
+  arbitrary (mid-shard) interface — real slices bit-exact, halos unchanged, no special cases.
+- **Prior Hessian at padded slices stays POSITIVE** (b_tilde(0) terms) ⇒ padded VCD delta is
+  `−0/positive = −0.0` exactly **by construction**: NO `jnp.where` guard (Greg: where is slow),
+  no division/update/init mask sites at all.
+- **Inertness = projector postcondition** (Greg's reframe): the back-projector output mask covers
+  forward_grad / Hessian diagonal / direct+fbp init in one site; parallel = defense (slice↔row
+  identity), cone = load-bearing at P6 (back-projection bleeds into padded slices).  Forward-input
+  enforcement is an exact-zero TEST, not a hot-path op.
+
+### Landed this session (staged; Greg commits from PyCharm; suites green)
+- **prox_map sharded fix** (GPU failure Greg reported: slice-sharded flat_recon × single-device
+  prox_input): prox_input now routes through `to_recon` (entry placement), the prox branch uses
+  the mesh-replicated `recon_indices`, `prox_map`'s redundant early `device_put` removed (+
+  do_initialization docstring corrected).  The prox prior is pointwise ⇒ prox_map is now
+  placement-CORRECT, not just unblocked.  New pinned `TestShardedProx` (explicit
+  configure_sharding, deterministic regardless of auto policy).  **GPU item: re-run test_prox on
+  the cluster.**
+- **`_auto_shard_cpu = True` by default** (Greg's call; platform-UNIFORM auto policy — the prox
+  gap hid precisely because auto was GPU-only, so "sharded + X" was invisible on CPU).  Measured
+  basis (M3 Max, 2 virtual CPU devices = the `_device_setup` cap, 8-iter VCD via
+  `vcd_recon_scaling.py`, YAML in results/): **256³ 1.30×** (50.2→38.6 s), 128³ 0.83×, 64³ 0.64×
+  (+2.9 s absolute) — win where time matters, seconds where it doesn't; small sizes use LESS RSS
+  sharded (64³ 1.49→1.07 GB).  Suite cost: legacy suite 154→290 s (~1.9×) at conftest's 8 virtual
+  devices — accepted for coverage (option if it grates: drop conftest to 4, the CPU sweet spot).
+  `test_auto_shards_cpu_when_enabled` → `test_auto_shards_cpu_by_default` (default + opt-out);
+  conftest "keep in sync" comment fixed (8-vs-2 divergence is deliberate).
+- **The flip flushed out (and we fixed): `configure_sharding`/`configure_devices` on UNPORTED
+  geometries.**  test_view_batching: parallel failed on the designed multi-device
+  `view_indices` NotImplementedError → pinned `configure_devices(1)` in the test (view batching
+  is a single-device feature; RETIRE-AFTER settable-view-params).  That pin then broke
+  cone/translation: configure_sharding pinned a trivial MESH on geometries whose projectors can't
+  run the banded path (opaque band-shape error — the P6 accumulation issue).  Fix:
+  `configure_sharding` now **raises NotImplementedError for multi-device on a
+  non-`_supports_sharding()` geometry** (fail fast vs mid-recon shape garbage — a real user-facing
+  hole, `configure_devices` is the public surface) and **returns as a no-op for 1 device** (the
+  legacy path is already single-device).  NOTE: test_view_batching + test_prox would BOTH have
+  been failing on any multi-GPU box since the Step-3 auto-default — **worth a full cluster suite
+  run** (GPU item).
+- **Verification:** legacy suite (8 virtual dev, auto-sharded) 24 passed + 33 subtests;
+  `tests/sharding/` 96/2 @ 4 dev; 1-device legacy run also green (the wall-clock baseline).
+- **Docs/plan:** v2 §P5 Step 4 Stage 2 AMENDED block (the implementable design); §Adjacent
+  CPU-cluster task updated (default-on resolved its first half; real-cluster measurement
+  remains); prox note corrected in §P5 Step 4 Notes.
+
+### GPU items (Greg, cluster) — carried + new
+- Stages 0–1 items (unchanged): partial-shard d2d assembly; perf sanity (masks+padding in noise);
+  host-RSS no-copy check for prepare_sino_for_devices; padded multi-GPU recon vs single-GPU
+  baseline.
+- NEW: full test suite on a multi-GPU box (test_prox + test_view_batching fixes; flush anything
+  else the GPU default exposes).
+
+---
+
 ## HANDOFF (2026-06-11) — P5 Step 4 designed + Stages 0–1 LANDED (CPU-green); use_gpu instance var retired; docs corrected + multi-GPU page planned; NEXT = Stage 2 (qGGMRF boundary mask — propose before implementing)
 
 ▶ **CURRENT FOCUS (next session): P5 Step 4 Stage 2 — slice padding** (see the Stage 2 bullet in

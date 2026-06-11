@@ -217,16 +217,18 @@ class TestModelPlacements(unittest.TestCase):
             expected = max((n for n in range(1, k + 1) if n_slices_p % n == 0), default=1)
             self.assertEqual(prime_views_model._auto_device_count(k), expected)
 
-    def test_auto_shards_cpu_when_enabled(self):
-        # The _auto_shard_cpu opt-in lets AUTOMATIC selection shard across CPU devices (it is GPU-only
-        # by default).  A bare model is single-device on CPU; with the flag set it auto-shards across
-        # the CPU devices, and the sharded back projection matches the single-device reference.  Note:
-        # this builds bare models directly (not _make_model, which pins a single device).
+    def test_auto_shards_cpu_by_default(self):
+        # AUTOMATIC selection shards across CPU devices BY DEFAULT (_auto_shard_cpu=True,
+        # 2026-06-11): a bare model on a multi-CPU-device host auto-shards exactly like a
+        # multi-GPU box (platform-uniform auto policy -- a platform-dependent policy is how
+        # "sharded + X" gaps stayed invisible to the CPU suite).  Setting the flag False and
+        # re-selecting opts back out to single-device.  Note: this builds bare models directly
+        # (not _make_model, which pins a single device).
         if preferred_devices(2) is None:
             self.skipTest("need >= 2 devices")
         try:
             if len(jax.devices('gpu')) > 0:
-                self.skipTest("GPU present: auto uses GPUs; this exercises the CPU opt-in")
+                self.skipTest("GPU present: auto uses GPUs; this exercises the CPU default")
         except RuntimeError:
             pass
         angles = np.linspace(0, np.pi, 8, endpoint=False)
@@ -240,11 +242,8 @@ class TestModelPlacements(unittest.TestCase):
                                        use_ror_mask=ref_model.get_params('use_ror_mask'))
         ref = np.asarray(ref_model.sparse_back_project(sino, idx))
 
-        # Bare model: single-device on CPU by default; opt in and re-select.
+        # Bare model: auto-sharded across the CPU devices by default.
         model = mbirjax.ParallelBeamModel(idx_shape, angles)
-        self.assertEqual(len(model.shard_devices), 1)
-        model._auto_shard_cpu = True
-        model.set_devices()
         n_cpu = len(jax.devices('cpu'))
         self.assertEqual(len(model.shard_devices), model._auto_device_count(n_cpu))
         self.assertGreater(len(model.shard_devices), 1)
@@ -255,6 +254,13 @@ class TestModelPlacements(unittest.TestCase):
         np.testing.assert_allclose(
             out, ref, rtol=1e-5, atol=1e-5,
             err_msg="auto CPU-sharded back projection diverged from single device")
+
+        # Opt-out: flag False + re-select -> back to a trivial single-device layout.
+        model_out = mbirjax.ParallelBeamModel(idx_shape, angles)
+        model_out._auto_shard_cpu = False
+        model_out.set_devices()
+        self.assertEqual(len(model_out.shard_devices), 1)
+        self.assertFalse(len(model_out.shard_devices) > 1)
 
     def test_sharded_placements_over_mesh(self):
         devs = preferred_devices(2)

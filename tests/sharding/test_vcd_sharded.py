@@ -451,5 +451,55 @@ class TestShardedReconKeepsSharding(unittest.TestCase):
             self.skipTest("no usable device count > 1")
 
 
+class TestShardedProx(unittest.TestCase):
+    """prox_map under sharding.
+
+    The prox prior is pointwise (recon - prox_input at the subset pixels; no
+    inter-slice coupling, no halos), so the only sharding-sensitive pieces are
+    prox_input's placement (it must share the slice-sharded flat_recon's
+    placement for the elementwise prox gradient) and the replicated recon
+    indices for the pixel-axis gather.
+
+    Pinned regression test: this combination first failed on a multi-GPU box
+    (auto-sharding default + prox_map mixed a slice-sharded recon with a
+    single-device prox_input) because nothing on CPU exercised sharded + prox.
+    Explicit configure_sharding keeps the coverage deterministic regardless of
+    auto-sharding policy or device counts."""
+
+    MAX_ITERS = 4
+
+    def _prox(self, model, sino, prox_input, seed=0):
+        np.random.seed(seed)  # fix partitions + subset order so modes are comparable
+        recon, _ = model.prox_map(prox_input, sino, max_iterations=self.MAX_ITERS,
+                                  stop_threshold_change_pct=0.0,  # run all iters, no early stop
+                                  print_logs=False)
+        return np.asarray(recon)
+
+    def test_sharded_prox_matches_single_device(self):
+        sino = _phantom_sino(_make_model())
+        recon_shape = _make_model().get_params('recon_shape')
+        rng = np.random.default_rng(11)
+        prox_input = jnp.asarray(rng.standard_normal(recon_shape).astype(np.float32))
+
+        ref = self._prox(_make_model(), sino, prox_input)
+
+        ran_multi = False
+        for n in (2, 4, 8):
+            devs = preferred_devices(n)
+            if devs is None:
+                continue
+            model = _make_model()
+            if not _divisible(model, n):
+                continue
+            model.configure_sharding(devs)
+            out = self._prox(model, sino, prox_input)
+            # Iterative amplification of float-reduce-order differences -> modest tolerance.
+            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
+                                       err_msg=f"prox_map mismatch at n_dev={n}")
+            ran_multi = True
+        if not ran_multi:
+            self.skipTest("no usable device count > 1")
+
+
 if __name__ == "__main__":
     unittest.main()

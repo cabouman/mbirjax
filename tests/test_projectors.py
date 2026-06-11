@@ -143,6 +143,13 @@ class TestProjectors(unittest.TestCase):
         self.set_view_params(geometry_type)
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
+        # View batching (view_indices) is a single-device feature: a view SUBSET breaks the
+        # equal view-shard, so the sharded projectors deliberately raise on a multi-device
+        # mesh (its only nontrivial user, vcls, runs single-device; the settable-view-params
+        # task retires view_indices entirely).  Auto-sharding is now the default on any
+        # multi-device host, so pin one device to keep testing the feature where it lives.
+        # RETIRE-AFTER: settable view parameters (then this pin is moot).
+        ct_model.configure_devices(1)
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')

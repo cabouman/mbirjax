@@ -87,15 +87,20 @@ class TomographyModel(ParameterHandler):
         self.shard_devices = None
         self.dev2dev_safe = True   # set empirically in configure_sharding
         self._sharding_configured = False  # True only after an explicit configure_sharding()
-        # Opt-in: let AUTOMATIC selection shard across CPU devices too (off by default).  Auto
-        # sharding is GPU-only by default because a normal CPU host exposes ONE jax device -- a
-        # multi-CPU-device setup is usually a virtual/test artifact (XLA_FLAGS), and virtual-CPU
-        # sharding is bandwidth-bound.  On a real multi-core/CPU-cluster host it may pay off; set
-        # this True (then call set_devices(), or set it before the recon) to auto-shard on CPU.
-        # EXPERIMENTAL: CPU-cluster performance is not yet characterized (see the plan's adjacent
-        # task on differentiating virtual CPUs from a real CPU cluster).  Explicit CPU sharding via
-        # configure_devices(n)/configure_sharding(cpu_devices) does NOT need this flag.
-        self._auto_shard_cpu = False
+        # Let AUTOMATIC selection shard across CPU devices too (ON by default, 2026-06-11).
+        # mbirjax._device_setup exposes a conservative number of virtual CPU devices (capped at
+        # 2) on CPU-only hosts.  Measured (M3 Max, 2 devices, 8-iter VCD): 1.30x at 256^3 and
+        # better at larger sizes, vs 0.83x at 128^3 and 0.64x at 64^3 -- i.e. a real win where
+        # time matters and a few absolute seconds where it does not (small recons also use LESS
+        # peak RSS sharded).  The deciding benefit is platform-UNIFORM auto resolution: every
+        # CPU user (and the whole CPU test suite, which gets 8 virtual devices from
+        # tests/conftest.py) runs the same auto-sharded path as a multi-GPU machine -- a
+        # platform-dependent policy is how "sharded + X" gaps stay invisible to the CPU suite.
+        # Set False to keep automatic selection single-device on CPU; explicit CPU sharding via
+        # configure_devices(n)/configure_sharding(cpu_devices) never consults this flag.
+        # CPU-CLUSTER tuning (real multi-socket hosts, more than 2 devices) is still an open
+        # adjacent task (see the plan); the library's device-count cap is the conservative knob.
+        self._auto_shard_cpu = True
         # recon_placement / sino_placement describe how recon-like and sino-like
         # arrays are distributed across devices.  Each is a Placement, which owns
         # a device list, a sharded axis, AND its own 1-D mesh; _set_placements()
@@ -185,8 +190,10 @@ class TomographyModel(ParameterHandler):
         Only such geometries auto-default the single-device case to a trivial 1-device mesh
         (the always-on placement path); the rest stay on the legacy single-device path until
         their projectors are ported (P6).  Base default is False; ParallelBeamModel overrides
-        to True.  (This does not gate an explicit configure_sharding(), which a caller invokes
-        deliberately.)
+        to True.  Also gates configure_sharding()/configure_devices(): a multi-device request
+        on an unported geometry raises immediately (the sharded band pipeline would fail with
+        an opaque shape error deep in the projectors), and a single-device request is a no-op
+        (the legacy path is already single-device).
         """
         return False
 
@@ -282,6 +289,20 @@ class TomographyModel(ParameterHandler):
         n_devices = len(devices)
         if n_devices < 1:
             raise ValueError("configure_sharding requires at least one device.")
+
+        # Geometries without the placement/movement projector path (everything but
+        # ParallelBeam until the P6 port) cannot run the sharded band pipeline -- entering it
+        # fails deep in the projectors with an opaque shape error.  Fail fast on a
+        # multi-device request; a single-device request is simply the legacy behavior these
+        # geometries already have, so honor it as a no-op (they stay on the legacy
+        # single-device path, whose device choice follows the use_gpu parameter).
+        if not self._supports_sharding():
+            if n_devices > 1:
+                raise NotImplementedError(
+                    f"Multi-device sharding is not yet supported for {type(self).__name__} "
+                    f"(currently ParallelBeamModel only); requested {n_devices} devices. "
+                    f"Single-device reconstruction works as always.")
+            return
 
         # Divisibility: each array's sharded axis must be evenly divisible by the device count
         # (equal contiguous shards).  The current shapes may still change before reconstruction
@@ -897,9 +918,9 @@ class TomographyModel(ParameterHandler):
         # projector path (_supports_sharding -> ParallelBeam) run an ALWAYS-ON placement path; unless
         # the caller has already pinned a configuration with configure_sharding()/configure_devices(),
         # auto-select here.  Auto SHARDS across all GPUs (the count is capped by slice divisibility,
-        # _auto_device_count; a non-dividing VIEW count is padded) -- and across CPU devices too when
-        # the _auto_shard_cpu opt-in is set (off by default; see __init__).  One GPU / one CPU /
-        # opt-out -> a trivial 1-device mesh.  user_selected=False keeps it overridable, so a later
+        # _auto_device_count; a non-dividing VIEW count is padded) -- and across CPU devices too
+        # unless the _auto_shard_cpu default is disabled (on by default; see __init__).  One GPU /
+        # one CPU / opt-out -> a trivial 1-device mesh.  user_selected=False keeps it overridable, so a later
         # set_params re-evaluates the layout (e.g. a 'full' <-> 'none' mode flip, or a
         # sinogram_shape change that changes the divisible count).  Geometries not yet ported leave
         # self.mesh = None and fall back to trivial single-device placements in _set_placements (the
@@ -2669,9 +2690,12 @@ class TomographyModel(ParameterHandler):
                 self.logger.error(error_message)
                 raise ValueError(error_message)
 
-            with jax.default_device(self.main_device):
-                prox_input = jnp.array(prox_input.reshape((-1, num_recon_slices)))
-            prox_input = jax.device_put(prox_input, self.main_device)
+            # Flatten, then place like every other recon-domain array (slice-sharded when
+            # sharding is on, main_device otherwise).  flat_recon is slice-sharded in the
+            # sharded path and the prox gradient is an elementwise difference of the two,
+            # so committing prox_input to a single device would hand the jitted prox
+            # gradient arrays on incompatible devices.
+            prox_input = to_recon(prox_input.reshape((-1, num_recon_slices)))
 
         # Get required parameters
         verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
@@ -2918,8 +2942,11 @@ class TomographyModel(ParameterHandler):
                                                                       qggmrf_params))
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
+                # The prox prior is pointwise (no inter-slice coupling, so no halos); recon_indices
+                # (replicated on the recon mesh in the sharded path) makes the pixel-axis gather
+                # local to each slice-shard, exactly like the fm_hessian/flat_recon gathers below.
                 prior_hess = 1 / (sigma_prox ** 2)
-                prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, pixel_indices, sigma_prox)
+                prior_grad = mj.prox_gradient_at_indices(flat_recon, prox_input, recon_indices, sigma_prox)
 
             if not const_weights:
                 weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
@@ -3115,7 +3142,8 @@ class TomographyModel(ParameterHandler):
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
             init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
             do_initialization (bool, optional):  If True, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
-                Set to False if initialization has already been performed on this sinogram, and prox_input and init_recon are on main_device and sinogram and weights are on sinogram_device.
+                Set to False if initialization (partitions and regularization parameters) has already been performed
+                on this sinogram by a previous prox_map call on this model.
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
@@ -3137,9 +3165,9 @@ class TomographyModel(ParameterHandler):
         compute_prior_loss = False
         prior_loss = [0]
         if do_initialization or self.prox_data is None:
-            if isinstance(prox_input, type(jnp.zeros(1))) and list(prox_input.devices())[0] != self.main_device:
-                prox_input = jax.device_put(prox_input, self.main_device)
-
+            # (prox_input is NOT pre-placed here: vcd_recon routes it through to_recon, which
+            # slice-shards it in the sharded path; an early device_put to main_device would just
+            # commit it to one device and force an immediate reshard.)
             sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params = (
                 self.initialize_recon(sinogram, weights, init_recon, max_iterations, first_iteration,
                                       compute_prior_loss, logfile_path, print_logs))
