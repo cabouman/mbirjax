@@ -19,11 +19,7 @@ self-comparison.  The capture platform is recorded in the metadata so the beta
 driver can label a cross-platform check.  We capture on CPU prerelease because it
 is deterministic, reproducible, and available everywhere.
 
-Note: beta's single-device (no-mesh) ``direct_recon`` is NOT bit-identical to
-prerelease.  The back-projection single-device path is the verbatim prerelease
-body, but Phase F1 REWROTE the filter (the old per-view kernel -> the row-batched
-``tomography_utils.apply_row_filter``, with ``pi/num_views`` folded into the
-filter).  So this comparison is a FLOAT-NOISE gate, not a bit-exact one: expect a
+This comparison is a FLOAT-NOISE gate, not a bit-exact one: expect a
 small nonzero diff dominated by the F1 filter rewrite, propagated through back
 projection (measured ~8e-8 max_abs_diff on CPU, 0% above the 1e-4 threshold).
 The value of the baseline is to catch real divergence (and cross-platform CPU/GPU

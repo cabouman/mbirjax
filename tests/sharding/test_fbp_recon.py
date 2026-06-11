@@ -1,6 +1,6 @@
 """
 Tests for the end-to-end sharded FBP pipeline (ParallelBeamModel.fbp_recon /
-direct_recon) -- Phase F2.
+direct_recon)
 
 fbp_recon is **user-facing**: the input may be plain or sharded (a plain
 sinogram is sharded on the view axis once at entry), and the OUTPUT form is

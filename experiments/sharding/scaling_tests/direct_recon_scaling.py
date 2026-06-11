@@ -1,7 +1,7 @@
 """
 experiments/sharding/scaling_tests/direct_recon_scaling.py
 ──────────────────────────────────────────────────────────
-Scaling + correctness driver for the sharded FBP pipeline (Phase F2) under the
+Scaling + correctness driver for the sharded FBP pipeline under the
 view/slice sharding scheme.
 
 ``direct_recon`` / ``fbp_recon`` is the first usable end-to-end sharded pipeline:

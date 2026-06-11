@@ -22,8 +22,8 @@ YAML (results/vcd_mesh_attrib_<plat>_<tag>.yaml).  After all runs this prints a 
 table and writes results/vcd_mesh_sweep_summary.csv.  A config that OOMs/crashes is
 recorded as FAILED and the sweep continues.
 
-WORKFLOW: run Phase 1 first (subset sweep), read the table, set WORST_NS to the worst
-subset-count, then rerun (Phase 2/3 rows use WORST_NS).  Comment rows out to skip them.
+WORKFLOW: run subset sweep, read the table, set WORST_NS to the worst
+subset-count, then rerun.  Comment rows out to skip them.
 """
 import os
 import sys
@@ -39,7 +39,7 @@ RESULTS_DIR = os.path.join(HERE, "results")
 
 # ── Sweep configuration (edit here) ───────────────────────────────────────────
 SIZE = "504,504,504"   # applied to every config below (where 3.31x was measured)
-WORST_NS = 128         # Phase 1's worst subset-count; Phase 2/3 rows use this
+WORST_NS = 128
 
 
 def cfg(label, **kw):
