@@ -7,19 +7,16 @@ A simulated hyperspectral neutron dataset containing three materials (Ni, Cu, an
 """
 
 import os
-import shutil
 import numpy as np
 import time
 import matplotlib.pyplot as plt
 plt.style.use('tableau-colorblind10')
-from PIL import Image
+
 import jax
 import jax.numpy as jnp
 import jax.lax as lax
-from functools import partial
 
-from mbirjax.hsnt import dehydrate, rehydrate, generate_hyper_data
-from plot_utils import plot_images, plot_spectra
+from mbirjax.hsnt import generate_hyper_data
 
 
 @jax.jit
