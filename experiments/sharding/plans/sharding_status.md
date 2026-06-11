@@ -19,11 +19,47 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-11b) — P5 Step 4 Stage 2 IMPLEMENTED (CPU-green): slice padding + qGGMRF interface mask + projector postcondition masks; prox sharded-fix; `_auto_shard_cpu=True` default (measured); NEXT = GPU validation, then P6
+## HANDOFF (2026-06-11b) — P5 Step 4 Stage 2 IMPLEMENTED + **GPU-VALIDATED** (P5 COMPLETE); prox sharded-fix; `_auto_shard_cpu=True` default (measured); NEXT = settable view parameters (approved), then P6
 
-▶ **CURRENT FOCUS (next session): GPU validation of Stage 2 + Stages 0–1 (the GPU items below),
-then P6** (geometry port + deletion cascade; design anchors recorded in the (g0,L) design note).
-P5 is now COMPLETE pending GPU validation.
+▶ **CURRENT FOCUS: the settable-view-parameters adjacent task (proposal APPROVED 2026-06-11;
+in progress), then P6** (geometry port + deletion cascade; design anchors in the (g0,L) design
+note).  **P5 IS COMPLETE — Stage 2 GPU-validated (2×H100, 2026-06-11):**
+`stage2_padded_slices_gpu_validation.py` at 1024×1023×1024 (slices pad 1023→1024 on 2 GPUs):
+NRMSE vs single-GPU **2.597e-07** (below even the halo-once band — padding exactly inert at
+scale), speedup **2.18×** (matches the dividing-size 2.20× at 1008³ ⇒ padding costs nothing),
+per-device peak **26.5 GB vs 56.1 GB** single (memory shards cleanly), host max-RSS delta
+**0 MB** against a 4092 MB sinogram (no padded host copy), `device_summary` = "2 x GPU (sharded)
+(slices padded 1023->1024)".  The full GPU test suite was also GREEN (and the earlier suite-start
+E-lines are confirmed environmental: a forgotten paused run held ~40 GB on GPU 0 — the
+preallocation back-off diagnosis stands; tests/conftest.py now disables test-process
+preallocation anyway).
+
+### Settable view parameters — ✅ IMPLEMENTED (CPU-green; see v2 §Adjacent tasks STATUS block)
+Projector lift (traced runtime arg, no public signature change) + `set_view_parameters` +
+4 bit-exact/no-recompile tests + vcls conversion (1-view sibling; baseline-identical outputs,
+time in noise; BONUS: fixed vcls's cone-only hardcoded param name — it crashed on
+ParallelBeamModel before).  Suites green after the lift: sharding 103/2 @4 dev, legacy 28+33
+subtests @2-dev default.  GPU note (perf-sanity item): the angle array is now a per-call
+operand instead of a baked constant — tiny (KBs), but confirm VCD timing is unchanged on the
+cluster; if it ever shows up, per-device caching like `_qggmrf_interface_masks` is the fix.
+NEXT = P6.
+
+### (superseded by the block above) proposal notes
+- Design per v2 §Adjacent tasks + the 2026-06-11 investigation: the bake-in is ONE closure
+  (projectors.py:56-58; kernels already take single_view_params).  Thread the array as a TRACED
+  arg of the jitted wrappers (shape static ⇒ value changes never recompile); public projector
+  signatures unchanged; `set_view_parameters()` updates params (save/load) + the projectors'
+  array, validates count-change → set_params.
+- Geometry audit: parallel/cone geometry_params carry NO angle-derived quantities
+  (psf_radius/magnification are distance/voxel-derived).  Cone's `slice_range_length`: Greg —
+  it is set in `get_psf_radius()` (distance-derived, and `entries_per_cylinder_batch` is likely
+  replaced by the band size at P6) ⇒ likely NOT view-dependent; VERIFY in code, then the cone
+  set_view_parameters hook may be unnecessary (z-shifts at cone_beam.py:244/995/1042 are read
+  from params at setup time — confirm they re-read after set_view_parameters).
+- **vcls: collect a BASELINE TIMING (and output) of current view_indices-based vcls BEFORE the
+  conversion (Greg)**, then convert to a 1-view model + set_view_parameters per candidate and
+  compare apples-to-apples (same problem, same candidates).
+- view_indices itself retires at P6 (the test pin in test_projectors is tagged RETIRE-AFTER).
 
 ### Stage 2 IMPLEMENTED this session (per the v2 "AMENDED 2026-06-11b" block; all CPU-green)
 - **qGGMRF interface delta-mask** (`qggmrf.py`): optional `interface_mask` on

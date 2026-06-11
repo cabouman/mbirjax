@@ -749,6 +749,28 @@ largely **parallelizable** alongside.
 
 ### Settable view parameters — retire `view_indices` (standalone, adjacent to P6)
 
+**STATUS: ✅ IMPLEMENTED 2026-06-11b (CPU-green; bit-exact vs fresh-model gates).**
+- `view_params_array` lifted from a closure-baked constant to a TRACED leading argument of the
+  jitted projectors (`projectors.py`); public signatures unchanged via late-binding wrappers
+  reading `Projectors.view_params_array` per call.  `TomographyModel.set_view_parameters()`
+  updates the param store (save/load + later recompiles stay coherent) + the runtime array;
+  view-count change raises with a set_params pointer.
+- Risks RESOLVED: no geometry bakes view-dependent quantities (cone's `slice_range_length` is
+  distance/voxel-derived in `get_psf_radius`; helical z-shift helpers re-read params at call
+  time).  No cone-specific hook needed.
+- Tests (`tests/test_view_params.py`, 4): setter ≡ fresh model BIT-EXACT (parallel + cone
+  multi-component), no-recompile via jit cache size, count-change raises.
+- **vcls converted** to a 1-view sibling model + `set_view_parameters` per view
+  (`_make_single_view_sibling`: wholesale param-store copy + 1-view recompile;
+  `view_params_component_names` recovers per-view ctor args).  Apples-to-apples baseline
+  (`experiments/vcls_baseline_timing.py`, cone 180×64×64, seed 42): identical selected
+  indices + VCL value, time 2.14 s vs 2.12 s (noise).  BONUS: fixed vcls's hardcoded
+  `'view_params_array'` lookup — it crashed on ParallelBeamModel before (its own docstring
+  example); now geometry-general via `view_params_name` and verified on parallel beam.
+- Remaining for P6: delete `view_indices` plumbing (the multi-device NotImplementedError
+  branches, the projector view_indices args, the test_projectors pin — grep RETIRE-AFTER);
+  the per-call view-params form (documented below) stays unimplemented by choice.
+
 **Decision (2026-06-08): DO IT (option "b"), standalone for now.**  Replace the
 `view_indices` mechanism with **settable view parameters**.  The only nontrivial user of
 `view_indices` is `vcls` (per-view back projection, `view_indices=[i]` to slice the frozen

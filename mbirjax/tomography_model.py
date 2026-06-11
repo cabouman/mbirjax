@@ -2163,6 +2163,38 @@ class TomographyModel(ParameterHandler):
         out = self._gather_recon(hessian_diagonal)
         return jax.device_put(out, output_device) if output_device is not None else out
 
+    def set_view_parameters(self, view_params):
+        """
+        Replace the view-dependent parameters (angles for parallel/cone beam, translation vectors
+        for translation, etc.) used by the projectors, WITHOUT rebuilding them.
+
+        The view parameters are a runtime input to the jitted projectors (not a baked constant),
+        so this is a cheap value update: it does NOT recompile, provided the number of views is
+        unchanged (a change in view count is a geometry change -- use set_params for that).  Use
+        it to vary the acquisition geometry on the fly -- e.g. vcls iterating one view at a time,
+        or motion correction perturbing per-view angles between iterations.
+
+        Args:
+            view_params: array shaped like the model's current view-parameter array (first axis =
+                num_views); only the values may differ, not the shape.
+        """
+        view_params_name = self.get_params('view_params_name')
+        current = jnp.asarray(self.get_params(view_params_name))
+        view_params = jnp.asarray(view_params)
+        if view_params.shape != current.shape:
+            raise ValueError(
+                'set_view_parameters requires the same shape as the current view-parameter '
+                'array {} ({}); got {}.  A change in the number of views is a geometry change: '
+                'use set_params({}=...) instead.'.format(
+                    view_params_name, tuple(current.shape), tuple(view_params.shape),
+                    view_params_name))
+        # Update the stored parameter (the single source of truth for save/load and for any
+        # later recompile) WITHOUT triggering a recompile -- avoiding that is the point here.
+        self.set_params(no_compile=True, no_warning=True, **{view_params_name: view_params})
+        # And the projectors' runtime array: the jitted projectors read it per call (late
+        # binding), so the new values take effect on the next projection with no recompile.
+        self.projector_functions.view_params_array = view_params
+
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
         Update parameters using keyword arguments.
