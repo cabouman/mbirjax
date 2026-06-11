@@ -75,12 +75,18 @@ use_gpu
 """""""
 :Type: string (Defaults to 'automatic')
 
-Possible values are 'automatic', 'full', 'sinograms', 'none'.
+Possible values are 'automatic', 'full', 'none'.
 
- * 'automatic' - recommended setting in which MBIRJAX determines the appropriate use of the GPU based on the available memory;
- * 'full' - performs entire reconstruction on the GPU;
- * 'sinograms' - uses the GPU for the sinogram storage and calculations but uses CPU memory for the reconstructions;
- * 'none' - disables GPU use.
+ * 'automatic' - recommended setting: the reconstruction runs on the GPU when one is available.
+   On a machine with multiple GPUs, MBIRJAX (currently for parallel-beam geometry) automatically
+   divides the work across them, which increases the available memory and typically reduces
+   reconstruction time;
+ * 'full' - performs the entire reconstruction on the GPU;
+ * 'none' - disables GPU use and runs everything on the CPU.
+
+This parameter expresses your *request*; the devices actually chosen are reported in the log at
+the start of each reconstruction and by ``model.device_summary``.  For explicit control over
+which (and how many) devices are used, see :meth:`TomographyModel.configure_devices`.
 
 
 Geometry Parameters

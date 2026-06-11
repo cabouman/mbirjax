@@ -44,7 +44,7 @@ Q: Why is my reconstruction blurry?
 +++++++++++++++++++++++++++++++++++
 
 A:  If your reconstruction is blurry, the first thing to try is to increase the sharpness parameter.  Values of
-``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness.
+``sharpness=1.0`` or ``sharpness=1.5`` are typical, but larger values can further improve sharpness.
 You can also increase the assumed SNR by setting the parameter ``snr_db=35`` or ``snr_db=40``. This is similar to increasing sharpness but will also create higher contrast edges in the reconstruction.
 
 If the reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
@@ -61,17 +61,18 @@ So you should find a fast GPU with the largest possible memory. These days that 
 The GPU will be hosted on a CPU, and it is best if that CPU also has even a larger amount of memory, ideally greater than 200GB.
 
 Note that a 2K x 2K x 2K reconstruction occupies 32GB of memory, not counting the sinogram or memory needed for processing.
-If your reconstruction is too large for your GPU memory, MBIRJAX will use CPU memory for some processing and then transfer
-to the GPU as needed; this reduces memory use but increases reconstruction time.  If you have no GPU or your GPU memory is small relative
-to the problem size, then all processing is done on the CPU.
+If your machine has multiple GPUs, MBIRJAX (currently for parallel-beam geometry) automatically divides the
+reconstruction across them: the memory available for the problem grows roughly in proportion to the number of GPUs,
+and large reconstructions typically get faster as well.  The log line at the start of each reconstruction (or
+``model.device_summary``) reports which devices were used.  If you have no GPU, all processing is done on the CPU.
 
-If you have a parallel beam system, you can select a subset of rows of your sinogram, reconstruct them separately, and then
-concatenate them at the end.  If you have a cone beam system, you can reconstruct a subset of the central slices.  In either
-case, you can do a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can
-introduce an intensity shift and other artifacts.
+If your reconstruction is still too large, then for a parallel beam system you can select a subset of rows of your
+sinogram, reconstruct them separately, and then concatenate them at the end.  If you have a cone beam system, you can
+reconstruct a subset of the central slices.  In either case, you can do a center cropped reconstruction as in
+Demo 3: Cropped Center, although as seen in that demo, this can introduce an intensity shift and other artifacts.
 
-We continue to improve the time and memory efficiency of MBIRJAX and will investigate multi-GPU/multi-CPU solutions.
-So stay tuned for further improvements.
+We continue to improve the time and memory efficiency of MBIRJAX, including extending multi-GPU support to the
+remaining geometries.
 
 
 Q: Why does my reconstruction have artifacts?

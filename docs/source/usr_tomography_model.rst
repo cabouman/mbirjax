@@ -15,6 +15,20 @@ Constructor
    :show-inheritance:
 
 
+Device Configuration
+--------------------
+
+On a machine with multiple GPUs, reconstruction is divided across them automatically
+(currently for parallel-beam geometry) to increase the available memory and reduce
+reconstruction time; these methods give explicit control and report the outcome.
+
+.. automethod:: mbirjax.TomographyModel.configure_devices
+
+.. automethod:: mbirjax.TomographyModel.prepare_sino_for_devices
+
+.. autoproperty:: mbirjax.TomographyModel.device_summary
+
+
 Reconstruction and Projection
 -----------------------------
 

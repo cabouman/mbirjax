@@ -785,3 +785,50 @@ real CPU cluster** (e.g. NUMA / socket / true-core topology vs an `XLA_FLAGS`-fo
 so auto can shard CPU *only when it pays* — promoting `_auto_shard_cpu` from an experimental flag to a
 proper, possibly default-on, policy with a clean API (a method or a `use_gpu='automatic'`-style
 setting) rather than a raw attribute + `set_devices()` call.
+
+### Sphinx docs: multi-GPU page + alignment review (planned 2026-06-11; implement after P6)
+
+**Vocabulary rule (Greg):** use "sharding" SPARINGLY and introduce it clearly when used — many users
+do not know (or want to know) the term.  Speak in user terms: *multiple GPUs increase memory
+capacity and reduce reconstruction time*; reserve the internals vocabulary for the
+behind-the-scenes section and the developer docs.
+
+**Timing:** write the new page AFTER the P6 geometry port — today it would need a
+"parallel-beam-only" caveat in every section, which P6 deletes (writing it twice is waste).  The
+user-facing contract it documents (`output_sharded`, `configure_devices`,
+`prepare_sino_for_devices`, `device_summary`, invisible padding) is already settled, so nothing
+else churns.  The two ACTIVELY-WRONG entries were fixed immediately (2026-06-11, did not wait):
+`usr_parameters.rst` `use_gpu` (documented the removed `'sinograms'` value; now
+automatic/full/none + request-vs-outcome note + `configure_devices` pointer) and the
+`demos_and_faqs.rst` "larger reconstructions" FAQ (described the removed hybrid; now describes
+automatic multi-GPU + keeps the subset/stitching guidance + drops the stale "we will investigate
+multi-GPU" promise).
+
+**New page `usr_multi_gpu.rst` — "Multi-GPU Reconstruction"** (User Guide toctree).  Outline:
+1. *Zero-effort path:* multi-GPU machines divide the reconstruction automatically; nothing in the
+   script changes; the recon log / `model.device_summary` reports what was chosen
+   (`'4 x GPU (sharded)'`, padding and why-GPUs-idle notes).
+2. *Controlling devices:* `configure_devices(None | n | list)` (explicit, pinned) vs the
+   `use_gpu` request parameter; one sentence on the experimental CPU opt-in.
+3. *Workflow / efficiency tips:* `num_slices` divisibility decides how many GPUs automatic
+   selection uses (the view count never constrains it); choose slice counts divisible by the GPU
+   count when possible; `prepare_sino_for_devices` to pay the host->device transfer once across
+   repeated reconstructions; `output_sharded=True` for on-device chaining (with the device-form
+   padded-shape caveat).
+4. *Performance expectations:* capacity FIRST (per-GPU memory ~1/N), speed second; near-linear
+   time scaling at large sizes; a FIXED problem with more GPUs eventually degrades
+   (communication/orchestration overhead stops amortizing — measured: small-size inversions,
+   the 4-device crossover between ~504³ and 1008³); frame as rules of thumb, hardware-dependent.
+5. *Behind the scenes (high level, where "sharding" is introduced):* views distributed across
+   GPUs for the data, slices for the volume; zero-padding to equal shares, kept exactly inert
+   (results independent of GPU count); banded communication; single-process (multi-node out of
+   scope).
+
+**Alignment review (same pass):** `advanced_features.rst` gains a "Use multiple GPUs" bullet
+linking the page; `index.rst`/`overview.rst` key-features line mentions multi-GPU;
+`usr_tomography_model.rst` gains a "Device configuration" section (`automethod` entries for
+`configure_devices`, `prepare_sino_for_devices`; `autoproperty` for `device_summary`) — the
+docstrings are already current, so autodoc content is free; skim `install.rst` /
+`dev_maintenance.rst` (looked fine in the 2026-06-11 survey).  Optional follow-on: a small
+multi-GPU demo script.  If P6 renames anything user-facing, this task is the reminder to sweep
+the page.
