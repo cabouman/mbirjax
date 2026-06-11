@@ -150,7 +150,7 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertIsNotNone(model.mesh)
         self.assertEqual(model.mesh.devices.size, 1)
         self.assertTrue(model.dev2dev_safe)
-        self.assertEqual(model.use_gpu, 'sharded')
+        self.assertTrue(model.is_sharded)
 
     def test_two_device_mesh(self):
         devs = preferred_devices(2)
@@ -165,23 +165,32 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertIsInstance(model.dev2dev_safe, bool)
 
     def test_divisibility_warns_then_shard_raises(self):
-        """A device count that doesn't divide a sharded axis WARNS at configure time and RAISES
-        clearly at the actual sharding op.  Deferred (not eager) so selection is order-independent --
-        a shape fixed up before the recon still works (see test_divisibility_resolved_by_shape_change).
-        num_views=8 is not divisible by 3 devices.
+        """A device count that doesn't divide the sharded RECON axis WARNS at configure time and
+        RAISES clearly at the actual sharding op.  Deferred (not eager) so selection is
+        order-independent -- a shape fixed up before the recon still works (see
+        test_divisibility_resolved_by_shape_change).  The VIEW axis no longer warns or raises: a
+        non-dividing view count is zero-padded instead (num_views=8 over 3 devices pads to 9).
+        num_slices=4 is not divisible by 3 devices, so the recon side still warns + raises.
         """
         devs = preferred_devices(3)
         if devs is None:
             self.skipTest("need >= 3 devices")
         model = self._make_model()
+        num_slices = model.get_params('recon_shape')[2]
+        self.assertNotEqual(num_slices % 3, 0)   # the warning below comes from the recon axis
         with self.assertWarns(UserWarning):
             model.configure_sharding(devs)
-        sino = np.zeros(model.get_params('sinogram_shape'), dtype=np.float32)
+        # The view axis PADS instead of raising: 8 views -> 9 (3 per device), zero tail.
+        sino = np.ones(model.get_params('sinogram_shape'), dtype=np.float32)
+        sharded = model._shard_sinogram(sino)
+        self.assertEqual(sharded.shape[0], 9)
+        # The recon (slice) axis still raises clearly at the shard op.
+        rows, cols, _ = model.get_params('recon_shape')
         with self.assertRaises(ValueError) as ctx:
-            model._shard_sinogram(sino)
+            model._shard_recon(np.zeros((rows * cols, num_slices), dtype=np.float32))
         msg = str(ctx.exception)
         self.assertIn("divisible", msg)
-        self.assertIn("sinogram", msg)
+        self.assertIn("reconstruction", msg)
 
     def test_divisibility_resolved_by_shape_change(self):
         """Order-independence: selecting devices that don't divide the CURRENT recon, then changing

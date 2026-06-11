@@ -431,10 +431,14 @@ class ParallelBeamModel(TomographyModel):
         """
         _warn_view_batch_size_deprecated(view_batch_size)
 
-        num_views, _, num_channels = sinogram.shape
+        num_channels = sinogram.shape[2]
+        # The FBP weight is pi / (number of REAL views): read it from the params (always the
+        # problem's shapes), not from the array, whose view axis may be zero-padded for
+        # sharding -- padded views contribute nothing, so they must not be counted here.
+        num_views = self.get_params('sinogram_shape')[0]
 
         # Generate the reconstruction filter with appropriate scaling.
-        delta_voxel, voxel_row_aspect = self.get_params( ['delta_voxel', 'voxel_row_aspect'])
+        delta_voxel, voxel_row_aspect = self.get_params(['delta_voxel', 'voxel_row_aspect'])
         delta_voxel_row = voxel_row_aspect * delta_voxel
         # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
         # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at

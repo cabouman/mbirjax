@@ -35,6 +35,14 @@ class Placement:
     each device to the contiguous block (shard) of the array it owns, determined
     by a sharded axis and a device list.
 
+    The placement also answers "what is on the devices?" for its sharded axis:
+    when ``real_size`` (the problem-owned axis length, from the model params) is
+    given and does not divide the device count, the DEVICE form of the axis is
+    the next multiple of the device count (``padded_size``), with the tail
+    zero-filled and kept exactly inert by the model (entry zero-fill + masking).
+    Problem-owned shapes stay in the model params; the padded device shape lives
+    only here.
+
     Args:
         devices (sequence of jax.Device): the devices this array type lives on.
             A single device is the trivial (1-shard) placement.
@@ -43,14 +51,25 @@ class Placement:
             sharding is built).  Recon-like → the slice axis (-1); sino-like →
             the view axis (0).
         axis_name (str): the mesh axis name referenced by the PartitionSpecs.
+        real_size (int or None): the problem-owned length of the sharded axis
+            (e.g. num_views for a sino placement).  When given, ``padded_size``
+            is the device-form length (the smallest multiple of the device count
+            >= real_size); when None, padding is unknown/unsupported and only
+            the divisible case is valid.
     """
 
-    def __init__(self, devices, axis, axis_name="devices"):
+    def __init__(self, devices, axis, axis_name="devices", real_size=None):
         self.devices = list(devices)
         if len(self.devices) < 1:
             raise ValueError("Placement requires at least one device.")
         self.axis = axis
         self.axis_name = axis_name
+        self.real_size = int(real_size) if real_size is not None else None
+        if self.real_size is None:
+            self.padded_size = None
+        else:
+            n = len(self.devices)
+            self.padded_size = ((self.real_size + n - 1) // n) * n
         # 1-D mesh over these devices; a single device is a trivial 1-device mesh
         # so the single- and multi-device paths share one representation.
         self.mesh = jax.sharding.Mesh(np.array(self.devices), (axis_name,))
@@ -63,6 +82,28 @@ class Placement:
     def is_trivial(self):
         """True when this placement is a single device (1 shard)."""
         return len(self.devices) == 1
+
+    @property
+    def is_padded(self):
+        """True when the device form of the sharded axis is longer than the
+        problem's real axis (real_size does not divide the device count)."""
+        return self.padded_size is not None and self.padded_size > self.real_size
+
+    def padded_shard_ranges(self):
+        """``shard_ranges`` over the device-form (padded) axis length, plus each
+        shard's count of REAL (problem-owned) entries.
+
+        Returns:
+            list of (device, (start, end), n_valid): the half-open global block
+            each device owns on the padded axis, and how many of its entries are
+            real (the rest, ``end - start - n_valid``, are zero-filled padding at
+            the end of the axis).  Requires ``real_size`` to have been given.
+        """
+        if self.padded_size is None:
+            raise ValueError("padded_shard_ranges requires real_size to be set.")
+        ranges = self.shard_ranges(self.padded_size)
+        return [(dev, (start, end), max(0, min(end, self.real_size) - start))
+                for dev, (start, end) in ranges]
 
     def shard_ranges(self, size):
         """The half-open axis range each device owns when an axis of length

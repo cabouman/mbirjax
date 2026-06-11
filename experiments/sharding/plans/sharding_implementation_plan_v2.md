@@ -510,6 +510,13 @@ inert-padding and enlarge-the-volume semantics for the padded slices.
   vs enlarge-the-volume semantics for padded slices, and whether its validity clip goes
   global-`S_real` (in-kernel inertness) or stays band-local; reconcile
   `compute_hessian_diagonal`'s legacy `output_device` with `output_sharded`.
+- **(2026-06-11)** Delete `initialize_recon`'s early `device_put` block (the
+  `_committed_elsewhere` guard): it survives only for the unported geometries' reliance
+  on pre-committed `main_device`/`sinogram_device` arrays.  After the port, inputs stay
+  on the HOST through validation/regularization (which read them host-side anyway) and
+  are committed exactly once, at the entry placement (`_shard_sinogram`/`_shard_recon`);
+  `prepare_sino_for_devices` is the explicit early-placement opt-in.  One commitment
+  point, no double placement.
 
 **STATUS (2026-06-08): step 4 IMPLEMENTED as "2-Keep" — CPU-green, GPU re-validation pending.**
 Change 1 (note 2: fold `alpha` into the donated FMA `update_error_sinogram`, drop the

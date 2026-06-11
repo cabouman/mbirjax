@@ -71,11 +71,55 @@ the v2 plan, the (g0,L) design note, and O2/O4 were updated.  **No library code 
   NOTE for Stage 1 (found, not fixed): `initialize_recon` ~2144 device_puts the sinogram to
   `sinogram_device` when its first device differs — a SHARDED sinogram into recon() would be
   silently gathered there; the Stage-1 pad-aware entry should own that placement instead.
-- **Stage 1 — views:** pad metadata + pad-aware entry + forward mask + real-count corrections +
-  auto ignores views + the shape-source audit + tests (zero-invariant, prime-num_views vs
-  single-device 1e-4, adjoint w/ padding, streaming layout).
+- **Stage 1 — views: ✅ DONE (same session, CPU-green; suite 95/2 incl. 13 new padding tests).**
+  - **Placement owns the device form:** `Placement(real_size=...)` → `padded_size` (next multiple
+    of n_dev), `is_padded`, `padded_shard_ranges()` (per-shard global range + n_valid).
+    `_set_placements` passes real sizes from params on every recompile (pad metadata tracks shapes).
+  - **Pad-aware entry:** `_shard_sinogram` routes through `_pad_shard_on_axis` when padded —
+    per-shard `device_put` of host slices, last shard's tail zero-filled ON device (no padded host
+    copy; one shard transient).  Accepts real OR padded input; wrong size → clear error naming
+    `prepare_sino_for_devices`.  `_gather_sinogram` crops.  **`prepare_sino_for_devices(sino,
+    weights=None)`** public (returns pair when weights given; prepared input passes through
+    untouched — assertIs-tested).
+  - **The mask site:** `_mask_padded_views(owned)` in `_sparse_forward_project_sharded`,
+    post-band-assembly per view-owner (local arrays, refcount-freed, survives the P6
+    concat→accumulate change) ⇒ the zero-invariant holds (tested exactly).
+  - **Clamped params indexing:** forward `view_ranges` + back `shard_info` clamp padded global
+    indices to the last real view (indices only feed `view_params_array[view_indices]` — verified).
+  - **Real-count corrections:** fbp_filter scale reads params num_views; `get_forward_model_loss`
+    gains `num_real_elements` (sum/n path only when padded — unpadded keeps the exact old mean
+    path); es_rmse + total_loss use real size; const-weights Hessian uses `_sino_ones_device_form`
+    (ones real / zeros pad, built per-shard); `auto_set_regularization_params` crops its host
+    subsample to real views by global index (the ones_like indicator FALLBACK would otherwise
+    average padded zeros into sigma_y — found by inspection, fixed before it bit).
+  - **Validation sites:** weights checks (compute_hessian_diagonal + create_vcd_subset_updater)
+    accept params shape OR `_sino_device_shape()`; `initialize_recon` no longer device_puts
+    NamedSharding inputs (the silent-gather fix).
+  - **Auto:** `_auto_device_count` = largest n dividing num_slices ONLY; views warning retired
+    (slices still warn-then-raise); `_device_report` adds "views padded V->V_pad".
+  - Tests: `tests/sharding/test_padding.py` (13: entry layout/zero-tail/crop, prepare pair +
+    pass-through, wrong-shape error, report, forward mask invariant + crop, back/fbp/direct/
+    hessian/adjoint vs single-device, VCD prime-views const + non-const at 1e-4, prepared-input
+    recon at 1e-5); test_hooks auto-count + test_primitives divisibility updated to the new policy.
+  - **Known corners (carry):** a STALE prepared array is caught when the new config also pads
+    (clear error) but a no-longer-padding config falls to the generic `_shard_on_axis` error or a
+    silent shard if it happens to divide — entry shape-vs-params validation could tighten this
+    (Stage 2 candidate).  `initialize_recon`'s np.isfinite + auto-reg `[::step]` GATHER a host
+    copy/subsample of a prepared sino (read-only, correct; perf note for GPU-scale).  With >20
+    views and padding, auto-reg's subsample grid spans V_pad (sampled set may differ slightly from
+    the unpadded grid — heuristic, documented here).
+- **Cleanup (same session): `self.use_gpu` instance variable DELETED** (request-vs-resolution
+  split).  The `use_gpu` PARAM stays the user's request ('automatic'/'full'/'none', re-evaluated
+  every recompile — never overwritten with the outcome, which would destroy 'automatic' and
+  corrupt save/load intent); the resolved layout lives ONLY in the placements (`is_sharded`,
+  `shard_devices`, `_recon_devices`, `_sharding_configured`; human-facing = `_device_report`).
+  The instance variable's last real reader was removed at Polish 1 (platform-derived OOM
+  guidance); its remaining reads were set_devices reading its own writes (now the local
+  `on_gpu`).  Tests assert `is_sharded` instead of the string.
 - **Stage 2 — slices:** forced-zero + qGGMRF boundary mask (review first) + auto = all devices.
-- **GPU items (Greg):** partial-shard assembly over d2d; perf sanity; host-RSS no-copy check.
+- **GPU items (Greg):** partial-shard assembly over d2d (incl. the new pad-shard entry); perf
+  sanity (mask + padding in the noise); host-RSS check that prepare_sino_for_devices makes no
+  host copy; a real padded multi-GPU recon vs the single-GPU baseline.
 
 ---
 

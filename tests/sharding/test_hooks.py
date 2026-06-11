@@ -196,17 +196,26 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
 
     def test_auto_device_count_picks_largest_dividing(self):
-        # Auto multi-GPU selection: _auto_device_count(k) is the largest n <= k that divides BOTH
-        # sharded axes (i.e. divides gcd(num_views, num_slices)).  CPU-testable (pure arithmetic),
+        # Auto multi-GPU selection: _auto_device_count(k) is the largest n <= k that divides the
+        # sharded RECON axis (num_slices).  The view axis does NOT constrain it -- a non-dividing
+        # view axis is zero-padded (inert), so any n works there.  CPU-testable (pure arithmetic),
         # so it covers the GPU-only auto-sharding selection without needing real GPUs.
         model = _make_model()
-        num_views = model.get_params('sinogram_shape')[0]
-        num_slices = model.get_params('recon_shape')[2]
-        g = math.gcd(int(num_views), int(num_slices))
+        num_slices = int(model.get_params('recon_shape')[2])
         for k in (1, 2, 3, 4, 8):
-            expected = max((n for n in range(1, k + 1) if g % n == 0), default=1)
+            expected = max((n for n in range(1, k + 1) if num_slices % n == 0), default=1)
             self.assertEqual(model._auto_device_count(k), expected)
         self.assertEqual(model._auto_device_count(0), 1)   # no devices -> 1
+        # The view axis does not constrain the count: a prime view count changes nothing.
+        rows, cols, _ = model.get_params('recon_shape')
+        prime_views_model = mbirjax.ParallelBeamModel(
+            (7, model.get_params('sinogram_shape')[1], model.get_params('sinogram_shape')[2]),
+            np.linspace(0, np.pi, 7, endpoint=False))
+        prime_views_model.configure_devices(1)
+        n_slices_p = int(prime_views_model.get_params('recon_shape')[2])
+        for k in (2, 4):
+            expected = max((n for n in range(1, k + 1) if n_slices_p % n == 0), default=1)
+            self.assertEqual(prime_views_model._auto_device_count(k), expected)
 
     def test_auto_shards_cpu_when_enabled(self):
         # The _auto_shard_cpu opt-in lets AUTOMATIC selection shard across CPU devices (it is GPU-only
@@ -239,7 +248,7 @@ class TestModelPlacements(unittest.TestCase):
         n_cpu = len(jax.devices('cpu'))
         self.assertEqual(len(model.shard_devices), model._auto_device_count(n_cpu))
         self.assertGreater(len(model.shard_devices), 1)
-        self.assertEqual(model.use_gpu, 'sharded')
+        self.assertTrue(model.is_sharded)
         self.assertEqual(model._platform_label(model.shard_devices[0]), 'CPU')
 
         out = np.asarray(model.sparse_back_project(sino, idx))
@@ -293,16 +302,17 @@ class TestOomGuidance(unittest.TestCase):
             self.assertIn('CPU memory', out)
 
     def test_cpu_sharding_oom_gives_cpu_guidance(self):
-        # Bug-lock: CPU sharding sets use_gpu='sharded', but an OOM there must give CPU guidance,
-        # because on_gpu is derived from the recon device platform, not the use_gpu string.  Works on
-        # a GPU host too (configure_sharding onto CPU devices makes the recon devices CPU even though
-        # main_device stays a GPU) -- this is exactly the _recon_devices vs main_device distinction.
+        # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because on_gpu is
+        # derived from the recon device platform (_recon_devices), not the use_gpu request param.
+        # Works on a GPU host too (configure_sharding onto CPU devices makes the recon devices CPU
+        # even though main_device stays a GPU) -- exactly the _recon_devices vs main_device
+        # distinction.
         cpu_devs = jax.devices('cpu')[:2]
         if len(cpu_devs) < 2:
             self.skipTest('need >= 2 CPU devices')
         model = _make_model()
         model.configure_sharding(cpu_devs)
-        self.assertEqual(model.use_gpu, 'sharded')
+        self.assertTrue(model.is_sharded)
         out = _capture_jax_error_guidance(model, 'RESOURCE_EXHAUSTED')
         self.assertIn('CPU memory', out)
         self.assertNotIn('GPU memory', out)
