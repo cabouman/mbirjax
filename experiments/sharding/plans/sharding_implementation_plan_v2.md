@@ -758,8 +758,13 @@ largely **parallelizable** alongside.
 - Risks RESOLVED: no geometry bakes view-dependent quantities (cone's `slice_range_length` is
   distance/voxel-derived in `get_psf_radius`; helical z-shift helpers re-read params at call
   time).  No cone-specific hook needed.
-- Tests (`tests/test_view_params.py`, 4): setter ≡ fresh model BIT-EXACT (parallel + cone
-  multi-component), no-recompile via jit cache size, count-change raises.
+- Tests (`tests/test_view_params.py`, 4): setter ≡ fresh model at tight allclose (parallel +
+  cone multi-component) — **GPU CORRECTION 2026-06-11c: the original bit-exact gate failed on
+  GPU; cross-COMPILATION bit-exactness is the wrong invariant there (separate executables for
+  identical HLO differ ~1 ULP via autotuning — the same lesson as the trivial-mesh tests).**
+  The same-executable A→B→A round trip asserts exact restoration (bit-exact on CPU; tight
+  float on GPU, whose scatter-add atomics allow run-to-run noise).  Plus no-recompile via jit
+  cache size and count-change raises.
 - **vcls converted** to a 1-view sibling model + `set_view_parameters` per view
   (`_make_single_view_sibling`: wholesale param-store copy + 1-view recompile;
   `view_params_component_names` recovers per-view ctor args).  Apples-to-apples baseline

@@ -34,15 +34,26 @@ E-lines are confirmed environmental: a forgotten paused run held ~40 GB on GPU 0
 preallocation back-off diagnosis stands; tests/conftest.py now disables test-process
 preallocation anyway).
 
-### Settable view parameters — ✅ IMPLEMENTED (CPU-green; see v2 §Adjacent tasks STATUS block)
+### Settable view parameters — ✅ IMPLEMENTED (see v2 §Adjacent tasks STATUS block)
 Projector lift (traced runtime arg, no public signature change) + `set_view_parameters` +
-4 bit-exact/no-recompile tests + vcls conversion (1-view sibling; baseline-identical outputs,
-time in noise; BONUS: fixed vcls's cone-only hardcoded param name — it crashed on
-ParallelBeamModel before).  Suites green after the lift: sharding 103/2 @4 dev, legacy 28+33
-subtests @2-dev default.  GPU note (perf-sanity item): the angle array is now a per-call
-operand instead of a baked constant — tiny (KBs), but confirm VCD timing is unchanged on the
-cluster; if it ever shows up, per-device caching like `_qggmrf_interface_masks` is the fix.
-NEXT = P6.
+4 tests + vcls conversion (1-view sibling; baseline-identical outputs, time in noise; BONUS:
+fixed vcls's cone-only hardcoded param name — it crashed on ParallelBeamModel before).  Suites
+green after the lift: sharding 103/2 @4 dev, legacy 28+33 subtests @2-dev default.  Demo:
+`experiments/sharding/features/settable_view_parameters_demo.py` (correctness / 59×
+no-recompile timing / 1-view angle-sweep pattern).
+**GPU CORRECTION (2026-06-11c) → PROJECT RULE (Greg): exact equality is NEVER the gate for
+COMPUTED floats.**  The original setter-vs-fresh tests asserted bit-exactness and failed on
+the GPU suite (separate executables for identical HLO differ ~1 ULP via autotuning — the
+trivial-mesh lesson re-learned; full statement in lessons.md).  Fixed everywhere: ALL
+computed-float exact comparisons swept and relaxed to tight allclose (test_view_params,
+test_fbp alias, test_fbp_recon delegate, the qGGMRF kernel real-slice/all-ones/no-halo
+identities); demo script likewise.  Exact equality KEPT only for data-movement identities
+(gather round trips, assemble, halo extraction, stored-param echo) and constructed-zero
+invariants (padded entries == 0.0 — the "exactly inert" spec, where a tolerance would hide a
+leak).  **GPU item: re-run tests/test_view_params.py on the cluster.**
+GPU note (perf-sanity item): the angle array is now a per-call operand instead of a baked
+constant — tiny (KBs), but confirm VCD timing is unchanged on the cluster; if it ever shows
+up, per-device caching like `_qggmrf_interface_masks` is the fix.  NEXT = P6.
 
 ### (superseded by the block above) proposal notes
 - Design per v2 §Adjacent tasks + the 2026-06-11 investigation: the bake-in is ONE closure

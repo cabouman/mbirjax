@@ -463,9 +463,11 @@ class TestQggmrfInterfaceMask(unittest.TestCase):
 
     def test_masked_padded_cylinder_matches_truncated_real(self):
         """One cylinder, boundary MID-shard: the masked kernel on the zero-padded
-        cylinder must equal the unmasked kernel on the truncated real cylinder
-        (bit-exact on the real slices), with exactly-zero gradient and finite
-        positive Hessian on the padded slices."""
+        cylinder must equal the unmasked kernel on the truncated real cylinder on
+        the real slices (mathematically identical op chains; compared at float
+        noise -- the two shapes compile separate executables, and exact equality
+        is never the gate for computed floats), with exactly-zero gradient and
+        finite positive Hessian on the padded slices."""
         params = self._qggmrf_params()
         rng = np.random.default_rng(3)
         L, k = 10, 6                       # local slices, real slices (pad = 4, mid-shard boundary)
@@ -481,11 +483,13 @@ class TestQggmrfInterfaceMask(unittest.TestCase):
         g_pad, h_pad = mbirjax.qggmrf_grad_and_hessian_per_cylinder(
             v_pad, params, v_pad[0], v_pad[-1], interface_mask=mask)
 
-        # Real slices: identical values, element for element (same elementwise op chain).
-        self.assertTrue(np.array_equal(np.asarray(g_pad[:k]), np.asarray(g_ref)),
-                        msg="real-slice gradient changed under padding+mask")
-        self.assertTrue(np.array_equal(np.asarray(h_pad[:k]), np.asarray(h_ref)),
-                        msg="real-slice Hessian changed under padding+mask")
+        # Real slices: the same per-element computation, gated at float noise.
+        np.testing.assert_allclose(np.asarray(g_pad[:k]), np.asarray(g_ref),
+                                   rtol=1e-6, atol=1e-6,
+                                   err_msg="real-slice gradient changed under padding+mask")
+        np.testing.assert_allclose(np.asarray(h_pad[:k]), np.asarray(h_ref),
+                                   rtol=1e-6, atol=1e-6,
+                                   err_msg="real-slice Hessian changed under padding+mask")
         # Padded slices: gradient exactly zero; Hessian finite and strictly positive
         # (b_tilde(0) terms -- this is what keeps the VCD division well-posed with no guard).
         self.assertTrue(np.all(np.asarray(g_pad[k:]) == 0.0),
@@ -540,8 +544,10 @@ class TestQggmrfInterfaceMask(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(h_tail)) and np.all(h_tail > 0.0))
 
     def test_all_ones_mask_is_identity(self):
-        """An all-ones mask must be bit-identical to no mask (the uniform-trace form
-        used for fully-real shards when the slice axis is padded)."""
+        """An all-ones mask must equal no mask at float noise (the uniform-trace
+        form used for fully-real shards when the slice axis is padded; multiply by
+        1.0 is mathematically the identity, but mask/no-mask compile separate
+        executables, and exact equality is never the gate for computed floats)."""
         params = self._qggmrf_params()
         rng = np.random.default_rng(7)
         v = jnp.asarray(rng.standard_normal(6).astype(np.float32))
@@ -549,8 +555,8 @@ class TestQggmrfInterfaceMask(unittest.TestCase):
         g0_, h0_ = mbirjax.qggmrf_grad_and_hessian_per_cylinder(v, params, v[0], v[-1])
         g1_, h1_ = mbirjax.qggmrf_grad_and_hessian_per_cylinder(v, params, v[0], v[-1],
                                                                 interface_mask=ones)
-        self.assertTrue(np.array_equal(np.asarray(g0_), np.asarray(g1_)))
-        self.assertTrue(np.array_equal(np.asarray(h0_), np.asarray(h1_)))
+        np.testing.assert_allclose(np.asarray(g0_), np.asarray(g1_), rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(np.asarray(h0_), np.asarray(h1_), rtol=1e-6, atol=1e-6)
 
 
 if __name__ == "__main__":

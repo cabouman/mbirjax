@@ -83,12 +83,14 @@ class TestFbpReconSingleDevice(unittest.TestCase):
                                  jax.sharding.NamedSharding)
 
     def test_direct_recon_matches_fbp_recon(self):
-        """direct_recon is just a thin delegate to fbp_recon."""
+        """direct_recon is just a thin delegate to fbp_recon.  Tight allclose, not
+        exact equality (never the gate for computed floats: the back projection's
+        GPU scatter-adds can reorder summation between two calls)."""
         model = _make_model()
         sino = _random_sino(model)
         a = np.asarray(model.fbp_recon(sino))
         b = np.asarray(model.direct_recon(sino))
-        self.assertTrue(np.array_equal(a, b))
+        np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-6)
 
 
 class TestFbpReconSharded(unittest.TestCase):

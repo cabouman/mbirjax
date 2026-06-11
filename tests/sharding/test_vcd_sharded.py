@@ -151,8 +151,9 @@ class TestHaloMath(unittest.TestCase):
         g0, h0 = mj.qggmrf_gradient_and_hessian_at_indices(flat, recon_shape, idx, params)
         g1, h1 = mj.qggmrf_gradient_and_hessian_at_indices(
             flat, recon_shape, idx, params, left_halo=None, right_halo=None)
-        self.assertTrue(np.array_equal(np.asarray(g0), np.asarray(g1)))
-        self.assertTrue(np.array_equal(np.asarray(h0), np.asarray(h1)))
+        # Tight allclose, not exact equality (never the gate for computed floats).
+        np.testing.assert_allclose(np.asarray(g0), np.asarray(g1), rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(np.asarray(h0), np.asarray(h1), rtol=1e-6, atol=1e-6)
 
 
 class TestShardedPrior(unittest.TestCase):

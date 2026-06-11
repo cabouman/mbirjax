@@ -322,6 +322,19 @@ async run-ahead — it was object lifecycle.
   Lesson: "bit-exact across two differently-compiled kernels" is the wrong invariant on
   GPU; use a tight tolerance and reserve exact-equality for same-kernel / data-movement
   identities.
+  **RE-LEARNED 2026-06-11 (settable view params), then settled as a PROJECT RULE (Greg):
+  exact equality is NEVER the right gate for COMPUTED floats.**  Not across two models
+  (separate executables even for identical programs/shapes; GPU autotuning differs ~1 ULP),
+  and not even for one executable run twice (GPU scatter-add atomics reorder summation).
+  CPU happens to compile/run deterministically, so a bit-exact test written and passed on
+  CPU is exactly the kind that fails first on the GPU suite.  Gate computed floats at a
+  tight allclose (1e-6-ish single-shot; a genuinely wrong/stale value misses by orders of
+  magnitude).  Exact equality remains correct for exactly two things: (1) DATA MOVEMENT
+  identities (shard/gather/assemble round trips, halo extraction, stored-parameter echo —
+  bytes in = bytes out, no arithmetic; a tolerance would mask corruption), and
+  (2) CONSTRUCTED-ZERO invariants (padded entries == 0.0 — the "exactly inert" spec;
+  allclose would hide a leak into the padding, the precise failure the invariant exists
+  to catch).
 - **Donation-engagement gotchas.**  (a) Release aliases first: for constant weights
   `weighted_error_sinogram IS error_sinogram`, so `= None` it or donation silently falls
   back to a copy.  (b) Donating 2 inputs for 1 output warns "Some donated buffers were
