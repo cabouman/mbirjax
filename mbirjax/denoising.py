@@ -144,7 +144,7 @@ class QGGMRFDenoiser(TomographyModel):
         raise NotImplementedError('recon is not implemented for QGGMRFDenoiser.  Use `denoise` instead.')
 
     def denoise(self, image, sigma_noise=None, use_ror_mask=False, init_image=None, max_iterations=15,
-                stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
+                stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         Compute the MAP denoiser assuming AWGN and the 3D qGGMRF prior.
 
@@ -168,7 +168,7 @@ class QGGMRFDenoiser(TomographyModel):
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
-            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            logfile_path (str, optional): Path to the output log file.  Defaults to '~/.mbirjax/logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
 
         Returns:

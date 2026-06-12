@@ -55,6 +55,39 @@ GPU note (perf-sanity item): the angle array is now a per-call operand instead o
 constant — tiny (KBs), but confirm VCD timing is unchanged on the cluster; if it ever shows
 up, per-device caching like `_qggmrf_interface_masks` is the fix.  NEXT = P6.
 
+### Test-suite time reduction (pre-team-release task; Tier 1 + redesign DONE: 253→165 s)
+- **Sharded VCD families 6→3 iterations** (mode-vs-mode comparisons discriminate from
+  iteration 1; fewer iterations accumulate LESS FP divergence — gate-safening).
+- **test_all_vcd redesigned** (Greg-approved rethink): parallel + cone keep FULL-convergence
+  gates (the VCD loop is geometry-independent; per-geometry kernel correctness is gated
+  sharply by test_projectors' adjoint identity); the other 5 geometries run 3-iteration
+  SANITY recons against measured-and-recorded gates (~1.6× the 3-iter nrmse; trivial level
+  = 1).  **test_split_sino redesigned mode-vs-mode**: split_sino_recon vs unsplit recon at 4
+  iterations (gates the SPLIT+STITCH, its actual added value; measured 0.0487, gate 0.10).
+- **Every VCD-running test now seeds np.random immediately before each recon/prox call**
+  (the partition sequence draws from the global RNG; per-call seeds make each subtest
+  independent of loop position) — Greg's rule.
+- Iteration trims were MEASURED first: the old converged-quality tolerances had NO iteration
+  slack (parallel fails its 0.11 gate at 8 iters), which is why the redesign splits
+  convergence-gating from sanity-gating instead of loosening gates.
+- Checked-in npy baseline tripwire REJECTED (no binaries on github — Greg).
+- **Tier 2 (persistent compilation cache) MEASURED AND REFUTED** (ruler-before-code, mine):
+  mbirjax already enables the cache at import (tomography_model.py:37 → /tmp/jax_cache), and
+  a TRUE cold suite run is only ~3 s slower than warm (161 vs 158 s; just 12 programs exceed
+  a 0.25 s XLA compile).  The per-model first-call cost is dominated by Python-side
+  TRACING/lowering of each fresh model's jitted closures — uncacheable.  Note left in
+  tests/conftest.py so nobody re-attempts it.  Remaining wall-clock lever: pytest-xdist
+  (÷~3); or accept ~160 s.
+- **RESOLVED (Greg-approved): per-user `~/.mbirjax/` home for run artifacts.**  (a) The
+  import-time jit cache moved `/tmp/jax_cache` → `~/.mbirjax/jax_cache`, set ONLY if the user
+  hasn't configured a cache (env `JAX_COMPILATION_CACHE_DIR` / jax.config respected — verified
+  by smoke test); fixes shared-/tmp cross-user permission risk on the cluster, the silent
+  override of user config, and reboot eviction.  (b) Log defaults moved `./logs/recon.log` →
+  `~/.mbirjax/logs/recon.log` (+ prox.log; recon/initialize_recon/prox_map/split_sino_recon/
+  denoiser/setup_logger) — no more `logs/` litter in whatever CWD a script runs from;
+  `setup_logger` expanduser's the path, docstrings updated (prox_map's had cited recon.log,
+  fixed).  Release note: users' log files move; `device_summary`/recon logs name the new path.
+
 ### (superseded by the block above) proposal notes
 - Design per v2 §Adjacent tasks + the 2026-06-11 investigation: the bake-in is ONE closure
   (projectors.py:56-58; kernels already take single_view_params).  Thread the array as a TRACED

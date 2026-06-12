@@ -34,7 +34,16 @@ import mbirjax._sharding as mjs
 
 from importlib.metadata import version, PackageNotFoundError
 
-jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+# Persistent jit-compilation cache: repeat runs of the same model shapes load
+# compiled executables from disk instead of recompiling (a real win for
+# production-size recons, whose XLA compiles take seconds).  The cache lives in
+# the per-user mbirjax home (NOT shared /tmp, which risks cross-user permission
+# collisions on multi-user machines and is cleared on reboot), and is set ONLY
+# if the user has not already configured a cache of their own (via
+# JAX_COMPILATION_CACHE_DIR or jax.config) -- never override an explicit choice.
+if jax.config.jax_compilation_cache_dir is None:
+    jax.config.update("jax_compilation_cache_dir",
+                      os.path.expanduser(os.path.join('~', '.mbirjax', 'jax_cache')))
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
@@ -2531,7 +2540,7 @@ class TomographyModel(ParameterHandler):
         return jnp.zeros_like(sinogram, device=self.sinogram_device)
 
     def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
-                         compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
+                         compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         Do the device management and parameter initialization needed for recon and prox_map.
 
@@ -2636,7 +2645,7 @@ class TomographyModel(ParameterHandler):
         raise e
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
-              compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True, output_sharded=False):
+              compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True, output_sharded=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
         This function takes care of generating its own partitions and partition sequence.
@@ -2652,7 +2661,9 @@ class TomographyModel(ParameterHandler):
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.  This will lead to slower reconstructions and is meant only for small recons.
-            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            logfile_path (str, optional): Path to the output log file ('~' expands to the user's
+                home directory).  Defaults to '~/.mbirjax/logs/recon.log'.  Set to None or '' to
+                skip file logging.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
             output_sharded (bool, optional): If False (default), return a plain reconstruction array.
                 If True, return the internal device form (slice-sharded across the model's devices,
@@ -2698,7 +2709,8 @@ class TomographyModel(ParameterHandler):
             self._handle_jax_error(e)
 
         if logfile_path:
-            self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
+            self.logger.info('Logs written to {}'.format(
+                os.path.abspath(os.path.expanduser(logfile_path))))
 
         for h in list(self.logger.handlers):  # Make sure the log files are up to date
             h.flush()
@@ -3277,7 +3289,7 @@ class TomographyModel(ParameterHandler):
         return loss
 
     def prox_map(self, prox_input, sinogram, sigma_prox=None, weights=None, init_recon=None, do_initialization=True, stop_threshold_change_pct=0.2,
-                 max_iterations=3, first_iteration=0, logfile_path='./logs/prox.log', print_logs=True, output_sharded=False):
+                 max_iterations=3, first_iteration=0, logfile_path='~/.mbirjax/logs/prox.log', print_logs=True, output_sharded=False):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
@@ -3294,7 +3306,9 @@ class TomographyModel(ParameterHandler):
             stop_threshold_change_pct (float, optional): Stop reconstruction when NMAE percent change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
-            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            logfile_path (str, optional): Path to the output log file ('~' expands to the user's
+                home directory).  Defaults to '~/.mbirjax/logs/prox.log'.  Set to None or '' to
+                skip file logging.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
             output_sharded (bool, optional): If False (default), return a plain reconstruction array.
                 If True, return the internal device form (no exit gather); on an unsharded model the
@@ -3352,7 +3366,8 @@ class TomographyModel(ParameterHandler):
             self._handle_jax_error(e)
 
         if logfile_path:
-            self.logger.info('Logs written to {}'.format(os.path.abspath(logfile_path)))
+            self.logger.info('Logs written to {}'.format(
+                os.path.abspath(os.path.expanduser(logfile_path))))
 
         for h in list(self.logger.handlers):  # Make sure the log files are up to date
             h.flush()

@@ -237,7 +237,11 @@ class TestShardedRecon(unittest.TestCase):
     same numpy seed is set before each recon to make the two modes do the identical
     computation (only the distributed reduce order differs)."""
 
-    MAX_ITERS = 6
+    # Mode-vs-mode comparisons discriminate from iteration 1 (any real algorithmic
+    # difference shows up immediately), and FEWER iterations accumulate LESS
+    # FP-reorder divergence, so a small count both speeds the suite and safens the
+    # gates; 3 still spans multiple partition granularities.
+    MAX_ITERS = 3
 
     def _recon(self, model, sino, seed=0, halo_per_subset=False, weights=None, positivity=False):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
@@ -467,7 +471,7 @@ class TestShardedProx(unittest.TestCase):
     Explicit configure_sharding keeps the coverage deterministic regardless of
     auto-sharding policy or device counts."""
 
-    MAX_ITERS = 4
+    MAX_ITERS = 3   # mode-vs-mode comparison; discriminates from iteration 1
 
     def _prox(self, model, sino, prox_input, seed=0):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable

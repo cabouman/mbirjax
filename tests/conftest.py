@@ -117,6 +117,16 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
 
+# NOTE on jit-compilation caching (measured 2026-06-11, so nobody re-attempts it):
+# mbirjax already enables JAX's persistent compilation cache at import
+# (tomography_model.py sets jax_compilation_cache_dir = /tmp/jax_cache), and it is
+# nearly irrelevant to suite time anyway -- a true cold run (cache cleared) is only
+# ~3 s slower than warm (161 vs 158 s; just 12 programs exceed even a 0.25 s XLA
+# compile).  The per-model first-call cost that LOOKS like compilation is mostly
+# Python-side TRACING/lowering of each fresh model's jitted closures, which no
+# persistent cache can skip.  Wall-clock levers that do work: fewer/cheaper recon
+# iterations (done) and pytest-xdist parallelism.
+
 
 def preferred_devices(n: int):
     """Return a list of n devices for sharding tests.

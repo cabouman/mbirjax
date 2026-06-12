@@ -26,18 +26,22 @@ class ParameterHandler:
         self.logger = None
         self.log_buffer = None
 
-    def setup_logger(self, *, logfile_path: str = "./logs/recon.log", print_logs: bool = True):
+    def setup_logger(self, *, logfile_path: str = "~/.mbirjax/logs/recon.log", print_logs: bool = True):
         """
         Initialize self.logger and self.log_buffer.
 
         Args:
-            logfile_path: Path to the log file. If None or empty, file logging is skipped.
+            logfile_path: Path to the log file ('~' is expanded to the user's home, so the
+                default lands in the per-user mbirjax directory rather than littering the
+                current working directory). If None or empty, file logging is skipped.
             verbosity: 0 -> WARNING, 1 -> INFO, 2+ -> DEBUG
             print_logs: If True, emit logs to console.
 
         Raises:
             Exception: If logfile_path directory cannot be created.
         """
+        if logfile_path:
+            logfile_path = os.path.expanduser(logfile_path)
         # Map verbosity to logging level
         verbose = self.get_params('verbose')
         if verbose < 1:

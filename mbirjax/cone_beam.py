@@ -1049,7 +1049,7 @@ class ConeBeamModel(TomographyModel):
         return recon
 
     def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
-                         first_iteration=0, compute_prior_loss=False, logfile_path='./logs/recon.log', print_logs=True):
+                         first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
         by splitting the detector rows into two overlapping halves, reconstructing each half separately,

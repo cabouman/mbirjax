@@ -236,7 +236,9 @@ class TestPaddedVcdRecon(unittest.TestCase):
     """End-to-end VCD recon on a prime view count: the padded sharded recon must
     match the single-device recon to the same tolerance as the dividing case."""
 
-    MAX_ITERS = 6
+    # Mode-vs-mode comparison: discriminates from iteration 1, and fewer iterations
+    # accumulate less FP-reorder divergence (gate-safening as well as faster).
+    MAX_ITERS = 3
 
     def _recon(self, model, sino, weights=None, prepared=False):
         np.random.seed(0)  # fix partitions + subset order so modes are comparable
@@ -316,7 +318,9 @@ class TestPaddedSlices(unittest.TestCase):
     NUM_VIEWS = 8
     NUM_ROWS = 7        # prime -> num_slices = 7 pads at every device count > 1
     NUM_CHANNELS = 32
-    MAX_ITERS = 6
+    # Mode-vs-mode comparison: discriminates from iteration 1, and fewer iterations
+    # accumulate less FP-reorder divergence (gate-safening as well as faster).
+    MAX_ITERS = 3
 
     def _make_model(self):
         angles = jnp.linspace(0, jnp.pi, self.NUM_VIEWS, endpoint=False)
