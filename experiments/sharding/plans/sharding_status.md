@@ -19,6 +19,38 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-12) — BETA WRAPPED: PR to prerelease OPEN for team testing; P5 + adjacent tasks COMPLETE; tests 66 s; NEXT = P6 (start with the scoping proposal)
+
+▶ **CURRENT FOCUS (next session): P6, step 1 — the projector-rework scoping proposal.**
+Follow **v2 §P6 "EXECUTION ORDER"** (added this session): one design proposal first (banded
+(g0,L) interface + anchor rule + per-geometry assembly + accumulator/donation + the
+de-closuring/module-level-jit restructure), reviewed with Greg BEFORE code; then cone port →
+translation/multiaxis → the retirement cascade → docs page.
+
+### State at wrap-up (2026-06-12)
+- **PR to prerelease is OPEN** for the team to bang on (description drafted from
+  `plans/pr_description_draft.md`).  Expect team-reported issues to take priority over P6
+  work as they arrive.
+- **P5 fully complete and GPU-validated** (incl. Stage 2 at 1024×1023×1024 on 2×H100:
+  NRMSE 2.6e-7, 2.18×, memory halves, RSS delta 0); full GPU test suite green.
+- **Adjacent tasks done**: settable view parameters (+ vcls conversion + its
+  ParallelBeamModel crash fix); `_auto_shard_cpu=True` default; per-user **`~/.mbirjax/`**
+  home (jit cache moved from /tmp, set-only-if-unset; log defaults moved from ./logs/).
+- **Test suite overhauled** (Greg committed 6441ae6 + e2ba4ed): monolith geometry tests split
+  into generated per-geometry methods under `tests/geometries/`; convergence gates kept for
+  parallel+cone, measured sanity gates for the rest; split_sino mode-vs-mode; seeds before
+  every recon; `pytest-xdist` in pyproject test extras; **`dev_scripts/run_tests.sh` →
+  `pytest -n auto` ≈ 66 s on a Mac** (single-process ~165 s).  Tracing (not XLA compile)
+  dominates first-call cost — measured, recorded in tests/conftest.py; the structural fix is
+  P6's de-closuring (v2 §P6 bullet 2026-06-12).
+- **Project rule (Greg): exact equality is NEVER the gate for computed floats** — tight
+  allclose (1e-5 single-shot; measured GPU run-to-run scatter-add noise ~8e-6 rel); exact
+  equality only for data-movement identities and constructed-zero invariants.  In lessons.md.
+- Remaining GPU items: none blocking; routine validation of team-reported issues + the cone
+  port's own validation when it lands.
+
+---
+
 ## HANDOFF (2026-06-11b) — P5 Step 4 Stage 2 IMPLEMENTED + **GPU-VALIDATED** (P5 COMPLETE); prox sharded-fix; `_auto_shard_cpu=True` default (measured); NEXT = settable view parameters (approved), then P6
 
 ▶ **CURRENT FOCUS: the settable-view-parameters adjacent task (proposal APPROVED 2026-06-11;

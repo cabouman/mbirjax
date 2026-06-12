@@ -540,6 +540,35 @@ inert-padding and enlarge-the-volume semantics for the padded slices (the Stage-
 already cone-ready: the back-projector output mask is the load-bearing site under cone).
 
 ### P6 — Port + retire
+
+**EXECUTION ORDER (added at the 2026-06-12 wrap-up; the bullets below this block hold the
+recorded design details each step draws on).**  The dependency logic: the projector REWORK
+design comes first because every port implements it; the RETIREMENTS come last because the
+legacy paths must stay live until the last geometry is off them.
+
+1. **Scoping session → projector-rework design proposal (review before code).**  Fresh-context
+   read of `.claude/back_projection_overview.md`, the (g0,L) design note (P3, above), and the
+   cone kernels.  ONE design covering: the (g0,L) banded interface per geometry; the anchor
+   rule; per-geometry forward-band assembly (parallel = concat, z-based = ACCUMULATE); the
+   in-place `dynamic_update_slice` accumulator + donation; deletion of
+   `entries_per_cylinder_batch`; and the de-closuring / module-level-jit restructure (the
+   2026-06-12 bullet below) — designed once so all three ports follow the same template.
+2. **Cone port** (largest user value): transpose pattern + banded kernels + accumulation
+   assembly + the padding-semantics decision (inert vs enlarge-the-volume; validity clip
+   global-`S_real` vs band-local).  The qGGMRF prior machinery is already geometry-independent
+   (halos + interface masks).  Land CPU-green; GPU-validate at scale (the
+   stage2_padded_slices_gpu_validation.py pattern, cone edition).
+3. **Translation + multiaxis ports** (same template; note `MultiAxisParallelModel` extends
+   `TomographyModel` directly, so it gets its own `_supports_sharding` flip).
+4. **Retirement cascade** (only after ALL geometries are on placements):
+   `main_device`/`sinogram_device`; the `is_sharded` guards + legacy single-device bodies;
+   the `view_indices` machinery (incl. the test_projectors pin); `initialize_recon`'s early
+   `device_put` block; `compute_hessian_diagonal`'s `output_device`; then the
+   `grep -rn "RETIRE-AFTER-SHARDING"` sweep (the trivial-mesh comparison tests retire).
+5. **Post-P6**: the multi-GPU user docs page (vocabulary rule: "sharding" sparingly);
+   the choose-N-vs-communication policy discussion (+ the CPU-cluster auto policy second
+   half); revisit the prox-map prior under sharding if a PnP-at-scale need appears.
+
 - Port the sinogram transpose pattern from `back_project_one_view_to_pixel_batch` 
   and `forward_project_pixel_batch_to_one_view` in parallel beam to cone / 
   translation / multiaxis geometries.
