@@ -560,6 +560,21 @@ already cone-ready: the back-projector output mask is the load-bearing site unde
   vs enlarge-the-volume semantics for padded slices, and whether its validity clip goes
   global-`S_real` (in-kernel inertness) or stays band-local; reconcile
   `compute_hessian_diagonal`'s legacy `output_device` with `output_sharded`.
+- **(2026-06-12, Greg-approved direction) Projector-assembly simplification + de-closuring**
+  — fold into the P6 rework since the assembly is being rewritten for the port anyway:
+  (a) ONE code path (the legacy single-device bodies retire) ⇒ roughly half the programs
+  traced/compiled per model; (b) lift the jitted projector closures to MODULE-LEVEL
+  functions taking explicit args (`projector_params` is already a hashable namedtuple →
+  static arg; the settable-view-params lift is the template) ⇒ the in-process jit cache is
+  shared across model INSTANCES (today every model re-traces byte-identical programs —
+  measured: tracing/lowering, not XLA compile, dominates first-call cost at test sizes;
+  persistent-cache cold-vs-warm was 3 s of 161 s); (c) flatten the fcn → pixel-batch →
+  view-batch nesting and pad tail batches to ONE signature (today a non-dividing batch
+  traces a second program).  Motivation: first-call latency (size-INDEPENDENT ~10-30 s —
+  matters for small/interactive use and tests; a few percent of a production batch job),
+  repeated-model construction (sweeps, vcls sibling), and plain code simplicity.
+  Cluster measurement to take first: instrument first-call overhead (trace+lower+compile)
+  at production size to size how much P6 should invest here.
 - **(2026-06-11)** Delete `initialize_recon`'s early `device_put` block (the
   `_committed_elsewhere` guard): it survives only for the unported geometries' reliance
   on pre-committed `main_device`/`sinogram_device` arrays.  After the port, inputs stay

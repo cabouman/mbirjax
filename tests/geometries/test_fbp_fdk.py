@@ -29,6 +29,7 @@ class TestFBPReconstruction(unittest.TestCase):
                                self.anisotropic_cone_tolerances, self.helical_cone_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
+        self.tolerances_by_geometry = dict(zip(self.geometry_types, self.all_tolerances))
         
         # Set parameters
         self.num_views = 64
@@ -97,16 +98,12 @@ class TestFBPReconstruction(unittest.TestCase):
         return ct_model
     
     
-    def test_all_FBP(self):
-        for geometry_type, tolerances in zip(self.geometry_types, self.all_tolerances):
-            with self.subTest(geometry_type=geometry_type):
-                if (geometry_type == 'parallel') | (geometry_type == 'anisotropic_parallel'):
-                    print("Testing FBP with", geometry_type)
-                if (geometry_type == 'cone') | (geometry_type == 'anisotropic_cone') | (geometry_type == 'helical_cone'):
-                    print("Testing FDK with", geometry_type)
-                self.verify_FBP(geometry_type, tolerances)
-    
-    
+    # One test method per geometry is generated at the bottom of this file
+    # (test_fbp_parallel, test_fdk_cone, ...) instead of a single test looping subTests:
+    # pytest can then report, select (-k cone), and distribute (pytest-xdist) them
+    # individually.
+
+
     def verify_FBP(self, geometry_type, tolerances):
         """Test the FBP reconstructions against the defined tolerances."""
         self.set_view_params(geometry_type)
@@ -178,6 +175,26 @@ class TestFBPReconstruction(unittest.TestCase):
         self.assertTrue(max_diff < tolerances['max_diff'], f"Max difference too high: {max_diff}")
         self.assertTrue(nrmse < tolerances['nrmse'], f"NRMSE too high: {nrmse}")
         self.assertTrue(pct_95 < tolerances['pct_95'], f"95th percentile difference too high: {pct_95}")
+
+
+def _add_per_geometry_fbp_tests():
+    """Generate one test per geometry (see note in TestFBPReconstruction).  The direct
+    method is FBP for the parallel geometries and FDK for the cone geometries; the test
+    names say which."""
+    geometry_types = [g for g in mj._utils._geometry_types_for_tests if 'translation' not in g]
+    for geometry_type in geometry_types:
+        def test(self, geometry_type=geometry_type):
+            print('Testing FBP/FDK with', geometry_type)
+            self.verify_FBP(geometry_type, self.tolerances_by_geometry[geometry_type])
+        method = 'fdk' if 'cone' in geometry_type else 'fbp'
+        test.__name__ = 'test_{}_{}'.format(method, geometry_type)
+        test.__doc__ = 'Direct ({}) reconstruction check for the {} geometry.'.format(
+            method.upper(), geometry_type)
+        setattr(TestFBPReconstruction, test.__name__, test)
+
+
+_add_per_geometry_fbp_tests()
+
 
 if __name__ == '__main__':
     unittest.main()

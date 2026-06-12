@@ -35,6 +35,7 @@ class TestVCD(unittest.TestCase):
                                self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances, self.anisotropic_translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
+        self.tolerances_by_geometry = dict(zip(self.geometry_types, self.all_tolerances))
 
         # Set parameters
         self.num_views = 64
@@ -126,12 +127,10 @@ class TestVCD(unittest.TestCase):
     FULL_CONVERGENCE_GEOMETRIES = ('parallel', 'cone')
     SANITY_ITERATIONS = 3
 
-    def test_all_vcd(self):
-        for geometry_type, tolerances in zip(self.geometry_types, self.all_tolerances):
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing vcd with", geometry_type)
-                sanity_only = geometry_type not in self.FULL_CONVERGENCE_GEOMETRIES
-                self.verify_vcd(geometry_type, tolerances, sanity_only=sanity_only)
+    # One test method PER GEOMETRY is generated below (test_vcd_parallel, test_vcd_cone,
+    # ...) instead of a single test looping subTests: pytest can then report, select
+    # (-k cone), and distribute (pytest-xdist) the geometries individually -- the
+    # single-loop form pinned one ~45 s monolith to a single xdist worker.
 
     def verify_vcd(self, geometry_type, tolerances, sanity_only=False):
         """
@@ -289,6 +288,22 @@ class TestVCD(unittest.TestCase):
         print('  nrmse vs phantom = {:.3f}'.format(nrmse))
         self.assertTrue(np.all(np.isfinite(recon)))
         self.assertLess(nrmse, self.cone_tolerances['sanity_nrmse'])
+
+
+def _add_per_geometry_vcd_tests():
+    """Generate one test_vcd_<geometry> method per geometry (see the note in TestVCD)."""
+    for geometry_type in mj._utils._geometry_types_for_tests:
+        def test(self, geometry_type=geometry_type):
+            print("Testing vcd with", geometry_type)
+            sanity_only = geometry_type not in self.FULL_CONVERGENCE_GEOMETRIES
+            self.verify_vcd(geometry_type, self.tolerances_by_geometry[geometry_type],
+                            sanity_only=sanity_only)
+        test.__name__ = 'test_vcd_' + geometry_type
+        test.__doc__ = 'VCD reconstruction check for the {} geometry.'.format(geometry_type)
+        setattr(TestVCD, test.__name__, test)
+
+
+_add_per_geometry_vcd_tests()
 
 
 if __name__ == '__main__':
