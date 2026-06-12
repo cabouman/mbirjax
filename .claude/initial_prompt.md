@@ -1,5 +1,5 @@
 This is the mbirjax CT reconstruction project — multi-GPU/CPU sharding work in the
-`mbirjax` worktree on branch `greg/parallel_sharding`.
+`mbirjax` worktree on branch `greg/conebeam_sharding`.
 
 Orient first by reading, in order:
 1. `.claude/claude_prompt.md` — collaboration style + workflow (investigate and propose

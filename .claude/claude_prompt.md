@@ -12,7 +12,7 @@ This codebase is complex, and I know a great deal about its mathematical structu
 
 Project orientation:
 
-* This is the **beta sharding worktree** (`greg/parallel_sharding`, built from `prerelease`). At the start of a session or after context compaction, read:
+* This is the **beta sharding worktree** (`greg/conebeam_sharding`, built from `prerelease`). At the start of a session or after context compaction, read:
   1. `experiments/sharding/plans/sharding_status.md` — current phase, what's blocked, verified hardware facts.
   2. `experiments/sharding/plans/sharding_implementation_plan.md` — the detailed Phase 0–F checklist, migration table, cross-cutting principles, and open design questions.
 * Prior art lived on the research branch (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`). Its worktree has been removed and the local branch deleted (consolidated to the single `mbirjax` worktree, 2026-06-08); the branch still exists on the remote `cabouman/mbirjax` if anything is ever needed from it.

@@ -1,4 +1,7 @@
-# Sharding implementation plan v2 — placement architecture (beta `greg/parallel_sharding`)
+# Sharding implementation plan v2 
+— placement architecture (beta `greg/conebeam_sharding`branched from 
+`greg/parallel_sharding`, which has a PR to prerelease as of 06/12/2026)
+
 
 *Created 2026-06-02.  This is the **current forward plan**.  It supersedes
 `sharding_implementation_plan.md` for forward planning; that doc is retained as

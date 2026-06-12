@@ -1,4 +1,4 @@
-# Sharding status (beta branch `greg/parallel_sharding`)
+# Sharding status (beta branch `greg/conebeam_sharding`)
 
 *Short living status. Forward plan: `sharding_implementation_plan_v2.md`.  Completed-work record +
 principles: `sharding_implementation_plan.md`.*
@@ -1490,7 +1490,7 @@ Consolidated to a **single** working tree (2026-06-08):
 
 | Path | Branch | Role |
 |------|--------|------|
-| `…/Research/mbirjax/` | `greg/parallel_sharding` | The repo — single worktree. All work. |
+| `…/Research/mbirjax/` | `greg/conebeam_sharding` | The repo — single worktree. All work. |
 
 The old research worktree (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`)
 was removed and its **local** branch deleted; it still exists on the remote

@@ -1,6 +1,6 @@
 # Orientation — beta sharding worktree
 
-This is the **beta sharding** worktree: branch `greg/parallel_sharding`, built
+This is the **beta sharding** worktree: branch `greg/conebeam_sharding`, built
 fresh from `prerelease`. Multi-device sharding is being reimplemented here under
 a new view-sharded design.
 
