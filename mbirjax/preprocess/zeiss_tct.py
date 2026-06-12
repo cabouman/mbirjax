@@ -181,12 +181,11 @@ def load_scans_and_params(dataset_dir, verbose=1):
         iso_pixel_pitch_unit = axis_units[iso_pixel_pitch_index] if iso_pixel_pitch_index > -1 else 'um'
 
         # Get object positions in x, y, z axis
-        # TODO: It seems that purdue p dataset and purdue BGA dataset use the different coordinate system
         # The scanner uses a coordinate system different from MBIRJAX
         # Axis mapping:
-        #   Scanner z-axis -> MBIRJAX x-axis or -x-axis not sure
-        #   Scanner x-axis -> MBIRJAX y-axis or -y-axis not sure
-        #   Scanner y-axis -> MBIRJAX z-axis or -z-axis not sure
+        #   Scanner x-axis -> MBIRJAX -x-axis
+        #   Scanner z-axis -> MBIRJAX y-axis
+        #   Scanner y-axis -> MBIRJAX z-axis
         object_x_positions = -np.array(zeiss_params['x_positions'], dtype=float).ravel()
         object_y_positions = np.array(zeiss_params['z_positions'], dtype=float).ravel()
         object_z_positions = np.array(zeiss_params['y_positions'], dtype=float).ravel()
