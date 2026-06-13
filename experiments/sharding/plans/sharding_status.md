@@ -48,6 +48,11 @@ the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
   all-gather + monolithic) ≈ current (no regression)**.  ⇒ cone sharded **forward does NOT
   band**; **back stays banded** (reduce-scatter, B1 kernel).  Retires the row-window /
   unified-assembly / fused-accumulator threads for forward.
+  **GPU CONFIRMED (2026-06-13, H100, n=2/4, 256³–1024³):** C wins decisively — B 1.17–2.09×
+  slower at every size, and B's CPU memory edge EVAPORATES on GPU (B/C peak 0.92–1.56×,
+  often worse).  C shards memory well (1024³ per-device: mono 3551 → C n=4 1303 MB).  C is
+  correct (max_abs ~1e-5 = GPU noise); the harness's "FAIL" at ≥512³ is B's windowed-vertical
+  with a too-tight fixed margin (a B-only artifact; B is dropped).  Decision reinforced.
 - **Row-sharding the sinogram — PARKED exploration** (Greg's long-standing idea, now better
   motivated by cone): footprint-halo scheme, parallel-beam zero-halo locality, the
   variable-halo + thin-recon trade-offs.  Full discussion in **`.claude/sinogram_sharding.md`**;
