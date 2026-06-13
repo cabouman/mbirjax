@@ -106,9 +106,64 @@ def old_back_horiz(sinogram_view, pixel_indices, single_view_params, projector_p
     return det_voxel_cylinder
 
 
-# NEW (current code) = the channel-major kernels on ConeBeamModel.
-new_forward_horiz = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
-new_back_horiz = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
+# NEW (channel-major) horizontal kernels — defined INLINE here (NOT referencing the
+# installed ConeBeamModel methods) so this ablation measures the LAYOUT difference
+# independent of the installed build.  If "new" pointed at the installed method and
+# the build were stale (still row-major), new would equal old and the ablation would
+# report a FALSE 1.00x null.  Inlining both layouts removes that failure mode; a
+# separate source check (see report_installed_kernel_layout) flags a stale install.
+def new_forward_horiz(voxel_values, pixel_indices, single_view_params, projector_params):
+    gp = projector_params.geometry_params
+    num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+    n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(
+        pixel_indices, single_view_params, projector_params)
+    L_max = jnp.minimum(1, W_p_c)
+    delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+    sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))      # channel-major
+    for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+        n = n_p_center + n_offset
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+        A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
+        A_chan_n *= (n >= 0) * (n < num_det_channels)
+        sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
+    return sinogram_view_T.T
+
+
+def new_back_horiz(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+    gp = projector_params.geometry_params
+    num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
+    num_pixels = pixel_indices.shape[0]
+    n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(
+        pixel_indices, single_view_params, projector_params)
+    L_max = jnp.minimum(1, W_p_c)
+    delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+    sinogram_view_T = sinogram_view.T            # channel-major (num_det_channels, num_det_rows)
+    det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
+    for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+        n = n_p_center + n_offset
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+        A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
+        A_chan_n *= (n >= 0) * (n < num_det_channels)
+        A_chan_n = A_chan_n ** coeff_power
+        det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
+    return det_voxel_cylinder
+
+
+def report_installed_kernel_layout():
+    """Print whether the INSTALLED ConeBeamModel horizontal kernels are channel-major
+    (the current edit) or row-major (a STALE build).  This is the build-currency check
+    that distinguishes a real GPU 'no difference' from a stale-build false null."""
+    import inspect
+    for name, fn in [("forward_horizontal_fan_pixel_batch_to_one_view",
+                      ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view),
+                     ("back_horizontal_fan_one_view_to_pixel_batch",
+                      ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch)]:
+        src = inspect.getsource(fn)
+        layout = "channel-major (CURRENT)" if "sinogram_view_T" in src else "row-major (STALE?)"
+        print(f"  installed {name}: {layout}")
+    print(f"  installed mbirjax: {mbirjax.__file__}")
 
 
 def vmapped(fn, idx, static_pp_argnum):
@@ -173,6 +228,10 @@ def main():
     print(f"  cone channel-major ablation ({plat}, same-process old-vs-new, "
           f"{WARMUP}+{TRIALS} timing)")
     print("=" * 78)
+    # Build-currency check: both kernels under test are INLINE (build-independent),
+    # but report whether the INSTALLED kernels are current or stale so a stale build
+    # is never mistaken for a real 'no difference'.
+    report_installed_kernel_layout()
     rows = []
     for size in sizes:
         r = run_one_size(size)
