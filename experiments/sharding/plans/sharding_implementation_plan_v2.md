@@ -794,6 +794,24 @@ largely **parallelizable** alongside.
 
 ## Adjacent tasks (not gating the P-phases)
 
+### Row-sharding for sinograms — consider as an alternative/future sharding axis (exploration)
+
+**STATUS: parked exploration (2026-06-13).**  The current scheme shards the sinogram by
+VIEW (recon by slice).  An alternative is to shard the sinogram by DETECTOR ROW (recon by
+slice, aligned), which for cone reframes the projection as "parallel-beam horizontal +
+a local vertical z-coupling" — replacing C's full-cylinder gather / the back view-reduce
+with a geometry-driven **footprint halo** (each device gathers only the det rows its slices
+project to/from).  It gives **parallel beam zero-halo locality** (the row-sharding originally
+advocated, then outvoted) as the degenerate case, and cone communication that scales with the
+vertical spread rather than the whole cylinder.  Open trade-offs: the halo is **variable-width**
+(small near iso, wide at axial extremes — handled as per-device LOCAL footprint buffers, NOT
+jax shards, padded-uniform or variable-shape); and view-sharding's robustness for **thin
+central-slice recons** (the view axis is always large, so it scales to any GPU count, whereas
+slice/row-sharding is capped by the slice count).  Conclusion for now: finish the P6 cone port
+on the existing view-sharding (C forward ≈ no regression, banded reduce-scatter back); revisit
+row-sharding later, starting with parallel beam (its best case) + a cheap footprint-width
+geometry computation.  **Full discussion + the geometry/halo analysis: `.claude/sinogram_sharding.md`.**
+
 ### Settable view parameters — retire `view_indices` (standalone, adjacent to P6)
 
 **STATUS: ✅ IMPLEMENTED 2026-06-11b (CPU-green; bit-exact vs fresh-model gates).**

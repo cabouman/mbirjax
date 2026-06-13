@@ -5,7 +5,36 @@ Inputs: the (g0,L) design note + anchor rule + forward-accumulation note (v2 §P
 `.claude/back_projection_overview.md`, and a fresh read of the parallel/cone/
 translation/multiaxis kernels.*
 
-**Review status (2026-06-12).**  Reviewed with Greg; decisions folded in below.
+**STATUS (2026-06-13) — measurement superseded several 2026-06-12 decisions; read this first.**
+This doc is the original scoping + the audit trail.  The CANONICAL settled design is
+**§8a-design** (data-driven), and the cone-port implementation plan + current progress
+live in **`p6_increment_b_design.md`**.  Net state:
+- **DONE & committed — increment A: channel-major both cone horizontal fans** (§5b).
+  Measured a CPU win (~13× forward-horizontal at 256³) and **GPU-NEUTRAL** (1.00×,
+  build-verified — the cross-run "~2×" was variance, caught by Greg).  Kept (free CPU
+  win, no GPU cost).  ⇒ there is NO easy single-GPU projector speedup from kernel
+  layout; the port's GPU value is CAPACITY (sharding), projectors already scale ~N⁴.
+- **DONE & staged — increment B1: banded cone kernels** (`back_project_one_view_to_band`
+  + the banded vertical fans; anchor fix; global validity clip), tested
+  (`tests/geometries/test_cone_banded.py`, circular + helical).  Back band-decomposition
+  + adjoint + Hessian all pass.
+- **DECIDED by measurement — forward sharded = C** (per-pixel-batch all-gather +
+  monolithic forward), NOT banded.  The forward-structure harness showed B (banded,
+  streamed) is 5–14× slower on CPU (dispatch-bound — CPU is a target), for ~13–23%
+  memory; C ≈ current (no regression).  ⇒ **the forward banded kernel
+  (`forward_project_band_to_one_view` / `forward_vertical_fan_band_*`) is not needed
+  for production**; back stays banded (reduce-scatter).  This RETIRES the row-window
+  (§2), unified-assembly (§4), and fused-accumulator threads for forward.
+- **SUPERSEDED 2026-06-12 decisions** (do not act on the block below as written): "row
+  window from day one" (§2 — measured out: back is vertical-bound, horizontal dominates
+  on GPU but layout-neutral); "unified scatter-add assembly" / `_forward_band_assembly`
+  (§4 — forward doesn't band at all); "kernel returns a band contribution + overlap-add"
+  (moot — no forward banding).
+- **PARKED — row-sharding the sinogram** as an alternative axis (v2 §Adjacent tasks +
+  `.claude/sinogram_sharding.md`): finish cone on view-sharding; revisit later.
+- **TODO**: increments B2–B5 + C/D/E — see `p6_increment_b_design.md`.
+
+**Review status (2026-06-12) — PARTIALLY SUPERSEDED (see STATUS above).**  Reviewed with Greg; decisions folded in below.
 Settled: **cone first**, land it well before the other geometries (§8); **row
 window from day one** (§2); **anchor rule from params** (§3); cone padding
 **exactly inert** via the global validity clip (§5); delete

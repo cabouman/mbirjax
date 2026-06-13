@@ -19,6 +19,66 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-13b) — P6 cone port: increment A COMMITTED, B1 STAGED, forward-structure DECIDED (= C); NEXT = B2 (sharded driver: banded back + gather+monolithic forward)
+
+▶ **CURRENT FOCUS: P6 increment B2** — wire the cone sharded driver (back on the banded
+kernel; forward = per-pixel-batch all-gather + monolithic), delete
+`entries_per_cylinder_batch`, gate memory/timing vs the §8a baseline.  Read, in order:
+`plans/p6_increment_b_design.md` (the PROGRESS block + staging table + the forward open
+item) and `plans/p6_projector_rework_proposal.md` (the STATUS block at top — §8a-design is
+the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
+
+### Done / decided this session
+- **Increment A — channel-major both cone horizontal fans: DONE, COMMITTED (Greg).**
+  Measured CPU win (~13× forward-horizontal at 256³), **GPU-NEUTRAL (1.00×, build-verified)**.
+  The cross-run "~2×" was GPU run-to-run variance (caught by Greg → built a same-process
+  ablation `cone_channel_major_ablation.py`).  Kept (free CPU win, no GPU cost).
+  **Implication: no easy single-GPU projector speedup from kernel layout; the port's GPU
+  value is CAPACITY (sharding).  Cone projectors scale ~N⁴ on GPU, fit 1024³ single-device;
+  the wall is VCD ~marginal at 1024³ (§8a-results).**
+- **Increment B1 — banded cone kernels: DONE, STAGED (CPU-green).**  `cone_beam.py`:
+  `back_project_one_view_to_band` + banded vertical fans (anchor fix: z from params S_real
+  + global k = g0+L; global validity clip for inert padding), alongside the monolithic
+  kernels.  Tests `tests/geometries/test_cone_banded.py` (circular + helical): back
+  band-decomposition, full-band==monolithic, adjoint-at-(g0,L), Hessian — all pass; monolithic
+  cone suite unaffected.
+- **Forward-structure DECIDED = C** (harness `cone_forward_structure_compare.py`, CPU,
+  jit-fair, isolated-subprocess): **B (banded/streamed) is 5–14× slower on CPU**
+  (dispatch-bound — CPU is a target), for only ~13–23% memory; **C (per-pixel-batch
+  all-gather + monolithic) ≈ current (no regression)**.  ⇒ cone sharded **forward does NOT
+  band**; **back stays banded** (reduce-scatter, B1 kernel).  Retires the row-window /
+  unified-assembly / fused-accumulator threads for forward.
+- **Row-sharding the sinogram — PARKED exploration** (Greg's long-standing idea, now better
+  motivated by cone): footprint-halo scheme, parallel-beam zero-halo locality, the
+  variable-halo + thin-recon trade-offs.  Full discussion in **`.claude/sinogram_sharding.md`**;
+  pointer added to v2 §Adjacent tasks.  Decision: finish cone on view-sharding; revisit later
+  (start with parallel beam + a cheap footprint-width computation).
+
+### Measurement tooling added this session (experiments/sharding/scaling_tests/, results/ gitignored)
+- `cone_baseline_scaling.py` (single-device cone fwd/back/VCD, CPU+GPU; §8a tables).
+- `cone_fan_split_microbench.py` (horizontal vs vertical fan split, CPU+GPU; §8a-split).
+- `cone_channel_major_ablation.py` (same-process old-vs-new layout; the variance-free ruler).
+- `cone_forward_structure_compare.py` (B vs C vs mono; the forward decision).
+
+### Open items / suggested handoff tasks (next session)
+1. **Greg: commit B1** (staged: `cone_beam.py`, `tests/geometries/test_cone_banded.py`, the
+   plan docs).  Also unstaged & yours: `demo/demo_1_shepp_logan.py`, `dev_scripts/run_tests.sh`.
+2. **Remove the forward banded kernel** (`forward_project_band_to_one_view` /
+   `forward_vertical_fan_band_*`) now that forward = C, and adjust `test_cone_banded` (its
+   forward band-decomposition + the adjoint use forward_band; back correctness is already
+   covered by the back band-decomposition + the monolithic fwd/back adjoint).  Confirm with Greg.
+3. **B2**: single-device + sharded cone driver (banded back reduce-scatter; forward gather+
+   monolithic; delete `entries_per_cylinder_batch`); memory/timing vs §8a baseline.  Then
+   B3 (de-closuring §7), B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding).
+4. **GPU confirmation (optional, Greg)**: `cone_forward_structure_compare.py` on 4 GPUs — does
+   C's pixel-batched gather stay bounded at 1024³?  (Decision already made; this is confirmation.)
+5. **GPU validation of B1** kernels (run `tests/geometries/test_cone_banded.py` on the cluster).
+6. Then C (parallel conversion + delete monolithic cone kernel + transitional branch),
+   D (translation, multiaxis), E (retirement cascade: `view_indices`, `main_device`/
+   `sinogram_device`, RETIRE-AFTER sweep).
+
+---
+
 ## HANDOFF (2026-06-13) — P6 step 1 DESIGN MEASURED & SETTLED (CPU+GPU baselines); cone port design data-driven; NOW CODING: channel-major cone horizontal fans (increment A)
 
 ▶ **CURRENT FOCUS: coding the cone port, increment A — channel-major the two cone
