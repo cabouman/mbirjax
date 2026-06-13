@@ -82,8 +82,18 @@ SIZES = {
 CONE_SDD_OVER_CHANNELS = 4.0
 
 WARMUP = 1
-TRIALS = 3
-MAX_ITERATIONS = 15      # VCD iterations per timed recon (matches vcd_recon_scaling)
+# Timed trials per op.  The PROJECTORS are the primary scaling ruler (the
+# cone-specific change), are cheap, and benefit from a min-of-a-few; VCD is a
+# long correctness/INTEGRATION anchor (NOT a scaling ruler — few iters
+# under-amortize fixed per-recon overhead), so one timed pass suffices.
+TRIALS_BY_OP = {"forward": 3, "back": 3, "vcd_const": 1, "vcd_nonc": 1}
+# VCD iterations per timed recon.  Kept small: VCD here checks that the integrated
+# recon is correct/bounded, not how it scales (see the §8a ruler note).
+MAX_ITERATIONS = 3
+
+# Filename tag (distinguishes this clean re-run from the earlier swap-contaminated
+# capture so both can be compared).  Empty string -> no tag.
+RUN_TAG = "clean"
 
 # Deterministic seeds (timing reproducibility; values don't affect time/memory).
 INPUT_SEED = 0
@@ -283,7 +293,7 @@ def run_worker(argv):
     p.add_argument("--size", default=None, help="LxRxC, for --mode measure")
     p.add_argument("--device-counts", type=int, nargs="+", default=None)
     p.add_argument("--warmup", type=int, default=WARMUP)
-    p.add_argument("--trials", type=int, default=TRIALS)
+    p.add_argument("--trials", type=int, default=3)
     p.add_argument("--out-file", required=True)
     a = p.parse_args(argv)
     if a.mode == "setup":
@@ -349,7 +359,7 @@ def main():
         for label in size_labels:
             args = ["--worker", "--mode", "measure", "--op", op, "--size", label,
                     "--device-counts", *[str(n) for n in device_counts],
-                    "--warmup", str(WARMUP), "--trials", str(TRIALS)]
+                    "--warmup", str(WARMUP), "--trials", str(TRIALS_BY_OP[op])]
             res, rc = sc.run_worker(script, args, extra_env=worker_env)
             rows = (res or {}).get("rows") or []
             if not rows:
@@ -366,13 +376,14 @@ def main():
     results = {
         "kind": "cone_baseline", "geometry": GEOMETRY, "platform": plat,
         "device_label": dev_label, "mbirjax_path": mpath,
-        "warmup": WARMUP, "trials": TRIALS, "max_iterations": MAX_ITERATIONS,
+        "warmup": WARMUP, "trials_by_op": TRIALS_BY_OP, "max_iterations": MAX_ITERATIONS,
         "device_counts": device_counts, "sizes": size_labels, "ops": list(OPS),
-        "cone_sdd_over_channels": CONE_SDD_OVER_CHANNELS,
+        "cone_sdd_over_channels": CONE_SDD_OVER_CHANNELS, "run_tag": RUN_TAG,
         "correctness": corr, "dev2dev_safe": dev2dev_safe, "topology": topology,
         "grids_by_op": grids_by_op,
     }
-    sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"cone_baseline_{GEOMETRY}_{plat}.yaml"),
+    tag = f"_{RUN_TAG}" if RUN_TAG else ""
+    sc.save_yaml(os.path.join(sc.RESULTS_DIR, f"cone_baseline_{GEOMETRY}{tag}_{plat}.yaml"),
                  results)
     _print_summary(grids_by_op, size_labels)
     print("\nDone.")
