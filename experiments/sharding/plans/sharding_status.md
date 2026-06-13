@@ -19,7 +19,7 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-13b) — P6 cone port: increment A COMMITTED, B1 STAGED, forward-structure DECIDED (= C); NEXT = B2 (sharded driver: banded back + gather+monolithic forward)
+## HANDOFF (2026-06-13b) — P6 cone port: increment A COMMITTED, B1 COMMITTED, forward-structure DECIDED (= C); NEXT = B2 (sharded driver: banded back + gather+monolithic forward)
 
 ▶ **CURRENT FOCUS: P6 increment B2** — wire the cone sharded driver (back on the banded
 kernel; forward = per-pixel-batch all-gather + monolithic), delete
@@ -36,7 +36,7 @@ the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
   **Implication: no easy single-GPU projector speedup from kernel layout; the port's GPU
   value is CAPACITY (sharding).  Cone projectors scale ~N⁴ on GPU, fit 1024³ single-device;
   the wall is VCD ~marginal at 1024³ (§8a-results).**
-- **Increment B1 — banded cone kernels: DONE, STAGED (CPU-green).**  `cone_beam.py`:
+- **Increment B1 — banded cone kernels: DONE, COMMITTED (Greg).**  `cone_beam.py`:
   `back_project_one_view_to_band` + banded vertical fans (anchor fix: z from params S_real
   + global k = g0+L; global validity clip for inert padding), alongside the monolithic
   kernels.  Tests `tests/geometries/test_cone_banded.py` (circular + helical): back
@@ -66,19 +66,14 @@ the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
 - `cone_forward_structure_compare.py` (B vs C vs mono; the forward decision).
 
 ### Open items / suggested handoff tasks (next session)
-1. **Greg: commit B1** (staged: `cone_beam.py`, `tests/geometries/test_cone_banded.py`, the
-   plan docs).  Also unstaged & yours: `demo/demo_1_shepp_logan.py`, `dev_scripts/run_tests.sh`.
-2. **Remove the forward banded kernel** (`forward_project_band_to_one_view` /
+1. **Remove the forward banded kernel** (`forward_project_band_to_one_view` /
    `forward_vertical_fan_band_*`) now that forward = C, and adjust `test_cone_banded` (its
    forward band-decomposition + the adjoint use forward_band; back correctness is already
    covered by the back band-decomposition + the monolithic fwd/back adjoint).  Confirm with Greg.
-3. **B2**: single-device + sharded cone driver (banded back reduce-scatter; forward gather+
+2. **B2**: single-device + sharded cone driver (banded back reduce-scatter; forward gather+
    monolithic; delete `entries_per_cylinder_batch`); memory/timing vs §8a baseline.  Then
    B3 (de-closuring §7), B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding).
-4. **GPU confirmation (optional, Greg)**: `cone_forward_structure_compare.py` on 4 GPUs — does
-   C's pixel-batched gather stay bounded at 1024³?  (Decision already made; this is confirmation.)
-5. **GPU validation of B1** kernels (run `tests/geometries/test_cone_banded.py` on the cluster).
-6. Then C (parallel conversion + delete monolithic cone kernel + transitional branch),
+3. Then C (parallel conversion + delete monolithic cone kernel + transitional branch),
    D (translation, multiaxis), E (retirement cascade: `view_indices`, `main_device`/
    `sinogram_device`, RETIRE-AFTER sweep).
 
