@@ -219,26 +219,43 @@ Cone's horizontal fans have the SAME exposure and have NOT been fixed:
 - back `back_horizontal_fan_one_view_to_pixel_batch`: `sinogram_view[:, n].T`
   gather — same stride (cone_beam.py ~529).
 
-**MEASURED (§8a-split, 2026-06-13) — on GPU (the production target) the horizontal
-fan dominates BOTH directions, so channel-major is the #1 cone lever for FORWARD
-AND BACK.**  GPU H/V: forward ≈ 7→3.4, back ≈ 1.3→2.6 (back-horizontal is the
-*larger* stage on GPU — opposite to CPU, where back is vertical-bound and
-back-horizontal is ~2%).  So: **apply channel-major to BOTH cone horizontal fans**
-(forward scatter + back gather), A/B at the KERNEL level — CPU shows the forward win
-sharply (forward-horizontal owns CPU's ×49 cliff); GPU shows both.  The CPU
-back-vertical ×62 cliff does NOT reproduce on GPU (cache artifact), so it is not a
-channel-layout issue and not a GPU lever.  Translation/multiaxis horizontal fans get
-the same treatment at their ports.  **This is the first coding increment** (most
-value, best-localized, independently testable via the adjoint identity).
+**MEASURED — channel-major is a CPU win, GPU-NEUTRAL (corrected 2026-06-13 after the
+same-process ablation; see the LANDED note below for the full story).**  CPU: forward
+~13× at 256³ (cache-aliasing fix), back ~1×.  GPU: 1.00× both fans (atomic-/FLOP-bound,
+not stride-bound) — the horizontal fan DOES dominate on GPU (within-run H/V: forward
+≈7→3.4, back ≈1.3→2.6) but layout doesn't fix it.  **Still worth doing** (free CPU
+win, GPU-neutral, correct), applied to BOTH cone horizontal fans, but NOT the GPU
+lever it was first claimed to be.  Translation/multiaxis horizontal fans get the same
+treatment at their ports.
 
 **LANDED (increment A, 2026-06-13, CPU-green).**  Both cone horizontal fans converted
 to channel-major (transpose, stride-1 channel access; mirror of ParallelBeam).  Cone
 projector adjoint-identity tests (9) + cone FBP/FDK + cone VCD (incl. helical /
 anisotropic) all pass.  **Measured CPU win (fan-split):** FORWARD horizontal 256³
 **102.8 → 9.05 ms/view (~11×)**, cliff gone (scaling ×47.6 → ×9.7) — forward is now
-vertical-bound on CPU.  Back-horizontal was already ~2% on CPU (2.1→2.0, unchanged);
-its win is on GPU where it was the dominant stage.  **GPU re-run (Greg): expect the
-analogous win for BOTH directions** (the GPU's dominant stage).
+vertical-bound on CPU.  Back-horizontal was already ~2% on CPU (unchanged).
+
+**Attribution discipline (Greg's catch).**  The cross-RUN before/after GPU
+comparison is CONFOUNDED: the pre/post fan-split runs showed even UNTOUCHED code
+(forward-vertical) moving ~1.9×, so GPU run-to-run variance swamps a 2× claim.  The
+clean ruler is a **same-process old-vs-new ablation** (`cone_channel_major_ablation.py`)
+— both kernel layouts timed in ONE run, interleaved, identical inputs, so run-level
+variance cancels; it also asserts old≈new (correctness).
+- **CPU (variance-free, done):** FWD horiz old/new = 2.2× / 2.4× / **12.95×** at
+  64³/128³/256³; BACK horiz ≈ 1.0× (CPU back is vertical-bound, gather not channel-
+  bound); old≈new True everywhere.  So channel-major DEFINITELY helps forward on CPU
+  (the 256³ aliasing case), confirmed without the cross-run confound.
+- **GPU (variance-free, BUILD-VERIFIED — REFUTES the cross-run "2×"):** old/new =
+  **1.00–1.01×** for BOTH fans at 256³/512³/1024³; old≈new True.  Confirmed on a
+  FRESH editable install (the ablation's build-currency check reported installed
+  kernels = channel-major CURRENT, repo path — NOT a stale build, which was the one
+  remaining doubt).  **Channel-major does NOTHING on GPU**; XLA already assigns the
+  optimal physical layout for the scatter/gather there, so the manual transpose is
+  redundant.  The earlier cross-run "~2×" was entirely run-to-run variance (Greg's
+  catch).
+- **VERDICT: keep channel-major** — it's a real CPU win (forward ~13×), GPU-NEUTRAL
+  (1.00×, no regression), and correct (tests + old≈new).  But it is NOT a GPU lever;
+  §8a-design item 1 corrected accordingly.
 
 ---
 
@@ -538,11 +555,23 @@ VCD ~marginal).
 ### 8a-design — the data-driven cone design (supersedes the §1/§2/§4/§5 lean)
 
 Settled by CPU+GPU measurement, GPU weighted (production target):
-1. **Channel-major both horizontal fans** (forward + back) — the dominant GPU
-   stage; the single biggest lever.  Kernel-level A/B at the port.
+1. **Channel-major both horizontal fans — DONE (increment A), but it is a CPU win,
+   NOT a GPU lever.**  Same-process ablation (`cone_channel_major_ablation.py`):
+   forward ~13× on CPU at 256³ (cache-aliasing fix), but **1.00× on GPU** (the
+   channel scatter/gather is atomic-/FLOP-bound there, not stride-bound).  KEEP it —
+   free CPU win, GPU-neutral, correct (tests + old≈new) — but the earlier "#1 GPU
+   lever" claim was WRONG (it came from a cross-RUN comparison that GPU run-to-run
+   variance confounded; the same-process ablation refuted it).
+   **Consequence: there is NO easy single-GPU projector speedup from kernel layout.**
+   On GPU the projectors already scale cleanly (~N⁴, no cliff) and the horizontal fan
+   dominates for reasons layout can't fix.  So the cone port's GPU value is CAPACITY
+   (sharding lets VCD exceed one GPU at 1024³+), not kernel micro-opt — increment B
+   is about correctness + the sharding structure, not GPU speed.
 2. **Structure = Option B, no row window**: horizontal-once over full rows
    (pixel-batched to bound the pixels×rows cylinder), band the slice axis only for
    the multi-device reduce-scatter (back) and accumulate per band (forward, §4).
+   (Option B over the window still holds: horizontal dominates on GPU even though
+   layout doesn't fix it, so recomputing it per band — the window — is still bad.)
 3. **No fusion / sino-accumulator restructure** (no measured time win).
 4. **Delete `entries_per_cylinder_batch`** (§6) — simplification + the band loop is
    needed for sharding anyway; not a GPU perf fix.
@@ -575,27 +604,29 @@ Settled by CPU+GPU measurement, GPU weighted (production target):
 
 ---
 
-## 10. Decisions (resolved with Greg 2026-06-12) + what's left to measure
+## 10. Decisions — CANONICAL design is §8a-design (this section is history)
 
-Resolved:
-1. **Cone first**, land well before other geometries.  ✅
-2. **Row window from day one.**  ✅
-3. **W from volume-wide worst-case magnification** for cone/multiaxis; translation
-   may need per-view-bucket W (decide at its port, §2 caveat).  ✅
-4. **Forward kernel returns a band contribution `(r0, window)`**; assembly resolves
-   overlap by ADD; kernel stays pure.  Provisional — watch cone-angle sweeps. ✅
-5. **One unified assembly path** intended (scatter-add accumulator, parallel =
-   degenerate window).  `_forward_band_assembly` flag is the FALLBACK only if the
-   parallel A/B (stage A) shows concat genuinely wins.  ✅
-6. **De-closure preserves only the two top-level signatures**
-   (`sparse_forward_project` / `sparse_back_project`).  Everything else in
-   projectors.py assembly — including the `forward_project_pixel_batch` /
-   `back_project_view_batch` exposed attributes — is a simplification target, not
-   preserved verbatim.  ✅
+The original 2026-06-12 decision list (row window from day one; forward returns
+`(r0, window)`; unified scatter-add assembly; window W from worst-case mag) was
+SUPERSEDED by the 2026-06-13 CPU+GPU measurements.  Read **§8a-design** for the
+current design.  What changed and why:
+- **Row window — DROPPED** (§2): it was premised on the horizontal fan being the
+  band-recompute cost; the fan-split showed back is vertical-bound on CPU and on GPU
+  the window would recompute the dominant horizontal stage.  Option B (horizontal-
+  once) replaces it.
+- **Forward `(r0, window)` return / fused accumulator — DROPPED**: no window, and
+  fusion showed no time win.  Forward just accumulates full-view band contributions
+  (§4).
+- **Channel-major "#1 GPU lever" — CORRECTED to CPU-only** (§5b / §8a-design 1): the
+  same-process ablation showed 1.00× on GPU (the cross-run 2× was variance).
+- **Still standing:** cone-first; de-closure preserves only the two top-level
+  signatures; the (g0,L) banded VERTICAL interface; the anchor rule.
 
-Left to MEASURE (the "evaluate as we go" items):
-- Stage 0 cone baselines (CPU + GPU) — the no-regression reference table (§8a).
-- Stage A parallel forward concat-vs-scatter-add A/B — decides unify vs flag (§4).
-- Cone window-vs-full-rows ablation + horizontal-fan-blowup-absent scaling check.
-- Channel-major cone horizontal fans A/B (CPU, §5b).
-- First-call trace/lower/compile instrumentation at production size (§7, GPU).
+Methodology lesson banked: **before/after across separate runs is not a
+single-variable ablation when run-to-run variance is large** — confirm with a
+same-process old-vs-new ablation, and use untouched-code stability as the
+variance gauge.  (Cost me a wrong "GPU #1 lever" claim; caught by Greg.)
+
+Remaining measurements (as we go): increment B cone banded-vertical correctness +
+the multi-device sharded scaling (capacity at 1024³+); first-call trace/lower/compile
+instrumentation at production size (§7, GPU).

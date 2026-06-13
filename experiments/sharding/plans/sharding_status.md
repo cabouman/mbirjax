@@ -29,11 +29,15 @@ Full record + data: **`plans/p6_projector_rework_proposal.md`** (read §8a-desig
 settled design; §8a/§8a-split for the data; §1/§2/§4 rewritten to match).
 
 ### The design, settled by data (GPU = production target)
-- **Channel-major BOTH cone horizontal fans is the #1 lever.**  On GPU the horizontal
-  (channel scatter/gather) fan DOMINATES both directions (forward H/V ≈ 7→3.4, back
-  H/V ≈ 1.3→2.6 — back-horizontal is the *larger* GPU stage, opposite to CPU).  This is
-  the parallel-beam channel-major transpose ported to cone's `forward_horizontal_fan_*`
-  (scatter) and `back_horizontal_fan_*` (gather).  **= increment A, now coding.**
+- **Channel-major BOTH cone horizontal fans — DONE (increment A), a CPU win, NOT a
+  GPU lever** (corrected 2026-06-13 by a same-process ablation).  CPU forward ~13× at
+  256³ (cache-aliasing fix); **GPU 1.00×** (channel scatter/gather is atomic-/FLOP-
+  bound, not stride-bound).  The earlier "GPU #1 lever, ~2×" was a CROSS-RUN artifact
+  (GPU run-to-run variance ~1.9× even on untouched code — Greg's catch); the
+  same-process old-vs-new ablation (`cone_channel_major_ablation.py`) refuted it.
+  KEEP it (free CPU win, GPU-neutral, correct: tests + old≈new).  **Implication: no
+  easy single-GPU projector speedup from kernel layout — the port's GPU value is
+  CAPACITY (sharding), and cone projectors already scale cleanly (~N⁴) on GPU.**
 - **Option B, NO row window:** compute the horizontal fan ONCE per view (pixel-batched
   internally to bound the pixels×rows transient — `pixel_batch_size` in projectors.py),
   band only the VERTICAL fan by `(g0, L)` for the multi-device reduce-scatter.  The
