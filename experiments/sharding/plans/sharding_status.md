@@ -19,6 +19,58 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-13) — P6 step 1 DESIGN MEASURED & SETTLED (CPU+GPU baselines); cone port design data-driven; NOW CODING: channel-major cone horizontal fans (increment A)
+
+▶ **CURRENT FOCUS: coding the cone port, increment A — channel-major the two cone
+horizontal fans.**  The projector-rework design was reviewed with Greg, then
+**measured** (CPU + GPU single-device cone baselines + a horizontal/vertical fan-split
+micro-bench).  The measurements OVERTURNED several assumptions and SIMPLIFIED the design.
+Full record + data: **`plans/p6_projector_rework_proposal.md`** (read §8a-design for the
+settled design; §8a/§8a-split for the data; §1/§2/§4 rewritten to match).
+
+### The design, settled by data (GPU = production target)
+- **Channel-major BOTH cone horizontal fans is the #1 lever.**  On GPU the horizontal
+  (channel scatter/gather) fan DOMINATES both directions (forward H/V ≈ 7→3.4, back
+  H/V ≈ 1.3→2.6 — back-horizontal is the *larger* GPU stage, opposite to CPU).  This is
+  the parallel-beam channel-major transpose ported to cone's `forward_horizontal_fan_*`
+  (scatter) and `back_horizontal_fan_*` (gather).  **= increment A, now coding.**
+- **Option B, NO row window:** compute the horizontal fan ONCE per view (pixel-batched
+  internally to bound the pixels×rows transient — `pixel_batch_size` in projectors.py),
+  band only the VERTICAL fan by `(g0, L)` for the multi-device reduce-scatter.  The
+  detector-row WINDOW (the old "load-bearing cone decision") was MEASURED OUT — it would
+  recompute the dominant horizontal stage per band.
+- **No fusion / sino-accumulator restructure** (fan-split: no time win; even hurts at 256³).
+- **Delete `entries_per_cylinder_batch`** — a simplification + the band loop needs it gone
+  anyway; NOT a GPU perf fix (the CPU back-vertical ×62 cliff was a CACHE artifact, gone on
+  GPU — clean ~N⁴ there).
+- Anchor rule (params, not band length) + de-closuring (§7) unchanged from the proposal.
+- **Capacity wall is at VCD, not projectors:** single-device cone projectors fit 1024³ on
+  one H100 (~16 GB); full VCD 1024³ is ~marginal (~65 GB, vcd_const OOM'd / vcd_nonc fit) —
+  so cone needs multi-GPU for VCD at 1024³+.
+
+### Measurement tooling (staged; experiments/, gitignored results/)
+- `scaling_tests/cone_baseline_scaling.py` — single-device cone forward/back/vcd_const/
+  vcd_nonc baseline (reuses scaling_common; `GEOMETRY` cone|parallel; CPU+GPU sizes wired).
+- `scaling_tests/cone_fan_split_microbench.py` — horizontal vs vertical fan split + per-view
+  scaling + fused-vs-separate; CPU+GPU (adaptive view batch, per-view normalized).
+- Baselines recorded as tables in the proposal §8a / §8a-split (binaries don't go on github).
+
+### Cone baseline headlines (no-regression reference)
+- GPU H100 single-device: forward 256³/512³/1024³ = 0.30/4.8/79 s (peak 1.3/6.0/16 GB);
+  back = 0.16/2.3/36 s (1.2/5.6/17 GB); VCD 3-iter 256³/512³ = ~3/30 s; 1024³ ~marginal.
+- Clean ~N⁴ projector scaling on GPU, NO cliff.  (CPU has a back-vertical ×62 cliff at 256³
+  that is cache-specific — does not appear on GPU.)
+
+### NEXT (in order)
+- **A (coding now):** channel-major both cone horizontal fans; gate = cone adjoint identity
+  (test_projectors) + allclose vs current; measure with the fan-split bench; GPU re-run (Greg).
+- **B:** module-level banded drivers + cone two-stage kernels (banded vertical + horizontal-once,
+  anchor, global clip, forward accumulation, entries_per_cylinder_batch deletion, de-closuring);
+  `_supports_sharding()=True` for cone; transitional "has banded kernels?" branch.
+- **C:** parallel conversion + old-driver deletion.  **D:** translation, multiaxis.  **E:** retirement cascade.
+
+---
+
 ## HANDOFF (2026-06-12) — BETA WRAPPED: PR to prerelease OPEN for team testing; P5 + adjacent tasks COMPLETE; tests 66 s; NEXT = P6 (start with the scoping proposal)
 
 ▶ **CURRENT FOCUS (next session): P6, step 1 — the projector-rework scoping proposal.**

@@ -343,8 +343,15 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
+        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
+        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
+        # power-of-2 num_det_channels column stride aliases the CPU cache, and the
+        # channel scatter is (measured) the dominant cone-forward cost on both CPU and
+        # GPU; the contiguous write avoids it.  Transpose back to (rows, channels) on
+        # return (one cheap pass, fused by XLA) so the output layout is unchanged.  This
+        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view.
+        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
@@ -353,9 +360,9 @@ class ConeBeamModel(TomographyModel):
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
-        return sinogram_view
+        return sinogram_view_T.T
 
     @staticmethod
     def forward_vertical_fan_one_pixel_to_one_view(voxel_cylinder, pixel_index, single_view_params, projector_params):
@@ -515,6 +522,15 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
+        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows)
+        # up front so the per-pixel channel gather reads a CONTIGUOUS row (stride 1)
+        # instead of a column of stride num_det_channels.  A power-of-2 num_det_channels
+        # column stride aliases the CPU cache, and the channel gather is (measured) the
+        # dominant cone-back cost on GPU; the contiguous access avoids it.  This is the
+        # adjoint of the forward kernel's channel-major scatter (mirror of
+        # ParallelBeamModel.back_project_one_view_to_pixel_batch).
+        sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
+
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
 
@@ -526,7 +542,7 @@ class ConeBeamModel(TomographyModel):
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
+            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
 
         return det_voxel_cylinder
 

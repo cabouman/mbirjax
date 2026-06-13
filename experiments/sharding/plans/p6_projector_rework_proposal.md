@@ -55,108 +55,74 @@ this design just has to not block them.
 
 ---
 
-## 1. The banded kernel interface
+## 1. The banded projector interface (data-driven — canonical statement in §8a-design)
 
-Each geometry replaces its two kernels with banded forms.  Shared conventions:
-`g0` is a **traced** global slice index; `L` is **static** (≤2 values from
-`_balanced_slice_bounds`, so ≤2 programs); the sinogram view passed to the back
-kernel is the **full resident view** (all rows — a view-owner always holds every
-row of its own views); each geometry maps the band to the rows it needs
-*internally*.
+**This section was rewritten 2026-06-13 after the CPU+GPU fan-split measurements
+(§8a-split).**  The original design (a detector-row WINDOW + a forward CONTRIBUTION
+return + an optional fused/sino-accumulator) was *measured out*: on GPU the
+horizontal fan dominates BOTH directions and the row window would recompute it per
+band (~2× the dominant stage), while fusion showed no time win.  The window is
+demoted to a "considered, measured out" note (§2); what remains is the durable part.
 
-**Back** (per view): `back_project_one_view_to_band(sinogram_view, pixel_indices,
-single_view_params, projector_params, g0, num_band_slices, coeff_power)` →
-`(num_pixels, L)`, exactly global slices `[g0, g0+L)`.
+The cone port replaces each geometry's monolithic per-view kernel with a **two-stage
+decomposition** that bands the VERTICAL (slice) fan and computes the HORIZONTAL
+(channel) fan ONCE per view (Option B):
 
-**Forward** (per view): `forward_project_band_to_one_view(band_values,
-pixel_indices, single_view_params, projector_params, g0)` where `band_values` is
-`(num_pixels, L)` (L static via shape).  **Returns a band CONTRIBUTION**, not a full
-view: the window rows `(W, C)` plus the traced offset `r0` (the rows the band
-projects into — see §2).  The kernel is **pure** (band in → contribution out); the
-caller's assembly resolves band-to-band overlap by ADD (§4 / overlap note below).
-Parallel is the degenerate case (`r0 = g0`, `W = L`, no margin, disjoint windows).
+- **Horizontal fan — once per view, channel-major (§5b).**  The dominant GPU stage
+  (the channel scatter/gather).  Back: sino `(rows×channels)` → det cylinder
+  `(pixels×rows)` (a channel gather).  Forward: det cylinder `(pixels×rows)` → view
+  `(rows×channels)` (a channel scatter).  Pixel-batched INTERNALLY
+  (`pixel_batch_size`, `projectors.py` — see the layer note below) so the
+  `pixels×rows` transient is bounded — **no row window needed**.
+- **Vertical fan — banded by global slice `(g0, L)`.**  `g0` traced, `L` static
+  (≤2 values from `_balanced_slice_bounds` → ≤2 programs).  Back: det cylinder →
+  `(pixels, L)` for global slices `[g0, g0+L)`.  Forward: a `(pixels, L)` band →
+  its contribution to the view, ACCUMULATED across bands (§4 — input-side banding
+  needs a sum).  Global slice `k = g0 + k_local`; the physical-coordinate anchor
+  comes from PARAMS (§3), never from the band length.
 
-Per-geometry internals:
+Banding the vertical fan is exactly what the multi-device reduce-scatter needs (the
+recon is slice-sharded): each view-owner computes its horizontal det cylinder once,
+then per slice-band runs the vertical fan → `(pixels, L)` partial → summed onto the
+slice-owner.  Parallel beam is the degenerate case (vertical fan = the slice=row
+identity; its "band" is the existing row-crop).
 
-| geometry | back: band → rows | forward: band → window |
-|---|---|---|
-| parallel | `dynamic_slice` rows `[g0:g0+L)` of the view (replaces today's *external* row-crop and the kernel's input-length sizing); body unchanged | emits rows `[g0:g0+L)` → returns `(L, C)` at `r0=g0`; windows are disjoint so the add degenerates to writes |
-| cone, translation (gather-form vertical fan) | vertical fan outputs global slices `k = g0 + arange(L)`, gathering from the row **window** (§2); horizontal fan runs on the window only | vertical fan scatters the band's slices into the row window; horizontal fan produces the window's `(W, C)` rows; returned with `r0` |
-| multiaxis (scatter-form) | same window structure | its slice loop runs `k = g0 + local`, scattering into the window |
+**Batching layers (the distinction Greg flagged):** *slices* are banded OUTSIDE, in
+TomographyModel's sharded driver (`_back_project_all_bands`), for the reduce-scatter;
+*pixels* are batched INSIDE the projector functions (`pixel_batch_size_for_vmap`, via
+`concatenate_function_in_batches`/`sum_function_in_batches` in `projectors.py`),
+which is what bounds the `pixels×rows` horizontal transient to
+`pixel_batch_size × num_det_rows`.  Option B leans on the existing inside knob — no
+new TomographyModel-level pixel loop (the legacy `transfer_pixel_batch_size` host
+loop retires with the legacy single-device path).
 
-**Overlap (the provisional point, Greg to watch).**  Adjacent forward bands project
-into row windows that OVERLAP (by the psf blur + the window margin; the overlap grows
-with cone angle).  Resolution: the kernel returns only its band's contribution, and
-assembly does `acc[:, r0:r0+W, :] += window` — overlapping rows from adjacent bands
-simply both add, which is exactly correct because forward projection is linear in the
-slices.  So the kernel never takes an accumulating view as input (keeps it pure and
-keeps the adjoint round-trip gate clean).  **Accepted for now**; if a cone parameter
-sweep shows large deviation from parallel (assembly-add cost or memory), the
-held-in-reserve alternative is a stateful kernel taking a donated accumulator and
-adding internally (fuses the pass, at the cost of a stateful, harder-to-test kernel).
-
-The generic driver change: `_back_project_local_views_to_band` passes `(g0, L)`
-instead of row-cropping (`data[:, g0:g1, :]` disappears from tomography_model);
-`_forward_project_all_bands` calls the unified scatter-add assembly (§4).  Back
-assembly (concat of bands per slice-owner) is output-side banding and stays valid
-for every geometry — unchanged (the band sweep already settled back's assembly).
+**Implementation note (why this is a kernel restructure, not a flag).**  The per-view
+kernel is vmapped by the shared generic layer (`projectors.py`
+`sparse_back_project_view_batch`), so splitting horizontal-once from banded-vertical
+changes the generic projector call structure and every geometry's kernel
+decomposition.  Build it on cone first (§8 staging); parallel keeps its row-crop
+band until it converts.
 
 ---
 
-## 2. The detector-row window (the load-bearing cone decision)
+## 2. Detector-row window — CONSIDERED, MEASURED OUT (2026-06-13)
 
-**The cost problem.**  Today's sharded band loop hands the kernel the full view.
-Parallel beam's row-crop makes per-band work ∝ L, so total work stays ∝ S.  For
-cone, the horizontal fan runs over **all** detector rows and is band-independent —
-naive banding recomputes it once per band.  Bands per recon: ~n_dev² multi-device,
-and ~S/L single-device under the compute cap once the single-device path unifies
-onto band-looping (1024³: num_pixels ≈ 1M ⇒ L ≈ 95 ⇒ ~11 bands).  The horizontal
-and vertical fans are comparable cost (both ~num_pixels × extent × psf), so naive
-banding multiplies roughly half the kernel cost by the band count — a 5–15×
-back-projection regression.  Banding cone without restricting rows is not viable.
+The original design made a per-band detector-row window `[r0, r0+W)` the
+"load-bearing cone decision" — the premise being that the horizontal fan is
+band-independent and expensive, so naive per-band banding would recompute it (a
+5–15× regression) and the window restricts it to `W` rows.
 
-**The fix.**  A band of slices `[g0, g0+L)` projects, for one view, into a
-bounded detector-row window `[r0, r0+W)`:
+**The fan-split measurement (§8a-split) refuted the premise and the fix:**
+- The horizontal fan is NOT the back-projection bottleneck the window targeted —
+  on CPU it is ~2% of back (vertical dominates); on GPU it is the *dominant* stage
+  but the window would RECOMPUTE it per band (~2× the dominant cost).
+- So instead of a window, **compute the horizontal fan ONCE per view (Option B)**
+  and bound its transient by the existing internal pixel batching (§1).  No window,
+  no `r0`/`W` machinery, no per-band horizontal recompute, cone-angle-independent.
 
-- `r0` — **traced**, computed in-kernel from `g0`, the view params (helical
-  z-shift enters here, so per-view shifts cost no recompile), and the volume-wide
-  magnification bounds.
-- `W` — **static**, computed at `get_psf_radius()` time from the worst-case
-  (volume-wide) magnification already derived there:
-  `W ≈ ceil(L · max_magnification · Δ_slice/Δ_det_row) + 2·psf_margin + 1`.
-  One W per L value ⇒ still ≤2 programs.
-  *(The existing `slice_range_length` — computed, shipped in geometry params, and
-  consumed by NOTHING — is exactly this quantity sized for
-  `entries_per_cylinder_batch`; it gets re-derived for L and finally used, or
-  retired.)*
-
-Kernel flow (back): `dynamic_slice` rows `[r0, r0+W)` → horizontal fan on
-`(W, C)` → `(P, W)` det window → vertical fan gathers within the window, with
-validity masks doing the *precise* work (row in-window ∩ `[0, R)`; slice
-`k < S_real`).  The window is only a conservative superset — correctness never
-depends on its tightness.  Forward is the transpose: vertical fan scatters into a
-`(P, W)` window, horizontal fan → `(W, C)`, returned with `r0` for assembly.
-
-Conservatism: volume-wide max/min magnification makes W loose by roughly the
-mag ratio `(D+w)/(D−w)` — typically tens of percent of L, plus the psf margin.
-That bounds the wasted work at far below the naive blowup; per-pixel-batch
-tightening is a later optimization if it ever shows up.
-
-**Decided: build the window in from day one.**  The naive kernel is not enough
-simpler to justify a throwaway, and its measurements would be discarded.
-Validation handles the risk: implement the window as an in-kernel choice with a
-"full rows" setting (`r0=0, W=R`) so window-vs-full-rows is a cheap
-single-variable ablation, gated by tight allclose.
-
-**One bit of plumbing for everything (Greg).**  The window machinery (traced `r0`,
-static `W`, the `dynamic_slice`/scatter at `r0`) is the SAME for back and forward
-and for every geometry; parallel beam is the degenerate window (`r0=g0`, `W=L`).
-So the intent is one shared window/assembly code path, not a cone-only branch —
-this is the same unification as §4.  The cost to check is whether the degenerate
-window adds measurable overhead to parallel beam vs. its current row-crop; that is
-exactly the parallel A/B in §4 (and the window's "full rows" toggle gives the
-ablation knob).  If parallel regresses unacceptably, parallel keeps its row-crop
-and the window stays the z-based path — but the expectation is one path.
+What carried over from the window analysis (still true, now elsewhere): the anchor
+rule (§3) and the fact that the dead `slice_range_length` (computed, shipped, used
+by nothing) is retired with `entries_per_cylinder_batch` (§6).
 
 **Translation caveat (record now, decide at the translation port).**  W from a
 volume-wide worst-case magnification assumes magnification does not vary wildly
@@ -192,39 +158,29 @@ closure/static.
 
 ---
 
-## 4. Forward-band assembly — one unified scatter-add accumulator
+## 4. Forward-band assembly — accumulate (no window)
 
-Forward banding is input-side, so a band does NOT own a fixed row range of the
-output: view-owners must SUM per-band contributions.  **Direction (reviewed):
-unify on ONE assembly path for every geometry** instead of a concat/accumulate
-split.
+Forward banding is input-side: a band of input slices `(pixels, L)` does NOT map to
+a fixed row range of the output (cone: overlapping, pixel-dependent rows), so the
+view-owner must SUM per-band contributions.  With Option B (no window, §1/§2) each
+band's forward kernel produces a full view-shaped contribution `(rows, channels)`
+for its slices (zero outside the rows those slices reach), and the view-owner
+ACCUMULATES across bands:
+- `view += forward_band(band_k)` over the bands.  Since the horizontal fan is
+  computed inside the per-band forward (channel-major), and the contributions sum,
+  no window/`r0` bookkeeping is needed — overlapping rows from adjacent bands simply
+  both add (forward is linear in the slices).
+- Parallel beam keeps its existing row-concat assembly (the slice=row identity
+  makes each row a single producer; no add pass).  The earlier "unify parallel onto
+  scatter-add" A/B is DROPPED — the fan-split showed no fusion/restructure time win
+  and parallel's concat is already good; not worth disturbing the working path.
+- The padded-view mask stays POST-assembly (already designed to survive this).
+  **Cone needs NO row padding** (rows aren't tied to slices; `_sino_row_padding`
+  stays ParallelBeam-only); a zero (padded) slice contributes a zero band.
 
-- **Unified accumulator.**  Each view-owner allocates its `(V_local, R, C)`
-  view-shard accumulator once (zeros — this is just its output shard, already in
-  the memory budget), and per band scatter-adds the kernel's `(V_local, W, C)`
-  window at the per-view `r0` under a **donated jit** (`donate_argnums` on the
-  accumulator).  Donation makes the per-band update in-place — no per-band
-  full-shard copy.  These are local single-device arrays, so they free on
-  refcount (no NamedSharding reference-cycle exposure; the donation is for the
-  copy, not the leak).  `r0` varies per view (helical/translation z-shift), so
-  the update is vmapped over the view batch with per-view offsets.
-- **Parallel is the degenerate case**: `r0 = g0`, `W = L`, windows disjoint, so
-  the scatter-add reduces to plain writes onto zeros — no double-counting, and it
-  *replaces* today's concat path, which holds the full row-band list AND allocates
-  the concatenated output on top (a ~2× transient at assembly).  So unification
-  plausibly *improves* parallel forward memory while deleting a code path.
-- **The gate (the A/B Greg asked for).**  Before committing to unification, run
-  the single-variable ablation on PARALLEL forward: concat (today) vs. scatter-add
-  accumulator, two sizes × {1,2,4} devices, time + `peak_bytes_in_use`, tight
-  allclose on output.  If scatter-add is in the noise or better → unify and delete
-  the concat path.  If concat genuinely wins on parallel → keep a
-  `_forward_band_assembly = 'concat' | 'accumulate'` flag (concat for parallel,
-  accumulate for z-based) as the documented fallback.  Either way the padded-view
-  mask stays POST-assembly (already designed to survive this).
-- **Cone needs NO row padding** (rows aren't tied to slices; `_sino_row_padding`
-  stays ParallelBeam-only).  Forward inertness of padded slices is free: their
-  values are identically zero (forced-zero invariant) and a zero band contributes
-  a zero window.
+(`donate_argnums` on the accumulator is the right in-place mechanism if/when the
+band loop is jitted; in the host-level band loop it is a per-band add into the
+local view-shard, freed on refcount — no NamedSharding cycle.)
 
 ---
 
@@ -263,12 +219,26 @@ Cone's horizontal fans have the SAME exposure and have NOT been fixed:
 - back `back_horizontal_fan_one_view_to_pixel_batch`: `sinogram_view[:, n].T`
   gather — same stride (cone_beam.py ~529).
 
-Since the banded port rewrites these fans anyway (the horizontal fan now runs on
-the `(W, C)` window), **carry the channel-major layout into cone from the start**
-and A/B it at the KERNEL level on CPU (where the aliasing bites), with a GPU sanity
-check.  The vertical-fan accesses are already contiguous (per-pixel detector
-columns), so the horizontal fans are the whole story.  Translation/multiaxis
-horizontal fans get the same treatment at their ports.
+**MEASURED (§8a-split, 2026-06-13) — on GPU (the production target) the horizontal
+fan dominates BOTH directions, so channel-major is the #1 cone lever for FORWARD
+AND BACK.**  GPU H/V: forward ≈ 7→3.4, back ≈ 1.3→2.6 (back-horizontal is the
+*larger* stage on GPU — opposite to CPU, where back is vertical-bound and
+back-horizontal is ~2%).  So: **apply channel-major to BOTH cone horizontal fans**
+(forward scatter + back gather), A/B at the KERNEL level — CPU shows the forward win
+sharply (forward-horizontal owns CPU's ×49 cliff); GPU shows both.  The CPU
+back-vertical ×62 cliff does NOT reproduce on GPU (cache artifact), so it is not a
+channel-layout issue and not a GPU lever.  Translation/multiaxis horizontal fans get
+the same treatment at their ports.  **This is the first coding increment** (most
+value, best-localized, independently testable via the adjoint identity).
+
+**LANDED (increment A, 2026-06-13, CPU-green).**  Both cone horizontal fans converted
+to channel-major (transpose, stride-1 channel access; mirror of ParallelBeam).  Cone
+projector adjoint-identity tests (9) + cone FBP/FDK + cone VCD (incl. helical /
+anisotropic) all pass.  **Measured CPU win (fan-split):** FORWARD horizontal 256³
+**102.8 → 9.05 ms/view (~11×)**, cliff gone (scaling ×47.6 → ×9.7) — forward is now
+vertical-bound on CPU.  Back-horizontal was already ~2% on CPU (2.1→2.0, unchanged);
+its win is on GPU where it was the dominant stage.  **GPU re-run (Greg): expect the
+analogous win for BOTH directions** (the GPU's dominant stage).
 
 ---
 
@@ -278,13 +248,14 @@ The outer band loop subsumes the internal chunking once single-device also drive
 band-looping (the trivial-placement unification, already true for ParallelBeam):
 
 - cone back `create_voxel_cylinder_slices` (lax.map over slice chunks) — gone;
-  the band IS the chunk.
-- cone forward `create_det_column_rows` (lax.map over det-row chunks) — replaced
-  by the row window (W is band-sized; no internal chunking needed).
+  the band IS the chunk (the vertical fan is banded by `(g0, L)`).
+- cone forward `create_det_column_rows` (lax.map over det-row chunks) — gone; the
+  vertical fan produces the band's full-row contribution (no internal chunking).
 - translation + multiaxis equivalents — same.
-- The attribute, its geometry-params entries (cone/translation/multiaxis), and
-  `slice_range_length` (cone) all retire; `get_psf_radius` keeps computing the
-  magnification bounds (now consumed by W).
+- The attribute, its geometry-params entries (cone/translation/multiaxis), and the
+  dead `slice_range_length` (cone — computed, shipped, used by nothing) all retire.
+- NOTE: on GPU the chunking is NOT a perf cliff (the CPU ×62 was cache-specific);
+  this deletion is a SIMPLIFICATION + the band loop is needed for sharding anyway.
 
 Memory audit: per-band working set = `(P_batch, W)` det window +
 `(P_batch, L)` band output, times the view-batch factor — bounded by the existing
@@ -335,37 +306,31 @@ dominates first-call cost at test sizes.
 
 ## 8. Staging — CONE FIRST (each stage lands CPU-green for review)
 
-Cone is where all the design risk lives (window, accumulation, anchor), so we
-confront it first and land it WELL before touching the other geometries.  The new
-module-level banded drivers are built as cone's drivers; ParallelBeam keeps its
-existing closure-based row-crop drivers behind a transitional branch until cone
-validates, then converts and the old drivers are deleted (don't let two stacks
-linger).
+Cone is where the value and the risk live, so we confront it first and land it WELL
+before touching the other geometries.  Staging revised 2026-06-13 to the data-driven
+design (no window, no fusion; channel-major is the #1 lever).
 
-0. **Baselines first** (§8a): capture cone single-device time + memory on CURRENT
-   code, CPU (local) and GPU (cluster), recorded as a table in this doc.  These are
-   the "no regression (not literal)" reference.
-A. **Parallel forward assembly A/B** (§4 gate): concat vs scatter-add accumulator
-   on ParallelBeam, the window's "full rows" toggle as the knob.  Decides whether
-   §4/§2 unify into one path or keep the `_forward_band_assembly` fallback.  Cheap,
-   isolates the one parallel-perf question before cone work starts.
-B. **Module-level banded drivers + cone banded kernels** — the (g0,L) interface,
-   the row window (with the full-rows toggle), the anchor rule, the global clip,
-   the unified scatter-add assembly, channel-major cone horizontal fans, and
-   `entries_per_cylinder_batch` deletion (cone only).  `_supports_sharding()=True`
-   for cone.  Transitional branch: sharded orchestration routes
-   "geometry has banded kernels?" to the new driver, else the existing parallel
-   row-crop path (tagged RETIRE-AFTER).  CPU-green; then GPU validation at scale
-   (stage2 pattern, cone edition) — including the scaling check that the
-   horizontal-fan blowup is absent and the window-vs-full-rows ablation.
-C. **Parallel conversion + old-driver deletion** — once cone is validated, port
-   ParallelBeam onto the banded drivers (degenerate window), delete the closure
-   drivers and the transitional branch, and confirm trace-sharing across model
-   instances (program-cache hits) + full suite green.  Behavior gate: tight
-   allclose vs the recorded parallel behavior (never exact — project rule).
-D. **Translation port**, then **multiaxis** (its own `_supports_sharding` flip —
-   it extends TomographyModel directly); translation may need per-view-bucket W
-   (§2 caveat) — decide with its own measurement.
+0. **Baselines — DONE** (§8a): cone single-device CPU + GPU captured; the GPU table
+   is the no-regression reference and resolved the design (§8a-design).
+A. **Channel-major the cone horizontal fans (FIRST coding increment)** — apply the
+   parallel-beam channel-major transpose to BOTH cone horizontal fans (forward
+   scatter `forward_horizontal_fan_*`, back gather `back_horizontal_fan_*`).  The
+   #1 GPU lever, well-localized (2 functions), independently testable (the existing
+   cone adjoint identity + allclose vs current).  No structural change yet.  Land
+   CPU-green; measure the win with the fan-split bench (CPU) + GPU re-run.
+B. **Module-level banded drivers + cone two-stage kernels** — the `(g0, L)` banded
+   VERTICAL fan + horizontal-once (Option B, §1), the anchor rule (§3), the global
+   validity clip (§5), forward accumulation (§4), `entries_per_cylinder_batch`
+   deletion (cone), de-closuring (§7).  `_supports_sharding()=True` for cone.
+   Transitional branch: sharded orchestration routes "geometry has banded kernels?"
+   to the new driver, else the existing parallel row-crop path (tagged RETIRE-AFTER).
+   CPU-green; then GPU validation at scale (stage2 pattern, cone edition).
+C. **Parallel conversion + old-driver deletion** — once cone validates, port
+   ParallelBeam onto the banded drivers, delete the closure drivers + transitional
+   branch, confirm trace-sharing across model instances + full suite green.
+D. **Translation port**, then **multiaxis** (its own `_supports_sharding` flip — it
+   extends TomographyModel directly); translation may need per-view-bucket geometry
+   bounds (the magnification-spread caveat, §9) — decide with its own measurement.
 E. **Retirement cascade** (v2 §P6 step 4 — only after D): legacy single-device
    bodies, `main_device`/`sinogram_device`, `view_indices` machinery,
    `initialize_recon` early device_put, `compute_hessian_diagonal`'s
@@ -373,7 +338,7 @@ E. **Retirement cascade** (v2 §P6 step 4 — only after D): legacy single-devic
 
 Validation per port: the **(g0,L) adjoint round-trip at arbitrary bands** (the
 strong per-geometry gate), banded-vs-baseline full recon at 1e-5/1e-4 allclose,
-window-vs-full-rows ablation (cone), padded exact-zero invariants, full suite.
+padded exact-zero invariants, full suite.
 
 ---
 
@@ -381,8 +346,8 @@ window-vs-full-rows ablation (cone), padded exact-zero invariants, full suite.
 
 Goal (Greg): no regression, judged not literal.  From ParallelBeam we expect good
 per-device and per-size scaling and a 1-device-mesh case comparable-to-or-better
-than the existing single-device path; cone differs (the window, accumulation,
-channel-major), so measure carefully and evaluate as we go.
+than the existing single-device path; cone differs (channel-major, banded vertical,
+accumulation), so measure carefully and evaluate as we go.
 
 Tooling (AS BUILT, 2026-06-13): a thin dedicated driver
 `scaling_tests/cone_baseline_scaling.py` that REUSES `scaling_common`'s
@@ -415,45 +380,175 @@ worker per (op, size).
 ### 8a-results — CPU baseline captured 2026-06-13 (M3 Max, single device)
 
 Geometry: cone, magnification 2 (sdd = 4·channels).  Recon shape auto-derived =
-sinogram size here (NxNxN).  15 VCD iterations.  min over 3 trials (1 warmup);
-RSS (process-level, CPU).  YAML: `results/cone_baseline_cone_cpu.yaml`.
+sinogram size here (NxNxN).  RSS (process-level, CPU).  **Two runs**: the first
+was partly contaminated (another app held ~148 GB → swap on this unified-memory
+box); the **CLEAN re-run** below is authoritative (projectors 3 trials; VCD 1
+timed pass at **3 iterations**).  YAML: `results/cone_baseline_cone_clean_cpu.yaml`
+(contaminated first run kept at `cone_baseline_cone_cpu.yaml` for comparison).
 
-| size (sino=recon) | forward ms | back ms | vcd_const ms | vcd_nonc ms | RSS@vcd MB |
+| size (sino=recon) | forward ms | back ms | vcd_const ms (3 it) | vcd_nonc ms (3 it) | RSS@vcd MB |
 |---|---|---|---|---|---|
-| 64³  |     41.8 |     15.1 |    5 490 |    8 148 | ~1 456 |
-| 128³ |  1 011.1 |    197.5 |   35 424 |   68 551 | ~4 087 |
-| 256³ | 42 637.3 | 22 812.2 | 1 139 239† | 1 368 561 | ~5 908 |
+| 64³  |     40.9 |     14.7 |     350 |     358 | ~1 280 |
+| 128³ |    990.5 |    202.6 |   5 130 |   5 126 | ~3 105 |
+| 256³ | 42 304.2 | 22 216.1 | 294 533 | 288 421 | ~5 620 |
 
-All cells min/mean spread ≤0.2% (rock-stable) EXCEPT †vcd_const 256³ =
-**16% spread, std 129 s — thermal-throttle-contaminated** (a ~19-min sustained
-single recon on a laptop; the CPU throttle sampler is GPU-only so this is not
-auto-flagged).  forward/back 256³ are clean (std ≤0.2%), so the projector cliff
-below is real, not throttle.
+What swap touched and what it didn't (verified by comparing the two runs):
+- **Projectors were NOT contaminated.**  forward/back are within noise across the
+  two runs (forward 256³ 42 637→42 304; back 256³ 22 812→22 216) — they are short
+  and low-memory (back 256³ = 2.3 GB RSS), so swap never reached them.  All
+  projector cells are rock-stable (std ≤0.7%).
+- **Only the long VCD recons were contaminated** (vcd_const 256³ 1 139 239→294 533;
+  the ~19-min sustained recon is what hit swap).  Clean VCD spreads are 0% (single
+  timed pass).
 
 **Findings (these MOTIVATE the port, and become the post-port gate):**
-1. **Super-N⁴ projector scaling on CPU, with a sharp BACK cliff at 256³.**  Ideal
-   doubling = ×16 (time ∝ N⁴ = voxels·views).  Measured: forward ×24.2 then ×42.2
-   (exponent 4.6→5.4); **back ×13.1 then ×115.5** (exponent 3.7→**6.85**).  Back's
-   ×115 jump from 128³→256³ is reproducible (std 0.03%), so it is a real
-   working-set/cache cliff — almost certainly the strided channel access
-   (`sinogram_view[:, n]`, stride = num_det_channels, power-of-2 → cache aliasing)
-   that parallel beam already fixed and cone has NOT (§5b) plus the unbounded
-   single-device working set (§6).  The channel-major rewrite + band-streaming the
-   working set should flatten this; the 256³ back number is the headline
-   pre-port datum to beat.
-2. **vcd_nonc > vcd_const** (weighted error-sino path): ×1.48 / ×1.93 / ×1.20 — as
-   expected; both dominated by the projectors.
-3. **VCD at 15 iters is an impractical CPU ruler at ≥256³** (~19–23 min/recon,
-   throttle-prone).  Per-iteration cost is the comparable quantity, so for the
-   POST-port CPU comparison: drop VCD to ~3 iterations and push ≥256³ VCD to the
-   GPU (fast + throttle-detected).  forward/back stay the primary cone-specific CPU
-   baseline (the VCD loop itself is geometry-independent — test-suite redesign
-   rationale).
+1. **Super-N⁴ projector scaling on CPU, with a sharp, REAL BACK cliff at 256³.**
+   Ideal doubling = ×16 (time ∝ N⁴ = voxels·views).  Measured (clean): forward
+   ×24.2 then ×42.7 (exponent 4.6→5.4); **back ×13.8 then ×109.6 (exponent
+   3.8→6.78)**.  The ×110 back jump 128³→256³ reproduces across BOTH runs (clean
+   and contaminated agree within 2.6%), so it is a genuine working-set/cache cliff,
+   NOT swap.  **LOCALIZED (§8a-split): the cliff is the VERTICAL fan (×62), not the
+   horizontal channel access** — my initial channel-aliasing hypothesis was wrong
+   (corrected below).  **The 256³ back number (22.2 s) is the headline pre-port
+   datum to beat.**
+2. **vcd_nonc ≈ vcd_const** (clean): ×1.02 / ×1.00 / ×0.98 — essentially equal, as
+   expected (the weighted path adds only an elementwise multiply + a buffer).  The
+   earlier 1.2–1.9× gap was contamination, now gone.
+3. **Few-iteration VCD is a poor SCALING ruler (Greg's amortization point,
+   confirmed quantitatively).**  Clean vcd_const 256³ = 294 s for 3 iters ≈ 98
+   s/iter, vs the contaminated 15-iter run's 76 s/iter — per-iter looks *worse* at
+   fewer iters because the direct-recon init + first-call compile amortize over
+   fewer iterations.  So VCD time is a correctness/integration anchor, not a
+   scaling number; the projectors are the scaling ruler (the VCD loop itself is
+   geometry-independent — test-suite redesign rationale).
 4. **Memory** (CPU RSS, process-level, approximate): forward 256³ 2.9 GB; VCD 256³
-   5.9 GB.  GPU `peak_bytes_in_use` (the real per-device ruler) is the cluster run.
+   5.6 GB.  GPU `peak_bytes_in_use` (the real per-device ruler) is the cluster run.
 
-GPU baseline (256³–1024³, `peak_bytes_in_use`, throttle-checked): **Greg, cluster**
-— same driver, `GEOMETRY='cone'`, sizes already wired in the config block.
+**GPU baseline — H100 80GB, single device (2026-06-13), `peak_bytes_in_use`:**
+
+| size | forward ms / GB | back ms / GB | vcd_const ms / GB (3 it) | vcd_nonc ms / GB (3 it) |
+|---|---|---|---|---|
+| 256³  |   296 / 1.3 |   158 / 1.2 |  2 961 / 2.1 |  3 076 / 2.1 |
+| 512³  | 4 820 / 6.0 | 2 287 / 5.6 | 32 347 / 12.1 | 29 022 / 12.1 |
+| 1024³ | 78 946 / 16.0 | 35 888 / 17.3 | **OOM** | 256 480 / **64.8** |
+
+- **Clean ~N⁴ scaling, NO cliff on GPU.**  forward ×16.3 then ×16.4; back ×14.5
+  then ×15.7 (ideal ×16).  So the CPU back-vertical ×62 cliff was a **CPU cache
+  artifact** — gone on GPU.  (Confirms the §8a-split CPU/GPU caveat.)
+- **Projectors FIT 1024³ single-device on one H100** (~16–17 GB) — I predicted OOM;
+  wrong (80 GB is plenty for a single projector op).  **Full VCD is the capacity
+  wall:** vcd 1024³ is ~marginal (~65 GB) — vcd_nonc fit, vcd_const OOM'd.  So cone
+  needs multi-GPU for VCD at 1024³+, not for the projectors alone.
+- **Anomaly (flagged, not chased):** vcd_const 1024³ OOM but vcd_nonc fit at 64.8 GB
+  is backwards (const should use ≤ nonconst).  Likely GPU-occupancy variance on a
+  shared node or a const-path transient at the 80 GB edge; the "~marginal at 1024³"
+  conclusion holds either way.  Re-run on an empty GPU if a precise wall is needed.
+
+### 8a-split — horizontal vs vertical fan cost (informs A vs B vs fused)
+
+Open question (Greg + design): cone back = horizontal fan (band-independent,
+materializes the pixels×rows transient) then vertical fan.  Three structures on
+the table — **A** per-band row window (recompute horizontal per band, ~2× horizontal
+FLOPs, cone-angle-dependent), **B** horizontal-once + pixel-batched memory, and the
+**fused / sino-accumulator** structure (Greg: per pixel-batch, accumulate vertical
+output into the sino (fwd) / gather from it (back), never materialize pixels×rows;
+the two fans do NOT strictly commute — the vertical fan is pixel_mag-dependent and
+horizontal mixes pixels↔channels — but fusing per pixel-batch with the sino/recon as
+the in-place accumulator achieves the same benefit).  Decide with a micro-bench:
+time the horizontal and vertical fans SEPARATELY (which stage dominates → is fusing
+worth the restructure?) + a fused-vs-separate timing check (proxy for whether XLA
+elides the pixels×rows intermediate).  Bench: `cone_fan_split_microbench.py`
+(8-view batch, full pixels).
+
+**RESULTS (CPU, 2026-06-13, 8-view batch) — these INVERT the premise of
+A/B/window/fusion, and the two DIRECTIONS have cliffs in OPPOSITE stages:**
+
+| size | BACK vert ms | BACK horiz ms | FWD vert ms | FWD horiz ms |
+|---|---|---|---|---|
+| 64³  |   2.12 |  0.65 |   3.08 |   2.09 |
+| 128³ |  11.26 |  1.46 |  19.39 |  16.68 |
+| 256³ | 693.24 | 16.15 | 492.60 | 814.36 |
+
+128³→256³ scaling: **BACK vertical ×61.6** (horiz ×11.0); **FORWARD horizontal
+×48.8** (vert ×25.4).  Back fused/separate ≈ 1.0 (no fusion time win).
+Cross-check: back-vertical 8 views × (256/8) ≈ 22 300 ms ≈ the full back 22 216 ms
+(§8a-results) — so **back ≈ its vertical fan; forward is split, horizontal-heavy at
+scale.**
+
+**Conclusions (supersede §2's row-window rationale; re-scope §5b):**
+- **BACK cliff = the VERTICAL fan, not channel access.**  My "strided
+  `sinogram_view[:, n]` cache-aliasing" attribution for back (§5b / §8a finding 1)
+  was WRONG-DIRECTION — back-horizontal scales a tame ×11.  (Mechanism
+  over-attributed before measuring — the project's own ruler lesson, self-inflicted.)
+- **FORWARD cliff = the HORIZONTAL fan** (the channel SCATTER
+  `sinogram_view.at[:, n].add`, stride = num_det_channels → cache aliasing), ×48.8.
+  So **channel-major IS warranted — for FORWARD horizontal** (§5b corrected).
+  Forward-vertical also blows up ×25, so forward has two heavy stages.
+- **The row WINDOW (§2) optimizes a ~2% stage for BACK → NOT a perf lever.**
+  Slice-banding is still right for back, but because the EXPENSIVE stage (vertical)
+  is the one that bands by output slices — not because a window restricts
+  horizontal rows.  So back: horizontal full-rows (cheap) per view-owner; band the
+  vertical fan by slices for the reduce-scatter; pixel-batch to bound the
+  pixels×rows cylinder (GPU-memory, ~3.2 GB/view at 1024³).  Option B, NO window.
+- **Fusion buys ~0 time** (back fused/separate ≈ 1.0): the pixels×rows intermediate
+  is not the bottleneck → the fused/sino-accumulator restructure is not justified
+  on time grounds.
+- **Levers, by direction:** BACK — the vertical fan's super-N⁴ blowup (×62 vs ×8
+  of pixels×slices), likely working set (per-pixel gather from the pixels×rows det
+  cylinder crossing cache at 256³) and/or `entries_per_cylinder_batch` chunking +
+  per-slice geometry recompute → the band loop + chunk deletion (§6) targets this.
+  FORWARD — channel-major the horizontal scatter (§5b), plus the vertical (input-
+  band accumulation, §4).
+- **CPU vs GPU caveat:** these cliffs are CPU cache effects; GPU will look
+  different (Greg's cluster run).  Treat the DIRECTIONAL attribution (which stage
+  dominates) as robust; treat the absolute cliff factors as CPU-specific.
+
+**GPU RESULTS (H100, 2026-06-13, per-view ms) — these OVERRIDE the CPU conclusions
+for the design (GPU is the production target):**
+
+| size | BACK horiz | BACK vert | FWD horiz | FWD vert | fused/sep |
+|---|---|---|---|---|---|
+| 256³  |  0.201 | 0.158 | 1.257 | 0.181 | 1.72 |
+| 512³  |  2.519 | 1.429 | 7.780 | 1.988 | 1.06 |
+| 1024³ | 21.535 | 8.405 | 57.204 | 16.754 | 1.15 |
+
+Per-view scaling (×/doubling; ideal ×16): all SMOOTH, sub-N⁴ (BACK h ×12.6/×8.5,
+v ×9.0/×5.9; FWD v ×11/×8.4, h ×6.2/×7.4) — **no cliff on GPU.**
+
+**GPU conclusions (the design basis — they REVERSE the CPU back finding):**
+- **The HORIZONTAL fan dominates BOTH directions on GPU** — forward strongly
+  (H/V ≈ 7→3.4), back moderately but really (H/V ≈ 1.3→2.6, i.e. back-horizontal is
+  the LARGER stage on GPU, opposite to CPU's 2%).  The strided channel scatter/
+  gather is the GPU bottleneck (poor coalescing), so **channel-major (§5b) is THE
+  primary cone optimization on GPU, for FORWARD and BACK.**
+- **The row WINDOW (§2) is now clearly WRONG on GPU**: it recomputes the dominant
+  (horizontal) stage per band (~2× the biggest cost).  **Option B — horizontal-once
+  + pixel-batched memory, band the slice axis only for the multi-device
+  reduce-scatter (back) / accumulate (forward) — wins decisively.**  No window.
+- **Fusion: no win on GPU either** (fused/separate 1.06–1.72, *hurts* at 256³).
+  Off the table.
+- The CPU back-vertical cliff does NOT reproduce on GPU (cache artifact), so the
+  `entries_per_cylinder_batch` chunking is a SIMPLIFICATION + sharding enabler (§6),
+  not a GPU perf fix.
+
+Fused-vs-separate PEAK MEMORY: deprioritized (no time win anywhere; the baseline's
+per-device `peak_bytes_in_use` is the memory ruler — projectors ~16 GB at 1024³,
+VCD ~marginal).
+
+### 8a-design — the data-driven cone design (supersedes the §1/§2/§4/§5 lean)
+
+Settled by CPU+GPU measurement, GPU weighted (production target):
+1. **Channel-major both horizontal fans** (forward + back) — the dominant GPU
+   stage; the single biggest lever.  Kernel-level A/B at the port.
+2. **Structure = Option B, no row window**: horizontal-once over full rows
+   (pixel-batched to bound the pixels×rows cylinder), band the slice axis only for
+   the multi-device reduce-scatter (back) and accumulate per band (forward, §4).
+3. **No fusion / sino-accumulator restructure** (no measured time win).
+4. **Delete `entries_per_cylinder_batch`** (§6) — simplification + the band loop is
+   needed for sharding anyway; not a GPU perf fix.
+5. **Anchor rule** (§3) unchanged — mechanical, bit-exact.
+6. The (g0,L) banded INTERFACE (§1) stays (it is how the slice axis is banded for
+   the reduce-scatter); the **row WINDOW within it is dropped**.
 
 ---
 
