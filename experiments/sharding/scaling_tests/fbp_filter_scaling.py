@@ -16,7 +16,7 @@ high-water marks that never reset within a process.  So this script is an
 ORCHESTRATOR that spawns isolated WORKER subprocesses and never touches JAX
 itself (otherwise it would hold GPU memory while a worker measures peak usage):
 
-  - orchestrator (default, no args)  : spawns workers, collects JSON, plots.
+  - orchestrator (default, no args)  : spawns workers, collects YAML, plots.
   - worker --mode setup              : reports platform/devices + correctness.
   - worker --mode measure --size ... : times + measures memory for one size,
                                        running device counts DESCENDING (8→4→2→1)
@@ -33,7 +33,6 @@ each worker's PYTHONPATH, and the setup worker prints the resolved mbirjax path)
     python experiments/sharding/scaling_tests/fbp_filter_scaling.py
 """
 import os
-import gc
 import sys
 import argparse
 
@@ -41,8 +40,27 @@ import scaling_common as sc
 
 import numpy as np
 
+# NOTE: mbirjax (and therefore jax) is imported INSIDE the worker functions, not
+# at the top level, on purpose.  This one file runs in two roles: the default
+# (no --worker) is the ORCHESTRATOR, which only spawns worker subprocesses and
+# collects their results and must stay completely JAX-free; the --worker
+# invocations are WORKER subprocesses that actually touch JAX.  A top-level
+# `import mbirjax` would run in both roles, pulling jax into the orchestrator —
+# so the orchestrator could hold a (GPU) backend while a worker is measuring
+# peak_bytes_in_use, contaminating exactly the per-device memory number the
+# isolated-subprocess design exists to measure cleanly.  Importing mbirjax only
+# in the worker keeps the orchestrator a pure, JAX-free supervisor.  (The import
+# also has a load-bearing side effect — it runs mbirjax._device_setup, which sets
+# the virtual-CPU-device XLA flag, and must precede jax backend init; see the
+# import site in worker_measure.)
+
 
 OP_NAME = "fbp_filter"
+
+# Time-ideal slope for the size-sweep plot.  fbp_filter is a PER-VIEW filter whose
+# cost is the sinogram size (∝ voxels, N³) -- unlike the projectors / VCD, which
+# touch each voxel once per view (∝ voxels·views, N⁴, the plotter's default).
+TIME_IDEAL = "voxels"
 
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
 # Problem sizes (n_views, n_rows, n_channels) PER OP — different ops want
@@ -64,15 +82,6 @@ CORRECTNESS_THRESHOLD = 1e-4
 
 CORRECTNESS_SIZE = (64, 64, 64)   # small, fixed; comparison is size-independent
 CORRECTNESS_SEED = 1234
-
-# Substrings (upper-cased) that mark a caught failure as memory exhaustion.
-# Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces
-# as "INTERNAL: RET_CHECK ... Failed to create cuFFT batched plan with scratch
-# allocator" / "Failed to allocate work area" — none of the usual OOM tokens.
-# (Confirmed on H100 at 1624^3 / 1 device.)
-_OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
-                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
-                "FAILED TO CREATE CUFFT")
 
 
 # ── Op-specific builders (used by the worker) ─────────────────────────────────
@@ -139,71 +148,31 @@ def worker_setup(out_file):
               f"pct_above={m['pct_above_threshold']:.6f}%"
               + ("   <-- CROSS-PLATFORM" if captured_on != plat else ""))
 
-    pkg_path = os.path.dirname(mbirjax.__file__)
-    beta_state, branch = sc.beta_status(pkg_path)   # by git branch, not dir name
-    result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
-              "mbirjax_path": pkg_path, "beta_state": beta_state, "branch": branch,
-              "correctness": corr}
+    result = sc.build_setup_result(plat, max_dev, dev_label, corr)
     sc.write_worker_result(out_file, result)
-    print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
 
 
 def worker_measure(size_label, device_counts, warmup, trials, out_file):
-    """Time + measure memory for one size, device counts DESCENDING.
-
-    Descending order (8→4→2→1) makes per-device allocation ascending within this
-    fresh process, so the cumulative peak_bytes_in_use equals each config's own
-    allocation when read right after it.  It also means once a config OOMs, every
-    later (fewer-device) config needs MORE per-device memory and would OOM too —
-    so we catch the OOM, record it, and stop the descent.  Results are written
-    incrementally so even a hard crash returns the completed configs.
-    """
-    import mbirjax  # device-setup-first
+    """Time + measure memory for one size; the shared descent does the rest."""
+    # mbirjax's first import runs mbirjax._device_setup, which sets the virtual-CPU
+    # device XLA flag from MBIRJAX_NUM_CPU_DEVICES; that must be in place BEFORE jax
+    # initializes its backend.  scaling_common imports jax lazily, so the first
+    # trigger is pick_devices() inside run_measure_loop -- import mbirjax here first.
+    import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
-    desc = sorted(set(device_counts), reverse=True)
-    print(f"\n[measure {size_label}]  device counts (descending): {desc}")
     sino_np = make_input(size, seed=0)
-    rows = []
-    failures = []
-    mem_kind = "n/a"
 
-    def _publish():
-        sc.write_worker_result(out_file, {"size": size_label, "mem_kind": mem_kind,
-                                          "rows": rows, "failures": failures})
-
-    for n in desc:
-        devs = sc.pick_devices(n)
-        if devs is None:
-            print(f"  n_devices={n}: not enough devices, skipping")
-            continue
+    def build_and_time(n, devs):
         model = make_model(size, devices=devs)
         if model is None:
-            continue
-        try:
-            # Pre-shard outside the timing loop: measure the op, not the scatter.
-            sino = model._shard_sinogram(sino_np)
-            stats, _ = sc.time_op(lambda: run_fbp_filter(model, sino), warmup, trials)
-            mem_mb, mem_kind = sc.peak_memory_mb(devs)
-        except Exception as e:   # noqa: BLE001 — measurement harness: never abort the sweep
-            msg = str(e).replace("\n", " ")
-            is_oom = any(k in msg.upper() for k in _OOM_MARKERS)
-            failures.append({"n_devices": n, "oom": is_oom, "error": msg[:300]})
-            print(f"  n_devices={n:2d}  {'OOM' if is_oom else 'ERROR'}: {msg[:120]}")
-            _publish()
-            if is_oom:
-                print(f"  stopping descent at {size_label}: fewer-device configs "
-                      f"need more per-device memory and would also OOM")
-                break
-            continue
-        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb})
-        print(f"  n_devices={n:2d}  min={stats['min_ms']:8.2f} ms  "
-              f"mean={stats['mean_ms']:8.2f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
-        # Publish partial progress and free this config before the next (larger)
-        # one so peak_bytes_in_use reflects each config alone.
-        _publish()
-        del model, sino
-        gc.collect()   # release device buffers before the next config allocates
-    _publish()
+            return None
+        # Pre-shard outside the timing loop: measure the op, not the scatter.
+        sino = model._shard_sinogram(sino_np)
+        stats, _ = sc.time_op(lambda: run_fbp_filter(model, sino), warmup, trials)
+        mem_mb, mem_kind = sc.peak_memory_mb(devs)
+        return stats, mem_mb, mem_kind
+
+    sc.run_measure_loop(size_label, device_counts, out_file, build_and_time)
 
 
 def run_worker(argv):
@@ -224,39 +193,16 @@ def run_worker(argv):
 
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
-def _beta_root():
-    """Beta worktree root, derived from this file's location.
-
-    This file is at <beta>/experiments/sharding/scaling_tests/, so the worktree
-    root is three directories up from the file's directory.
-    """
-    return os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                        os.pardir, os.pardir, os.pardir))
-
-
 def main():
     script = os.path.abspath(__file__)
 
-    # Force the beta worktree onto each worker's PYTHONPATH so `import mbirjax`
-    # resolves to beta regardless of how the orchestrator was launched (PyCharm
-    # or CLI) — removes the sys.path footgun for the subprocesses.  Preallocate
-    # the pool up front (no per-call cudaMalloc growth → clean timing), with
-    # MEM_FRACTION raised so the largest configs don't OOM on the cap;
-    # peak_bytes_in_use still tracks in-use tensors, so memory stays accurate
-    # (verified by the row_batch sweep's preallocate sanity check).
-    beta_root = _beta_root()
-    if not os.path.isdir(os.path.join(beta_root, "mbirjax")):
-        print(f"  WARNING: no mbirjax/ under derived beta root {beta_root}")
-    existing_pp = os.environ.get("PYTHONPATH", "")
-    worker_env = {
-        "PYTHONPATH": beta_root + (os.pathsep + existing_pp if existing_pp else ""),
-        "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
-        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
-    }
+    # Each worker inherits the beta worktree on PYTHONPATH + the JAX allocator
+    # knobs (see sc.build_worker_env).
+    worker_env = sc.build_worker_env()
 
     print("=" * 72)
     print("  fbp_filter scaling — isolated-subprocess harness (orchestrator)")
-    print(f"  beta root: {beta_root}")
+    print(f"  beta root: {sc.beta_root()}")
     print("=" * 72)
 
     # 1. Setup worker: platform, device count/label, correctness.
@@ -265,27 +211,7 @@ def main():
     if setup is None:
         print(f"  ERROR: setup worker produced no result (rc={rc}); aborting.")
         return
-    plat = setup["platform"]
-    max_dev = setup["max_devices"]
-    dev_label = setup["device_label"]
-    corr = setup["correctness"]
-    mpath = setup.get("mbirjax_path", "?")
-    beta_state = setup.get("beta_state", "unknown")
-    branch = setup.get("branch")
-    if beta_state == "beta":
-        label = f"*** beta ***  (branch {branch})"
-    elif beta_state == "not-beta":
-        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
-    else:
-        label = "(branch undetermined — verify path manually)"
-    print(f"  mbirjax: {label}   {mpath}")
-    print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
-    if corr.get("baseline_present"):
-        print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
-              f"pct_above={corr['pct_above_threshold']:.6f}%"
-              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
-    else:
-        print("  correctness: no baseline present")
+    plat, max_dev, dev_label, corr, mpath = sc.print_setup_banner(setup)
 
     sizes = SIZES[plat]
     size_labels = [sc.size_label(s) for s in sizes]
@@ -335,6 +261,7 @@ def main():
         "device_counts": device_counts,
         "sizes": size_labels,
         "mem_kind": mem_kind,
+        "time_ideal": TIME_IDEAL,
         "correctness": corr,
         "grid": grid,
         "failures": failures_by_size,
@@ -347,7 +274,8 @@ def main():
             os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_device_sweep.png"))
         sc.plot_size_sweep(
             OP_NAME, grid, device_counts, size_labels, dev_label, mem_kind,
-            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_size_sweep.png"))
+            os.path.join(sc.RESULTS_DIR, f"{OP_NAME}_{plat}_size_sweep.png"),
+            time_ideal=TIME_IDEAL)
 
     print("\nDone.")
 

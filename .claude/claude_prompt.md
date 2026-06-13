@@ -15,7 +15,7 @@ Project orientation:
 * This is the **beta sharding worktree** (`greg/parallel_sharding`, built from `prerelease`). At the start of a session or after context compaction, read:
   1. `experiments/sharding/plans/sharding_status.md` — current phase, what's blocked, verified hardware facts.
   2. `experiments/sharding/plans/sharding_implementation_plan.md` — the detailed Phase 0–F checklist, migration table, cross-cutting principles, and open design questions.
-* Prior art lives on the research branch (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`) in the sibling worktree `…/Research/mbirjax/`. That branch will eventually be deleted — migrate anything worth keeping first (the plan tracks this).
+* Prior art lived on the research branch (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`). Its worktree has been removed and the local branch deleted (consolidated to the single `mbirjax` worktree, 2026-06-08); the branch still exists on the remote `cabouman/mbirjax` if anything is ever needed from it.
 * Before context is compacted, update `sharding_status.md` (and the plan's checkboxes) if significant progress has been made, so the next session can orient quickly.
 
 When investigating or diagnosing problems:
@@ -52,6 +52,25 @@ Scripts and reproducibility:
   exactly one thing and hold the rest identical.  Take the extra few minutes to
   do it properly rather than moving quickly on improper evidence.
 
-For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, and computational efficiency over stylistic changes.
+Performance and measurement (jax/GPU — learned on this project; full playbook
+with the F1 case study in `.claude/lessons.md`):
 
-Remember, we're in the curiosity business, so a little bit of exploration and a lot of understanding are much better than a quick fix.
+* Per-worker compute must be jitted — eager, op-by-op dispatch silently kills
+  multi-device scaling.
+* For honest GPU memory: measure each config in an isolated subprocess, keep the
+  orchestrator JAX-free (so it holds no device memory while a worker measures),
+  and free the previous result before the next allocation (`peak_bytes_in_use`
+  is a process-cumulative high-water mark).
+* Fold scalars into a small operand (e.g. an f32 filter), never as an
+  out-of-place full-array multiply — a float64 scalar like `np.pi` silently
+  promotes the whole array to f64, doubling memory.
+* The general measurement principles (suspect the ruler before the code;
+  single-variable ablations; name+verify the assumption a fix rests on; sweep,
+  don't guess) live in global memory and apply everywhere.
+
+For mathematical or numerical code, prioritize correctness, conditioning, memory behavior, 
+and computational efficiency over stylistic changes.
+
+I value curiosity greatly, so a little bit of exploration and a lot of understanding 
+are much better than a quick fix.  I really want to understand what we're doing, so I need 
+you to discuss options and explain important changes as we go.  

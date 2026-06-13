@@ -1,5 +1,6 @@
 import os
 import warnings
+import gc
 import matplotlib
 import easygui
 
@@ -92,7 +93,7 @@ class SliceViewer:
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
-        self.datasets = datasets
+        self.datasets = [np.asarray(dataset) for dataset in datasets]  # Convert to numpy arrays to avoid problems with sharded arrays
         self.n_volumes = len(datasets)
         self.title = title
         self.vmin = vmin
@@ -1093,3 +1094,13 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
     viewer = SliceViewer(*datasets, data_dicts=data_dicts, title=title, vmin=vmin, vmax=vmax,
                          slice_label=slice_label,  slice_axis=slice_axis, cmap=cmap,
                          show_instructions=show_instructions)
+    # The viewer blocks until its window closes.  Matplotlib's TkAgg backend leaves orphaned tkinter
+    # objects (toolbar icons/variables) that plt.close does not fully release; collect them now, on
+    # the main thread, so a later automatic GC -- e.g. during a sharded recon, whose reference-cycle
+    # arrays trigger gen-2 collection -- does not finalize them with no Tk mainloop running and print
+    # "main thread is not in main loop".  (Interim; a viewer overhaul is planned.)
+
+    # Apply del before gc.collect so the viewer↔Tk reference cycle is unreachable and gets finalized here,
+    # on the main thread, not by a later GC mid-recon.
+    del viewer  # Note that this requires that viewer not be referenced outside this function.
+    gc.collect()

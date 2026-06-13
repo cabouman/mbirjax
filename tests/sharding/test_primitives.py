@@ -1,5 +1,5 @@
 """
-Phase A unit tests for the sharding primitives.
+Tests for the sharding primitives.
 
 Covers the model-agnostic helpers in mbirjax._sharding (transfer +
 thread_execution) and TomographyModel.configure_sharding.  Runs on whatever
@@ -92,6 +92,29 @@ class TestExecution(unittest.TestCase):
         for i, r in enumerate(results):
             self.assertEqual(list(r.devices())[0], devs[i])
 
+    def test_device_pool_reuse_matches_per_call(self):
+        """A reused device_pool gives the same results, in device order, as the
+        default per-call pool -- across several calls (the streaming use case)."""
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+
+        def worker_process(i, device, k=0):
+            return jnp.asarray(i * 10.0) + k
+
+        # Per-call pools (executor=None) as the reference, over several "bands".
+        ref = [mjs.run_per_device(devs, lambda i, d, k=k: worker_process(i, d, k))
+               for k in range(3)]
+        # Same calls through one reused pool.
+        with mjs.device_pool(len(devs)) as pool:
+            got = [mjs.run_per_device(devs, lambda i, d, k=k: worker_process(i, d, k),
+                                      executor=pool)
+                   for k in range(3)]
+        self.assertEqual([[float(x) for x in row] for row in got],
+                         [[float(x) for x in row] for row in ref])
+        self.assertEqual([[float(x) for x in row] for row in ref],
+                         [[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
+
     def test_assemble_sharded_matches_reference(self):
         """Assembling per-device row-shards reproduces the global array."""
         devs = preferred_devices(2)
@@ -127,7 +150,7 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertIsNotNone(model.mesh)
         self.assertEqual(model.mesh.devices.size, 1)
         self.assertTrue(model.dev2dev_safe)
-        self.assertEqual(model.use_gpu, 'sharded')
+        self.assertTrue(model.is_sharded)
 
     def test_two_device_mesh(self):
         devs = preferred_devices(2)
@@ -141,21 +164,66 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertEqual(model.mesh.devices.size, 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
-    def test_divisibility_error(self):
-        """A device count that doesn't divide a sharded axis raises clearly.
-
-        With num_views=8 (sinogram view axis) and 3 devices, the sinogram-axis
-        divisibility check fires first; the message names the sharded axis.
+    def test_non_dividing_axes_pad_instead_of_raising(self):
+        """Neither sharded axis constrains the device count anymore (P5 Step 4 Stage 2):
+        a non-dividing view count AND a non-dividing slice count are zero-padded to the
+        device form, with the tails exactly zero.  num_views=8 over 3 devices pads to 9;
+        num_slices=4 over 3 devices pads to 6 (an explicitly configured count may even
+        leave the last shard fully padded -- correct, just wasteful; AUTO skips those).
+        For parallel beam the detector rows pad with the slices (row r <-> slice r), so
+        the sino device form is (9, 6, channels).
         """
         devs = preferred_devices(3)
         if devs is None:
             self.skipTest("need >= 3 devices")
-        model = self._make_model()  # num_views = 8, not divisible by 3
-        with self.assertRaises(ValueError) as ctx:
-            model.configure_sharding(devs)
-        msg = str(ctx.exception)
-        self.assertIn("divisible", msg)
-        self.assertIn("sinogram axis", msg)
+        model = self._make_model()
+        num_slices = model.get_params('recon_shape')[2]
+        num_rows = model.get_params('sinogram_shape')[1]
+        self.assertNotEqual(num_slices % 3, 0)
+        model.configure_sharding(devs)   # no warning, no raise: padding handles both axes
+        # Views pad 8 -> 9 and rows pad with the slices; all padded entries exactly zero.
+        sino = np.ones(model.get_params('sinogram_shape'), dtype=np.float32)
+        sharded = model._shard_sinogram(sino)
+        self.assertEqual(sharded.shape, (9, 6, sino.shape[2]))
+        sharded_np = np.asarray(sharded)
+        np.testing.assert_array_equal(sharded_np[8:], 0.0)
+        np.testing.assert_array_equal(sharded_np[:, num_rows:, :], 0.0)
+        np.testing.assert_array_equal(np.asarray(model._gather_sinogram(sharded)), sino)
+        # Slices pad 4 -> 6 with a zero tail, and the exit gather crops back.
+        rows, cols, _ = model.get_params('recon_shape')
+        flat = np.ones((rows * cols, num_slices), dtype=np.float32)
+        sharded_recon = model._shard_recon(flat)
+        self.assertEqual(sharded_recon.shape, (rows * cols, 6))
+        np.testing.assert_array_equal(np.asarray(sharded_recon)[:, num_slices:], 0.0)
+        np.testing.assert_array_equal(np.asarray(model._gather_recon(sharded_recon)), flat)
+
+    def test_shape_change_rederives_padding(self):
+        """Order-independence under padding: a user-selected device count is kept across
+        shape changes, and the pad metadata is re-derived from the new shapes on every
+        recompile -- a non-dividing slice count pads, a dividing one carries no padding.
+        Also: a STALE device-form array from the previous (padded) layout is rejected
+        with a clear error once the new layout no longer pads, even though its size
+        happens to divide the device count (the silent-wrong-results corner from
+        Stage 1, closed by the entry shape check).
+        """
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        model = self._make_model()                          # num_views = 8 (divisible by 2)
+        rows, cols, _ = model.get_params('recon_shape')
+        model.set_params(recon_shape=(rows, cols, 5))        # 5 slices over 2 devices: pads to 6
+        model.configure_sharding(devs)
+        out = model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
+        self.assertEqual(out.shape, (rows * cols, 6))
+        stale_device_form = np.zeros((rows * cols, 6), dtype=np.float32)
+        # Change to a dividing slice count: same devices, no padding, real shapes only.
+        model.set_params(recon_shape=(rows, cols, 4))
+        self.assertEqual(len(model.shard_devices), 2)
+        out = model._shard_recon(np.zeros((rows * cols, 4), dtype=np.float32))
+        self.assertEqual(out.shape, (rows * cols, 4))
+        # The stale 6-slice device form (6 divides 2!) must NOT shard silently.
+        with self.assertRaises(ValueError):
+            model._shard_recon(stale_device_form)
 
 
 if __name__ == "__main__":

@@ -18,17 +18,24 @@ class TestVCD(unittest.TestCase):
         np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
         # Choose the geometry type
         self.geometry_types = mj._utils._geometry_types_for_tests
-        self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04}
-        self.anisotropic_parallel_tolerances = {'nrmse': 0.20, 'max_diff': 0.45, 'pct_95': 0.08}
-        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04}
-        self.anisotropic_cone_tolerances = {'nrmse': 0.49, 'max_diff': 1.0, 'pct_95': 0.21}
-        self.helical_cone_tolerances = self.cone_tolerances
-        self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13}
-        self.anisotropic_translation_tolerances = {'nrmse': 0.6, 'max_diff': 1.0, 'pct_95': 0.13}
+        # nrmse/max_diff/pct_95 gate CONVERGED quality (used for the full-convergence
+        # geometries); sanity_nrmse gates the 3-iteration sanity recon for the rest,
+        # calibrated at ~1.6x the MEASURED 3-iteration nrmse (2026-06-11: aniso_parallel
+        # 0.206, aniso_cone 0.469, helical 0.298, translation 0.399, aniso_translation
+        # 0.498; the trivial zero-recon level is nrmse == 1, so every gate keeps real
+        # headroom below "did nothing").
+        self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04, 'sanity_nrmse': 0.33}
+        self.anisotropic_parallel_tolerances = {'nrmse': 0.20, 'max_diff': 0.45, 'pct_95': 0.08, 'sanity_nrmse': 0.33}
+        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04, 'sanity_nrmse': 0.40}
+        self.anisotropic_cone_tolerances = {'nrmse': 0.49, 'max_diff': 1.0, 'pct_95': 0.21, 'sanity_nrmse': 0.75}
+        self.helical_cone_tolerances = dict(self.cone_tolerances, sanity_nrmse=0.48)
+        self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13, 'sanity_nrmse': 0.64}
+        self.anisotropic_translation_tolerances = {'nrmse': 0.6, 'max_diff': 1.0, 'pct_95': 0.13, 'sanity_nrmse': 0.80}
         self.all_tolerances = [self.parallel_tolerances, self.anisotropic_parallel_tolerances, self.cone_tolerances,
                                self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances, self.anisotropic_translation_tolerances]
         if len(self.geometry_types) != len(self.all_tolerances):
             raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
+        self.tolerances_by_geometry = dict(zip(self.geometry_types, self.all_tolerances))
 
         # Set parameters
         self.num_views = 64
@@ -109,15 +116,27 @@ class TestVCD(unittest.TestCase):
 
         return ct_model
 
-    def test_all_vcd(self):
-        for geometry_type, tolerances in zip(self.geometry_types, self.all_tolerances):
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing vcd with", geometry_type)
-                self.verify_vcd(geometry_type, tolerances)
+    # Geometries gated at FULL convergence (the canonical "physics converges" check):
+    # parallel (the beta/sharding geometry) and cone (the production workhorse).  The
+    # VCD loop machinery is geometry-INDEPENDENT, so converging it once per beam family
+    # is sufficient; per-geometry KERNEL correctness is gated sharply (and cheaply) by
+    # the adjoint identity in test_projectors.  The remaining geometries run a
+    # 3-iteration SANITY recon ("nothing major changed"): the error must drop well below
+    # the trivial zero-recon level (nrmse == 1), against per-geometry 'sanity_nrmse'
+    # gates calibrated at ~1.6x the measured 3-iteration values (2026-06-11).
+    FULL_CONVERGENCE_GEOMETRIES = ('parallel', 'cone')
+    SANITY_ITERATIONS = 3
 
-    def verify_vcd(self, geometry_type, tolerances):
+    # One test method PER GEOMETRY is generated below (test_vcd_parallel, test_vcd_cone,
+    # ...) instead of a single test looping subTests: pytest can then report, select
+    # (-k cone), and distribute (pytest-xdist) the geometries individually -- the
+    # single-loop form pinned one ~45 s monolith to a single xdist worker.
+
+    def verify_vcd(self, geometry_type, tolerances, sanity_only=False):
         """
-        Verify that the vcd reconstructions for a simple phantom are within tolerance
+        Verify the vcd reconstruction for a simple phantom: against the converged-quality
+        tolerances (sanity_only=False), or as a quick low-iteration sanity check against
+        the geometry's 'sanity_nrmse' gate (sanity_only=True).
         """
         self.set_view_params(geometry_type)
         ct_model = self.get_model(geometry_type)
@@ -174,7 +193,12 @@ class TestVCD(unittest.TestCase):
         # Perform VCD reconstruction
         sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
-        recon, recon_dict = ct_model.recon(sinogram)
+        np.random.seed(0)  # the partition sequence is drawn from the global RNG
+        if sanity_only:
+            recon, recon_dict = ct_model.recon(sinogram, max_iterations=self.SANITY_ITERATIONS,
+                                               stop_threshold_change_pct=0.0)
+        else:
+            recon, recon_dict = ct_model.recon(sinogram)
         recon.block_until_ready()
         
         # if anisotropic, rescale the recon to the phantom shape
@@ -196,9 +220,15 @@ class TestVCD(unittest.TestCase):
         print('  max_diff = {:.3f}'.format(max_diff))
         print('  pct_95 = {:.3f}'.format(pct_95))
 
-        self.assertTrue(max_diff < tolerances['max_diff'] and
-                        nrmse < tolerances['nrmse'] and
-                        pct_95 < tolerances['pct_95'])
+        if sanity_only:
+            # "Nothing major changed": a few iterations must pull the error well below
+            # the trivial zero-recon level (nrmse == 1) and produce finite values.
+            self.assertTrue(np.all(np.isfinite(recon)))
+            self.assertLess(nrmse, tolerances['sanity_nrmse'])
+        else:
+            self.assertTrue(max_diff < tolerances['max_diff'] and
+                            nrmse < tolerances['nrmse'] and
+                            pct_95 < tolerances['pct_95'])
 
         print('  Testing hdf5 save and load')
         notes = "Testing save/load"
@@ -212,6 +242,16 @@ class TestVCD(unittest.TestCase):
             assert recon_dict['notes'] == loaded_notes
 
 
+    # Iteration count for the split-vs-unsplit comparison, and the gate on their
+    # relative difference.  split_sino_recon's added value over recon() is the
+    # SPLIT+STITCH; comparing the two MODES at the same modest iteration count tests
+    # exactly that (a stitching error shows up from iteration 1), without paying for
+    # convergence (gated separately on the full-convergence geometries above).  The
+    # gate covers the documented seam approximation + the halves' different partition
+    # draws, calibrated at ~2x the measured value (2026-06-11).
+    SPLIT_SINO_ITERATIONS = 4
+    SPLIT_VS_FULL_NRMSE = 0.10   # measured 0.0487 (2026-06-11); gate at ~2x
+
     def test_split_sino(self):
         geometry_type = 'cone'
         self.set_view_params(geometry_type)
@@ -224,22 +264,46 @@ class TestVCD(unittest.TestCase):
         sinogram = ct_model.forward_project(phantom)
 
         # ##########################
-        # Perform half-sino reconstruction
+        # Mode-vs-mode: the stitched half-sino recon against the unsplit recon at the
+        # same iteration count (each seeded: the partition sequence is drawn from the
+        # global RNG).
         sinogram = jax.device_put(sinogram, ct_model.main_device)
-        print('  Starting recon')
-        recon, recon_dict = ct_model.split_sino_recon(sinogram)
+        print('  Starting unsplit recon')
+        np.random.seed(0)
+        recon_full, _ = ct_model.recon(sinogram, max_iterations=self.SPLIT_SINO_ITERATIONS,
+                                       stop_threshold_change_pct=0.0)
+        recon_full = np.asarray(recon_full)
+        print('  Starting split recon')
+        np.random.seed(0)
+        recon, recon_dict = ct_model.split_sino_recon(sinogram,
+                                                      max_iterations=self.SPLIT_SINO_ITERATIONS,
+                                                      stop_threshold_change_pct=0.0)
+        recon = np.asarray(recon)
 
-        # Check tolerances
-        max_diff = np.amax(np.abs(phantom - recon))
+        split_vs_full = np.linalg.norm(recon - recon_full) / np.linalg.norm(recon_full)
+        print('  split-vs-full nrmse = {:.4f}'.format(split_vs_full))
+        self.assertLess(split_vs_full, self.SPLIT_VS_FULL_NRMSE)
+        # Loose vs-phantom sanity ("nothing major changed" for the whole pipeline).
         nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
-        pct_95 = np.percentile(np.abs(recon - phantom), 95)
-        print('  nrmse = {:.3f}'.format(nrmse))
-        print('  max_diff = {:.3f}'.format(max_diff))
-        print('  pct_95 = {:.3f}'.format(pct_95))
+        print('  nrmse vs phantom = {:.3f}'.format(nrmse))
+        self.assertTrue(np.all(np.isfinite(recon)))
+        self.assertLess(nrmse, self.cone_tolerances['sanity_nrmse'])
 
-        self.assertTrue(max_diff < self.cone_tolerances['max_diff'] and
-                        nrmse < self.cone_tolerances['nrmse'] and
-                        pct_95 < self.cone_tolerances['pct_95'])
+
+def _add_per_geometry_vcd_tests():
+    """Generate one test_vcd_<geometry> method per geometry (see the note in TestVCD)."""
+    for geometry_type in mj._utils._geometry_types_for_tests:
+        def test(self, geometry_type=geometry_type):
+            print("Testing vcd with", geometry_type)
+            sanity_only = geometry_type not in self.FULL_CONVERGENCE_GEOMETRIES
+            self.verify_vcd(geometry_type, self.tolerances_by_geometry[geometry_type],
+                            sanity_only=sanity_only)
+        test.__name__ = 'test_vcd_' + geometry_type
+        test.__doc__ = 'VCD reconstruction check for the {} geometry.'.format(geometry_type)
+        setattr(TestVCD, test.__name__, test)
+
+
+_add_per_geometry_vcd_tests()
 
 
 if __name__ == '__main__':

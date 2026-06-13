@@ -98,3 +98,59 @@ def move_shard(x, target, dev2dev_safe=True):
             stacklevel=2,
         )
     return jax.device_put(np.asarray(x), target)
+
+
+def sum_band_to_owner(partials, owner, dev2dev_safe=True):
+    """Move per-device partials onto ``owner`` and sum them there.
+
+    This is the cross-device reduce used by sharded back projection.  Under
+    view-sharding each device computed only a *partial* back projection (the
+    contribution of its own subset of views) for some band of slices; the true
+    back projection of those slices is the sum of the partials over all devices.
+    Each partial is moved to the band's slice-owner (via ``move_shard``, so the
+    hardware-safe path is honored) and added there.
+
+    Args:
+        partials (sequence of jax.Array): one partial per device, all the same
+            shape (the band's ``(num_pixels, band_len)``).
+        owner (jax.Device): the device that owns this band's slices; the sum is
+            formed and left resident there.
+        dev2dev_safe (bool): cached hardware probe; forwarded to ``move_shard``.
+
+    Returns:
+        jax.Array: the summed band, resident on ``owner``.
+    """
+    contribs = [move_shard(p, owner, dev2dev_safe=dev2dev_safe) for p in partials]
+    total = contribs[0]
+    for c in contribs[1:]:
+        total = total + c
+    return total
+
+
+def broadcast_band_to_views(band, view_owners, dev2dev_safe=True):
+    """Copy a slice-band cylinder from its slice-owner to every view-owner.
+
+    The adjoint of :func:`sum_band_to_owner`.  In sharded forward projection the
+    recon is slice-sharded, so a band of slices lives on a single slice-owner,
+    yet every view-owner needs that band to forward-project its own views'
+    detector rows.  This broadcasts the band (one-to-many) to each view-owner via
+    ``move_shard`` (so the hardware-safe path is honored).  A ``move_shard`` to
+    the band's own device is a no-op, so the single-device case carries no
+    overhead.
+
+    Broadcast (copy to N devices) is the transpose of ``sum_band_to_owner``'s
+    reduce (sum from N devices) -- which is what keeps forward and back projection
+    adjoint.
+
+    Args:
+        band (jax.Array): a slice-band cylinder ``(num_pixels, band_len)``
+            resident on its slice-owner.
+        view_owners (sequence of jax.Device): the devices that will
+            forward-project (each gets its own copy of the band).
+        dev2dev_safe (bool): cached hardware probe; forwarded to ``move_shard``.
+
+    Returns:
+        dict {view_owner: jax.Array}: the band resident on each view-owner.
+    """
+    return {dev: move_shard(band, dev, dev2dev_safe=dev2dev_safe)
+            for dev in view_owners}

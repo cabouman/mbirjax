@@ -20,7 +20,7 @@ Using :math:`H(x)` to denote the denoising function, the denoiser is
 
 The denoiser will automatically estimate the noise level in the image, or the can directly set the value of
 noise standard deviation through the parameter `sigma_noise`.  Larger values of `sigma_noise` lead to smoother images.
-Alternatively, the amount of denoising can be adjusted using parameter `sharpness` (default=0.0).
+Alternatively, the amount of denoising can be adjusted using parameter `sharpness` (a float, default=1.0).
 This class inherits many of the behaviors and attributes of the :ref:`TomographyModelDocs`.
 
 Constructor
