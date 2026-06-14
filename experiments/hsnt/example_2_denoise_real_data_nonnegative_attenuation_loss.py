@@ -97,8 +97,8 @@ def multiplicative_update(W, H, T):
     return W * W_mult, H * H_mult
 
 @jax.jit(static_argnames=['num_materials', 'max_steps', 'rel_tol'])
-def optimize(T, num_materials, max_steps, rel_tol):
-    """Optimize W, H using Newton and multiplicative updates."""
+def optimize_newt(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using Newton updates."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
 
@@ -127,7 +127,18 @@ def optimize(T, num_materials, max_steps, rel_tol):
     prev_loss_newt = (jnp.exp(-W_newt_init @ H_newt_init) + T * (W_newt_init @ H_newt_init)).sum()
     state_newt = (W_newt_init, H_newt_init, prev_loss_newt, 0, False)
     state_newt = lax.while_loop(newton_cond, newton_body, state_newt)
-    W_newt, H_newt, _, _, _ = state_newt
+    W_newt, H_newt, _, i, _ = state_newt
+
+    return W_newt, H_newt, i
+
+@jax.jit(static_argnames=['num_materials', 'max_steps', 'rel_tol'])
+def optimize_mu(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using multiplicative updates."""
+    num_pixels = T.shape[0]
+    num_wavelengths = T.shape[1]
+
+    # Fixed seed for reproducibility
+    key = jax.random.PRNGKey(129)
 
     # ===== Multiplicative Optimization =====
     def mu_cond(state):
@@ -151,14 +162,12 @@ def optimize(T, num_materials, max_steps, rel_tol):
     prev_loss_mu = (jnp.exp(-W_mu_init @ H_mu_init) + T * (W_mu_init @ H_mu_init)).sum()
     state_mu = (W_mu_init, H_mu_init, prev_loss_mu, 0, False)
     state_mu = lax.while_loop(mu_cond, mu_body, state_mu)
-    W_mu, H_mu, _, _, _ = state_mu
+    W_mu, H_mu, _, i, _ = state_mu
 
-    return W_newt, H_newt, W_mu, H_mu
+    return W_mu, H_mu, i
 
 
 def main():
-    start_time = time.time()
-
     # Choose dataset from '0.8C_Ni_cylinder', '1.6C_Ni_cylinder', '2.4C_Ni_cylinder', '4.8C_Ni_cylinder', '9.6C_Ni_cylinder'
     dataset_name = '0_8c_Ni_cylinder_dataset'
     input_path = './input_data/processed_data_0_8c_Ni_cylinder.h5'  # path to import input noisy data
@@ -190,9 +199,16 @@ def main():
     T_jax = jnp.asarray(T, dtype=jnp.float32)
 
     # Perform hyperspectral denoising
-    W_newt, H_newt, W_mu, H_mu = optimize(
+    start_time = time.time()
+    W_newt, H_newt, i_newt = optimize_newt(
         T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
     )
+    print('Newton reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_newt, ' iterations')
+    start_time = time.time()
+    W_mu, H_mu, i_mu = optimize_mu(
+        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    )
+    print('Multiplicative reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_mu, ' iterations')
 
     # Convert results to NumPy arrays and reshape to original data shape
     hsnt_denoised_newt = np.array(W_newt @ H_newt).reshape(hsnt_data.shape)
@@ -234,8 +250,6 @@ def main():
                      y_lim=y_lim_transmission,
                      wavelengths=wavelengths,
                      filename="cylinder_transmission_nnal.png")
-
-    print('Total time elapsed: ', time.time() - start_time, ' seconds')
 
     plt.show()
 
