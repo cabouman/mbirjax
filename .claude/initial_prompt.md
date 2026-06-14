@@ -30,8 +30,18 @@ namedtuple CLASS per `get_geometry_parameters()` call, fixed via `make_geometry_
 lessons.md), and **B4.1–B4.3 are COMMITTED.  CONE SHARDS** (recon by slice ⇄ sinogram by view;
 banded reduce-scatter BACK + gather+monolithic FORWARD = decision C), CPU-validated end to end at
 DIVIDING counts (`tests/sharding/test_cone_sharded.py`: back/forward/Hessian 1e-5 + 3-iter VCD 1e-4,
-n=2/4, circular+helical — **this test file is UNTRACKED, commit it**).  Detail:
-`p6_increment_b_design.md` PROGRESS block.
+n=2/4, circular+helical).  Detail:
+`p6_increment_b_design.md` PROGRESS block.  
+
+**Most important next step:** `scaling_tests/cone_baseline_scaling.py` 
+shows no time or memory scaling with number of GPUs, either for ConeBeam or for ParallelBeam.  We need to determine if this is a ruler problem
+(the test script is incorrect) or a problem with the code implementation or both.  I think the problem
+is that `cone_baseline_scaling.py` is always using the maximum number of devices, but I'm not sure
+if this is because of the script or because of the code.  One problem is that tomography_model.py
+uses `jax.devices('gpu')` in multiple places, and I can't tell what each purpose is and if they 
+conflict.  Ideally, jax.devices would be called exactly once for each of gpu and cpu.  Determining
+the root cause and addressing this problem to produce robust code is the first thing we'll do (before
+moving on to B4.5 or B5).  
 
 **KNOWN ISSUE — deferred to B5 (Greg's call; do NOT chase before B5).**  Flipping cone's
 `_supports_sharding()` enabled the geometry-agnostic P5 PADDING, but cone padding IS B5 (not done).
@@ -47,7 +57,7 @@ device-form padded shape leaks to tests that assume the real shape.  B5 fixes it
   DIVIDING sizes (256/512/1024³ — no padding): per-device peak ~1/n_dev; the CAPACITY win (a 1024³
   VCD that OOM'd single-device now fits sharded); the back horizontal-recompute penalty vs §8a.
 - **B4.5:** hoist the cone back horizontal fan ONLY if B4.4's penalty demands it (the pixel-batch-
-  outer loop reorder; deferred behind measurement).
+  outer loop reorder; deferred behind measurement).  We'll need to make precise what the comparison and criteria are.  
 - **B5 (inert padding for cone) — FIXES the 4 deferred tests.**  For cone: forward gather crop to
   the real slice count (padded slices are zero → exact; prototyped+reverted in the B4.4 session);
   reconcile device-form-vs-real shape in the geometry tests / the internal `sparse_back_project`
