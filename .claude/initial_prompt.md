@@ -20,39 +20,51 @@ Orient first by reading, in order:
 5. `.claude/back_projection_overview.md` — required for P6 (projector internals).
 Verify claims against current code; memory/docs may lag.
 
-**Where we are (2026-06-13).**  A PR to prerelease is open (ParallelBeam beta complete).
-P5 is done and GPU-validated end to end (always-on placements, automatic multi-GPU via exactly
-inert padding, `configure_devices` / `device_summary` / `prepare_sino_for_devices` /
-`output_sharded`); adjacent tasks done (settable view parameters + vcls; `_auto_shard_cpu=True`;
-per-user `~/.mbirjax/` home); test suite overhauled (per-geometry `tests/geometries/`,
-`pytest -n auto` ≈ 66 s).  **Now in P6, the cone port, design measured-and-settled** (read
-§8a-design + `p6_increment_b_design.md`): increment A (channel-major both cone horizontal fans)
-is COMMITTED — a CPU win (~13×), GPU-NEUTRAL (so no easy single-GPU projector speedup from
-kernel layout; the port's GPU value is CAPACITY).  Increment B1 (banded cone BACK kernel +
-anchor/clip + `tests/geometries/test_cone_banded.py`) is committed, CPU+GPU green.  The cone
-sharded **forward = C (per-pixel-batch all-gather + monolithic), GPU-confirmed; B (banded/streamed)
-dropped** (slower, no memory win).  Sinogram row-sharding parked (`.claude/sinogram_sharding.md`).
+**Where we are (2026-06-13, P6 cone port — CONE NOW SHARDS).**  P5 done + GPU-validated (always-on
+placements, automatic multi-GPU, exactly-inert padding, `configure_devices` / `device_summary` /
+`prepare_sino_for_devices` / `output_sharded`).  P6 increments **A** (channel-major cone horizontal
+fans — CPU win, GPU-neutral; the port's GPU value is CAPACITY), **B1** (banded cone BACK kernel),
+**B2** (single-device cone on the banded back kernel; §8a-NEUTRAL both platforms), **B3**
+(module-level projector drivers — jit cache SHARED across model instances; the blocker was a fresh
+namedtuple CLASS per `get_geometry_parameters()` call, fixed via `make_geometry_params` — see
+lessons.md), and **B4.1–B4.3 are COMMITTED.  CONE SHARDS** (recon by slice ⇄ sinogram by view;
+banded reduce-scatter BACK + gather+monolithic FORWARD = decision C), CPU-validated end to end at
+DIVIDING counts (`tests/sharding/test_cone_sharded.py`: back/forward/Hessian 1e-5 + 3-iter VCD 1e-4,
+n=2/4, circular+helical — **this test file is UNTRACKED, commit it**).  Detail:
+`p6_increment_b_design.md` PROGRESS block.
+
+**KNOWN ISSUE — deferred to B5 (Greg's call; do NOT chase before B5).**  Flipping cone's
+`_supports_sharding()` enabled the geometry-agnostic P5 PADDING, but cone padding IS B5 (not done).
+So at non-dividing slice counts (≥4 devices) cone auto-pads and **4 tests FAIL on multi-device**:
+`test_{adjoint,hessian}_anisotropic_cone` (test_projectors), `test_split_sino`,
+`test_vcd_anisotropic_cone` (test_vcd).  Reproduce on CPU with `MBIRJAX_NUM_CPU_DEVICES=4` (the
+suite default is 2 → no padding → why CPU passed).  Cause: anisotropic cone (voxel_slice_aspect=2.9
+→ 14 slices) padded 14→16 at 4 dev; the forward gather assembles the PADDED cylinder and the
+device-form padded shape leaks to tests that assume the real shape.  B5 fixes it.
 
 **Next (details in the status NEXT + `p6_increment_b_design.md`):**
-- **Remove the now-unneeded forward banded kernel** (`forward_project_band_to_one_view` /
-  `forward_vertical_fan_band_*`, since forward = C) and adjust `test_cone_banded` (back
-  correctness is already covered by the back band-decomposition + the monolithic adjoint).
-- **B2 — the cone sharded driver**: banded BACK reduce-scatter + gather+monolithic FORWARD,
-  delete `entries_per_cylinder_batch`; gate memory/timing vs the §8a baseline.  Then B3
-  (de-closuring / module-level jit — kills the per-model retrace cost; tracing, not XLA
-  compile, dominates first-call latency, measured), B4 (sharded cone + GPU validation,
-  stage2-pattern), B5 (inert padding).
+- **B4.4 (GPU — Greg running):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4) at
+  DIVIDING sizes (256/512/1024³ — no padding): per-device peak ~1/n_dev; the CAPACITY win (a 1024³
+  VCD that OOM'd single-device now fits sharded); the back horizontal-recompute penalty vs §8a.
+- **B4.5:** hoist the cone back horizontal fan ONLY if B4.4's penalty demands it (the pixel-batch-
+  outer loop reorder; deferred behind measurement).
+- **B5 (inert padding for cone) — FIXES the 4 deferred tests.**  For cone: forward gather crop to
+  the real slice count (padded slices are zero → exact; prototyped+reverted in the B4.4 session);
+  reconcile device-form-vs-real shape in the geometry tests / the internal `sparse_back_project`
+  contract; consider a `_supports_slice_padding()` hook so the "B4 = dividing counts" contract is
+  explicit; the masks are mostly geometry-agnostic (done).
 - Then C (parallel conversion + delete the monolithic cone kernel + transitional branch) →
-  translation/multiaxis → retirement cascade (main_device/sinogram_device, is_sharded guards,
-  view_indices, RETIRE-AFTER sweep) → the multi-GPU user docs page ("sharding" sparingly —
-  speak in terms of multiple GPUs adding capacity and speed).
+  translation/multiaxis → retirement cascade → the multi-GPU user docs page.
 
 Reminders:
 - **Stage only / DRAFT commit messages; never run `git commit`** — I commit from PyCharm.
 - Tests: `source /Users/gbuzzard/miniforge3/etc/profile.d/conda.sh && conda activate mbirjax`;
-  full suite `pytest -n auto tests/` (~66 s; single-process ~165 s); sharding specifics via
-  `MBIRJAX_NUM_CPU_DEVICES=4 pytest tests/sharding/`; per-geometry recon tests live in
-  `tests/geometries/`.
+  full suite `python -m pytest -n auto tests/` (~66 s; single-process ~165 s); sharding specifics
+  via `MBIRJAX_NUM_CPU_DEVICES=4 python -m pytest tests/sharding/`; per-geometry recon tests live
+  in `tests/geometries/`.  **Use `python -m pytest`, not bare `pytest`** — on the cluster bare
+  `pytest` resolved to a stale `~/.local/bin/pytest` whose shebang Python lacks pytest (fixed in
+  `dev_scripts/run_tests.sh`).  **Multi-device cone exercises sharding on virtual CPUs at
+  `MBIRJAX_NUM_CPU_DEVICES=4`** — that catches the padding bugs the 2-device default misses.
 - I run GPU/large recons on the cluster — **flag GPU items.**  Fresh `pip install -e .` on the
   cluster after edits (a stale build once impersonated a leak); pre-flight `nvidia-smi dmon`
   (thermal throttling); `results/`/`baselines/` are gitignored — record decisions in docs.

@@ -980,8 +980,12 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            output_sharded (bool, optional): Accepted for API uniformity.  The FDK filter still
+                runs SINGLE-DEVICE (a sharded sinogram is gathered, filtered on one device, then
+                re-sharded by the downstream back_project), so the output is the same either way.
+                TODO: shard it like ParallelBeamModel.fbp_filter -- filter each device's own
+                view-shard on-device via mjs.run_per_device (the memory/time win), then honor
+                output_sharded.
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FDK filtering.

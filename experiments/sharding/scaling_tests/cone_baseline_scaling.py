@@ -62,7 +62,7 @@ GEOMETRY = "cone"
 # Cone is single-device-only on the current code, so the baseline is n_dev=1.
 # (Kept as a list so the same tool extends to a device sweep post-port by simply
 # adding counts — at which point configure_sharding will be wired in make_model.)
-DEVICE_COUNTS = [1]
+DEVICE_COUNTS = [1, 2, 4]
 
 # Ops to measure (each its own fresh worker per size).
 OPS = ("forward", "back", "vcd_const", "vcd_nonc")

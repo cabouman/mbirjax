@@ -143,11 +143,49 @@ with correctness / memory / timing gates (Greg's request).*
     path; full suite 161p/3s.  Multi-device gate: new `tests/sharding/test_cone_sharded.py` —
     back/forward/Hessian (coeff_power=2) at **1e-5** and a 3-iter VCD recon at **1e-4**, sharded
     (n=2,4) == single-device, circular+helical; full sharding suite 107p @4dev (cone+parallel
-    coexist).  ⇒ the cone reduce-scatter back + gather-forward are CORRECT end to end on CPU.
-  - **B4.4 NEXT (GPU — Greg):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4):
-    per-device peak ~1/n_dev; the CAPACITY win (a 1024³ VCD that OOM'd single-device now fits
-    sharded); the horizontal-recompute penalty vs §8a.  Then B4.5 (hoist horizontal ONLY if B4.4
-    demands it), B5 (inert padding), C/D/E.
+    coexist).  ⇒ the cone reduce-scatter back + gather-forward are CORRECT end to end on CPU
+    AT DIVIDING COUNTS.  (`tests/sharding/test_cone_sharded.py` is UNTRACKED — commit it.)
+  - **⚠ KNOWN FAILURES — DEFERRED TO B5 (Greg's call; do NOT chase before B5).**  The flag flip
+    enabled the geometry-agnostic P5 PADDING for cone, but cone padding IS B5 (not done).  So at
+    NON-dividing slice counts (≥4 devices) cone auto-pads and 4 tests FAIL on multi-device:
+    `test_{adjoint,hessian}_anisotropic_cone` (test_projectors), `test_split_sino`,
+    `test_vcd_anisotropic_cone` (test_vcd).  Reproduce on CPU with `MBIRJAX_NUM_CPU_DEVICES=4`
+    (default 2 → no padding → why CPU was green; GPU box has 4 → red).  Cause: anisotropic cone
+    (voxel_slice_aspect=2.9 → 14 slices) padded 14→16 at 4 dev; the forward gather assembles the
+    PADDED cylinder and the device-form padded shape leaks to tests assuming the real shape.
+    Scaling tests UNAFFECTED (256/512/1024³ divide 2/4/8 → no padding).
+  - **B4.4 NEXT (GPU — Greg running):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4)
+    at DIVIDING sizes: per-device peak ~1/n_dev; the CAPACITY win (a 1024³ VCD that OOM'd
+    single-device now fits sharded); the back horizontal-recompute penalty vs §8a.
+  - **B4.5:** hoist the cone back horizontal fan ONLY if B4.4's penalty demands it (pixel-batch-
+    outer loop reorder; deferred behind measurement).
+  - **B5 (inert padding for cone) — FIXES the 4 deferred failures.**  Cone scope: (1) forward
+    gather CROP to the real slice count (padded slices are zero → exact; PROTOTYPED + REVERTED in
+    the B4.4 session — `_forward_project_to_view_shards`, crop `full_cyl[:, :recon_placement.
+    real_size]`); (2) reconcile device-form-vs-real shape in the geometry tests / the internal
+    `sparse_back_project` contract (the tests assume `sparse_back_project` returns real-slice shape,
+    but sharded+padded it returns device-form); (3) consider a `_supports_slice_padding()` hook so
+    the "B4 = dividing counts" contract is explicit (cone False until B5); the masks (`_mask_padded_
+    slices`/`_mask_padded_views`) + the B1 global clip are already geometry-agnostic/done.  Then C/D/E.
+  - **FOLLOW-UP — convert cone `fdk_filter` to the sharded-contract `fbp_filter` pattern.**  Now
+    that cone is on the placement path (B4), `ConeBeamModel.fdk_filter` (cone_beam.py ~974) still
+    runs SINGLE-DEVICE — its docstring "Accepted for API uniformity. Cone beam runs single-device
+    UNTIL THE PLACEMENT PORT" is now STALE (the placement port = B4, done).  So a sharded cone
+    `direct_recon`/`fdk_recon` (the VCD FDK init) gathers the sinogram, filters single-device, then
+    re-shards for the sharded `back_project` — a host round-trip + single-device bottleneck at init
+    for large sharded cone recons.  **The KEY POINT of `fbp_filter`'s sharded change was wrapping
+    `tomography_utils.apply_row_filter` in `mjs.run_per_device`** (parallel_beam.py ~503-534): on a
+    sharded model each device's worker filters its OWN local view-shard on-device
+    (`apply_row_filter(shard, filter)` under `run_per_device`), then `assemble_sharded` stitches the
+    results back with no data movement — the memory/time win (no gather, no host round-trip, no f64
+    promotion, parallel across devices).  Cone's conversion does the ANALOGOUS: dispatch the cone
+    FDK filtering (the per-(row,channel) FDK weighting + ramp) per view-shard via `run_per_device`
+    (not `apply_row_filter` — cone's filter is its own per-view kernel), honor `output_sharded`
+    (view-sharded internal / gather at exit), so the filtered sinogram feeds the sharded back
+    projector with NO gather.  Not hot-path (FDK = init only), so it's an efficiency/consistency
+    cleanup, not blocking.  (Stale `fdk_filter` docstring "single-device UNTIL THE PLACEMENT PORT"
+    FIXED — now a TODO pointing at this pattern.)  Likely lands with C (parallel/cleanup) or as its
+    own small task.
 
 ---
 

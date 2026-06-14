@@ -29,6 +29,18 @@ VCD that OOM'd single-device now fits sharded); the horizontal-recompute penalty
 risk, deferred behind measurement).  Detailed record: `p6_increment_b_design.md` PROGRESS block
 (B3, B4.1–4.3).
 
+⚠ **KNOWN FAILING TESTS — DEFERRED TO B5 (Greg's call; do NOT chase before B5).**  B4.3's
+`_supports_sharding()` flip enabled the geometry-agnostic P5 PADDING for cone, but cone padding IS
+B5 (not done).  So at non-dividing slice counts (≥4 devices) cone auto-pads and **4 tests FAIL on
+multi-device**: `test_{adjoint,hessian}_anisotropic_cone` (tests/geometries/test_projectors.py),
+`test_split_sino`, `test_vcd_anisotropic_cone` (tests/geometries/test_vcd.py).  **Reproduce on CPU
+with `MBIRJAX_NUM_CPU_DEVICES=4`** (the suite default 2 doesn't pad these → why CPU was green; the
+GPU box has 4 → red).  Cause: anisotropic cone (voxel_slice_aspect=2.9 → 14 slices) padded 14→16 at
+4 dev; the cone forward gather assembles the PADDED cylinder and the device-form padded shape leaks
+to tests that assume the real shape.  **B5 fixes it** (see the B5 bullet in `p6_increment_b_design.md`).
+Scaling tests are UNAFFECTED (256/512/1024³ divide 2/4/8 → no padding).  ALSO:
+`tests/sharding/test_cone_sharded.py` is **UNTRACKED — commit it** (the B4.3 multi-device gate).
+
 ### Done since 2026-06-13c (staged, Greg commits from PyCharm)
 - **B3 — module-level projector drivers, jit cache SHARED across model instances.**  De-closured
   projectors.py.  KEY blocker: `get_geometry_parameters()` minted a fresh namedtuple CLASS per
