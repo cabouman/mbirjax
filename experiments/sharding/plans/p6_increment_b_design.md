@@ -23,10 +23,27 @@ with correctness / memory / timing gates (Greg's request).*
   (`⟨forward_mono x, y⟩ = ⟨x, concat back_band(y)⟩`).  Section header in cone_beam.py
   retargeted to back-only with a note recording why forward does not band (so it is
   not re-added).  Cone banded + cone projector suites green.
-- **NEXT:** B2 (single-device + sharded driver: back on the banded kernel; forward =
-  gather + monolithic; delete `entries_per_cylinder_batch`), gated by memory/timing vs
-  the §8a baseline.  Then B3 (de-closuring), B4 (sharded cone + GPU validation), B5
-  (inert padding), then C/D/E.
+- **B2 commit 1 DONE (2026-06-13c, staged — additive, nothing deleted yet):** rewired the
+  single-device cone `back_project_one_view_to_pixel_batch` to horizontal-fan-once + a
+  ROLLED `jax.lax.map` over slice bands of `CONE_SLICE_BAND_SIZE` (module constant = 128,
+  the old `entries_per_cylinder_batch` default) → reshape/crop.  The loop is ROLLED
+  (lax.map, not a Python unroll), so the compiled program is independent of the slice
+  count (Greg's unroll concern — slice counts span tens→thousands).  Added a
+  `slice_band_size` static kwarg (None→constant) so a small test geometry exercises the
+  multi-band assembly.  Monolithic vertical-fan primitives KEPT as the A/B reference.
+  Tests: new `test_cone_banded` driver A/B (production lax.map+reshape+crop == monolithic
+  across band sizes incl. a non-dividing crop, coeff_power 1+2); `_back_monolithic`
+  repointed to assemble from the monolithic primitives (no longer the now-banded
+  production method).  GATES GREEN: test_cone_banded, cone test_projectors/test_fbp_fdk/
+  test_vcd (15), full test_projectors (21).
+- **B2 commit 2 NEXT (the deletions):** delete the monolithic cone vertical fan
+  (`back_vertical_fan_one_view_to_pixel_batch` / `..._to_one_pixel`); swap the FORWARD
+  vertical fan's det-row chunk (`gp.entries_per_cylinder_batch`, cone_beam.py ~434) for a
+  module constant; delete `entries_per_cylinder_batch` + the dead `slice_range_length`
+  from cone params (runtime-only — no save/load migration unless a test surfaces one);
+  retire the monolithic-comparison tests.  Then the §8a memory/timing REPORT
+  (`cone_baseline_scaling.py`, CPU local + **GPU cluster**).  Then B3 (de-closuring), B4
+  (sharded cone + GPU validation), B5 (inert padding), then C/D/E.
 
 ---
 

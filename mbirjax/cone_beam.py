@@ -12,6 +12,16 @@ from mbirjax import TomographyModel, tomography_utils, ParameterHandler
 
 ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
+# Default slice-band size for the cone back projector's rolled vertical-fan loop.  The
+# back projector computes the horizontal fan once per view, then walks the recon slice
+# axis in bands of this many slices using a jax.lax.map.  The loop is ROLLED (the band
+# body compiles once and iterates at runtime), so the compiled program size is
+# independent of the slice count -- which can range from tens of slices on one device to
+# thousands across many devices.  The band size bounds the per-band scratch to
+# (pixel_batch x CONE_SLICE_BAND_SIZE); it is the back projector's memory knob, replacing
+# the old entries_per_cylinder_batch geometry parameter.  128 matches that old default.
+CONE_SLICE_BAND_SIZE = 128
+
 
 class ConeBeamModel(TomographyModel):
     """
@@ -463,10 +473,19 @@ class ConeBeamModel(TomographyModel):
         return det_column
 
     @staticmethod
-    @partial(jax.jit, static_argnames='projector_params')
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+    @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
+                                             coeff_power=1, slice_band_size=None):
         """
-        Use vmap to do a backprojection from one view to multiple pixels (voxel cylinders).
+        Back project one view to multiple pixels (voxel cylinders).
+
+        The horizontal fan is computed ONCE per view (it does not depend on the recon
+        slice), then the recon slice axis is walked in fixed-size bands with a ROLLED loop
+        (jax.lax.map): the band body compiles once and iterates at runtime, so the
+        compiled program does not grow with the slice count.  Each band back-projects onto
+        its block of global slices via the banded vertical fan; the bands are stacked and
+        cropped to the real slice count (the last band is padded up to a whole band and the
+        banded kernel's global validity clip zeros that padded tail, so the crop is exact).
 
         Args:
             sinogram_view (2D jax array): one view of the sinogram to be back projected.
@@ -476,19 +495,39 @@ class ConeBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
+            slice_band_size (int or None): number of recon slices per band (the memory knob).
+                None uses the module default CONE_SLICE_BAND_SIZE; tests pass a small value to
+                exercise the multi-band assembly on a small geometry.  Static (sets shapes).
 
         Returns:
             The voxel values for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
-            the input sinogram view.
+            the input sinogram view.  Shape (len(pixel_indices), num_recon_slices).
         """
+        num_recon_slices = projector_params.recon_shape[2]
+        num_pixels = pixel_indices.shape[0]
 
-        vertical_fan_projector = ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch
-        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
+        # Horizontal fan once per view -> detector-based voxel cylinder (num_pixels, num_det_rows).
+        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
 
-        det_voxel_cylinder = horizontal_fan_projector(sinogram_view, pixel_indices, single_view_params,
-                                                      projector_params, coeff_power=coeff_power)
-        back_projection = vertical_fan_projector(det_voxel_cylinder, pixel_indices, single_view_params,
-                                                 projector_params, coeff_power=coeff_power)
+        # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
+        # the last band runs past num_recon_slices and is cropped off below.
+        band_size = CONE_SLICE_BAND_SIZE if slice_band_size is None else slice_band_size
+        band_size = min(band_size, num_recon_slices)
+        num_bands = (num_recon_slices + band_size - 1) // band_size
+        band_starts = band_size * jnp.arange(num_bands)        # g0 for each band (mapped over)
+
+        def back_one_band(g0):
+            # (num_pixels, band_size) back projection onto global slices [g0, g0 + band_size).
+            return ConeBeamModel.back_vertical_fan_band_pixel_batch(
+                det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+                g0, band_size, coeff_power=coeff_power)
+
+        bands = jax.lax.map(back_one_band, band_starts)        # (num_bands, num_pixels, band_size)
+        # Reassemble into (num_pixels, num_bands * band_size): for pixel p and band b, slice
+        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.
+        back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
+        back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
 
         return back_projection
 

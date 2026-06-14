@@ -2,17 +2,22 @@
 tests/geometries/test_cone_banded.py
 ─────────────────────────────────────
 Unit tests for the cone banded BACK projector kernel
-``ConeBeamModel.back_project_one_view_to_band``.
+``ConeBeamModel.back_project_one_view_to_band`` and the production back projector
+``ConeBeamModel.back_project_one_view_to_pixel_batch`` that is now built on it.
 
-These are the strong per-geometry correctness gates for the banded interface, run
-BEFORE the kernel is wired into the projectors/sharding.  They check:
+These are the strong per-geometry correctness gates for the banded interface.  They
+check:
 
   * band-decomposition: the monolithic per-view BACK projector equals the
     concatenation of the banded back projector over a tiling of the slice axis --
     because the bands tile disjointly, so each contribution is counted exactly once;
   * full-band == monolithic: a single band (g0=0, L=S) reproduces the monolithic
     back kernel (the anchor is faithful on full cylinders);
-  * the Hessian path (coeff_power=2) decomposes the same way.
+  * the Hessian path (coeff_power=2) decomposes the same way;
+  * driver A/B: the production back_project_one_view_to_pixel_batch (horizontal fan
+    once + a rolled jax.lax.map over slice bands + reshape/crop) reproduces the
+    monolithic back projector across band sizes -- validating the lax.map reassembly,
+    not just the band kernel.
 
 Every check runs on a CIRCULAR and a HELICAL cone geometry, so the anchor's
 helical-z-shift term is exercised (a helical view has a nonzero per-view z shift).
@@ -99,8 +104,14 @@ class TestConeBandedProjector(unittest.TestCase):
 
     # ── helpers (operate on a config dict) ──────────────────────────────────────
     def _back_monolithic(self, c, view, coeff_power=1):
-        return np.asarray(ConeBeamModel.back_project_one_view_to_pixel_batch(
-            view, c['idx'], c['svp'], c['pp'], coeff_power=coeff_power))
+        # The pre-banded monolithic back projector: horizontal fan once -> monolithic
+        # vertical fan (entries_per_cylinder_batch slice chunking).  This is the A/B
+        # reference for both the band-decomposition tests and the banded production
+        # back_project_one_view_to_pixel_batch.  RETIRE with the monolithic vertical fan.
+        det_cyl = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+            view, c['idx'], c['svp'], c['pp'], coeff_power=coeff_power)
+        return np.asarray(ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch(
+            det_cyl, c['idx'], c['svp'], c['pp'], coeff_power=coeff_power))
 
     def _back_banded_concat(self, c, view, coeff_power=1):
         bands = [np.asarray(ConeBeamModel.back_project_one_view_to_band(
@@ -139,6 +150,31 @@ class TestConeBandedProjector(unittest.TestCase):
                 np.testing.assert_allclose(self._back_banded_concat(c, view, coeff_power=2),
                                            self._back_monolithic(c, view, coeff_power=2),
                                            rtol=self.RTOL, atol=self.ATOL)
+
+    # ── driver A/B: the production banded back projector vs the monolithic ───────
+    def test_back_driver_matches_monolithic(self):
+        """RETIRE-with-monolithic: the production back_project_one_view_to_pixel_batch
+        (horizontal fan once + rolled lax.map over slice bands + reshape/crop) reproduces
+        the monolithic back projector.  Unlike the band-decomposition test (which uses an
+        explicit np.concatenate), this exercises the production lax.map REASSEMBLY -- so a
+        transpose/reshape/crop bug would surface here.  Several band sizes are run: one that
+        does NOT divide the slice count (the padded-last-band crop), a small one (several
+        bands), and one >= S (a single band, clamped).  Covers coeff_power 1 and 2."""
+        for c in self.configs:
+            with self.subTest(geometry=c['name']):
+                view = self._rand_view(c)
+                S = c['S']
+                # Non-divisor (remainder -> crop), small (several bands), and a single band.
+                band_sizes = sorted({max(1, S // 3), max(2, S // 2 + 1), S})
+                for coeff_power in (1, 2):
+                    ref = self._back_monolithic(c, view, coeff_power=coeff_power)
+                    for bs in band_sizes:
+                        prod = np.asarray(ConeBeamModel.back_project_one_view_to_pixel_batch(
+                            view, c['idx'], c['svp'], c['pp'],
+                            coeff_power=coeff_power, slice_band_size=bs))
+                        np.testing.assert_allclose(
+                            prod, ref, rtol=self.RTOL, atol=self.ATOL,
+                            err_msg=f"[{c['name']}] coeff_power={coeff_power} band_size={bs}")
 
 
 if __name__ == '__main__':
