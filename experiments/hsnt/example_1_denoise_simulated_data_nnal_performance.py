@@ -180,6 +180,56 @@ def create_optimization_fn(N, rel_tol):
     return jax.vmap(optimize_for_seed, in_axes=(0, None, None, None))
 
 
+def plot_results(csv_file):
+    data = np.loadtxt(csv_file, skiprows=1, delimiter=',')
+    num_pixels = data[:, 0].astype(int)
+    num_wavelengths = data[:, 1].astype(int)
+    mse_spectra_newton = data[:, 3]
+    mse_spectra_mu = data[:, 4]
+    mse_materials_newton = data[:, 5]
+    mse_materials_mu = data[:, 6]
+
+    pixel_counts = np.unique(num_pixels)
+    wavelength_counts = np.unique(num_wavelengths)
+    shape = (pixel_counts.size, wavelength_counts.size, -1)
+
+    num_pixels = np.median(num_pixels.reshape(shape), axis=-1)
+    num_wavelengths = np.median(num_wavelengths.reshape(shape), axis=-1)
+    mse_spectra_newton = np.median(mse_spectra_newton.reshape(shape), axis=-1)
+    mse_spectra_mu = np.median(mse_spectra_mu.reshape(shape), axis=-1)
+    mse_materials_newton = np.median(mse_materials_newton.reshape(shape), axis=-1)
+    mse_materials_mu = np.median(mse_materials_mu.reshape(shape), axis=-1)
+
+    # Plot the denoised spectra
+    def plot_data(data, title, filename):
+        plt.figure(figsize=(10, 8))
+        plt.imshow(np.log2(data), cmap='viridis', vmin=np.log2(data[-1][-1]), vmax=np.log2(data[0][-1]))
+        plt.ylabel('Number of Pixels')
+        plt.xlabel('Number of Wavelengths')
+        plt.yticks(list(range(len(pixel_counts))), [str(p) for p in pixel_counts])
+        plt.xticks(list(range(len(wavelength_counts))), [str(w) for w in wavelength_counts])
+        plt.title(title)
+        plt.colorbar(label='log2(MSE)')
+        plt.savefig(filename + '.png')
+
+        ax = plt.figure(figsize=(10, 8)).add_subplot(111, projection='3d')
+        ax.view_init(elev=30, azim=45)
+        ax.plot_surface(np.log2(num_pixels), np.log2(num_wavelengths), np.log2(data), cmap='viridis', vmin=np.log2(data[-1][-1]), vmax=np.log2(data[0][-1]))
+        ax.set_ylabel('Number of Pixels')
+        ax.set_xlabel('Number of Wavelengths')
+        ax.set_zlabel('log2(MSE)')
+        ax.set_xticks(np.log2(pixel_counts), [str(p) for p in pixel_counts])
+        ax.set_yticks(np.log2(wavelength_counts), [str(w) for w in wavelength_counts])
+        ax.set_title(title)
+        plt.savefig(filename + '_3d.png')
+
+
+    plot_data(mse_spectra_newton, 'MSE of Denoised Spectra (Newton)', 'mse_spectra_newton')
+    plot_data(mse_spectra_mu, 'MSE of Denoised Spectra (Multiplicative)', 'mse_spectra_mu')
+    plot_data(mse_materials_newton, 'MSE of Denoised Material Projections (Newton)', 'mse_materials_newton')
+    plot_data(mse_materials_mu, 'MSE of Denoised Material Projections (Multiplicative)', 'mse_materials_mu')
+
+
 def main():
     # Simulation parameters
     num_angles = 1  # Number of projection angles
@@ -188,6 +238,7 @@ def main():
     dosage_rate = 50  # Neutron dosage rate
     material_density = {"Ni": 0.25, "Cu": 0.25, "Al": 0.75}  # Define material density (vol. fraction)
     dataset_type = 'attenuation'  # Choose between 'attenuation' or 'transmission'
+    out_file = 'denoising_results.csv'  # Output CSV file for results
 
     # Denoiser parameters
     num_materials = 3  # Number of materials
@@ -210,7 +261,7 @@ def main():
     rel_tol = 1e-8
     vmapped_optimize = create_optimization_fn(N, rel_tol)
 
-    with open('denoising_results_1.csv', 'w') as f:
+    with open(out_file, 'w') as f:
         f.write('num_pixels,num_wavelengths,random_seed,MSE_spectra_newt,MSE_spectra_mu,MSE_materials_newt,MSE_materials_mu\n')
 
         for size in np.logspace(2, 8, 7, base=2, dtype=int):
@@ -273,5 +324,8 @@ def main():
                            f'{Dm_newt_np[seed]},{Dm_mu_np[seed]}\n')
                 f.flush()
 
+    plot_results(out_file)
+
 if __name__ == "__main__":
-    main()
+    plot_results('denoising_results_bck.csv')
+    #main()
