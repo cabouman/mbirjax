@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
 from mbirjax._utils import is_oom, log_oom_guidance
+from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices
 # Internal sharding primitives (see _sharding), accessed with the `mjs` prefix.
 # Importing the SUBMODULE directly (not aliasing the top-level `mbirjax` and
 # reaching submodules as attributes) is safe even mid-import of mbirjax: it
@@ -83,7 +84,6 @@ class TomographyModel(ParameterHandler):
         self.set_params(geometry_type=str(type(self)))
 
         self.main_device, self.sinogram_device= None, None
-        self.cpus = jax.devices('cpu')
         self.projector_functions = None
         self.prox_data = None
 
@@ -241,25 +241,16 @@ class TomographyModel(ParameterHandler):
 
     def _resolve_devices(self, devices):
         """Resolve the configure_devices() ``devices`` argument to a concrete device list."""
-        def default_pool():
-            try:
-                g = list(jax.devices('gpu'))
-                if g:
-                    return g
-            except RuntimeError:
-                pass
-            return list(jax.devices('cpu'))
-
         if devices is None:
-            pool = default_pool()
+            pool = default_devices()   # GPUs if present, else CPUs
             on_gpu = bool(pool) and pool[0].platform == 'gpu'
             n = self._auto_device_count(len(pool)) if on_gpu else 1
             return pool[:n]
         if isinstance(devices, (int, np.integer)):
-            return default_pool()[:int(devices)]
+            return default_devices()[:int(devices)]
         devices = list(devices)
         if devices and all(isinstance(d, (int, np.integer)) for d in devices):
-            all_devices = jax.devices()
+            all_devices = default_devices()
             return [all_devices[int(i)] for i in devices]
         return devices
 
@@ -296,7 +287,7 @@ class TomographyModel(ParameterHandler):
             ``set_params`` will not override this configuration).
         """
         if devices is None:
-            devices = jax.devices()[:1]
+            devices = default_devices()[:1]
         devices = list(devices)
         n_devices = len(devices)
         if n_devices < 1:
@@ -413,10 +404,7 @@ class TomographyModel(ParameterHandler):
         # Automatic selection that left devices idle (a count whose last shard would be
         # entirely padding is skipped): explain why hardware is unused.
         if self.is_sharded and not self._sharding_configured and platform == 'GPU':
-            try:
-                n_available = len(jax.devices('gpu'))
-            except RuntimeError:
-                n_available = n
+            n_available = len(gpu_devices()) or n   # () -> 0 only off-GPU, which can't reach here
             if n_available > n:
                 recon_shape = self.get_params('recon_shape')
                 num_slices = recon_shape[self.recon_shard_axis() % len(recon_shape)]
@@ -896,12 +884,9 @@ class TomographyModel(ParameterHandler):
         #       recon time, where _handle_jax_error guides the user (add GPUs, shrink, split, or CPU).
         #   (2) Establish how arrays are laid out on those device(s) -- the placement block below +
         #       _set_placements (which always runs and builds recon_placement / sino_placement).
-        cpus = jax.devices('cpu')
+        cpus = cpu_devices()
         use_gpu = self.get_params('use_gpu')
-        try:
-            gpus = jax.devices('gpu')
-        except RuntimeError:
-            gpus = []
+        gpus = gpu_devices()   # () when there is no GPU backend
         gpu_available = len(gpus) > 0
         if not gpu_available and use_gpu not in ['automatic', 'none']:
             warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
