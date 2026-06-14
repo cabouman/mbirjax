@@ -19,8 +19,8 @@ def main():
     start_time = time.time()
 
     # Choose dataset from '0.8C_Ni_cylinder', '1.6C_Ni_cylinder', '2.4C_Ni_cylinder', '4.8C_Ni_cylinder', '9.6C_Ni_cylinder'
-    dataset_name = '2_4c_Ni_cylinder_dataset'
-    input_path = './input_data/2_4c/processed_data_2_4c_Ni_cylinder.h5'  # path to import input noisy data
+    dataset_name = '0_8c_Ni_cylinder_dataset'
+    input_path = './input_data/processed_data_0_8c_Ni_cylinder.h5'  # path to import input noisy data
     output_path = './output_data/'  # path to export output denoised data
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 

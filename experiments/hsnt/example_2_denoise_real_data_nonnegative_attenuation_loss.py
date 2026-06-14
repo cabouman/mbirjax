@@ -96,14 +96,14 @@ def multiplicative_update(W, H, T):
 
     return W * W_mult, H * H_mult
 
-@jax.jit
+@jax.jit(static_argnames=['num_materials', 'max_steps', 'rel_tol'])
 def optimize(T, num_materials, max_steps, rel_tol):
     """Optimize W, H using Newton and multiplicative updates."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
 
     # Fixed seed for reproducibility
-    key = jax.random.PRNGKey(129)
+    key = jax.random.PRNGKey(jnp.array(129, dtype=int))
 
     # ===== Newton Optimization =====
     def newton_cond(state):
