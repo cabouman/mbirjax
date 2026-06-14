@@ -103,8 +103,33 @@ with correctness / memory / timing gates (Greg's request).*
     static-arg cache on the pytree treedef, which includes the class, so a per-call class
     silently defeats cross-instance cache sharing.  Build the type once.
   - **B3b (tail-batch padding) — deferred/measured, unchanged.**
-- **NEXT: B4** (sharded cone driver — banded back reduce-scatter + gather+monolithic forward;
-  `_supports_sharding()=True`; GPU validation, stage2-pattern), then B5 (inert padding), C/D/E.
+- **B4 plan (reviewed with Greg) + B4.1 DONE.**  The reduce-scatter/all-gather infra in
+  tomography_model is GEOMETRY-AGNOSTIC; only two pieces are parallel-specific — the back
+  per-band worker's ROW-CROP and the banded FORWARD.  B4 routes those by geometry; everything
+  else (band loops, `_balanced_slice_bounds`, `sum_band_to_owner`/`broadcast_band_to_views`,
+  `_mask_padded_*`, `assemble_sharded`, placements) is reused.  **Decision (A)** (back: recompute
+  horizontal per band vs hoist) — START SIMPLE (recompute), MEASURE the penalty vs §8a, hoist
+  (B4.5) only if needed.  **Memory (Greg's question):** the simple per-band worker is BOUNDED by
+  view_batch_size×pixel_batch_size — it batches+sums over views (not V_d copies), and the full
+  view-shard is read in place (not copied); the cone-vs-parallel extra is the full-detector-row
+  transient recreated per band = the recompute cost itself.
+  - **B4.1 DONE (2026-06-13d, staged) — cone back sharded path (banded driver + geometry hook).**
+    Added `projectors._sparse_back_project_band` (banded back driver batched over views+pixels;
+    g0 traced, num_band_slices static; bounded by the batch sizes) exposed as
+    `Projectors.sparse_back_project_band` for geometries with a banded kernel (cone).  Geometry
+    hook `TomographyModel._back_project_view_shard_to_band` — **BASE = the geometry-neutral BANDED
+    path** (cone + future geometries use it as is); **`ParallelBeamModel` OVERRIDES** with its
+    cheaper detector-row crop (a specialization exploiting row r → slice r, not the default).  The
+    sharded back worker routes through the hook.  (Refactored from an initial base-row-crop/cone-
+    override after review — base now holds the general case, not parallel's; also safer, since a
+    future sharded geometry defaults to correct banded behavior instead of inheriting row-crop.)
+    Gate: new `test_cone_banded` driver test (`sparse_back_project_band(full_sino, g0, L) ==
+    sparse_back_project(full_sino)[:, g0:g0+L]`, coeff_power 1+2, circular+helical) green;
+    parallel sharding suite unchanged (103p @4dev, now via the override); full suite 161p/3s.
+  - **B4.2 NEXT:** cone forward sharded path (gather + monolithic, pixel-batched; decision C),
+    branched by geometry.  Then B4.3 (flip `_supports_sharding()`, cone sharding tests:
+    trivial-mesh 1e-5, multi-device 1e-4, adjoint, Hessian), B4.4 (measure + **GPU**), B4.5
+    (hoist horizontal only if B4.4 demands it), then B5 (inert padding), C/D/E.
 
 ---
 

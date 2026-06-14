@@ -2039,10 +2039,28 @@ class TomographyModel(ParameterHandler):
         """
         def worker(i, device):
             data, global_view_idx = shard_info[device]
-            return self.projector_functions.sparse_back_project(
-                data[:, g0:g1, :], local_pixels[i],
-                view_indices=global_view_idx, coeff_power=coeff_power)
+            return self._back_project_view_shard_to_band(
+                data, local_pixels[i], g0, g1, global_view_idx, coeff_power)
         return mjs.run_per_device(devices, worker, executor=pool)
+
+    def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
+                                         view_indices, coeff_power):
+        """Back-project one view-owner's full view-shard onto the GLOBAL slice band [g0, g1).
+
+        Default (geometry-neutral) behavior: run the geometry's BANDED back kernel on the FULL
+        view, producing slices [g0, g1) directly -- correct when a slice is drawn from a RANGE of
+        detector rows (so the rows cannot be cropped).  This is the general case; cone uses it as
+        is, as will translation/multiaxis once ported.  ``ParallelBeamModel`` OVERRIDES it with a
+        cheaper detector-row crop (its row r back-projects to slice r alone), a specialization that
+        avoids processing the full detector rows.
+
+        Returns the per-view-owner PARTIAL band ``(num_pixels, g1 - g0)`` -- this view-owner's
+        views' contribution to slices [g0, g1), still to be summed over view-owners by the
+        reduce-scatter (``sum_band_to_owner``).
+        """
+        return self.projector_functions.sparse_back_project_band(
+            view_data, pixel_indices, g0, g1 - g0,
+            view_indices=view_indices, coeff_power=coeff_power)
 
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):

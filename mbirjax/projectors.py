@@ -20,6 +20,7 @@ class Projectors:
 
         self.tomography_model = tomography_model
         self.sparse_forward_project, self.sparse_back_project = None, None
+        self.sparse_back_project_band = None   # set in create_projectors only for banded geometries
         self.create_projectors(tomography_model)
 
     def create_projectors(self, tomography_model):
@@ -51,6 +52,10 @@ class Projectors:
         """
         forward_project_pixel_batch_to_one_view = tomography_model.forward_project_pixel_batch_to_one_view
         back_project_one_view_to_pixel_batch = tomography_model.back_project_one_view_to_pixel_batch
+        # Geometries whose back projection bleeds a slice across a RANGE of detector rows provide a
+        # BANDED back kernel (cone; later translation/multiaxis), used by the sharded slice-band
+        # path; parallel beam has none (it crops detector rows instead).
+        back_project_one_view_to_band = getattr(tomography_model, 'back_project_one_view_to_band', None)
 
         # geometry_params already uses a shared namedtuple class (make_geometry_params); combine it
         # with the shapes into the module-level ProjectorParams type so the module-level projector
@@ -109,6 +114,27 @@ class Projectors:
 
         self.sparse_forward_project = sparse_forward_project_public
         self.sparse_back_project = sparse_back_project_public
+
+        # Banded back projector (only for geometries with a banded kernel -- cone): projects a
+        # view-owner's full views onto ONE global slice band [g0, g0 + num_band_slices), batched
+        # and summed exactly like sparse_back_project so memory stays bounded by the batch sizes,
+        # not by the view count.  Used by the sharded reduce-scatter (see
+        # TomographyModel._back_project_view_shard_to_band).  g0 is traced (per band),
+        # num_band_slices is static.
+        if back_project_one_view_to_band is not None:
+            def sparse_back_project_band_public(sinogram, pixel_indices, g0, num_band_slices,
+                                                view_indices=(), coeff_power=1):
+                return _jit_sparse_back_project_band(
+                    self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
+                    back_band_kernel=back_project_one_view_to_band,
+                    projector_params=projector_params,
+                    pixel_batch_size=pixel_batch_size,
+                    view_batch_size=view_batch_size,
+                    coeff_power=coeff_power,
+                    view_indices=view_indices)
+
+            self.sparse_back_project_band = sparse_back_project_band_public
+            self._jit_sparse_back_project_band = _jit_sparse_back_project_band
 
 
 def concatenate_function_in_batches(function, data_to_batch, batch_size):
@@ -372,3 +398,42 @@ _jit_sparse_back_project = jax.jit(
     _sparse_back_project,
     static_argnames=['back_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size',
                      'coeff_power'])
+
+
+def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, num_band_slices,
+                              back_band_kernel, projector_params, pixel_batch_size, view_batch_size,
+                              coeff_power=1, view_indices=()):
+    """Back project a sinogram onto the GLOBAL recon slice band [g0, g0 + num_band_slices).
+
+    The banded analogue of _sparse_back_project: it batches over views (summing) then pixels in
+    exactly the same way -- so the per-view-batch vmap stack and the per-pixel-batch transients are
+    bounded by view_batch_size / pixel_batch_size, NOT by the number of views -- but calls the
+    geometry's BANDED back kernel, which produces only the L = num_band_slices slices [g0, g0 + L)
+    from the FULL view (no detector-row crop; for geometries whose back projection draws a slice
+    from a RANGE of rows).  g0 is TRACED (a band's global start, so the bands of a slice axis do
+    not retrace); num_band_slices is STATIC (it sets the output slice count); back_band_kernel /
+    projector_params / batch sizes / coeff_power are static.
+    """
+    cur_view_params_array = view_params_array
+    if len(view_indices) > 0:
+        cur_view_params_array = view_params_array[view_indices]
+
+    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
+        def back_project_pixel_batch(pixel_indices_batch):
+            # Map the per-view banded back kernel over the views in this batch, then sum over views.
+            bp_vmap = jax.vmap(back_band_kernel, in_axes=(0, None, 0, None, None, None, None))
+            per_view_band = bp_vmap(local_view_batch, pixel_indices_batch, local_view_params_batch,
+                                    projector_params, g0, num_band_slices, coeff_power)
+            return jnp.sum(per_view_band, axis=0)
+
+        return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
+                                               pixel_batch_size)
+
+    return sum_function_in_batches(back_project_view_batch, (sinogram, cur_view_params_array),
+                                   view_batch_size, pixel_indices)
+
+
+_jit_sparse_back_project_band = jax.jit(
+    _sparse_back_project_band,
+    static_argnames=['num_band_slices', 'back_band_kernel', 'projector_params',
+                     'pixel_batch_size', 'view_batch_size', 'coeff_power'])

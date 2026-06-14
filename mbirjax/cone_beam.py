@@ -184,7 +184,7 @@ class ConeBeamModel(TomographyModel):
         geometry_param_values.append(self.bp_psf_radius)
         geometry_param_values.append(self.get_params('use_curved_detector'))
 
-        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
         geometry_params = self.make_geometry_params(geometry_param_names, geometry_param_values)
 
         return geometry_params

@@ -74,7 +74,7 @@ def make_config(num_views, num_det_rows, num_det_channels, helical):
     svp = view_params[-1] if helical else view_params[0]
     return {
         'name': 'helical' if helical else 'circular',
-        'pp': make_projector_params(model), 'svp': svp, 'idx': idx,
+        'pp': make_projector_params(model), 'svp': svp, 'idx': idx, 'model': model,
         'S': recon_shape[2], 'num_pixels': int(idx.shape[0]),
         'num_det_rows': num_det_rows, 'num_det_channels': num_det_channels,
     }
@@ -127,6 +127,31 @@ class TestConeBandedProjector(unittest.TestCase):
                         np.testing.assert_allclose(
                             prod, ref, rtol=self.RTOL, atol=self.ATOL,
                             err_msg=f"[{c['name']}] coeff_power={coeff_power} band_size={bs}")
+
+    # ── banded back DRIVER (sharded slice-band reduce-scatter worker) vs the full back ──
+    def test_back_band_driver_matches_full(self):
+        """The batched banded back driver projector_functions.sparse_back_project_band projects a
+        FULL sinogram (all views) onto a global slice band [g0, g1) and must equal the full back
+        projection sliced to that band.  This is the single-device gate for the driver the sharded
+        reduce-scatter uses on each view-owner's shard -- it batches and SUMS over views, so memory
+        stays bounded by the batch sizes, not the view count.  Covers the 3-band tiling plus the
+        full range, coeff_power 1 and 2."""
+        rng = np.random.default_rng(7)
+        for c in self.configs:
+            with self.subTest(geometry=c['name']):
+                model, idx, S = c['model'], c['idx'], c['S']
+                sino_shape = tuple(int(x) for x in model.get_params('sinogram_shape'))
+                sino = jnp.asarray(rng.standard_normal(sino_shape, np.float32))
+                bands = band_bounds(S) + [(0, S)]   # the 3-band tiling plus the full range
+                for coeff_power in (1, 2):
+                    full = np.asarray(model.projector_functions.sparse_back_project(
+                        sino, idx, coeff_power=coeff_power))
+                    for (g0, g1) in bands:
+                        band = np.asarray(model.projector_functions.sparse_back_project_band(
+                            sino, idx, g0, g1 - g0, coeff_power=coeff_power))
+                        np.testing.assert_allclose(
+                            band, full[:, g0:g1], rtol=self.RTOL, atol=self.ATOL,
+                            err_msg=f"[{c['name']}] coeff_power={coeff_power} band=({g0},{g1})")
 
 
 if __name__ == '__main__':

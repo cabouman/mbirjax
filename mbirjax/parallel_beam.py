@@ -94,6 +94,18 @@ class ParallelBeamModel(TomographyModel):
         always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
         return True
 
+    def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
+                                         view_indices, coeff_power):
+        """Parallel-beam specialization of the sharded slice-band back projection (overrides the
+        base banded path): detector row r back-projects to slice r alone, so the slice band [g0, g1)
+        IS detector rows [g0:g1).  Crop the detector-row axis and run the standard back projector
+        (the kernel sizes its output slices from the input rows) -- cheaper than the base banded
+        path, which would process the full detector rows.  Returns the per-view-owner partial band
+        ``(num_pixels, g1 - g0)``."""
+        return self.projector_functions.sparse_back_project(
+            view_data[:, g0:g1, :], pixel_indices,
+            view_indices=view_indices, coeff_power=coeff_power)
+
     def _sino_row_padding(self):
         """Parallel beam ties detector row r to recon slice r (the kernels mix channels,
         never rows; recon_shape[2] == sinogram_shape[1] is enforced in
