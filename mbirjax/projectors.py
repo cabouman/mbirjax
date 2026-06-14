@@ -5,13 +5,21 @@ import mbirjax
 from functools import partial
 
 
+# The ProjectorParams namedtuple TYPE is defined ONCE here (module level), not rebuilt per
+# instance.  jax registers namedtuples as pytrees and keys the jit static-argument cache on the
+# pytree treedef -- which includes the namedtuple CLASS -- so rebuilding the class per call (as
+# namedtuple() inside a function does) would give each instance a distinct pytree type and defeat
+# the shared module-level projector jit cache.  geometry_params gets the same treatment at its
+# source (ParameterHandler.make_geometry_params).
+ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params'])
+
+
 class Projectors:
 
     def __init__(self, tomography_model):
 
         self.tomography_model = tomography_model
         self.sparse_forward_project, self.sparse_back_project = None, None
-        self.forward_project_pixel_batch, self.back_project_view_batch = None, None
         self.create_projectors(tomography_model)
 
     def create_projectors(self, tomography_model):
@@ -44,14 +52,12 @@ class Projectors:
         forward_project_pixel_batch_to_one_view = tomography_model.forward_project_pixel_batch_to_one_view
         back_project_one_view_to_pixel_batch = tomography_model.back_project_one_view_to_pixel_batch
 
+        # geometry_params already uses a shared namedtuple class (make_geometry_params); combine it
+        # with the shapes into the module-level ProjectorParams type so the module-level projector
+        # jit cache is shared across instances (see the note on ProjectorParams at the top).
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
-
-        # Combine the needed parameters into a named tuple for named access compatible with jit
-        projector_param_names = ['sinogram_shape', 'recon_shape', 'geometry_params']
-        projector_param_values = (sinogram_shape, recon_shape, geometry_params)
-        ProjectorParams = namedtuple('ProjectorParams', projector_param_names)
-        projector_params = ProjectorParams(*tuple(projector_param_values))
+        projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params)
 
         view_params_name = self.tomography_model.get_params('view_params_name')
         # The view parameters are a RUNTIME input to the jitted projectors, not a baked
@@ -64,176 +70,45 @@ class Projectors:
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
         view_batch_size = self.tomography_model.view_batch_size_for_vmap
 
-        def sparse_forward_project_fcn(view_params_array, voxel_values, pixel_indices, view_indices=()):
-            """
-            Compute the sinogram obtained by forward projecting the specified voxels. The voxel sare determined
-            using 2D indices into a flattened array of shape (num_recon_rows, num_recon_cols),
-            and for each such 2D index, the voxels in all slices at that location are projected.
-
-            This function batches over pixels, applies sparse_forward_project_pixel_batch to each batch,
-            then adds the results to get the sinogram.
-
-            Args:
-                voxel_values (ndarray or jax array): 2D array of shape (len(pixel_indices), num_slices) of voxel values
-                pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape (num_rows, num_cols)
-                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                    If None, then all views are used.
-
-            Returns:
-                3D array of shape (num_views, num_det_rows, num_det_cols), where num_views is len(view_indices) if view_indices is not None
-            """
-
-            voxel_and_indices = (voxel_values, pixel_indices)  # Apply ensure_tuple
-
-            def forward_project_pixel_batch_wrapper(local_values, local_pix_indices):
-                return sparse_forward_project_pixel_batch(view_params_array, local_values, local_pix_indices,
-                                                          view_indices, view_batch_size)
-
-            summed_output = sum_function_in_batches(forward_project_pixel_batch_wrapper, voxel_and_indices,
-                                                    pixel_batch_size)
-            return summed_output
-
-        @partial(jax.jit, static_argnames='views_per_batch')
-        def sparse_forward_project_pixel_batch(view_params_array, voxel_values, pixel_indices, view_indices=(),
-                                               views_per_batch=None):
-            """
-            Compute the sinogram obtained by forward projecting the specified batch of voxels. The voxels
-            are determined using 2D indices into a flattened array of shape (num_rows, num_cols),
-            and for each such 2D index, the voxels in all slices at that location are projected.
-
-            This function creates batches of views and collects the results to form the full sinogram.
-
-            Args:
-                voxel_values: 2D array of shape (len(pixel_indices), num_slices) of voxel values
-                pixel_indices: 1D array of indices into a flattened array of shape (num_rows, num_cols)
-                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                    If None, then all views are used.
-                views_per_batch (int or None, optional): Maximum number of views to project per batch.
-
-            Returns:
-                3D array of shape (num_views, num_det_rows, num_det_cols)
-            """
-            cur_view_params_array = view_params_array
-            if len(view_indices) > 0:
-                cur_view_params_array = view_params_array[view_indices]
-
-            def forward_project_single_view(single_view_params):
-                # Use closure to define a mappable function that operates on a single view with the given voxel values.
-                return forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices,
-                                                               single_view_params, projector_params)
-
-            def forward_project_view_batch(view_params_batch):
-                # Map the single view function over a batch of views.
-                # To parallelize over views, we can use jax.vmap here instead of jax.lax.map, but this may use extra
-                # memory since the voxel values are required for each view.
-
-                sino_view_batch = jax.vmap(forward_project_single_view)(view_params_batch)
-
-                return sino_view_batch
-
-            sinogram = concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array, views_per_batch)
-
-            return sinogram
-
-        def sparse_back_project_fcn(view_params_array, sinogram, pixel_indices, coeff_power=1, view_indices=()):
-            """
-            Compute the voxel values obtained by back projecting the sinogram to the specified voxels. The voxels
-            are determined using 2D indices into a flattened array of shape (num_recon_rows, num_recon_cols),
-            and for each such 2D index, the voxels in all slices at that location are projected.
-
-            This function batches over views, applies sparse_back_project_view_batch to each batch,
-            then adds the results to get the voxel values.
-
-            Args:
-                sinogram (ndarray or jax array): 3D array of shape (cur_num_views, num_det_rows, num_det_cols), where
-                    cur_num_views is recon_shape[0] if view_indices is () and len(view_indices)
-                    otherwise, in which case the views in sinogram should match those indicated by view_indices.
-                pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape
-                (num_recon_rows, num_recon_cols)
-                coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
-                    Normally 1, but should be 2 when computing Hessian diagonal.
-                view_indices (ndarray or jax array, optional): 1D array of indices into the view parameters array.
-                    If None, then all views are used.
-
-            Returns:
-                2D array of shape (num_pixels, num_recon_slices)
-            """
-
-            cur_view_params_array = view_params_array
-            if len(view_indices) > 0:
-                cur_view_params_array = view_params_array[view_indices]
-
-            batch_size = view_batch_size
-
-            def back_project_view_batch_helper(local_view_batch, local_view_params_batch, local_pixel_indices):
-                return sparse_back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices,
-                                                      coeff_power, pixels_per_batch=pixel_batch_size)
-
-            data_to_batch = (sinogram, cur_view_params_array)  # Apply ensure_tuple
-            summed_output = sum_function_in_batches(back_project_view_batch_helper, data_to_batch, batch_size,
-                                                    pixel_indices)
-            return summed_output
-
-        @partial(jax.jit, static_argnames=['coeff_power', 'pixels_per_batch'])
-        def sparse_back_project_view_batch(view_batch, view_params_batch, pixel_indices, coeff_power=1,
-                                           pixels_per_batch=None):
-            """
-            This function creates batches of pixels and collects the results to form the full sinogram.
-            Also, since the geometry-specific projectors map between a batch of voxel cylinders and a single view,
-            we need to map over views and add the results to get the correct back projection for each voxel.
-
-            Args:
-                view_batch (ndarray or jax array): 3D array of shape (cur_num_views, num_det_rows, num_det_cols)
-                view_params_batch (jax array): 1D or 2D array of parameters, view_params_batch[i] describes view_batch[i]
-                pixel_indices (ndarray or jax array): 1D array of indices into a flattened array of shape
-                (num_recon_rows, num_recon_cols)
-                coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
-                    Normally 1, but should be 2 when computing Hessian diagonal.
-
-            Returns:
-                jax array of size (pixel_indices.shape[0], num_recon_slices)
-            """
-            def back_project_pixel_batch(pixel_indices_batch):
-                """
-                Apply back_project_one_view_to_pixel_batch to each pixel batch and each view
-                Add over the views and concatenate over the pixels.
-
-                Args:
-                    pixel_indices_batch:
-
-                Returns:
-                    jax array of size (pixel_indices.shape[0], num_recon_slices)
-                """
-                #
-                bp_vmap = jax.vmap(back_project_one_view_to_pixel_batch, in_axes=(0, None, 0, None, None))
-                per_view_voxel_values_batch = bp_vmap(view_batch, pixel_indices_batch, view_params_batch,
-                                                      projector_params, coeff_power)
-
-                voxel_values_batch = jnp.sum(per_view_voxel_values_batch, axis=0)
-                return voxel_values_batch
-
-            new_voxel_values = concatenate_function_in_batches(back_project_pixel_batch, pixel_indices, pixels_per_batch)
-            return new_voxel_values
-
-        # Compile the projectors with the view parameters as their leading TRACED argument.
-        self._jit_sparse_forward_project = jax.jit(sparse_forward_project_fcn)
-        self._jit_sparse_back_project = jax.jit(sparse_back_project_fcn, static_argnames='coeff_power')
+        # The jitted drivers are MODULE-LEVEL functions (defined at the end of this file),
+        # not per-instance closures, so their jit cache is SHARED across model instances: a
+        # second model with the same geometry reuses the first model's compiled program
+        # instead of re-tracing.  The geometry-specific pieces that used to be captured by
+        # closure -- the per-view kernel, projector_params, and the two batch sizes -- are
+        # passed as STATIC arguments (hashable; projector_params is already static in every
+        # per-view kernel).  The view-parameter array stays a TRACED argument, so
+        # set_view_parameters changes its values with no recompile.
+        #
+        # Keep references to the module-level jitted functions on this object so existing
+        # introspection (e.g. _jit_sparse_forward_project._cache_size()) still works; the
+        # cache they expose is now the one shared across instances.
+        self._jit_sparse_forward_project = _jit_sparse_forward_project
+        self._jit_sparse_back_project = _jit_sparse_back_project
 
         # Public entry points keep the original signatures; they read the CURRENT
         # view-parameter array off this object at call time (late binding), so
         # set_view_parameters takes effect on the next call with no recompile.
         def sparse_forward_project_public(voxel_values, pixel_indices, view_indices=()):
-            return self._jit_sparse_forward_project(self.view_params_array, voxel_values,
-                                                    pixel_indices, view_indices)
+            return _jit_sparse_forward_project(
+                self.view_params_array, voxel_values, pixel_indices,
+                fwd_kernel=forward_project_pixel_batch_to_one_view,
+                projector_params=projector_params,
+                pixel_batch_size=pixel_batch_size,
+                view_batch_size=view_batch_size,
+                view_indices=view_indices)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, view_indices=()):
-            return self._jit_sparse_back_project(self.view_params_array, sinogram, pixel_indices,
-                                                 coeff_power=coeff_power, view_indices=view_indices)
+            return _jit_sparse_back_project(
+                self.view_params_array, sinogram, pixel_indices,
+                back_kernel=back_project_one_view_to_pixel_batch,
+                projector_params=projector_params,
+                pixel_batch_size=pixel_batch_size,
+                view_batch_size=view_batch_size,
+                coeff_power=coeff_power,
+                view_indices=view_indices)
 
         self.sparse_forward_project = sparse_forward_project_public
         self.sparse_back_project = sparse_back_project_public
-        self.forward_project_pixel_batch = sparse_forward_project_pixel_batch
-        self.back_project_view_batch = sparse_back_project_view_batch
 
 
 def concatenate_function_in_batches(function, data_to_batch, batch_size):
@@ -415,3 +290,85 @@ def ensure_tuple(var_args):
     # Assume var_args is a single item if it's neither a list nor a tuple
     else:
         return (var_args, )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level projector drivers (shared jit cache across model instances)
+#
+# These were per-instance closures inside Projectors.create_projectors.  Lifting them to
+# module level -- with the geometry-specific per-view kernel, projector_params, and batch
+# sizes as STATIC arguments and the view-parameter array as a TRACED argument -- lets
+# jax.jit key its cache on those values, so two models with the same geometry SHARE one
+# compiled program instead of each re-tracing (tracing dominates the per-model first-call
+# cost).  Only the two top-level signatures (Projectors.sparse_forward_project /
+# .sparse_back_project) are part of the public interface; these drivers are internal.
+# ──────────────────────────────────────────────────────────────────────────────
+def _sparse_forward_project(view_params_array, voxel_values, pixel_indices,
+                            fwd_kernel, projector_params, pixel_batch_size, view_batch_size,
+                            view_indices=()):
+    """Forward project voxels to a sinogram, batching over pixels then views.
+
+    Batches over pixels (sum_function_in_batches); within each pixel batch, maps the
+    geometry's per-view forward kernel over batches of views (concatenate_function_in_batches)
+    and sums the pixel-batch contributions.  fwd_kernel, projector_params, pixel_batch_size and
+    view_batch_size are static; view_params_array / voxel_values / pixel_indices are traced.
+    """
+    cur_view_params_array = view_params_array
+    if len(view_indices) > 0:
+        cur_view_params_array = view_params_array[view_indices]
+
+    def forward_project_pixel_batch(local_values, local_pix_indices):
+        def forward_project_single_view(single_view_params):
+            return fwd_kernel(local_values, local_pix_indices, single_view_params, projector_params)
+
+        def forward_project_view_batch(view_params_batch):
+            # vmap (not lax.map) over views: the per-view kernel reuses the same voxel batch,
+            # so parallelizing over views trades a little memory for speed.
+            return jax.vmap(forward_project_single_view)(view_params_batch)
+
+        return concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array,
+                                               view_batch_size)
+
+    return sum_function_in_batches(forward_project_pixel_batch, (voxel_values, pixel_indices),
+                                   pixel_batch_size)
+
+
+_jit_sparse_forward_project = jax.jit(
+    _sparse_forward_project,
+    static_argnames=['fwd_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size'])
+
+
+def _sparse_back_project(view_params_array, sinogram, pixel_indices,
+                         back_kernel, projector_params, pixel_batch_size, view_batch_size,
+                         coeff_power=1, view_indices=()):
+    """Back project a sinogram to voxels, batching over views (summing) then pixels.
+
+    Batches over views (sum_function_in_batches); within each view batch, maps the geometry's
+    per-view back kernel over the views (vmap) and sums them, then batches over pixels
+    (concatenate_function_in_batches).  back_kernel, projector_params, pixel_batch_size,
+    view_batch_size and coeff_power are static; view_params_array / sinogram / pixel_indices
+    are traced.
+    """
+    cur_view_params_array = view_params_array
+    if len(view_indices) > 0:
+        cur_view_params_array = view_params_array[view_indices]
+
+    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
+        def back_project_pixel_batch(pixel_indices_batch):
+            # Map the per-view back kernel over the views in this batch, then sum over views.
+            bp_vmap = jax.vmap(back_kernel, in_axes=(0, None, 0, None, None))
+            per_view_voxel_values_batch = bp_vmap(local_view_batch, pixel_indices_batch,
+                                                  local_view_params_batch, projector_params, coeff_power)
+            return jnp.sum(per_view_voxel_values_batch, axis=0)
+
+        return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
+                                               pixel_batch_size)
+
+    return sum_function_in_batches(back_project_view_batch, (sinogram, cur_view_params_array),
+                                   view_batch_size, pixel_indices)
+
+
+_jit_sparse_back_project = jax.jit(
+    _sparse_back_project,
+    static_argnames=['back_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size',
+                     'coeff_power'])

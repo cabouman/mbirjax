@@ -74,8 +74,37 @@ with correctness / memory / timing gates (Greg's request).*
   - **Verdict: B2 is memory- and time-NEUTRAL on both platforms.** The banded rolled
     `lax.map` (band=128) reproduces the old `entries_per_cylinder_batch=128` chunking, as
     designed.  GPU is the gate that matters (capacity) and its peak is byte-identical.
-- **NEXT: B3** (de-closuring — module-level banded drivers; kills per-instance retrace),
-  then B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding), then C/D/E.
+- **B3a DONE (2026-06-13c, staged) — de-closuring + the real blocker fixed.**  Lifted the
+  four per-instance projector closures in `projectors.py` to MODULE-LEVEL jitted functions
+  (`_sparse_forward_project` / `_sparse_back_project`) with the per-view kernel,
+  projector_params, and the two batch sizes as STATIC args and the view-param array TRACED;
+  dropped the unused exposed inner fns; kept `self._jit_sparse_*` as references to the module
+  globals (introspection/`_cache_size` unchanged).  **KEY DISCOVERY: de-closuring alone did
+  NOT share the cache** — `get_geometry_parameters()` calls `namedtuple('GeometryParams', …)`
+  on every invocation, so each instance gets a DISTINCT namedtuple CLASS; jax keys the
+  static-arg cache on the pytree treedef (which includes the class), so distinct-but-identical
+  classes ⇒ re-trace.  **Fixed at the SOURCE (Greg's call, option b):**
+  `ParameterHandler.make_geometry_params(field_names, values)` builds `GeometryParams` from a
+  class cached by field-name tuple (one class per geometry, shared across instances); all 4
+  geometries (`cone_beam`, `parallel_beam`, `multiaxis_parallel`, `translation_model`) route
+  through it, and `ProjectorParams` is hoisted to module level in `projectors.py`.  (First
+  landed as a `projectors.py` canonicalization shim, then moved to the source so the per-view
+  kernels + the B4 sharded driver also get the shared class; **shim retired**.)  **Gate (new
+  `tests/test_projector_cache_sharing.py`):** a 2nd fresh same-geometry model adds ZERO new
+  programs to the shared module cache; measured a 2nd cone model's first forward 16× faster
+  (201→13 ms, trace+compile reused).  Full suite green (160p/3s).
+  - **Bonus from fixing at source:** the per-view kernels
+    (`back_project_one_view_to_pixel_batch`, `@jit static projector_params`) now also get the
+    shared `GeometryParams` class, so their caches share across instances too (not just the
+    driver) — and the B4 sharded driver inherits this for free.  Verified the class is now
+    identical across instances (was distinct before).
+  - **General lesson (→ lessons.md candidate):** never call `namedtuple()` (or build any
+    pytree-typed object) inside a function that feeds a jit STATIC arg — jax keys the
+    static-arg cache on the pytree treedef, which includes the class, so a per-call class
+    silently defeats cross-instance cache sharing.  Build the type once.
+  - **B3b (tail-batch padding) — deferred/measured, unchanged.**
+- **NEXT: B4** (sharded cone driver — banded back reduce-scatter + gather+monolithic forward;
+  `_supports_sharding()=True`; GPU validation, stage2-pattern), then B5 (inert padding), C/D/E.
 
 ---
 

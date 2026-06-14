@@ -122,8 +122,9 @@ class TranslationModel(mj.TomographyModel):
         geometry_param_values.append(self.entries_per_cylinder_batch)
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
-        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
-        geometry_params = GeometryParams(*tuple(geometry_param_values))
+        # The class is shared across instances (make_geometry_params) so the projectors' jit cache
+        # is shared rather than re-traced per instance.
+        geometry_params = self.make_geometry_params(geometry_param_names, geometry_param_values)
 
         return geometry_params
 

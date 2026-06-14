@@ -30,8 +30,8 @@ object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 64
-num_det_rows = 40
+num_views = 128
+num_det_rows = 128
 num_det_channels = 128
 
 # Generate simulated data

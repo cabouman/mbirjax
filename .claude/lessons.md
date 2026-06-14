@@ -367,3 +367,20 @@ async run-ahead — it was object lifecycle.
   mesh→placement migration and the one thing to retire once all geometries shard.  The
   transient-free **cleanup section does NOT retire at unification** — it's inherent to
   host-orchestrated sharded arrays (the reference cycle above); only the *guards* go away.
+- **`namedtuple()` inside a function silently defeats jit static-arg cache sharing
+  across instances.**  jax registers namedtuples as PYTREES and keys the jit
+  static-argument cache on the pytree TREEDEF — which includes the namedtuple CLASS.
+  `namedtuple('GeometryParams', names)` called inside `get_geometry_parameters` mints a
+  NEW class every call, so two model instances with byte-identical params get DIFFERENT
+  treedefs (`tree_flatten(p1).treedef != …p2`) and a shared module-level jit RE-TRACES per
+  instance — *even though the params are `==` and hash-equal* (jit compares the treedef
+  first and never reaches the value compare).  Symptom: `_jit_fn._cache_size()` grows by
+  one per fresh same-geometry instance; the 2nd model's first call pays full trace+compile
+  (measured **16× slower**: 201→13 ms once shared).  FIX: build the namedtuple CLASS once
+  (cache it by field-name tuple — `ParameterHandler.make_geometry_params`) so the treedef
+  is stable.  The diagnostic that cracked it: a `_replace()` copy (same nested field
+  objects) HIT the cache while an `==`-but-fresh copy MISSED ⇒ the key is identity-of-type,
+  not value.  General rule: **never create a pytree-typed object (namedtuple / custom
+  registered node) inside a function that feeds a jit STATIC arg — define the type at
+  module level.**  (Also why de-closuring alone did not share the cache until the
+  namedtuple classes were hoisted.)
