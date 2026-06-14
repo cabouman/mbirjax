@@ -14,10 +14,15 @@ with correctness / memory / timing gates (Greg's request).*
   `cone_forward_structure_compare.py`): B (banded/streamed) is 5–14× slower on CPU
   (dispatch-bound) for ~13–23% memory; C ≈ current (no regression).  So the cone sharded
   **forward does NOT band**; **back stays banded** (reduce-scatter).
-- **OPEN before B2:** remove the now-unneeded forward banded kernel
-  (`forward_project_band_to_one_view` / `forward_vertical_fan_band_*`) + adjust
-  test_cone_banded (its forward tests / the adjoint, which uses forward_band) — Greg to
-  confirm; back_band correctness is already gated by the back band-decomposition.
+- **DONE (2026-06-13c):** removed the forward banded kernel
+  (`forward_project_band_to_one_view` / `forward_vertical_fan_band_*`) and its three
+  forward-dependent tests in test_cone_banded (the two forward band-decomposition
+  tests + the forward-band adjoint test).  The adjoint test was DROPPED, not
+  re-expressed: the banded BACK kernel is fully gated by the back band-decomposition
+  against the monolithic back, which test_projectors already gates for adjointness
+  (`⟨forward_mono x, y⟩ = ⟨x, concat back_band(y)⟩`).  Section header in cone_beam.py
+  retargeted to back-only with a note recording why forward does not band (so it is
+  not re-added).  Cone banded + cone projector suites green.
 - **NEXT:** B2 (single-device + sharded driver: back on the banded kernel; forward =
   gather + monolithic; delete `entries_per_cylinder_batch`), gated by memory/timing vs
   the §8a baseline.  Then B3 (de-closuring), B4 (sharded cone + GPU validation), B5

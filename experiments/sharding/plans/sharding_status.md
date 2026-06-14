@@ -66,10 +66,12 @@ the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
 - `cone_forward_structure_compare.py` (B vs C vs mono; the forward decision).
 
 ### Open items / suggested handoff tasks (next session)
-1. **Remove the forward banded kernel** (`forward_project_band_to_one_view` /
-   `forward_vertical_fan_band_*`) now that forward = C, and adjust `test_cone_banded` (its
-   forward band-decomposition + the adjoint use forward_band; back correctness is already
-   covered by the back band-decomposition + the monolithic fwd/back adjoint).  Confirm with Greg.
+1. **Remove the forward banded kernel — DONE (2026-06-13c, staged).**
+   `forward_project_band_to_one_view` / `forward_vertical_fan_band_*` deleted from
+   cone_beam.py; the three forward-dependent test_cone_banded tests removed (incl. the
+   forward-band adjoint test, DROPPED — the banded back is gated by the back
+   band-decomposition against the monolithic back, which test_projectors gates for
+   adjointness).  Cone banded + cone projector suites green.
 2. **B2**: single-device + sharded cone driver (banded back reduce-scatter; forward gather+
    monolithic; delete `entries_per_cylinder_batch`); memory/timing vs §8a baseline.  Then
    B3 (de-closuring §7), B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding).

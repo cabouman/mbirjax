@@ -1,19 +1,17 @@
 """
 tests/geometries/test_cone_banded.py
 ─────────────────────────────────────
-Unit tests for the cone banded projector kernels:
-``ConeBeamModel.back_project_one_view_to_band`` / ``forward_project_band_to_one_view``.
+Unit tests for the cone banded BACK projector kernel
+``ConeBeamModel.back_project_one_view_to_band``.
 
 These are the strong per-geometry correctness gates for the banded interface, run
-BEFORE the kernels are wired into the projectors/sharding.  They check:
+BEFORE the kernel is wired into the projectors/sharding.  They check:
 
-  * band-decomposition: the monolithic per-view projector equals the sum (forward) /
-    concatenation (back) of the banded projector over a tiling of the slice axis --
+  * band-decomposition: the monolithic per-view BACK projector equals the
+    concatenation of the banded back projector over a tiling of the slice axis --
     because the bands tile disjointly, so each contribution is counted exactly once;
   * full-band == monolithic: a single band (g0=0, L=S) reproduces the monolithic
-    kernel (the anchor is faithful on full cylinders);
-  * adjoint-at-(g0, L): <A_band x, y> == <x, A_bandᵀ y> for an arbitrary band
-    (forward_band and back_band are exact adjoints);
+    back kernel (the anchor is faithful on full cylinders);
   * the Hessian path (coeff_power=2) decomposes the same way.
 
 Every check runs on a CIRCULAR and a HELICAL cone geometry, so the anchor's
@@ -23,12 +21,16 @@ Computed floats -> tight allclose (project rule: never exact equality for comput
 floats).  Band decomposition only reorders summation, so CPU agreement is ~1e-6;
 the gates use 1e-4 to stay robust on GPU (projector scatter-add noise ~8e-6 rel).
 
-RETIRE: the band-decomposition, full-band-equals-monolithic, and Hessian-decomposition
-tests COMPARE the banded kernels against the monolithic
-forward_project_pixel_batch_to_one_view / back_project_one_view_to_pixel_batch; they
-retire when those monolithic kernels are deleted (after the projectors are switched
-to the banded path).  The adjoint-at-(g0, L) test is self-contained (it needs no
-monolithic reference) and stays as a permanent gate.
+RETIRE: every test here COMPARES the banded back kernel against the monolithic
+back_project_one_view_to_pixel_batch, so they all retire when that monolithic kernel
+is deleted (after the back projector is switched to the banded path).  At that point
+the wired-path adjoint identity in test_projectors becomes the banded back kernel's
+permanent gate -- the banded back is a correct restriction of the monolithic back
+(band-decomposition), which test_projectors already gates for adjointness.
+
+(The forward projection does not band -- the multi-device forward gathers the slice
+cylinder per pixel-batch and runs the monolithic forward -- so there is no banded
+forward kernel to test here.)
 """
 import unittest
 from collections import namedtuple
@@ -106,22 +108,8 @@ class TestConeBandedProjector(unittest.TestCase):
             for (g0, g1) in band_bounds(c['S'])]
         return np.concatenate(bands, axis=1)   # (num_pixels, S)
 
-    def _forward_monolithic(self, c, voxels):
-        return np.asarray(ConeBeamModel.forward_project_pixel_batch_to_one_view(
-            voxels, c['idx'], c['svp'], c['pp']))
-
-    def _forward_banded_sum(self, c, voxels):
-        acc = np.zeros((c['num_det_rows'], c['num_det_channels']), np.float64)
-        for (g0, g1) in band_bounds(c['S']):
-            acc += np.asarray(ConeBeamModel.forward_project_band_to_one_view(
-                voxels[:, g0:g1], c['idx'], c['svp'], c['pp'], g0))
-        return acc
-
     def _rand_view(self, c):
         return jnp.asarray(self.rng.standard_normal((c['num_det_rows'], c['num_det_channels']), np.float32))
-
-    def _rand_voxels(self, c):
-        return jnp.asarray(self.rng.standard_normal((c['num_pixels'], c['S']), np.float32))
 
     # ── band-decomposition (RETIRE with the monolithic kernels) ─────────────────
     def test_back_band_decomposition(self):
@@ -151,46 +139,6 @@ class TestConeBandedProjector(unittest.TestCase):
                 np.testing.assert_allclose(self._back_banded_concat(c, view, coeff_power=2),
                                            self._back_monolithic(c, view, coeff_power=2),
                                            rtol=self.RTOL, atol=self.ATOL)
-
-    def test_forward_band_decomposition(self):
-        """RETIRE-with-monolithic: monolithic forward == sum of banded forward."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                voxels = self._rand_voxels(c)
-                np.testing.assert_allclose(self._forward_banded_sum(c, voxels),
-                                           self._forward_monolithic(c, voxels),
-                                           rtol=self.RTOL, atol=self.ATOL)
-
-    def test_forward_full_band_equals_monolithic(self):
-        """RETIRE-with-monolithic: a single full band (g0=0, L=S) == monolithic forward."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                voxels = self._rand_voxels(c)
-                full = np.asarray(ConeBeamModel.forward_project_band_to_one_view(
-                    voxels, c['idx'], c['svp'], c['pp'], 0))
-                np.testing.assert_allclose(full, self._forward_monolithic(c, voxels),
-                                           rtol=self.RTOL, atol=self.ATOL)
-
-    # ── adjoint at an arbitrary band (PERMANENT -- no monolithic reference) ──────
-    def test_band_adjoint(self):
-        """<A_band x, y> == <x, A_bandᵀ y> for an arbitrary interior band (forward_band
-        and back_band are exact adjoints; coeff_power=1)."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                g0, g1 = band_bounds(c['S'])[1]        # middle band (g0 > 0, interior)
-                L = g1 - g0
-                x_band = jnp.asarray(self.rng.standard_normal((c['num_pixels'], L), np.float32))
-                y_view = self._rand_view(c)
-                ax = np.asarray(ConeBeamModel.forward_project_band_to_one_view(
-                    x_band, c['idx'], c['svp'], c['pp'], g0))
-                aty = np.asarray(ConeBeamModel.back_project_one_view_to_band(
-                    y_view, c['idx'], c['svp'], c['pp'], g0, L, coeff_power=1))
-                lhs = float(np.sum(ax * np.asarray(y_view)))
-                rhs = float(np.sum(np.asarray(x_band) * aty))
-                rel = abs(lhs - rhs) / (abs(lhs) + abs(rhs) + 1e-30)
-                self.assertLess(rel, 1e-4,
-                                f"[{c['name']}] band adjoint mismatch: <Ax,y>={lhs:.6e} "
-                                f"<x,Aᵀy>={rhs:.6e} rel={rel:.2e}")
 
 
 if __name__ == '__main__':

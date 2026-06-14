@@ -638,110 +638,34 @@ class ConeBeamModel(TomographyModel):
     # ──────────────────────────────────────────────────────────────────────────
     # Banded vertical fans + per-view banded kernels
     #
-    # These project a contiguous band of GLOBAL recon-slice indices [g0, g0+L): the
-    # vertical fan is restricted to that slice range, while the horizontal fan is the
-    # same for every band and is computed once per view.  This is the interface the
-    # multi-device projector uses -- the recon's slice axis is split into bands so
-    # each device handles a slice range, and the per-band results are combined (the
-    # back projection concatenates the slice bands; the forward projection sums the
-    # per-band view contributions).  It also lets a single device process the slices
-    # in bands instead of holding the whole cylinder at once.
+    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
+    # [g0, g0+L): the vertical fan is restricted to that slice range, while the
+    # horizontal fan is the same for every band and is computed once per view.  This
+    # is the interface the multi-device back projector uses -- the recon's slice axis
+    # is split into bands so each device handles a slice range, and the per-band
+    # results are concatenated.  It also lets a single device process the slices in
+    # bands instead of holding the whole cylinder at once.
+    #
+    # The FORWARD projection does NOT band.  A band of input slices reaches a wide,
+    # mostly-empty window of detector rows, so a banded forward recomputes the
+    # dominant horizontal stage per band for little memory gain (measured: streaming
+    # the bands was 5-14x slower on CPU for ~13-23% transient memory -- a bad trade).
+    # The multi-device forward instead gathers the slice cylinder per pixel-batch and
+    # runs the monolithic forward, so there is no banded forward kernel here.
     #
     # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice
     # index (k = g0 + k_local), never from the length of the band that is passed in,
     # so a sub-band gives exactly the same coordinates as the full cylinder.  A slice
     # whose global index is at or beyond the real slice count (a padded slice, used
-    # when the slice axis is padded to split evenly across devices) contributes and
-    # receives nothing, so padding is inert.
+    # when the slice axis is padded to split evenly across devices) receives nothing,
+    # so padding is inert.
     #
     # RETIRE: these currently coexist with the monolithic
-    # forward_project_pixel_batch_to_one_view / back_project_one_view_to_pixel_batch.
-    # Once the projectors are switched to the banded path, remove the monolithic
-    # versions and the entries_per_cylinder_batch slice chunking they use.
+    # back_project_one_view_to_pixel_batch.  Once the back projector is switched to the
+    # banded path, remove that monolithic version and the entries_per_cylinder_batch
+    # slice chunking it uses.  (The monolithic forward stays -- the sharded forward
+    # gathers the slice cylinder and calls it.)
     # ──────────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def forward_vertical_fan_band_one_pixel(band_values, pixel_index, single_view_params,
-                                            projector_params, g0):
-        """Forward vertical fan for one pixel, taking a BAND of input slices.
-
-        ``band_values`` is the length-L voxel band (global slices [g0, g0+L)) at this
-        pixel; the output is this band's contribution to the full detector column
-        (num_det_rows,) -- "band" names the INPUT slice range, not the output, which
-        spans all rows (mostly zero -- see the row-window note below).  z is anchored
-        on the problem's slice count and the global index k = g0 + arange(L) (so a
-        sub-band matches the full cylinder), and padded global slices contribute zero.
-        Summing the per-band columns over a tiling of the slices reconstructs the
-        monolithic vertical fan, because the bands tile disjointly so each
-        (voxel, row) contribution is counted exactly once.
-        """
-        # single_view_params holds the per-view angle and helical z shift.
-        angle = single_view_params[0]
-        helical_z_shift = single_view_params[1]
-        # Get the geometry parameters; we use the short name gp since we access many
-        # fields (e.g. gp.delta_det_row) and a longer name would be clumsy.
-        gp = projector_params.geometry_params
-        num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
-        recon_shape = projector_params.recon_shape
-        num_recon_slices = recon_shape[2]                 # S_real (params, never the band length)
-        L = band_values.shape[0]
-
-        delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
-        y, pixel_mag = ConeBeamModel.compute_y_mag_for_pixel(pixel_index, angle, recon_shape, projector_params)
-
-        # GLOBAL slice indices for this band; z anchored on S_real (the anchor fix).
-        k_global = g0 + jnp.arange(L)
-        z = delta_voxel_slice * (k_global - (num_recon_slices - 1) / 2.0) + (gp.recon_slice_offset - helical_z_shift)
-        v = pixel_mag * z
-        phi_p = jnp.arctan2(v, gp.source_detector_dist)
-        cos_phi_p = jnp.cos(phi_p)
-        # Padded global slices (index >= S_real) contribute nothing (inert).
-        band_valid = (k_global >= 0) & (k_global < num_recon_slices)
-        scaled_voxel_values = jnp.where(band_valid, band_values, 0.0) / cos_phi_p
-
-        W_p_r = (pixel_mag * delta_voxel_slice) / gp.delta_det_row
-        slope_k_to_m = W_p_r
-        L_max = jnp.minimum(1, W_p_r)
-
-        # A band of L slices only reaches a limited window of detector rows, but this
-        # reference implementation evaluates ALL detector rows and lets the footprint
-        # clip below zero the rest, so every band returns a full (num_det_rows,) column
-        # and the caller simply SUMS the per-band columns.  That is correct but does
-        # O(num_det_rows) work per band (wasteful when there are many bands); the
-        # efficient form -- evaluate only the band's detector-row window and
-        # scatter-add it into the column -- is left to the point where the sharded
-        # forward driver is wired, because it depends on how slice bands are delivered
-        # to each device.  TODO: windowed forward vertical fan.
-        det_center_row = (num_det_rows - 1) / 2.0
-        m_center = jnp.arange(num_det_rows)
-        v_m = (m_center - det_center_row) * gp.delta_det_row - gp.det_row_offset
-        z_m = v_m / pixel_mag
-        # GLOBAL voxel index each det row sees, then the LOCAL index into the band.
-        k_m_global = (z_m - (gp.recon_slice_offset - helical_z_shift)) / delta_voxel_slice + (num_recon_slices - 1) / 2.0
-        k_m_local = k_m_global - g0
-        k_m_center = jnp.round(k_m_local).astype(int)
-        m_p = slope_k_to_m * (k_m_center - k_m_local[0]) + m_center[0]
-
-        new_column = jnp.zeros(num_det_rows)
-        for k_offset in jnp.arange(start=-gp.bp_psf_radius, stop=gp.bp_psf_radius + 1):
-            k_ind_local = k_m_center + k_offset
-            k_ind_global = k_ind_local + g0
-            abs_delta_p_r_m = jnp.abs(m_p + slope_k_to_m * k_offset - m_center)
-            A_row_k = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-            A_row_k *= (k_ind_global >= 0) * (k_ind_global < num_recon_slices)   # in volume (padding)
-            A_row_k *= (k_ind_local >= 0) * (k_ind_local < L)                    # in THIS band (gather safety)
-            new_column = jnp.add(new_column, A_row_k * scaled_voxel_values[k_ind_local])
-        return new_column
-
-    @staticmethod
-    def forward_vertical_fan_band_pixel_batch(band_values, pixel_indices, single_view_params, projector_params, g0):
-        """Vmap the banded forward vertical fan over a pixel batch.
-
-        ``band_values`` is (num_pixels, L); returns (num_pixels, num_det_rows), the
-        detector-column contribution of the band [g0, g0+L)."""
-        pixel_map = jax.vmap(ConeBeamModel.forward_vertical_fan_band_one_pixel,
-                             in_axes=(0, 0, None, None, None))
-        return pixel_map(band_values, pixel_indices, single_view_params, projector_params, g0)
 
     @staticmethod
     def back_vertical_fan_band_one_pixel(detector_column_values, pixel_index, single_view_params,
@@ -805,20 +729,6 @@ class ConeBeamModel(TomographyModel):
         return ConeBeamModel.back_vertical_fan_band_pixel_batch(
             det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
             g0, num_band_slices, coeff_power=coeff_power)
-
-    @staticmethod
-    @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_band_to_one_view(band_values, pixel_indices, single_view_params, projector_params, g0):
-        """Banded forward projection: a band of GLOBAL slices [g0, g0+L) -> its
-        (num_det_rows, num_det_channels) contribution to the view.
-
-        Banded vertical fan (accumulate target) -> horizontal fan once.  ``band_values``
-        is (num_pixels, L); ``g0`` traced, L static via the input shape.  Summing the
-        per-band views over bands reconstructs the monolithic forward projection."""
-        det_contrib = ConeBeamModel.forward_vertical_fan_band_pixel_batch(
-            band_values, pixel_indices, single_view_params, projector_params, g0)
-        return ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view(
-            det_contrib, pixel_indices, single_view_params, projector_params)
 
     @staticmethod
     def compute_vertical_data_single_pixel(pixel_index, slice_indices, single_view_params, projector_params):
