@@ -126,10 +126,28 @@ with correctness / memory / timing gates (Greg's request).*
     Gate: new `test_cone_banded` driver test (`sparse_back_project_band(full_sino, g0, L) ==
     sparse_back_project(full_sino)[:, g0:g0+L]`, coeff_power 1+2, circular+helical) green;
     parallel sharding suite unchanged (103p @4dev, now via the override); full suite 161p/3s.
-  - **B4.2 NEXT:** cone forward sharded path (gather + monolithic, pixel-batched; decision C),
-    branched by geometry.  Then B4.3 (flip `_supports_sharding()`, cone sharding tests:
-    trivial-mesh 1e-5, multi-device 1e-4, adjoint, Hessian), B4.4 (measure + **GPU**), B4.5
-    (hoist horizontal only if B4.4 demands it), then B5 (inert padding), C/D/E.
+  - **B4.2 DONE (2026-06-13d, staged) — cone forward sharded path (gather + monolithic).**
+    Refactored `_sparse_forward_project_sharded` to call a `_forward_project_to_view_shards` hook
+    (mirrors the back): BASE = the geometry-neutral GATHER+MONOLITHIC path (each view-owner gathers
+    the full slice cylinder PER PIXEL-BATCH via `move_shard`+concat, runs the monolithic forward,
+    sums over pixel-batches — decision C, the structure `cone_forward_structure_compare.py`
+    validated); `ParallelBeamModel` OVERRIDES with its banded forward (broadcast band → project
+    rows [g0:g1), never gathers).  Assemble shape now geometry-aware via `_sino_device_shape()`
+    (cone keeps its real detector rows; parallel pads rows with slices — value-identical for
+    parallel).  Gate: parallel sharding unchanged (103p @4dev, now via the override); full suite
+    161p/3s.  The cone gathered path is DORMANT until the flag flip (B4.3) — exercised there.
+  - **B4.3 DONE (2026-06-13d, staged) — cone `_supports_sharding()=True`; CPU-VALIDATED end to end.**
+    Flipped the flag (cone defaults to the always-on placement path: trivial 1-device mesh
+    single-device, shards multi-device).  n_dev=1 gate: the EXISTING cone gates (test_projectors
+    adjoint, test_fbp_fdk, test_vcd convergence — circular+helical) all pass through the sharded
+    path; full suite 161p/3s.  Multi-device gate: new `tests/sharding/test_cone_sharded.py` —
+    back/forward/Hessian (coeff_power=2) at **1e-5** and a 3-iter VCD recon at **1e-4**, sharded
+    (n=2,4) == single-device, circular+helical; full sharding suite 107p @4dev (cone+parallel
+    coexist).  ⇒ the cone reduce-scatter back + gather-forward are CORRECT end to end on CPU.
+  - **B4.4 NEXT (GPU — Greg):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4):
+    per-device peak ~1/n_dev; the CAPACITY win (a 1024³ VCD that OOM'd single-device now fits
+    sharded); the horizontal-recompute penalty vs §8a.  Then B4.5 (hoist horizontal ONLY if B4.4
+    demands it), B5 (inert padding), C/D/E.
 
 ---
 

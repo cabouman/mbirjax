@@ -106,6 +106,22 @@ class ParallelBeamModel(TomographyModel):
             view_data[:, g0:g1, :], pixel_indices,
             view_indices=view_indices, coeff_power=coeff_power)
 
+    def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
+                                     recon_shard_info, view_ranges, local_pixels):
+        """Parallel-beam specialization of the sharded forward projection (overrides the base
+        gather+monolithic path): band the slice axis and broadcast each band; each view-owner
+        projects detector rows [g0:g1) from the band (row r <- slice r) and concatenates its
+        row-bands -- never gathering the full cylinder.  Band sizing mirrors back projection
+        (see _slice_band_length); forward's transient is even smaller (no n_dev-way gather), so
+        reusing the back sizing is safe and conservative."""
+        slices_per_dev = num_slices // n_dev
+        band_len = self._slice_band_length(
+            slices_per_dev, n_dev, num_pixels,
+            fixed_band=getattr(self, 'forward_project_slice_band', None))
+        band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
+        return self._forward_project_all_bands(
+            band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
+
     def _sino_row_padding(self):
         """Parallel beam ties detector row r to recon slice r (the kernels mix channels,
         never rows; recon_shape[2] == sinogram_shape[1] is enforced in

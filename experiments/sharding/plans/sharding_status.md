@@ -19,6 +19,39 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-13d) — P6 B3 + B4.1–4.3 DONE: CONE SHARDS, CPU-VALIDATED end to end; NEXT = B4.4 (GPU measurement)
+
+▶ **CURRENT FOCUS: P6 B4.4 (GPU — Greg), then B4.5.**  Cone now SHARDS (recon by slice ⇄
+sinogram by view), CPU-validated end to end.  **B4.4** = the GPU multi-device measurement
+(`cone_baseline_scaling.py`, n_dev 1/2/4): per-device peak ~1/n_dev; the CAPACITY win (a 1024³
+VCD that OOM'd single-device now fits sharded); the horizontal-recompute penalty vs §8a.
+**B4.5** = hoist the back horizontal fan ONLY if B4.4's penalty demands it (the loop-reorder
+risk, deferred behind measurement).  Detailed record: `p6_increment_b_design.md` PROGRESS block
+(B3, B4.1–4.3).
+
+### Done since 2026-06-13c (staged, Greg commits from PyCharm)
+- **B3 — module-level projector drivers, jit cache SHARED across model instances.**  De-closured
+  projectors.py.  KEY blocker: `get_geometry_parameters()` minted a fresh namedtuple CLASS per
+  call (jax keys the static-arg cache on the pytree treedef, which includes the class) → fixed at
+  source via `ParameterHandler.make_geometry_params` (class cached by field names) + module-level
+  `ProjectorParams`.  2nd same-geometry model reuses the 1st's compiled program (16× faster first
+  call).  Lesson recorded in `.claude/lessons.md`.
+- **B4 — CONE SHARDED DRIVER (B4.1 back, B4.2 forward, B4.3 flip), CPU-validated.**  The
+  reduce-scatter/all-gather infra is geometry-agnostic; cone routes two hooks:
+  `_back_project_view_shard_to_band` (BASE = geometry-neutral BANDED reduce-scatter via
+  `Projectors.sparse_back_project_band`, batched/summed so memory ~ view_batch×pixel_batch;
+  ParallelBeam OVERRIDES with row-crop) and `_forward_project_to_view_shards` (BASE = geometry-
+  neutral GATHER+MONOLITHIC per pixel-batch — decision C; ParallelBeam OVERRIDES with banded
+  forward).  Assemble via `_sino_device_shape()` (cone keeps real det rows).  `_supports_sharding()
+  =True` for cone.  GATES: existing cone gates pass via the sharded path at n_dev=1 (full suite
+  161p/3s); `tests/sharding/test_cone_sharded.py` — back/forward/Hessian 1e-5 + 3-iter VCD 1e-4,
+  sharded (n=2,4) == single-device, circular+helical; sharding suite 107p @4dev.
+  - **Design decision (A):** back recompute-horizontal-per-band kept SIMPLE; hoist deferred to
+    B4.5 behind the GPU measurement.  The hooks mirror (BASE = geometry-neutral; ParallelBeam
+    overrides with its row-identity specialization).
+
+---
+
 ## HANDOFF (2026-06-13c) — P6 B2 single-device DONE + §8a-NEUTRAL (memory+time, both platforms); forward banded kernel removed; NEXT = B3 (de-closuring)
 
 ▶ **CURRENT FOCUS: P6 increment B3** — de-closure the projector drivers to module-level

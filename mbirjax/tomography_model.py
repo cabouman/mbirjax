@@ -1471,35 +1471,68 @@ class TomographyModel(ParameterHandler):
          recon_shard_info, view_ranges, local_pixels) = \
             self._sharded_forward_project_setup(voxel_values, pixel_indices, view_indices)
 
-        # Each slice-owner owns a contiguous block of slices_per_dev slices; that
-        # block is streamed in BANDS (contiguous sub-ranges) so each view-owner
-        # holds only one band at a time, not the whole gathered cylinder.  Band
-        # sizing mirrors back projection (see _slice_band_length); forward's
-        # transient is even smaller (no n_dev-way gather), so the back sizing is a
-        # safe, conservative reuse.
-        slices_per_dev = num_slices // n_dev
-        band_len = self._slice_band_length(
-            slices_per_dev, n_dev, num_pixels,
-            fixed_band=getattr(self, 'forward_project_slice_band', None))
-        band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
-
-        owned_views = self._forward_project_all_bands(
-            band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
+        # Produce each view-owner's forward-projected view-shard.  The default (geometry-neutral)
+        # path gathers the full slice cylinder per view-owner and runs the monolithic forward;
+        # ParallelBeamModel OVERRIDES _forward_project_to_view_shards with a banded forward that never
+        # gathers (it exploits its detector-row r <- slice r identity).  See that hook.
+        owned_views = self._forward_project_to_view_shards(
+            devices, n_dev, num_slices, num_pixels, recon_shard_info, view_ranges, local_pixels)
 
         # Zero the padded views (if any) on their owners.  This is THE mask site that
         # keeps padding inert: with the entry zero-fill it establishes the invariant
         # that padded views of every sinogram-domain array are identically zero.
         owned_views = self._mask_padded_views(owned_views)
 
-        # Wrap the per-view-owner shards as one view-sharded sinogram (no movement).
-        # The global view axis is the DEVICE-FORM count.  The detector-row count
-        # equals the input slice count (the kernel produces row r from slice r), so
-        # when the slice axis is padded the rows are the padded device-form length
-        # too; channels come from the params (never padded).
-        sinogram_shape = self.get_params('sinogram_shape')
+        # Wrap the per-view-owner shards as one view-sharded sinogram (no movement).  The
+        # device-form sino shape carries the padded view count and, for geometries that pad
+        # detector rows with slices (parallel beam, row r <- slice r), the padded row count; cone
+        # keeps its real detector rows (it does not pad rows).  Channels come from params.
         return mjs.assemble_sharded(
-            owned_views, (num_padded_views, num_slices, sinogram_shape[2]),
+            owned_views, self._sino_device_shape(),
             self.sino_placement.shard_structure(3))
+
+    def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
+                                     recon_shard_info, view_ranges, local_pixels):
+        """Produce every view-owner's forward-projected view-shard from the slice-sharded recon.
+
+        Default (geometry-neutral) path: each view-owner GATHERS the full slice cylinder and runs
+        the MONOLITHIC forward.  A slice can project to a RANGE of detector rows (cone), so every
+        view-owner needs ALL slices to produce its own views' rows -- it cannot stream slice-bands.
+        To bound memory the gather is done PER PIXEL-BATCH: only one pixel-batch's slices
+        (``pixel_batch x num_slices``) are gathered at a time, the monolithic forward is run on
+        that batch, and the per-view contributions are SUMMED over pixel-batches (forward
+        projection sums over voxels).  All view-owners run in parallel, one thread each.
+
+        ``ParallelBeamModel`` OVERRIDES this with a banded forward: it broadcasts one slice-band at
+        a time and projects detector rows [g0:g1) from it (row r <- slice r), so it never gathers
+        the full cylinder.
+
+        Returns a list of per-view-owner sinogram shards ``(views_per_dev, num_det_rows,
+        num_channels)``, ``owned_views[i]`` resident on ``devices[i]``.
+        """
+        pixel_batch = self.pixel_batch_size_for_vmap
+        # Gather slice-shards in GLOBAL slice order so the assembled cylinder is correctly ordered.
+        slice_owners = sorted(devices, key=lambda d: recon_shard_info[d][1][0])
+
+        def worker(i, view_owner):
+            idx = local_pixels[i]                       # pixel indices, resident on view_owner
+            n_local = int(idx.shape[0])
+            owned = None
+            for p0 in range(0, n_local, pixel_batch):
+                p1 = min(p0 + pixel_batch, n_local)
+                # Gather THIS pixel-batch's slices from every slice-owner onto this view-owner and
+                # concatenate along the slice axis -> the full cylinder (p1 - p0, num_slices).
+                full_cyl = jnp.concatenate(
+                    [mjs.move_shard(recon_shard_info[so][0][p0:p1], view_owner,
+                                    dev2dev_safe=self.dev2dev_safe)
+                     for so in slice_owners], axis=1)
+                part = self.projector_functions.sparse_forward_project(
+                    full_cyl, idx[p0:p1], view_indices=view_ranges[view_owner])
+                owned = part if owned is None else owned + part
+            return owned
+
+        with mjs.device_pool(len(devices)) as pool:
+            return mjs.run_per_device(devices, worker, executor=pool)
 
     def _mask_padded_views(self, owned_views):
         """Zero the padded views in per-view-owner sinogram blocks.
