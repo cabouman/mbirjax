@@ -1,14 +1,18 @@
 """
 experiments/sharding/scaling_tests/cone_baseline_scaling.py
 ───────────────────────────────────────────────────────────
-P6 Step 0 — single-device CONE baseline for time + peak memory, on the CURRENT
-(pre-port) code.  This is the "no regression (judged, not literal)" reference the
-P6 cone port is measured against (plan: p6_projector_rework_proposal.md §8a).
+P6 — CONE baseline for time + peak memory (single- AND multi-device), on the
+CURRENT code.  This is the "no regression (judged, not literal)" reference the
+P6 cone port is measured against (plan: p6_projector_rework_proposal.md §8a) and,
+now that cone shards (B4), the multi-device scaling sweep (time/peak per count).
 
 Why a small dedicated driver, not an edit to the three device-sweep drivers:
-cone does not support sharding yet, so the device sweep is just n_dev=1 and the
-sweep drivers' sharded machinery (configure_sharding, pre-shard, reduce-scatter)
-is irrelevant.  This driver REUSES the proven measurement primitives in
+this driver fixes the cone geometry + magnification and auto-derives the recon
+shape (which the generic drivers don't), and sweeps device counts by PINNING each
+count with ``model.configure_devices(devs)`` so a count actually uses that many
+devices — without the pin, every model auto-shards across ALL devices at
+construction (set_devices()), so each count would measure the same max-device
+run.  This driver REUSES the proven measurement primitives in
 ``scaling_common`` (isolated-subprocess harness, ``time_op`` warmup/trials, the
 free-previous-result discipline, ``peak_memory_mb``, throttle sampling, YAML) so
 the cone numbers are produced with the SAME timing discipline as the parallel
@@ -59,9 +63,10 @@ import numpy as np
 # single-device parallel reference with identical timing discipline.
 GEOMETRY = "cone"
 
-# Cone is single-device-only on the current code, so the baseline is n_dev=1.
-# (Kept as a list so the same tool extends to a device sweep post-port by simply
-# adding counts — at which point configure_sharding will be wired in make_model.)
+# Device counts to sweep.  Each (op, size) worker measures every count the hardware
+# has, PINNING each with model.configure_devices() (see build_and_time).  A count that
+# doesn't divide the recon slice axis is skipped for cone (slice padding is P6 B5, not
+# done); the cubic sweep sizes below divide 1/2/4 cleanly, so no count is skipped there.
 DEVICE_COUNTS = [1, 2, 4]
 
 # Ops to measure (each its own fresh worker per size).
@@ -233,16 +238,22 @@ def worker_setup(out_file):
 def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     """Time + measure memory for one op and SINOGRAM size, device counts descending.
 
-    For cone the only count is 1 (single device).  build_and_time prepares the
-    op's input OUTSIDE the timing loop and times only the op.
+    build_and_time prepares the op's input OUTSIDE the timing loop, PINS the model
+    to exactly the device count under test (model.configure_devices(devs)), and times
+    only the op.  Host inputs (sinogram, cylinders, indices, VCD partitions) are built
+    once on a single-device base model and reused across counts; the sharded
+    recon/projector entry re-places them per configuration.
     """
     import mbirjax  # noqa: F401  (device-setup side effect; must precede jax init)
     size = parse_size_label(size_label)
     sino_np = make_sinogram(size, seed=INPUT_SEED)
 
-    # Build the model + op input once for this size (device-independent here, since
-    # the only device count is 1; prepared outside the timing loop).
+    # Build the model + op input once for this size (device-independent: host arrays the
+    # per-count models re-place at entry).  Pin the base model to ONE device so the
+    # derived inputs (especially the VCD partitions from initialize_recon) carry no
+    # multi-device placement; build_and_time configures the real count per measurement.
     base_model = make_model(size)
+    base_model.configure_devices(1)
     recon_shape = tuple(int(x) for x in base_model.get_params('recon_shape'))
     idx = make_indices(base_model)
     num_pixels = len(idx)
@@ -259,7 +270,21 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     gc.collect()
 
     def build_and_time(n, devs):
-        model = make_model(size)               # n is always 1 (single device)
+        model = make_model(size)
+        # Pin EXACTLY these n devices (devs == pick_devices(n)), so the model runs on the
+        # same devices peak_memory_mb(devs) reads.  Without this the model auto-shards
+        # across ALL available devices at construction (set_devices()), making every
+        # device-count iteration measure the same max-device run (the flat-curve bug).
+        model.configure_devices(devs)
+        # Cone slice-padding (B5) is not implemented: a count that doesn't divide the
+        # recon slice axis pads, and the cone forward gather would assemble the padded
+        # cylinder (wrong numbers).  Skip such counts rather than report garbage; the
+        # configured cubic sweep sizes divide cleanly, so this is purely defensive.
+        if GEOMETRY == "cone" and model.recon_placement is not None \
+                and model.recon_placement.is_padded:
+            print(f"  n_devices={n}: slice axis not divisible by {n} "
+                  f"(cone padding is P6 B5, not done) — skipping")
+            return None
         if op == "forward":
             run_fn = lambda: run_forward(model, cylinders, idx)
         elif op == "back":
@@ -304,24 +329,28 @@ def run_worker(argv):
 
 # ── Orchestrator (default; touches no JAX) ────────────────────────────────────
 def _print_summary(grids_by_op, size_labels):
-    """Print min time (ms) / peak mem (MB) per (op, size) — the baseline table."""
-    print("\n" + "=" * 72)
-    print(f"  {GEOMETRY} single-device baseline — min time (ms) / peak mem (MB)")
-    print("  ([THROTTLED] = a GPU throttled, timing unreliable)")
-    print("=" * 72)
-    header = "  {:<10s}".format("size") + "".join(f"{op:>22s}" for op in OPS)
-    print(header)
-    for label in size_labels:
-        cells = []
-        for op in OPS:
-            rows = grids_by_op.get(op, {}).get(label, [])
-            r = next((x for x in rows if x["n_devices"] == 1), None)
-            if not r:
-                cells.append(f"{'--':>22s}")
+    """Per op: min time (ms) / peak mem (MB) / speedup-vs-1-device, for each
+    (size, device count) — the scaling table.  ``[!]`` flags a throttled GPU
+    (timing unreliable).  Speedup is min_ms(1 dev) / min_ms(n dev); on CPU the
+    memory column is whole-process RSS (not per-device), so it does not shard."""
+    for op in OPS:
+        print("\n" + "=" * 78)
+        print(f"  {GEOMETRY} {op} — min time (ms) / peak mem (MB) / speedup vs 1 device")
+        print("=" * 78)
+        print("  {:<11s}{:>7s}{:>12s}{:>12s}{:>10s}".format(
+            "size", "n_dev", "min_ms", "mem_mb", "speedup"))
+        for label in size_labels:
+            rows = sorted(grids_by_op.get(op, {}).get(label, []),
+                          key=lambda r: r["n_devices"])
+            if not rows:
+                print(f"  {label:<11s}{'--':>7s}")
                 continue
-            mark = " !" if r.get("throttled") else ""
-            cells.append(f"{r['min_ms']:9.1f}/{r['mem_mb']:8.1f}{mark:>3s}".rjust(22))
-        print(f"  {label:<10s}" + "".join(cells))
+            sc.annotate_speedups(rows)   # adds 'speedup' relative to the 1-device run
+            for r in rows:
+                mark = " !" if r.get("throttled") else ""
+                print("  {:<11s}{:>7d}{:>12.1f}{:>12.1f}{:>9.2f}x{:<2s}".format(
+                    label, r["n_devices"], r["min_ms"], r["mem_mb"],
+                    r.get("speedup", float("nan")), mark))
     print("\n  (recon shapes differ from sinogram size for cone — see YAMLs.)")
 
 
@@ -367,9 +396,10 @@ def main():
                 grid[label] = []
                 continue
             grid[label] = rows
-            r1 = next((r for r in rows if r["n_devices"] == 1), rows[0])
-            print(f"  size {label}: min={r1['min_ms']:.1f} ms  mem={r1['mem_mb']:.1f} MB"
-                  + ("  [THROTTLED]" if r1.get("throttled") else ""))
+            for r in sorted(rows, key=lambda r: r["n_devices"]):
+                print(f"  size {label}  n_dev={r['n_devices']}: "
+                      f"min={r['min_ms']:.1f} ms  mem={r['mem_mb']:.1f} MB"
+                      + ("  [THROTTLED]" if r.get("throttled") else ""))
         grids_by_op[op] = grid
 
     # 3. Persist one YAML for the whole baseline run + print the summary table.
