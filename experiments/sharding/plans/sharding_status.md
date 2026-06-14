@@ -19,6 +19,34 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-13c) — P6 B2 single-device DONE + §8a-NEUTRAL (memory+time, both platforms); forward banded kernel removed; NEXT = B3 (de-closuring)
+
+▶ **CURRENT FOCUS: P6 increment B3** — de-closure the projector drivers to module-level
+functions (kills the per-instance retrace; §4/§7 of `plans/p6_increment_b_design.md`).
+B2 (single-device cone on the banded back kernel) is COMPLETE and measurement-closed; the
+SHARDED cone driver is B4 (after B3).  Read the `p6_increment_b_design.md` PROGRESS block
+(B2 commit 1/2 + the §8a comparison record) first.
+
+### Done this session (2026-06-13c; staged, Greg commits from PyCharm)
+- **Forward banded kernel REMOVED:** the dropped Option-B `forward_project_band_to_one_view`
+  / `forward_vertical_fan_band_*` + their 3 tests deleted (forward = gather + monolithic).
+- **B2 — single-device cone back on the banded kernel (2 commits):**
+  `back_project_one_view_to_pixel_batch` rewired to horizontal-fan-once + a ROLLED
+  `jax.lax.map` over slice bands of `CONE_SLICE_BAND_SIZE`(=128) + reshape/crop (ROLLED →
+  compile size independent of slice count, so 2000+ slices are fine); deleted the monolithic
+  back vertical fan; forward det-row chunk → `CONE_FORWARD_DET_ROW_BATCH`(=128, bit-identical);
+  deleted `entries_per_cylinder_batch` + dead `slice_range_length`.  `test_cone_banded`
+  consolidated to one self-contained tiling-consistency gate (physical correctness gated by
+  test_projectors adjoint + test_vcd convergence).  Full suite green (159p/3s).  Added the
+  `slice_band_size` static kwarg (None→constant) as the band knob / test hook.
+- **§8a measurement — B2 NEUTRAL, no regression (both platforms); B2 CLOSED.**  GPU peak
+  BYTE-IDENTICAL (forward/vcd) / ≤0.5 KB (back) ⇒ single-device capacity preserved exactly;
+  time-neutral (back tracks the bit-identical-FORWARD control through the ~1.9× GPU cross-run
+  variance).  CPU back ~1.0× time, peak within ≤1.1×; the CPU forward 0.38×@256³ is increment
+  A (channel-major; OLD 6:25am yaml predates it — Greg-confirmed), used as the control, NOT B2.
+
+---
+
 ## HANDOFF (2026-06-13b) — P6 cone port: increment A COMMITTED, B1 COMMITTED, forward-structure DECIDED (= C); NEXT = B2 (sharded driver: banded back + gather+monolithic forward)
 
 ▶ **CURRENT FOCUS: P6 increment B2** — wire the cone sharded driver (back on the banded

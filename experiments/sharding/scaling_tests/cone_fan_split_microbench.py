@@ -92,7 +92,9 @@ def run_one_size(size):
     sino_vb = jnp.asarray(rng.standard_normal((V, n_rows, n_channels), dtype=np.float32))
 
     H = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
-    Vfan = ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch
+    # The monolithic vertical fan was removed; the banded vertical fan over the whole
+    # cylinder (one band: g0=0, L=num_slices) is the equivalent full vertical projection.
+    Vfan = ConeBeamModel.back_vertical_fan_band_pixel_batch
     Full = ConeBeamModel.back_project_one_view_to_pixel_batch
 
     # HORIZONTAL only: vmap over views -> (V, num_pixels, num_rows) det cylinders.
@@ -108,7 +110,7 @@ def run_one_size(size):
     # over views -> (num_pixels, num_slices).  Matches how the projector sums views.
     @partial(jax.jit, static_argnums=(2,))
     def vert_only(det_cylinders, view_params, projector_params):
-        f = lambda dc, svp: Vfan(dc, idx, svp, projector_params, 1)
+        f = lambda dc, svp: Vfan(dc, idx, svp, projector_params, 0, num_slices, 1)
         return jnp.sum(jax.vmap(f)(det_cylinders, view_params), axis=0)
 
     # FUSED: one per-view kernel does horizontal THEN vertical internally, summed

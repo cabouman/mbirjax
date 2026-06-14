@@ -1,41 +1,29 @@
 """
 tests/geometries/test_cone_banded.py
 ─────────────────────────────────────
-Unit tests for the cone banded BACK projector kernel
+Unit tests for the cone banded BACK projector: the per-band kernel
 ``ConeBeamModel.back_project_one_view_to_band`` and the production back projector
-``ConeBeamModel.back_project_one_view_to_pixel_batch`` that is now built on it.
+``ConeBeamModel.back_project_one_view_to_pixel_batch`` that is built on it.
 
-These are the strong per-geometry correctness gates for the banded interface.  They
-check:
+The production back projector hoists the horizontal fan and walks the recon slice axis
+in UNIFORM bands with a rolled jax.lax.map (+ reshape/crop).  This test checks that it
+reproduces an INDEPENDENT banded assembly -- an explicit np.concatenate of
+back_project_one_view_to_band over a NON-uniform tiling (which recomputes the horizontal
+fan per band) -- across several band sizes (including one that does not divide the slice
+count, exercising the padded-last-band crop) and coeff_power 1 (projection) and 2
+(Hessian).  Agreement validates the horizontal-hoist, the lax.map reassembly, and the
+banded vertical fan's tiling-invariance.
 
-  * band-decomposition: the monolithic per-view BACK projector equals the
-    concatenation of the banded back projector over a tiling of the slice axis --
-    because the bands tile disjointly, so each contribution is counted exactly once;
-  * full-band == monolithic: a single band (g0=0, L=S) reproduces the monolithic
-    back kernel (the anchor is faithful on full cylinders);
-  * the Hessian path (coeff_power=2) decomposes the same way;
-  * driver A/B: the production back_project_one_view_to_pixel_batch (horizontal fan
-    once + a rolled jax.lax.map over slice bands + reshape/crop) reproduces the
-    monolithic back projector across band sizes -- validating the lax.map reassembly,
-    not just the band kernel.
+Both a CIRCULAR and a HELICAL cone geometry are exercised, so the anchor's
+helical-z-shift term is covered (a helical view has a nonzero per-view z shift).
 
-Every check runs on a CIRCULAR and a HELICAL cone geometry, so the anchor's
-helical-z-shift term is exercised (a helical view has a nonzero per-view z shift).
+The banded vertical fan's own physical correctness (anchor, footprint, helical z shift)
+is gated INDEPENDENTLY by the cone adjoint identity in test_projectors and the cone
+convergence gate in test_vcd, both of which run the production banded back projector.
 
 Computed floats -> tight allclose (project rule: never exact equality for computed
-floats).  Band decomposition only reorders summation, so CPU agreement is ~1e-6;
-the gates use 1e-4 to stay robust on GPU (projector scatter-add noise ~8e-6 rel).
-
-RETIRE: every test here COMPARES the banded back kernel against the monolithic
-back_project_one_view_to_pixel_batch, so they all retire when that monolithic kernel
-is deleted (after the back projector is switched to the banded path).  At that point
-the wired-path adjoint identity in test_projectors becomes the banded back kernel's
-permanent gate -- the banded back is a correct restriction of the monolithic back
-(band-decomposition), which test_projectors already gates for adjointness.
-
-(The forward projection does not band -- the multi-device forward gathers the slice
-cylinder per pixel-batch and runs the monolithic forward -- so there is no banded
-forward kernel to test here.)
+floats).  Band reassembly only reorders summation, so CPU agreement is ~1e-6; the gates
+use 1e-4 to stay robust on GPU (projector scatter-add noise ~8e-6 rel).
 """
 import unittest
 from collections import namedtuple
@@ -103,17 +91,9 @@ class TestConeBandedProjector(unittest.TestCase):
         cls.rng = np.random.default_rng(1234)
 
     # ── helpers (operate on a config dict) ──────────────────────────────────────
-    def _back_monolithic(self, c, view, coeff_power=1):
-        # The pre-banded monolithic back projector: horizontal fan once -> monolithic
-        # vertical fan (entries_per_cylinder_batch slice chunking).  This is the A/B
-        # reference for both the band-decomposition tests and the banded production
-        # back_project_one_view_to_pixel_batch.  RETIRE with the monolithic vertical fan.
-        det_cyl = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-            view, c['idx'], c['svp'], c['pp'], coeff_power=coeff_power)
-        return np.asarray(ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch(
-            det_cyl, c['idx'], c['svp'], c['pp'], coeff_power=coeff_power))
-
     def _back_banded_concat(self, c, view, coeff_power=1):
+        # Independent reference: explicit np.concatenate of the per-band back projector
+        # over a NON-uniform tiling (each call recomputes its own horizontal fan).
         bands = [np.asarray(ConeBeamModel.back_project_one_view_to_band(
             view, c['idx'], c['svp'], c['pp'], g0, g1 - g0, coeff_power=coeff_power))
             for (g0, g1) in band_bounds(c['S'])]
@@ -122,44 +102,16 @@ class TestConeBandedProjector(unittest.TestCase):
     def _rand_view(self, c):
         return jnp.asarray(self.rng.standard_normal((c['num_det_rows'], c['num_det_channels']), np.float32))
 
-    # ── band-decomposition (RETIRE with the monolithic kernels) ─────────────────
-    def test_back_band_decomposition(self):
-        """RETIRE-with-monolithic: monolithic back == concat of banded back."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                view = self._rand_view(c)
-                np.testing.assert_allclose(self._back_banded_concat(c, view),
-                                           self._back_monolithic(c, view),
-                                           rtol=self.RTOL, atol=self.ATOL)
-
-    def test_back_full_band_equals_monolithic(self):
-        """RETIRE-with-monolithic: a single full band (g0=0, L=S) == monolithic back."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                view = self._rand_view(c)
-                full = np.asarray(ConeBeamModel.back_project_one_view_to_band(
-                    view, c['idx'], c['svp'], c['pp'], 0, c['S'], coeff_power=1))
-                np.testing.assert_allclose(full, self._back_monolithic(c, view),
-                                           rtol=self.RTOL, atol=self.ATOL)
-
-    def test_back_band_decomposition_hessian(self):
-        """RETIRE-with-monolithic: Hessian path (coeff_power=2) decomposes the same way."""
-        for c in self.configs:
-            with self.subTest(geometry=c['name']):
-                view = self._rand_view(c)
-                np.testing.assert_allclose(self._back_banded_concat(c, view, coeff_power=2),
-                                           self._back_monolithic(c, view, coeff_power=2),
-                                           rtol=self.RTOL, atol=self.ATOL)
-
-    # ── driver A/B: the production banded back projector vs the monolithic ───────
-    def test_back_driver_matches_monolithic(self):
-        """RETIRE-with-monolithic: the production back_project_one_view_to_pixel_batch
-        (horizontal fan once + rolled lax.map over slice bands + reshape/crop) reproduces
-        the monolithic back projector.  Unlike the band-decomposition test (which uses an
-        explicit np.concatenate), this exercises the production lax.map REASSEMBLY -- so a
-        transpose/reshape/crop bug would surface here.  Several band sizes are run: one that
-        does NOT divide the slice count (the padded-last-band crop), a small one (several
-        bands), and one >= S (a single band, clamped).  Covers coeff_power 1 and 2."""
+    # ── production back projector vs an independent banded assembly ──────────────
+    def test_back_production_matches_band_concat(self):
+        """The production back_project_one_view_to_pixel_batch (horizontal fan once + a
+        rolled jax.lax.map over uniform slice bands + reshape/crop) reproduces an explicit
+        np.concatenate of back_project_one_view_to_band over a non-uniform tiling.  Run
+        across band sizes -- one that does NOT divide the slice count (padded-last-band
+        crop), a small one (several bands), and one >= S (single band, clamped) -- and
+        coeff_power 1 and 2.  This validates the horizontal-hoist, the lax.map reassembly,
+        and tiling-invariance; the banded vertical fan's physical correctness is gated by
+        test_projectors (adjoint identity) and test_vcd (convergence)."""
         for c in self.configs:
             with self.subTest(geometry=c['name']):
                 view = self._rand_view(c)
@@ -167,7 +119,7 @@ class TestConeBandedProjector(unittest.TestCase):
                 # Non-divisor (remainder -> crop), small (several bands), and a single band.
                 band_sizes = sorted({max(1, S // 3), max(2, S // 2 + 1), S})
                 for coeff_power in (1, 2):
-                    ref = self._back_monolithic(c, view, coeff_power=coeff_power)
+                    ref = self._back_banded_concat(c, view, coeff_power=coeff_power)
                     for bs in band_sizes:
                         prod = np.asarray(ConeBeamModel.back_project_one_view_to_pixel_batch(
                             view, c['idx'], c['svp'], c['pp'],

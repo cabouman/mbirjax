@@ -36,14 +36,46 @@ with correctness / memory / timing gates (Greg's request).*
   repointed to assemble from the monolithic primitives (no longer the now-banded
   production method).  GATES GREEN: test_cone_banded, cone test_projectors/test_fbp_fdk/
   test_vcd (15), full test_projectors (21).
-- **B2 commit 2 NEXT (the deletions):** delete the monolithic cone vertical fan
-  (`back_vertical_fan_one_view_to_pixel_batch` / `..._to_one_pixel`); swap the FORWARD
-  vertical fan's det-row chunk (`gp.entries_per_cylinder_batch`, cone_beam.py ~434) for a
-  module constant; delete `entries_per_cylinder_batch` + the dead `slice_range_length`
-  from cone params (runtime-only — no save/load migration unless a test surfaces one);
-  retire the monolithic-comparison tests.  Then the §8a memory/timing REPORT
-  (`cone_baseline_scaling.py`, CPU local + **GPU cluster**).  Then B3 (de-closuring), B4
-  (sharded cone + GPU validation), B5 (inert padding), then C/D/E.
+- **B2 commit 2 DONE (2026-06-13c, staged — the deletions):** deleted the monolithic cone
+  vertical fan (`back_vertical_fan_one_view_to_pixel_batch` / `..._to_one_pixel`, 89 lines);
+  swapped the FORWARD vertical fan's det-row chunk to the new module constant
+  `CONE_FORWARD_DET_ROW_BATCH = 128` (bit-identical — only the source of 128 changed);
+  deleted `entries_per_cylinder_batch` + the dead `slice_range_length` from cone (instance
+  attrs, the geometry-param namedtuple, the `slice_range_length` computation) — runtime-only,
+  no save/load migration (they were instance-attr namedtuple fields, not registered params);
+  removed the banded-section RETIRE note (the banded kernels are production now).
+  `test_cone_banded` consolidated to ONE self-contained gate `test_back_production_matches_
+  band_concat` (production uniform-band lax.map == explicit non-uniform-band np.concatenate,
+  band-size sweep incl. the non-dividing crop, coeff_power 1+2) — no monolithic reference, so
+  permanent; the banded vertical fan's physical correctness is gated by test_projectors
+  (adjoint) + test_vcd (convergence).  Stale `slice_range_length` comment in test_view_params
+  fixed.  GATES GREEN: cone test_cone_banded/test_projectors/test_fbp_fdk/test_vcd (16), full
+  test_projectors + test_view_params (25).
+- **B2 §8a memory/timing — DONE; B2 CLOSED, no regression (2026-06-13c).**  Compared
+  `cone_baseline_scaling.py` OLD (pre-B2) vs NEW (post-B2), 3-iter both, single-device
+  (results/cone_baseline_cone_clean_{cpu,gpu}.yaml vs `..._{cpu,gpu} 2.yaml`, gitignored).
+  **Method — forward as the bit-identical control:** B2 left the FORWARD projector
+  bit-identical (commit 1 never touched it; commit 2's only forward change was
+  `gp.entries_per_cylinder_batch → CONE_FORWARD_DET_ROW_BATCH`, same value 128), so any
+  forward delta is NON-B2 and exposes the run's ruler error; the BACK delta relative to
+  that control is the real B2 signal.
+  - **GPU (H100, 256³–1024³, n=1): peak memory BYTE-IDENTICAL** old-vs-new for forward and
+    VCD; back differs by ~0.5 KB.  ⇒ B2 changes single-device GPU peak by ≤0.5 KB —
+    **capacity preserved exactly.**  Time: forward (control) and back BOTH ~0.53× (≈1.9×
+    faster) — i.e. the documented ~1.9× GPU run-to-run variance; back TRACKS the control ⇒
+    **time-neutral.**  (Lone outlier vcd_nonc 1024³ 1.03× = within that variance band,
+    hottest single-trial.)
+  - **CPU (64³–256³, n=1): back ~1.0× time (neutral)**, peak within the ≤1.1× gate (+1–3%).
+    The CPU forward 0.38× at 256³ is NOT B2 — the OLD CPU yaml (6:25am) PREDATES the
+    channel-major sinogram conversion (increment A, the ~13× horizontal CPU win,
+    Greg-confirmed), so forward and back move by DIFFERENT factors (forward 0.38×, back
+    1.0×) ⇒ not uniform variance ⇒ the forward delta is increment A, the back ~1.0× is the
+    clean B2 signal.
+  - **Verdict: B2 is memory- and time-NEUTRAL on both platforms.** The banded rolled
+    `lax.map` (band=128) reproduces the old `entries_per_cylinder_batch=128` chunking, as
+    designed.  GPU is the gate that matters (capacity) and its peak is byte-identical.
+- **NEXT: B3** (de-closuring — module-level banded drivers; kills per-instance retrace),
+  then B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding), then C/D/E.
 
 ---
 
