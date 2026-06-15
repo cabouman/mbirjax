@@ -91,6 +91,17 @@ class Config:
     date: str = ""         # stamped by the orchestrator (never datetime.now() in a worker)
     run_tag: str = ""
 
+    # diff / gate
+    gate: bool = True               # set the process exit code on a HARD regression
+    compare_to_prior: bool = True   # compare against the most-recent prior dated file in out_dir
+    golden_path: str = ""           # optional golden file (empty -> none; golden capture is later)
+    mem_hard_pct: float = 8.0       # memory growth threshold (%); HARD on GPU, soft on CPU
+    speedup_warn_pct: float = 15.0  # speedup-ratio drop WARN threshold (%); soft on all platforms
+    time_soft_pct: float = 25.0     # absolute-time WARN threshold (%)
+    fp_rtol_single: float = 1e-5    # fingerprint robust-aggregate rel tol (single-shot ops)
+    fp_rtol_iter: float = 1e-4      # ... for the iterated vcd
+    k_sample_tol: int = 1           # allowed deviating fingerprint samples before a soft flag
+
     def to_dict(self):
         return dataclasses.asdict(self)
 
@@ -528,6 +539,184 @@ def update_records(records, cells, commit, date):
     return new_lines, n_baselines
 
 
+# ── Diff + gate (compare a run vs prior / golden; classify; set exit code) ─────
+def _cell_key(c):
+    return f"{c['geometry']}|{c['op']}|{c['size']}|{c['n_devices']}"
+
+
+def _cell_status(c):
+    """ok (measured) / failed / skipped / absent (None)."""
+    if c is None:
+        return "absent"
+    if c.get("failed"):
+        return "failed"
+    if c.get("skipped"):
+        return "skipped"
+    return "ok"
+
+
+def _expected_cells(result):
+    """The (geom|op|size|n_dev) keys this run's config was supposed to attempt."""
+    cfg = result.get("config", {})
+    plat = result["platform"]
+    sizes = [sc.size_label(s) for s in cfg.get("sizes", {}).get(plat, [])]
+    keys = set()
+    for g in cfg.get("geometries", []):
+        for op in cfg.get("ops", []):
+            for s in sizes:
+                for n in result.get("device_counts", []):
+                    keys.add(f"{g}|{op}|{s}|{n}")
+    return keys
+
+
+def _fmt_delta(today, ref, unit=""):
+    """'<today> vs <expected> (<+abs>, <+pct>)' — shows BOTH the absolute and the % difference
+    so a reader can judge importance (a big % on a tiny absolute is often noise, and vice versa)."""
+    d = today - ref
+    pct = (d / ref * 100.0) if ref else float("nan")
+    return f"{today:g}{unit} vs {ref:g}{unit} expected ({d:+g}{unit}, {pct:+.1f}%)"
+
+
+def _gate_fingerprint(key, tf, rf, op, lab, config, hard, soft):
+    """Correctness gate on the tolerant fingerprint (see §7): exact shape/dtype, robust
+    aggregates within rtol (HARD), a few sample deviations allowed (SOFT), new padding leak (HARD).
+    Each aggregate finding shows the relative diff vs the tolerance plus the absolute change."""
+    if not tf or not rf:
+        return
+    if tf.get("shape") != rf.get("shape"):
+        hard.append(f"[{lab}] {key} fingerprint shape {rf.get('shape')} -> {tf.get('shape')}")
+        return
+    if tf.get("dtype") != rf.get("dtype"):
+        hard.append(f"[{lab}] {key} fingerprint dtype {rf.get('dtype')} -> {tf.get('dtype')}")
+    rtol = config.fp_rtol_iter if op == "vcd_nonconst" else config.fp_rtol_single
+    for m in ("sum", "mean", "l2norm"):
+        rv, tv = rf.get(m), tf.get(m)
+        if rv is None or tv is None:
+            continue
+        reldiff = abs(tv - rv) / (abs(rv) or 1.0)
+        if reldiff > rtol:
+            hard.append(f"[{lab}] {key} fingerprint {m}: reldiff {reldiff:.2e} > rtol {rtol:g} "
+                        f"(Δ {tv - rv:+.3g}; {tv:g} vs {rv:g} expected)")
+    rs_, ts_ = rf.get("samples") or [], tf.get("samples") or []
+    if rs_ and len(rs_) == len(ts_):
+        dev = sum(1 for a, b in zip(rs_, ts_) if abs(b - a) / (abs(a) or 1.0) > rtol)
+        if dev > config.k_sample_tol:
+            soft.append(f"[{lab}] {key} {dev}/{len(rs_)} fingerprint samples deviate (rtol {rtol:g})")
+    if tf.get("padding_zero") is False and rf.get("padding_zero") is not False:
+        hard.append(f"[{lab}] {key} padding leak: padding_zero {rf.get('padding_zero')} -> False")
+
+
+def _gate_metrics(key, t, r, lab, plat, config, hard, soft):
+    """Metric gates for an ok->ok cell.  Structural changes and the correctness fingerprint are
+    HARD on every platform.  Of the PERFORMANCE signals, only MEMORY is HARD, and only on GPU,
+    where peak_bytes_in_use is ~deterministic (it is also what catches the gather-bug class —
+    memory that fails to shard); on CPU memory is whole-process RSS (coarse) so it is SOFT.
+    Speedup and absolute time are SOFT on every platform — both derive from timings, which are
+    noisy even on GPU (especially small runs).  Every delta shows the value vs expected with BOTH
+    the absolute and the percentage difference."""
+    pre = f"[{lab}] {key} "
+    # memory — HARD on GPU, SOFT (coarse RSS) on CPU.
+    rm, tm = r.get("mem_mb"), t.get("mem_mb")
+    if rm and tm is not None and (tm - rm) / rm * 100.0 > config.mem_hard_pct:
+        bucket = hard if plat == "gpu" else soft
+        cpu_note = "" if plat == "gpu" else " [CPU RSS, coarse]"
+        bucket.append(pre + "memory " + _fmt_delta(tm, rm, " MB") + cpu_note)
+    # speedup-ratio drop — SOFT everywhere (ratio of noisy timings).
+    rsp, tsp = r.get("speedup"), t.get("speedup")
+    if t["n_devices"] > 1 and rsp and tsp is not None and (rsp - tsp) / rsp * 100.0 > config.speedup_warn_pct:
+        soft.append(pre + "speedup " + _fmt_delta(tsp, rsp))
+    # absolute time — SOFT everywhere.
+    rt, tt = r.get("min_ms"), t.get("min_ms")
+    if rt and tt is not None and (tt - rt) / rt * 100.0 > config.time_soft_pct:
+        soft.append(pre + "time " + _fmt_delta(tt, rt, " ms"))
+    # structural — HARD everywhere.
+    if bool(t.get("is_sharded")) != bool(r.get("is_sharded")):
+        hard.append(pre + f"is_sharded {r.get('is_sharded')} -> {t.get('is_sharded')}")
+    tb, rb = t.get("back_n_bands_per_shard"), r.get("back_n_bands_per_shard")
+    if (tb is not None or rb is not None) and tb != rb:
+        hard.append(pre + f"back band count {rb} -> {tb}")
+    _gate_fingerprint(key, t.get("fingerprint"), r.get("fingerprint"), t.get("op", ""),
+                      lab, config, hard, soft)
+
+
+def _compare_cell(key, t, r, lab, plat, expected, oom_gos, config, hard, soft):
+    """Classify one cell vs one reference (see plan §10a status transitions)."""
+    ts, rs = _cell_status(t), _cell_status(r)
+    if rs == "absent":
+        soft.append(f"[{lab}] new cell, no baseline (not gated): {key}")
+        return
+    if ts == "absent":
+        gos = tuple(key.split("|")[:3])
+        if key not in expected:
+            soft.append(f"[{lab}] dropped from sweep: {key}")
+        elif gos in oom_gos:
+            soft.append(f"[{lab}] {key} not measured (OOM-descent stopped at higher n_dev)")
+        else:
+            hard.append(f"[{lab}] expected cell vanished (no row/skip/fail): {key}")
+        return
+    if ts == "failed" and rs == "ok":
+        hard.append(f"[{lab}] {key} REGRESSED: was ok, now fails ({str(t.get('error',''))[:50]})")
+        return
+    if ts == "ok" and rs == "failed":
+        soft.append(f"[{lab}] {key} improved: was failing, now ok (consider re-baselining golden)")
+        return
+    if ts != "ok" or rs != "ok":   # skip<->fail combos, or unchanged fail/skip (quiet)
+        if ts != rs:
+            soft.append(f"[{lab}] {key} status {rs} -> {ts}")
+        return
+    _gate_metrics(key, t, r, lab, plat, config, hard, soft)   # ok -> ok
+
+
+def gate_run(result, references, config):
+    """Compare ``result`` against each (label, ref_result) and return the gate dict.
+
+    Fires on a CHANGE vs the reference (plan §10/§10a): ok->fail / memory / speedup / structural /
+    correctness are HARD; absolute time / added-dropped / improvements are SOFT; persistent
+    failures are quiet.  Cold start (no usable reference) is all-SOFT, never a fail.
+    """
+    hard, soft = [], []
+    refs = [(lab, r) for lab, r in references if r]
+    if not refs:
+        return {"result": "warn", "hard": [], "compared_to": [],
+                "soft": ["no prior or golden to compare against (cold start) — nothing gated"]}
+    plat = result.get("platform", "")
+    expected = _expected_cells(result)
+    oom_gos = {(c["geometry"], c["op"], c["size"])
+               for c in result["cells"] if c.get("failed") and c.get("oom")}
+    today = {_cell_key(c): c for c in result["cells"]}
+    for lab, ref in refs:
+        refcells = {_cell_key(c): c for c in ref.get("cells", [])}
+        for key in sorted(set(today) | set(refcells)):
+            _compare_cell(key, today.get(key), refcells.get(key), lab, plat,
+                          expected, oom_gos, config, hard, soft)
+    return {"result": "fail" if hard else ("warn" if soft else "pass"),
+            "hard": hard, "soft": soft, "compared_to": [lab for lab, _ in refs]}
+
+
+def _find_prior(out_dir, plat, today_date):
+    """Most-recent prior dated file in out_dir (excluding today's), or None.
+
+    Filenames embed the date/timestamp, so a lexicographic sort is chronological.
+    """
+    import glob
+    today_file = os.path.join(out_dir, f"regression_{plat}_{today_date}.yaml")
+    files = sorted(f for f in glob.glob(os.path.join(out_dir, f"regression_{plat}_*.yaml"))
+                   if f != today_file)
+    return files[-1] if files else None
+
+
+def _print_gate(g):
+    print("\n" + "=" * 78)
+    print(f"  GATE: {g['result'].upper()}   (vs {', '.join(g['compared_to']) or 'nothing'})")
+    print("=" * 78)
+    for h in g.get("hard", []):
+        print("  HARD  " + h)
+    for s in g.get("soft", []):
+        print("  warn  " + s)
+    if not g.get("hard") and not g.get("soft"):
+        print("  no changes vs reference")
+
+
 def _print_summary(cells):
     """Per (geometry, op): min time (ms) / peak mem (MB) / speedup, for each (size, n_dev)."""
     print("\n" + "=" * 78)
@@ -651,8 +840,24 @@ def run(config):
     result = {
         "kind": "regression", "date": config.date, "platform": plat,
         "device_label": dev_label, **prov,
-        "config": config.to_dict(), "cells": cells,
+        "config": config.to_dict(), "device_counts": device_counts, "cells": cells,
     }
+
+    # Diff + gate: compare against the most-recent prior dated file (and golden, if configured),
+    # classify per the §10/§10a rules, and stash the gate dict in the YAML.  Done before the write
+    # so the dated file records its own verdict; the exit code is set by main() from result.gate.
+    gate_dict = None
+    if config.compare_to_prior or config.golden_path:
+        refs = []
+        if config.compare_to_prior:
+            pp = _find_prior(config.out_dir, plat, config.date)
+            if pp:
+                refs.append((f"prior:{os.path.basename(pp)}", sc.load_yaml(pp)))
+        if config.golden_path and os.path.exists(config.golden_path):
+            refs.append(("golden", sc.load_yaml(config.golden_path)))
+        gate_dict = gate_run(result, refs, config)
+        result["gate"] = gate_dict
+
     out_path = os.path.join(config.out_dir, f"regression_{plat}_{config.date}.yaml")
     sc.save_yaml(out_path, result)
     _print_summary(cells)
@@ -662,6 +867,8 @@ def run(config):
             print(line)
     elif n_baselines:
         print(f"\n  established {n_baselines} baseline record(s) (first run for these cells)")
+    if gate_dict:
+        _print_gate(gate_dict)
     print(f"\nOutput written to: {out_path}")
     print(f"Record book:       {records_path}")
     print("Done.")
@@ -669,12 +876,18 @@ def run(config):
 
 
 def main():
-    """Default entry: the nightly config, dated today, into results/regression/."""
+    """Default entry: the nightly config, dated today, into results/regression/.
+
+    Exit code: non-zero on a HARD-gate regression when gating is on, so a cron/slurm wrapper
+    surfaces it as a real alert.
+    """
     from datetime import datetime
     config = Config()
     config.out_dir = os.path.join(sc.RESULTS_DIR, "regression")
     config.date = datetime.now().strftime("%Y%m%d")
-    run(config)
+    result = run(config)
+    if config.gate and result and (result.get("gate") or {}).get("result") == "fail":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

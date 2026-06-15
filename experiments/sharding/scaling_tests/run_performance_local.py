@@ -46,6 +46,8 @@ def main():
         inline=INLINE,
         run_tag=RUN_TAG,
         vcd_iterations=VCD_ITERATIONS,
+        gate=False,             # informational diff only; a local run never fails the process
+
         # Isolated output: never the nightly results/regression/ dir.  Timestamped date so
         # repeated manual runs accumulate side by side instead of clobbering.
         out_dir=os.path.join(sc.RESULTS_DIR, "manual", RUN_TAG or "local"),
