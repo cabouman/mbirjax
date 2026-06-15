@@ -327,7 +327,7 @@ def print_setup_banner(setup):
 
 
 def run_measure_loop(size_label, device_counts, out_file, build_and_time,
-                     header_extra=""):
+                     header_extra="", print_traceback=True):
     """Worker side: the shared device-count descent for one problem size.
 
     Owns what every op's measure shares: iterate device counts DESCENDING
@@ -371,8 +371,12 @@ def run_measure_loop(size_label, device_counts, out_file, build_and_time,
             failures.append({"n_devices": n, "oom": oom, "error": msg[:300],
                              "traceback": tb})
             print(f"  n_devices={n:2d}  {'OOM' if oom else 'ERROR'}: {msg[:120]}")
-            if not oom:
-                print(tb)   # don't silently truncate a real failure to one line
+            if not oom and print_traceback:
+                # Full traceback for a real failure (don't truncate to one line).  A caller that
+                # EXPECTS failures (e.g. performance_tracking's known cone-padding cells) passes
+                # print_traceback=False for a clean one-line report; the full tb is still stored
+                # in the failure dict above, so nothing is lost.
+                print(tb)
             _publish()
             if oom:
                 print(f"  stopping descent at {size_label}: fewer-device configs "

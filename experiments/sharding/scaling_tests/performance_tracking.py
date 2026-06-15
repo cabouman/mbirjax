@@ -48,22 +48,22 @@ import numpy as np
 
 
 # ── Run configuration ─────────────────────────────────────────────────────────
-# The Config defaults encode the NIGHTLY sweep; the manual launcher (P2) and main()
-# override a subset.  See the plan §4 for the field-by-field rationale.  A worker
+# The Config defaults encode the NIGHTLY sweep; the manual launcher and main()
+# override a subset.  See the plan for the field-by-field rationale.  A worker
 # reconstructs this from the temp YAML the orchestrator writes (from_dict tolerates
 # extra/missing keys so the schema can evolve without breaking serialized configs).
 @dataclass
 class Config:
     # sweep dimensions
     geometries: list = field(default_factory=lambda: ["parallel", "cone"])
-    # P0 implements the three non-VCD ops; vcd_nonconst joins in P1.
+    # The three non-VCD ops are implemented; vcd_nonconst is not yet wired up.
     ops: list = field(default_factory=lambda: ["direct_filter", "forward", "back"])
     device_counts: list = field(default_factory=lambda: [1, 2, 4])
     # SINOGRAM sizes (n_views, n_rows, n_channels) — ASYMMETRIC (all three differ) to surface
     # axis swaps; one DIVIDING + one NON-DIVIDING (all-odd) per platform to exercise padding;
     # plus a GPU 1024-class capacity size.  The recon shape is auto-derived per geometry.
     sizes: dict = field(default_factory=lambda: {
-        "cpu": [(128, 112, 96), (129, 113, 97)],
+        "cpu": [(128, 112, 96), (129, 113, 97), (200, 208, 160)],
         "gpu": [(512, 448, 384), (513, 449, 385), (1024, 1008, 992)],
     })
     # Sizes where every op runs trials=1 (capacity/memory check, not a timing ruler).
@@ -71,7 +71,7 @@ class Config:
     # Smallest device count to ATTEMPT for VCD at a size known to OOM below it (let it OOM once).
     vcd_min_devices: dict = field(default_factory=lambda: {"1024x1008x992": 2})
 
-    # vcd (used from P1)
+    # vcd (not yet wired up)
     vcd_iterations: int = 3
     weight_mode: str = "nonconstant"
     weight_seed: int = 13
@@ -226,9 +226,9 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
 
     Builds the model + op input once for this size on a single-device base model (host arrays
     the per-count models re-place at entry), then for each device count PINS the model to
-    exactly that count, pre-places inputs on the device form, and times only the op.  Cone at a
-    non-dividing count is a CAPABILITY-GATED skip (cone padding is B5 / not implemented) — it is
-    recorded with a reason (plan §10a), not silently dropped and not a failure.
+    exactly that count, pre-places inputs on the device form, and times only the op.  Cone slice
+    padding is not yet implemented, so cone at a non-dividing count is NOT skipped — the op runs
+    and any failure is captured as a failure cell (see build_and_time).
 
     ``out_file`` is used by ``run_measure_loop`` for incremental partial publishing; the caller
     (worker entry, or the inline orchestrator) is responsible for it.  Returns the result dict.
@@ -261,16 +261,17 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
         # reads.  Without this the model auto-shards across ALL devices at construction.
         if hasattr(model, "configure_devices"):
             model.configure_devices(devs)
-        # A non-dividing count for CONE is NOT skipped — we let the op run so the harness records
-        # ground truth (Greg's call: validate the failure-capture path + track the B5 fix as a
-        # datable failure->success transition).  Empirically (this session, padded cone):
-        # `forward` RAISES (run_measure_loop captures it as a failure and continues the descent,
-        # since it is not an OOM), while `back` and `direct_filter` already tolerate padding and
-        # return the padded DEVICE form (e.g. 49->50 views, 41->42 slices).  NO allowlist: the gate
-        # (P3) fires only on a CHANGE in cell status vs the prior day / golden, so a persistent
-        # known failure stays a visible wart without alarming, and the B5 fix surfaces as a
-        # fail->ok improvement (prompting a deliberate golden re-capture).  The vcd_min_devices
-        # OOM-floor (P1) remains a deliberate skip (avoid an hour of OOM thrash) — a different case.
+        # Cone slice padding is not yet implemented, so a non-dividing count for CONE is NOT
+        # skipped — we let the op run so the harness records ground truth (Greg's call: validate
+        # the failure-capture path + track the eventual fix as a datable failure->success
+        # transition).  Empirically (this session, padded cone): `forward` RAISES (run_measure_loop
+        # captures it as a failure and continues the descent, since it is not an OOM), while `back`
+        # and `direct_filter` already tolerate padding and return the padded DEVICE form (e.g.
+        # 49->50 views, 41->42 slices).  No allowlist: the gate fires only on a CHANGE in cell
+        # status vs the prior day / golden, so a persistent known failure stays a visible wart
+        # without alarming, and the fix surfaces as a fail->ok improvement (prompting a deliberate
+        # golden re-capture).  The vcd_min_devices OOM-floor remains a deliberate skip (avoid an
+        # hour of OOM thrash) — a different case.
         path_by_n[n] = path_info(model, op, devs, num_pixels, num_slices)
         # Pre-place big host inputs on this config's device form OUTSIDE the timing loop.
         if op == "direct_filter":
@@ -283,14 +284,15 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
             sino_dev = to_device(model, sino_np, "sino")
             run_fn = lambda: run_back(model, sino_dev, idx)
         else:
-            raise ValueError(f"op {op!r} not implemented in P0 (vcd_nonconst arrives in P1)")
+            raise ValueError(f"op {op!r} not implemented here (vcd_nonconst is not yet wired up)")
         stats, _ = sc.time_op(run_fn, config.warmup, trials)
         mem_mb, mem_kind = sc.peak_memory_mb(devs)
         return stats, mem_mb, mem_kind
 
     rows, failures = sc.run_measure_loop(
         size_label, device_counts, out_file, build_and_time,
-        header_extra=f" | {geometry} | op={op} | recon={recon_shape}")
+        header_extra=f" | {geometry} | op={op} | recon={recon_shape}",
+        print_traceback=False)   # expected failures (e.g. cone padding) -> clean one-liner
     # Stamp each row with its sweep coordinates + the auto-derived recon shape + code-path info.
     for r in rows:
         r["geometry"] = geometry
@@ -305,11 +307,11 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
 
 # ── Worker entry (internal; the orchestrator builds argv) ─────────────────────
 def worker_setup(out_file):
-    """Report platform + device count/label (no cross-version baseline yet in P0)."""
+    """Report platform + device count/label (no cross-version baseline yet)."""
     import mbirjax  # noqa: F401  device-setup-first
     plat, max_dev = sc.detect_platform()
     dev_label = sc.device_label()
-    corr = {"check": "P0 — no correctness fingerprint yet", "baseline_present": False}
+    corr = {"check": "no correctness fingerprint yet", "baseline_present": False}
     result = sc.build_setup_result(plat, max_dev, dev_label, corr)
     sc.write_worker_result(out_file, result)
 
@@ -406,6 +408,12 @@ def run(config):
         dev_label = sc.device_label()
     else:
         worker_env = sc.build_worker_env()
+        # Bound the CPU virtual-device count by THIS sweep (config.device_counts), not by
+        # mbirjax's DEFAULT_MAX_CPU_DEVICES.  This MUST be set before the setup probe: the probe
+        # imports mbirjax, and with no override mbirjax resolves only DEFAULT_MAX_CPU_DEVICES
+        # devices -> detect_platform reports that as max_dev -> the sweep is silently capped (e.g.
+        # 4 dropped when the library default is 2).  Harmless on GPU (CPU-backend flag only).
+        worker_env["MBIRJAX_NUM_CPU_DEVICES"] = str(max(config.device_counts))
         setup, rc = sc.run_worker(script, ["--worker", "--mode", "setup"], extra_env=worker_env)
         if setup is None:
             print(f"  ERROR: setup worker produced no result (rc={rc}); aborting.")
@@ -415,8 +423,6 @@ def run(config):
     sizes = config.sizes[plat]
     size_labels = [sc.size_label(s) for s in sizes]
     device_counts = [n for n in config.device_counts if n <= max_dev]
-    if not config.inline and plat == "cpu":
-        worker_env["MBIRJAX_NUM_CPU_DEVICES"] = str(max(device_counts))
     print(f"  geometries: {config.geometries}   ops: {config.ops}")
     print(f"  sizes: {size_labels}   device counts: {device_counts}")
 
@@ -466,7 +472,8 @@ def run(config):
     out_path = os.path.join(config.out_dir, f"regression_{plat}_{config.date}.yaml")
     sc.save_yaml(out_path, result)
     _print_summary(cells)
-    print("\nDone.")
+    print(f"\nOutput written to: {out_path}")
+    print("Done.")
     return result
 
 
