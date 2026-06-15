@@ -961,12 +961,14 @@ class ConeBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
+            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+                return the view-sharded device form (on an unsharded model the output is the same
+                either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            view-sharded if output_sharded=True.
         """
         return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
                                output_sharded=output_sharded)
@@ -976,81 +978,54 @@ class ConeBeamModel(TomographyModel):
         """
         Perform FDK filtering on the given sinogram.
 
+        Uses the shared row-batched filter kernel (tomography_utils.apply_row_filter via
+        TomographyModel._apply_direct_recon_filter), the same path as
+        ParallelBeamModel.fbp_filter, with an FDK cosine pre-weight applied per detector
+        row.  The peak stays at the input+output floor (no full-sinogram out-of-place
+        copy or concatenate), and when a mesh is configured each device filters its own
+        view-shard locally.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  The FDK filter still
-                runs SINGLE-DEVICE (a sharded sinogram is gathered, filtered on one device, then
-                re-sharded by the downstream back_project), so the output is the same either way.
-                TODO: shard it like ParallelBeamModel.fbp_filter -- filter each device's own
-                view-shard on-device via mjs.run_per_device (the memory/time win), then honor
-                output_sharded.
+            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
+                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
+            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+                return the view-sharded device form (on an unsharded model the output is the same
+                either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering.
+            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            view-sharded if output_sharded=True.
         """
-        # Get parameters
-        num_views, num_rows, num_channels = sinogram.shape
-        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
+        # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared
+        # row filter does the rest (bounded peak, jitted, sharded per view-shard).
+        num_rows, num_channels = sinogram.shape[1], sinogram.shape[2]
+        source_detector_dist = self.get_params('source_detector_dist')
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(
+            ['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
-        
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-        
         voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
-        
-        if view_batch_size is None:
-            view_batch_size = self.view_batch_size_for_vmap
-            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
-            view_batch_size = min(view_batch_size, max_view_batch_size)
-
-        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        # Magnification M_0 = source-detector distance / source-isocenter distance.
         M_0 = self.get_magnification()
 
-        # Define the index arrays for channels and rows
-        m = jnp.arange(num_rows)  # Column vector for rows
-        n = jnp.arange(num_channels)  # Row vector for channels
-        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
-
-        # Coordinate transformation to physical distances:
+        # FDK cosine pre-weight (rows, channels), view-INDEPENDENT.  Passed to the shared
+        # kernel, which applies it per detector row inside the bounded scan (no full
+        # out-of-place sinogram * weight copy).
+        m_grid, n_grid = jnp.meshgrid(jnp.arange(num_rows), jnp.arange(num_channels), indexing='ij')
         u_grid, v_grid = self.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
                                                 det_channel_offset, det_row_offset, num_rows, num_channels)
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid ** 2 + v_grid ** 2)
 
-        # Compute the weight
-        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
-
-        # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
-
-        # Compute the scaled filter
-        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
-        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # FDK filter scale alpha (voxel-size factor); pi/num_views is folded in by the
+        # shared method.  For the derivation see the theory zip at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         alpha = delta_det_row / (voxel_volume * M_0)
-        recon_filter = alpha * recon_filter
-
-        # Define convolution for a single row (across its channels)
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
-
-        # Apply above convolve func across each row of a view
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
-
-        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views
-        return filtered_sinogram
+        return self._apply_direct_recon_filter(
+            sinogram, filter_name, filter_scale=alpha,
+            output_sharded=output_sharded, row_weight=weight_map)
 
     def helical_fdk_z_weight(self, recon, sinogram):
         """
@@ -1064,14 +1039,16 @@ class ConeBeamModel(TomographyModel):
             recon (jax array): The helical FDK reconstruction with correctly weighted slice intensity.
         """
         
-        num_views, num_rows, num_channels = sinogram.shape
+        # Real sinogram shape from params: the passed ``sinogram`` may be view-sharded and
+        # zero-padded, so num_views must be the real count for the coverage weight to be
+        # correct.  (sinogram is otherwise unused here -- the weighting is per recon slice.)
+        num_views, num_rows, num_channels = self.get_params('sinogram_shape')
         view_params_array = self.get_params('view_params_array')
         helical_z_shifts = view_params_array[:, 1]
         delta_voxel, voxel_slice_aspect, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
             ['delta_voxel', 'voxel_slice_aspect', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
         )
         M_0 = self.get_magnification()
-        num_rows = self.get_params('sinogram_shape')[1]
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
         num_slices = recon_shape[2]
         
@@ -1099,27 +1076,34 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
+            output_sharded (bool, optional): If False (default), return a plain array.  If
+                True, return the slice-sharded device form (on an unsharded model the output
+                is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction.
+            recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
+            default, slice-sharded if ``output_sharded=True``.
         """
+        # Shard once at entry so the filter receives view-sharded data (no-op when no mesh
+        # is configured or already sharded).  The pipeline then stays on-device throughout
+        # -- fdk_filter then back_project, both output_sharded=True (zero host transfer) --
+        # exactly like ParallelBeamModel.fbp_recon.
+        sinogram = self._shard_sinogram(sinogram)
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=True)
+        recon = self.back_project(filtered_sinogram, output_sharded=True)
 
-        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
-
-        # Apply backprojection
-        recon = self.back_project(filtered_sinogram, output_sharded=output_sharded)
-        
-        # Slice dependent filtering for helical recon
-        view_params_array = self.get_params('view_params_array')
-        helical_z_shifts = view_params_array[:, 1]
+        # Slice-dependent weighting for helical recon: a per-recon-slice multiply (the recon's
+        # slice axis), so it works directly on the slice-sharded device form -- each device
+        # scales its own slices.  Circular scans (z_range == 0) skip it and stay on-device.
+        helical_z_shifts = self.get_params('view_params_array')[:, 1]
         z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
         if z_range > 0:
             warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
             recon = self.helical_fdk_z_weight(recon, sinogram)
 
-        return recon
+        # Single place the output form is decided.
+        return recon if output_sharded else self._gather_recon(recon)
 
     def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
                          first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):

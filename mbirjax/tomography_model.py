@@ -32,6 +32,7 @@ from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices
 # jax/numpy/warnings, nothing that loops back into the partially-initialized
 # mbirjax package.
 import mbirjax._sharding as mjs
+import mbirjax.tomography_utils as tomography_utils
 
 from importlib.metadata import version, PackageNotFoundError
 
@@ -1502,6 +1503,16 @@ class TomographyModel(ParameterHandler):
         def worker(i, view_owner):
             idx = local_pixels[i]                       # pixel indices, resident on view_owner
             n_local = int(idx.shape[0])
+            # Single device: the whole cylinder is already local on this device, so there is
+            # NO cross-device gather to bound -- the per-pixel-batch loop below is pure overhead
+            # and, by issuing many small rigid dispatches, it defeats the XLA rematerialization
+            # that the monolithic single-device forward relies on (measured: 1024^3 single-device
+            # peak ~16 GB one-shot vs ~32 GB looped).  Project the full cylinder in ONE call,
+            # recovering the legacy single-device memory profile.
+            if n_dev == 1:
+                full_cyl = recon_shard_info[slice_owners[0]][0]
+                return self.projector_functions.sparse_forward_project(
+                    full_cyl, idx, view_indices=view_ranges[view_owner])
             owned = None
             for p0 in range(0, n_local, pixel_batch):
                 p1 = min(p0 + pixel_batch, n_local)
@@ -2574,6 +2585,70 @@ class TomographyModel(ParameterHandler):
         """
         warnings.warn('direct_filter not implemented for TomographyModel.')
         return jnp.zeros_like(sinogram, device=self.sinogram_device)
+
+    def _apply_direct_recon_filter(self, sinogram, filter_name, filter_scale, output_sharded,
+                                   row_weight=None):
+        """Shared FBP/FDK row-filter for direct reconstruction (one codebase for both).
+
+        Scales the recon filter by ``filter_scale * pi / num_views`` -- folded into the
+        (tiny) filter array, NOT applied as an out-of-place full-sinogram multiply (which
+        promotes f32 -> f64 via np.pi and ~doubles peak memory -- the large-size
+        single-device OOM this replaces).  ``num_views`` is the REAL count from params
+        (padded views excluded).  Optionally pre-weights each detector row by
+        ``row_weight`` (the FDK cosine map; None for FBP).  The row-batched kernel
+        (tomography_utils.apply_row_filter) keeps the peak at the input+output floor;
+        when a mesh is configured each device filters its own view-shard locally (no
+        cross-device movement), exactly like ParallelBeamModel.fbp_filter.
+
+        Args:
+            sinogram (jax array): (num_views, num_rows, num_channels); plain or view-sharded.
+            filter_name (str): filter for generate_direct_recon_filter (e.g. 'ramp').
+            filter_scale (float): geometry-specific filter scaling (FBP: 1/(dv*dvr);
+                FDK: alpha = delta_det_row/(voxel_volume*M_0)).
+            output_sharded (bool): True keeps the view-sharded device form; False gathers.
+            row_weight (jax array or None): optional (rows, channels) FDK cosine pre-weight.
+
+        Returns:
+            filtered_sinogram: plain by default, view-sharded device form if output_sharded.
+        """
+        num_channels = sinogram.shape[2]
+        # Real view count from params (the array's view axis may be zero-padded for
+        # sharding; padded views contribute nothing and must not be counted here).
+        num_views = self.get_params('sinogram_shape')[0]
+        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
+        # Fold both scalars into the (tiny) filter via a Python-float scale, which keeps
+        # the f32 filter f32 (no out-of-place full-sino multiply, no f32->f64 promotion
+        # that would double the sinogram's memory).  Matches ParallelBeamModel's fold.
+        recon_filter = recon_filter * float(filter_scale * (np.pi / num_views))
+        filter_np = np.asarray(recon_filter, dtype=np.float32)
+        # The row weight enters the hot per-row multiply, so it MUST be f32 too -- an f64
+        # weight would promote the window and cascade the whole sinogram to f64.
+        row_weight_np = None if row_weight is None else np.asarray(row_weight, dtype=np.float32)
+
+        if self.is_sharded:
+            # Multi-device: one thread per device, each filtering its own view shard
+            # locally (no cross-device data movement).  Shard once at entry (no-op when
+            # already view-sharded) so the per-device map sees every mesh device's shard.
+            sinogram = self._shard_sinogram(sinogram)
+            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
+
+            def worker_process(i, device):
+                shard = dev_to_shard[device]
+                filter_jax = jnp.array(filter_np)            # tiny upload: 2*channels-1 floats
+                rw = None if row_weight_np is None else jnp.array(row_weight_np)
+                return tomography_utils.apply_row_filter(shard, filter_jax, row_weight=rw)
+
+            results = mjs.run_per_device(self.shard_devices, worker_process)
+            filtered_sinogram = mjs.assemble_sharded(results, sinogram.shape, sinogram.sharding)
+        else:
+            # Single-device path (no mesh configured): filter directly.
+            filter_jax = jnp.array(filter_np)
+            rw = None if row_weight_np is None else jnp.array(row_weight_np)
+            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax, row_weight=rw)
+
+        if output_sharded:
+            return filtered_sinogram                     # keep the device form
+        return self._gather_sinogram(filtered_sinogram)  # default: plain output
 
     def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
                          compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
