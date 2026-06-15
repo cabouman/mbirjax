@@ -2775,6 +2775,10 @@ class TomographyModel(ParameterHandler):
         completed so far, and set init_recon to be the output of the previous recon.  This will continue using
         the same partition sequence from where the previous recon left off.
 
+        Reproducibility note: the pixel partitions are drawn from numpy's global random number
+        generator, so reconstructions vary slightly from run to run.  For a reproducible result,
+        call ``np.random.seed(seed)`` before calling this method.
+
         Args:
             sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
@@ -3415,6 +3419,10 @@ class TomographyModel(ParameterHandler):
         """
         Proximal Map function for use in Plug-and-Play applications.
         This function is similar to recon, but it essentially uses a prior with a mean of prox_input and a standard deviation of sigma_prox.
+
+        Reproducibility note: the pixel partitions are drawn from numpy's global random number
+        generator, so results vary slightly from run to run.  For a reproducible result, call
+        ``np.random.seed(seed)`` before calling this method.
 
         Args:
             prox_input (jax array): proximal map input with same shape as reconstruction.
