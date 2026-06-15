@@ -59,7 +59,8 @@ def _run_op(config, geometry, op):
         return pt.run_back(model, sino, idx)
     if op == "vcd_nonconst":
         weights = pt.make_weights(config, SIZE)
-        parts, seq = pt.build_partitions(model, sino, weights, config.vcd_iterations)
+        parts, seq = pt.build_partitions(model, sino, weights, config.vcd_iterations,
+                                         seed=config.measure_seed)   # pin partitions (reproducible)
         model.setup_logger(print_logs=False)
         return pt.run_vcd(model, sino, weights, parts, seq, config.measure_seed)
     raise ValueError(f"unknown op {op!r}")

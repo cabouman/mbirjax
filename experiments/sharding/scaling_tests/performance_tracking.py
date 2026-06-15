@@ -210,12 +210,17 @@ def make_weights(config, size):
     return rng.uniform(0.5, 1.5, size=size).astype(np.float32)
 
 
-def build_partitions(model, sino_np, weights, max_iterations):
+def build_partitions(model, sino_np, weights, max_iterations, seed=None):
     """Build the VCD pixel partitions + sequence once (device-independent, outside timing).
 
     initialize_recon constructs the partitions (consuming the global RNG) and the partition
-    sequence; we keep only those two.
+    sequence; we keep only those two.  ``seed`` pins the partition grouping: gen_pixel_partition
+    draws from the UN-seeded global RNG, so without this the partitions — and therefore the VCD
+    recon — vary run to run (verified ~4e-2), which would make the day-over-day VCD fingerprint
+    false-positive.  Seeding here makes VCD reproducible across runs.
     """
+    if seed is not None:
+        np.random.seed(seed)
     (_sino, _weights, _init, partitions, partition_sequence,
      _granularity, _reg) = model.initialize_recon(
         sino_np, weights=weights, max_iterations=max_iterations, print_logs=False)
@@ -351,7 +356,7 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
     if op == "vcd_nonconst":
         weights = make_weights(config, size)
         partitions, partition_sequence = build_partitions(
-            base_model, sino_np, weights, config.vcd_iterations)
+            base_model, sino_np, weights, config.vcd_iterations, seed=config.measure_seed)
     del base_model
     gc.collect()
 
