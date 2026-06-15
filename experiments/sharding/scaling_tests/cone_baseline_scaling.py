@@ -70,7 +70,7 @@ GEOMETRY = "cone"
 DEVICE_COUNTS = [1, 2, 4]
 
 # Ops to measure (each its own fresh worker per size).
-OPS = ("forward", "back", "vcd_const", "vcd_nonc")
+OPS = ("forward", "back", "vcd_const")  #, "vcd_nonc")
 
 # Problem sizes as SINOGRAM shape (n_views, n_det_rows, n_det_channels).  For cone
 # the RECON shape is auto-derived (magnification + detector extent), so it differs
@@ -253,7 +253,8 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     # derived inputs (especially the VCD partitions from initialize_recon) carry no
     # multi-device placement; build_and_time configures the real count per measurement.
     base_model = make_model(size)
-    base_model.configure_devices(1)
+    if hasattr(base_model, "configure_devices"):   # absent on pre-sharding code (f23d3964)
+        base_model.configure_devices(1)
     recon_shape = tuple(int(x) for x in base_model.get_params('recon_shape'))
     idx = make_indices(base_model)
     num_pixels = len(idx)
@@ -275,12 +276,16 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
         # same devices peak_memory_mb(devs) reads.  Without this the model auto-shards
         # across ALL available devices at construction (set_devices()), making every
         # device-count iteration measure the same max-device run (the flat-curve bug).
-        model.configure_devices(devs)
+        # hasattr guard: configure_devices is absent on pre-sharding code (e.g. the
+        # f23d3964 single-device cone baseline) -- run that with DEVICE_COUNTS = [1] so
+        # the SAME script measures the apples-to-apples single-device reference.
+        if hasattr(model, "configure_devices"):
+            model.configure_devices(devs)
         # Cone slice-padding (B5) is not implemented: a count that doesn't divide the
         # recon slice axis pads, and the cone forward gather would assemble the padded
         # cylinder (wrong numbers).  Skip such counts rather than report garbage; the
         # configured cubic sweep sizes divide cleanly, so this is purely defensive.
-        if GEOMETRY == "cone" and model.recon_placement is not None \
+        if GEOMETRY == "cone" and getattr(model, "recon_placement", None) is not None \
                 and model.recon_placement.is_padded:
             print(f"  n_devices={n}: slice axis not divisible by {n} "
                   f"(cone padding is P6 B5, not done) — skipping")

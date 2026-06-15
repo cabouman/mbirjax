@@ -19,6 +19,34 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-14) — cone_baseline_scaling "no scaling" = RULER bug, FIXED; jax.devices consolidated; scaling now reasonable (GPU+CPU)
+
+▶ **Root cause: the SCRIPT, not the code.**  `cone_baseline_scaling.py`'s `build_and_time` never
+pinned the device count, so every iteration inherited the construction-time auto all-devices default
+— each count re-measured the same max-device run (flat curves).  Confirmed by CPU ablation
+(`make_model` builds an already-4-device model with no configure call).
+
+### Done this session (staged for Greg's PyCharm commit; suggested as 2 commits)
+- **Ruler fix** (`cone_baseline_scaling.py`): `build_and_time` pins each count with
+  `model.configure_devices(devs)`; `_print_summary`/live print show the full sweep + speedup vs
+  1 device (they were filtering to n=1); defensive cone slice-padding guard; base model pinned to
+  1 device so reused VCD partitions carry no multi-device placement.
+- **`jax.devices()` consolidation** (Greg-approved scope): single source of truth in
+  `_device_setup.py` — `gpu_devices()` / `cpu_devices()` / `default_devices()`.  Routed
+  `tomography_model.py` (7 sites; dead `self.cpus` deleted), `denoising.py`, `vcd_utils.py`,
+  `preprocess/stripe.py` through them.  Bootstrap in `_device_setup` left as direct calls.
+  Behavior-preserving.
+- **Validated (CPU):** full suite 165p/3s @2dev; sharding 107p @4dev (baseline match); the 4 known
+  cone tests still fail for the documented B5 padding reason only (unchanged).
+- **Scaling now reasonable (Greg, GPU+CPU re-run).**  Note: virtual CPUs DO give time scaling for
+  compute-bound ops (forward 256³ 2-dev ~1.9×; fbp_filter best — embarrassingly parallel), not just
+  capacity — the earlier "CPU can't show scaling" held only at tiny sizes where overhead dominates.
+
+▶ **NEXT unchanged:** interpret the B4.4 GPU sweep (per-device peak ~1/n, the 1024³ capacity win,
+the back horizontal-recompute penalty vs §8a), then B4.5 / B5.
+
+---
+
 ## HANDOFF (2026-06-13d) — P6 B3 + B4.1–4.3 DONE: CONE SHARDS, CPU-VALIDATED end to end; NEXT = B4.4 (GPU measurement)
 
 ▶ **CURRENT FOCUS: P6 B4.4 (GPU — Greg), then B4.5.**  Cone now SHARDS (recon by slice ⇄

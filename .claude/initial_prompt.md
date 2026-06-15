@@ -33,15 +33,16 @@ DIVIDING counts (`tests/sharding/test_cone_sharded.py`: back/forward/Hessian 1e-
 n=2/4, circular+helical).  Detail:
 `p6_increment_b_design.md` PROGRESS block.  
 
-**Most important next step:** `scaling_tests/cone_baseline_scaling.py` 
-shows no time or memory scaling with number of GPUs, either for ConeBeam or for ParallelBeam.  We need to determine if this is a ruler problem
-(the test script is incorrect) or a problem with the code implementation or both.  I think the problem
-is that `cone_baseline_scaling.py` is always using the maximum number of devices, but I'm not sure
-if this is because of the script or because of the code.  One problem is that tomography_model.py
-uses `jax.devices('gpu')` in multiple places, and I can't tell what each purpose is and if they 
-conflict.  Ideally, jax.devices would be called exactly once for each of gpu and cpu.  Determining
-the root cause and addressing this problem to produce robust code is the first thing we'll do (before
-moving on to B4.5 or B5).  
+**RESOLVED (2026-06-14):** the `cone_baseline_scaling.py` "no scaling" was a RULER bug —
+`build_and_time` never pinned the device count, so every iteration inherited the auto
+all-devices default (each count re-measured the same max-device run). FIXED: pin each count
+with `model.configure_devices(devs)` + report the full sweep with speedup + a defensive cone
+slice-padding guard. Also consolidated `jax.devices()` behind `_device_setup` accessors
+(`gpu_devices`/`cpu_devices`/`default_devices`; dead `self.cpus` deleted). Both CPU-validated
+(full suite 165p @2dev, sharding 107p @4dev; B5 cone failures unchanged). GPU+CPU re-runs now
+show **reasonable scaling** (Greg) — virtual CPUs DO scale for compute-bound ops (forward 256³
+2-dev ~1.9×; fbp_filter best, embarrassingly parallel). Next: interpret the B4.4 GPU sweep, then
+B4.5 / B5.
 
 **KNOWN ISSUE — deferred to B5 (Greg's call; do NOT chase before B5).**  Flipping cone's
 `_supports_sharding()` enabled the geometry-agnostic P5 PADDING, but cone padding IS B5 (not done).
