@@ -19,14 +19,12 @@ the cone numbers are produced with the SAME timing discipline as the parallel
 ones — and, crucially, the pre-port-vs-post-port cone comparison is apples-to-
 apples because both are produced by THIS tool.
 
-It measures four ops, each in its own fresh worker subprocess per size (so peak
+It measures three ops, each in its own fresh worker subprocess per size (so peak
 memory reads cleanly):
 
-  * forward   — sparse_forward_project (single device)
-  * back      — sparse_back_project    (single device)
+  * forward   — sparse_forward_project
+  * back      — sparse_back_project
   * vcd_const — full vcd_recon, constant (all-ones) weights
-  * vcd_nonc  — full vcd_recon, NON-constant weights (defeats the const-weights
-                fast path, exercising the weighted error-sinogram path)
 
 GEOMETRY defaults to 'cone'; set it to 'parallel' to produce the parallel
 single-device reference with identical discipline (the scaling-SHAPE sanity
@@ -70,7 +68,20 @@ GEOMETRY = "cone"
 DEVICE_COUNTS = [1, 2, 4]
 
 # Ops to measure (each its own fresh worker per size).
-OPS = ("forward", "back", "vcd_const")  #, "vcd_nonc")
+OPS = ("forward", "back", "vcd_const")
+
+# Ops that run a full VCD recon (subject to the VCD_MIN_DEVICES skip below).
+VCD_OPS = ("vcd_const",)
+
+# Skip a VCD measurement that is known not to fit, to avoid a long near-OOM
+# rematerialization thrash before the inevitable OOM.  Maps a sinogram-size label to
+# the SMALLEST device count to ATTEMPT for the VCD ops at that size; smaller counts are
+# skipped with a note (the projectors are cheap and always run every count).  The n=1
+# OOM is itself the capacity result, so let it OOM ONCE, then raise the floor for reruns.
+# Empty dict -> attempt every count.  Example below: a 1024^3 cone VCD OOMs on one 80 GB GPU.
+VCD_MIN_DEVICES = {
+    "1024x1024x1024": 2,
+}
 
 # Problem sizes as SINOGRAM shape (n_views, n_det_rows, n_det_channels).  For cone
 # the RECON shape is auto-derived (magnification + detector extent), so it differs
@@ -91,7 +102,7 @@ WARMUP = 1
 # cone-specific change), are cheap, and benefit from a min-of-a-few; VCD is a
 # long correctness/INTEGRATION anchor (NOT a scaling ruler — few iters
 # under-amortize fixed per-recon overhead), so one timed pass suffices.
-TRIALS_BY_OP = {"forward": 3, "back": 3, "vcd_const": 1, "vcd_nonc": 1}
+TRIALS_BY_OP = {"forward": 3, "back": 3, "vcd_const": 1}
 # VCD iterations per timed recon.  Kept small: VCD here checks that the integrated
 # recon is correct/bounded, not how it scales (see the §8a ruler note).
 MAX_ITERATIONS = 3
@@ -151,18 +162,6 @@ def make_sinogram(size, seed=INPUT_SEED):
     return rng.random(size, dtype=np.float32)
 
 
-def make_nonconst_weights(sino_shape, seed=INPUT_SEED + 1):
-    """Deterministic NON-constant positive weights matching the sinogram shape.
-
-    Non-constant weights defeat the constant-weights fast path so the weighted
-    error-sinogram path is exercised (the path cone's sharded VCD will also use).
-    Values in [0.5, 1.5) — positive and varying; the magnitude is immaterial to
-    time/memory.
-    """
-    rng = np.random.default_rng(seed)
-    return (0.5 + rng.random(sino_shape, dtype=np.float32)).astype(np.float32)
-
-
 def build_partitions(model, sino_np, weights, max_iterations):
     """Build the VCD partitions + sequence once (device-independent, outside timing).
 
@@ -199,6 +198,36 @@ def run_vcd(model, sino_np, weights, partitions, partition_sequence, max_iterati
     return recon
 
 
+def path_info(model, op, devs, num_pixels, num_slices):
+    """Record WHICH code path this measurement used, so the YAML is self-documenting.
+
+    The key field is ``is_sharded``: True = the placement/banded path (a 1-device
+    sharded run is a trivial mesh, NOT the legacy single-device path); False = the
+    legacy monolithic path (e.g. pre-sharding code).  These two paths have different
+    time/memory at the same device count, so recording the flag per row removes the
+    legacy-vs-sharded ambiguity that bit the n=1 comparison.  For the back op we also
+    record the sharded band length / band count (the streaming that drives back memory
+    and the horizontal-recompute cost), best-effort so a future internal-API change
+    records None instead of breaking the measurement.
+    """
+    info = {"is_sharded": bool(getattr(model, "is_sharded", False)),
+            "n_shard_devices": len(getattr(model, "shard_devices", None) or devs),
+            "platform": devs[0].platform}
+    if op == "back":
+        try:
+            slices_per_dev = num_slices // len(devs)
+            fixed = getattr(model, "back_project_slice_band", None)
+            band_len = model._slice_band_length(slices_per_dev, len(devs), num_pixels,
+                                                fixed_band=fixed)
+            bounds = model._balanced_slice_bounds(slices_per_dev, band_len)
+            info["back_band_len"] = int(band_len)
+            info["back_n_bands_per_shard"] = len(bounds)
+        except Exception:   # internal API differs (e.g. legacy code) -> record None
+            info["back_band_len"] = None
+            info["back_n_bands_per_shard"] = None
+    return info
+
+
 def parse_size_label(label):
     """'256x256x256' -> (256, 256, 256)."""
     return tuple(int(x) for x in label.split("x"))
@@ -218,7 +247,6 @@ def worker_setup(out_file):
     model = make_model(small)
     idx = make_indices(model)
     sino = make_sinogram(small, seed=INPUT_SEED)
-    weights = make_nonconst_weights(small)
     parts, seq = build_partitions(model, sino, np.ones(small, np.float32), MAX_ITERATIONS)
     model.setup_logger(print_logs=False)
     recon = np.asarray(run_vcd(model, sino, np.ones(small, np.float32), parts, seq,
@@ -260,9 +288,8 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     num_pixels = len(idx)
     num_slices = recon_shape[2]
 
-    if op in ("vcd_const", "vcd_nonc"):
-        weights = (np.ones(size, np.float32) if op == "vcd_const"
-                   else make_nonconst_weights(size))
+    if op in VCD_OPS:
+        weights = np.ones(size, np.float32)
         partitions, partition_sequence = build_partitions(
             base_model, sino_np, weights, MAX_ITERATIONS)
     elif op == "forward":
@@ -270,7 +297,17 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     del base_model
     gc.collect()
 
+    # Path info per measured device count (merged into the rows after the loop, so the
+    # YAML records which code path each row used -- see path_info()).
+    path_by_n = {}
+
     def build_and_time(n, devs):
+        # Skip a VCD config known not to fit (avoids a long near-OOM rematerialization
+        # thrash before the inevitable OOM); the projectors are cheap and always run.
+        if op in VCD_OPS and n < VCD_MIN_DEVICES.get(size_label, 1):
+            print(f"  n_devices={n}: skipping {op} at {size_label} "
+                  f"(below VCD_MIN_DEVICES={VCD_MIN_DEVICES.get(size_label)}; known OOM)")
+            return None
         model = make_model(size)
         # Pin EXACTLY these n devices (devs == pick_devices(n)), so the model runs on the
         # same devices peak_memory_mb(devs) reads.  Without this the model auto-shards
@@ -290,6 +327,8 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
             print(f"  n_devices={n}: slice axis not divisible by {n} "
                   f"(cone padding is P6 B5, not done) — skipping")
             return None
+        # Record which code path this row used (legacy vs sharded; back band count).
+        path_by_n[n] = path_info(model, op, devs, num_pixels, num_slices)
         if op == "forward":
             run_fn = lambda: run_forward(model, cylinders, idx)
         elif op == "back":
@@ -305,10 +344,11 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
     rows, _failures = sc.run_measure_loop(
         size_label, device_counts, out_file, build_and_time,
         header_extra=f" | {GEOMETRY} | op={op} | recon={recon_shape}")
-    # Record the auto-derived recon shape alongside the rows (cone's recon shape
-    # differs from the sinogram size and is needed to interpret the numbers).
+    # Record the auto-derived recon shape + the code-path info alongside the rows (cone's
+    # recon shape differs from the sinogram size; the path info says legacy vs sharded).
     for r in rows:
         r["recon_shape"] = list(recon_shape)
+        r.update(path_by_n.get(r["n_devices"], {}))
     sc.write_worker_result(out_file, {"size": size_label, "op": op,
                                       "recon_shape": list(recon_shape),
                                       "rows": rows})
@@ -402,8 +442,11 @@ def main():
                 continue
             grid[label] = rows
             for r in sorted(rows, key=lambda r: r["n_devices"]):
+                path = "sharded" if r.get("is_sharded") else "legacy"
+                if r.get("back_n_bands_per_shard"):
+                    path += f", {r['back_n_bands_per_shard']}b x {r.get('back_band_len')}"
                 print(f"  size {label}  n_dev={r['n_devices']}: "
-                      f"min={r['min_ms']:.1f} ms  mem={r['mem_mb']:.1f} MB"
+                      f"min={r['min_ms']:.1f} ms  mem={r['mem_mb']:.1f} MB  [{path}]"
                       + ("  [THROTTLED]" if r.get("throttled") else ""))
         grids_by_op[op] = grid
 
