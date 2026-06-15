@@ -56,8 +56,7 @@ import numpy as np
 class Config:
     # sweep dimensions
     geometries: list = field(default_factory=lambda: ["parallel", "cone"])
-    # The three non-VCD ops are implemented; vcd_nonconst is not yet wired up.
-    ops: list = field(default_factory=lambda: ["direct_filter", "forward", "back"])
+    ops: list = field(default_factory=lambda: ["direct_filter", "forward", "back", "vcd_nonconst"])
     device_counts: list = field(default_factory=lambda: [1, 2, 4])
     # SINOGRAM sizes (n_views, n_rows, n_channels) — ASYMMETRIC (all three differ) to surface
     # axis swaps; one DIVIDING + one NON-DIVIDING (all-odd) per platform to exercise padding;
@@ -190,6 +189,93 @@ def run_back(model, sino, pixel_indices):
     return model.sparse_back_project(sino, pixel_indices)
 
 
+def make_weights(config, size):
+    """Deterministic NONCONSTANT weights (positive) for the weighted VCD path.
+
+    All-ones weights skip the weighted gradient/Hessian path; a seeded uniform draw in
+    [0.5, 1.5] exercises it while staying positive and reproducible.
+    """
+    rng = np.random.default_rng(config.weight_seed)
+    return rng.uniform(0.5, 1.5, size=size).astype(np.float32)
+
+
+def build_partitions(model, sino_np, weights, max_iterations):
+    """Build the VCD pixel partitions + sequence once (device-independent, outside timing).
+
+    initialize_recon constructs the partitions (consuming the global RNG) and the partition
+    sequence; we keep only those two.
+    """
+    (_sino, _weights, _init, partitions, partition_sequence,
+     _granularity, _reg) = model.initialize_recon(
+        sino_np, weights=weights, max_iterations=max_iterations, print_logs=False)
+    return partitions, partition_sequence
+
+
+def run_vcd(model, sino_np, weights, partitions, partition_sequence, measure_seed):
+    """Timed op: one full VCD reconstruction with NONCONSTANT weights.
+
+    Seeds the global RNG so the subset order is identical on every call (stable timing).
+    ``init_recon=None`` lets vcd_recon compute its own direct_recon init (part of the real
+    per-recon cost).  Returns only the recon (the fingerprint/correctness target).
+    """
+    np.random.seed(measure_seed)
+    recon, _stats = model.vcd_recon(
+        sino_np, partitions, partition_sequence,
+        stop_threshold_change_pct=0.0, weights=weights, init_recon=None)
+    return recon
+
+
+# ── Correctness fingerprint ───────────────────────────────────────────────────
+def _crop_to_true_shape(arr, true_shape):
+    """Crop a possibly-padded device-form output to the TRUE shape and check the padding.
+
+    At a non-dividing count an op may return the padded device form (e.g. 49->50 views,
+    41->42 slices).  The fingerprint must be on the TRUE shape so it is comparable across
+    device counts / vs golden.  Returns ``(cropped, padding_zero)`` where padding_zero is:
+      - None  if arr is not padded (shape already == true_shape),
+      - True/False whether the padded OVERHANG is exactly 0 (a constructed-zero invariant; a
+        non-zero overhang is a real padding-leak bug, surfaced rather than hidden).
+    """
+    arr = np.asarray(arr)
+    true_shape = tuple(int(s) for s in true_shape)
+    if arr.shape == true_shape:
+        return arr, None
+    padding_zero = True
+    for ax, (a, t) in enumerate(zip(arr.shape, true_shape)):
+        if a > t:   # overhang along this axis must be exactly zero
+            overhang = arr.take(range(t, a), axis=ax)
+            if not bool(np.all(overhang == 0.0)):
+                padding_zero = False
+    cropped = arr[tuple(slice(0, t) for t in true_shape)]
+    return cropped, padding_zero
+
+
+def fingerprint(result, true_shape, k_samples=12):
+    """Tolerant correctness fingerprint of an op output, computed on the TRUE shape.
+
+    Reductions {sum, mean, l2norm} are accumulated in float64 so the fingerprint reflects the
+    array's value, not float32 accumulation order (which varies with device count).  ``samples``
+    are the exact values at K evenly-spaced, deterministic flat indices.  ``shape``/``dtype`` are
+    the exact (structural) part of the gate.  See _crop_to_true_shape for the padding handling.
+    """
+    cropped, padding_zero = _crop_to_true_shape(result, true_shape)
+    flat = np.asarray(cropped).ravel()
+    n = int(flat.size)
+    flat64 = flat.astype(np.float64)
+    idx = (np.linspace(0, n - 1, min(k_samples, n)).astype(int) if n else np.array([], int))
+    return {
+        "sum": float(flat64.sum()),
+        "mean": float(flat64.mean()) if n else 0.0,
+        "l2norm": float(np.sqrt(np.sum(flat64 * flat64))),
+        "min": float(flat.min()) if n else 0.0,
+        "max": float(flat.max()) if n else 0.0,
+        "samples": [float(flat[i]) for i in idx],
+        "shape": list(np.asarray(cropped).shape),
+        "dtype": str(np.asarray(result).dtype),
+        "padding_zero": padding_zero,
+    }
+
+
 def path_info(model, op, devs, num_pixels, num_slices):
     """Record WHICH code path this measurement used, so the YAML is self-documenting.
 
@@ -249,13 +335,37 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
     num_slices = recon_shape[2]
     cylinders = (make_cylinders(num_pixels, num_slices, config.input_seed)
                  if op == "forward" else None)
+    # VCD inputs (built once, device-independent): nonconstant weights + the pixel partitions.
+    weights = partitions = partition_sequence = None
+    if op == "vcd_nonconst":
+        weights = make_weights(config, size)
+        partitions, partition_sequence = build_partitions(
+            base_model, sino_np, weights, config.vcd_iterations)
     del base_model
     gc.collect()
 
+    # TRUE (unpadded) output shape per op, for the fingerprint crop: filter/forward emit the
+    # sinogram shape; back emits (num_pixels, num_slices); vcd emits the recon shape.
+    op_true_shape = {
+        "direct_filter": tuple(size),
+        "forward": tuple(size),
+        "back": (num_pixels, num_slices),
+        "vcd_nonconst": tuple(recon_shape),
+    }.get(op, tuple(size))
+
     trials = 1 if size_label in config.single_trial_sizes else config.trials_by_op.get(op, 3)
     path_by_n = {}
+    fp_by_n = {}
+    skips = []
 
     def build_and_time(n, devs):
+        # Deliberate skip: a VCD config known to OOM below a device floor (avoid an hour of
+        # near-OOM thrash before the inevitable OOM).  Recorded as a skip, not a failure.
+        if op == "vcd_nonconst" and n < config.vcd_min_devices.get(size_label, 1):
+            reason = f"below vcd_min_devices={config.vcd_min_devices.get(size_label)} (known OOM)"
+            skips.append({"n_devices": n, "reason": reason})
+            print(f"  n_devices={n}: skipping {op} at {size_label} ({reason})")
+            return None
         model = make_model(config, geometry, size)
         # Pin EXACTLY these n devices, so the model runs on the same devices peak_memory_mb(devs)
         # reads.  Without this the model auto-shards across ALL devices at construction.
@@ -283,10 +393,17 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
         elif op == "back":
             sino_dev = to_device(model, sino_np, "sino")
             run_fn = lambda: run_back(model, sino_dev, idx)
+        elif op == "vcd_nonconst":
+            model.setup_logger(print_logs=False)
+            run_fn = lambda: run_vcd(model, sino_np, weights, partitions,
+                                     partition_sequence, config.measure_seed)
         else:
-            raise ValueError(f"op {op!r} not implemented here (vcd_nonconst is not yet wired up)")
-        stats, _ = sc.time_op(run_fn, config.warmup, trials)
+            raise ValueError(f"op {op!r} not implemented")
+        stats, result = sc.time_op(run_fn, config.warmup, trials)
         mem_mb, mem_kind = sc.peak_memory_mb(devs)
+        # Correctness fingerprint AFTER the memory read (the host gather must not inflate the
+        # device peak), on the TRUE shape (crop + padding-zero check; see fingerprint()).
+        fp_by_n[n] = fingerprint(result, op_true_shape)
         return stats, mem_mb, mem_kind
 
     rows, failures = sc.run_measure_loop(
@@ -301,8 +418,12 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
         r["recon_shape"] = list(recon_shape)
         r["trials"] = trials
         r.update(path_by_n.get(r["n_devices"], {}))
+        fp = fp_by_n.get(r["n_devices"])
+        if fp is not None:
+            r["fingerprint"] = fp
     return {"geometry": geometry, "op": op, "size": size_label,
-            "recon_shape": list(recon_shape), "rows": rows, "failures": failures}
+            "recon_shape": list(recon_shape), "rows": rows,
+            "failures": failures, "skips": skips}
 
 
 # ── Worker entry (internal; the orchestrator builds argv) ─────────────────────
@@ -377,6 +498,9 @@ def _print_summary(cells):
         print("  {:<12s}{:>6s}{:>11s}{:>11s}{:>9s}".format(
             "size", "n_dev", "min_ms", "mem_mb", "speedup"))
         for r in sorted(rows, key=lambda r: (r["size"], r["n_devices"])):
+            if r.get("skipped"):
+                print(f"  {r['size']:<12s}{r['n_devices']:>6d}   [skip] {r['reason']}")
+                continue
             if r.get("failed"):
                 tag = "OOM" if r.get("oom") else "FAIL"
                 print(f"  {r['size']:<12s}{r['n_devices']:>6d}   [{tag}] {str(r.get('error', ''))[:58]}")
@@ -460,6 +584,10 @@ def run(config):
                     cells.append({"geometry": geometry, "op": op, "size": label,
                                   "n_devices": f["n_devices"], "failed": True,
                                   "oom": bool(f.get("oom")), "error": f.get("error")})
+                for s in (res.get("skips") or []):
+                    cells.append({"geometry": geometry, "op": op, "size": label,
+                                  "n_devices": s["n_devices"], "skipped": True,
+                                  "reason": s["reason"]})
 
     if cfg_path and os.path.exists(cfg_path):
         os.remove(cfg_path)
