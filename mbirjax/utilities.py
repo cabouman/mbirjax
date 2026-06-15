@@ -1101,6 +1101,7 @@ def generate_demo_data(
     # Initialize model
 
     if model_type == ModelType.PARALLEL:
+        start_angle = 0
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
         ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)

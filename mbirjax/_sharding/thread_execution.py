@@ -15,12 +15,39 @@ per-device results without assembling them (or wants to assemble results it
 produced some other way) can use either alone.
 """
 
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 
 import jax
 
 
-def run_per_device(devices, worker_fn):
+@contextlib.contextmanager
+def device_pool(n):
+    """A reusable thread pool for repeated run_per_device calls.
+
+    Yields a ``ThreadPoolExecutor`` with ``n`` workers and closes it on exit.
+    Pass the yielded pool as ``run_per_device(..., executor=pool)`` so a loop of
+    many per-device fan-outs (e.g. the slice-band streaming in sharded back
+    projection, which calls run_per_device once per band) reuses one pool instead
+    of creating and tearing down a fresh ``ThreadPoolExecutor`` per call.
+
+    Thread reuse is safe: each task sets its own ``jax.default_device`` (see
+    run_per_device), so there is no thread-to-device affinity to preserve.
+
+    Args:
+        n (int): number of worker threads (typically the device count).
+
+    Yields:
+        ThreadPoolExecutor: the pool to hand to run_per_device.
+    """
+    executor = ThreadPoolExecutor(max_workers=n)
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=True)
+
+
+def run_per_device(devices, worker_fn, executor=None):
     """Run worker_fn once per device, each in its own thread on that device.
 
     Each thread runs under `jax.default_device(device)` (which is thread-local
@@ -38,6 +65,11 @@ def run_per_device(devices, worker_fn):
         devices (sequence): devices to run on; one thread per device.
         worker_fn (callable): worker_fn(i, device) -> result, where i is the
             index into devices and device is devices[i].
+        executor (ThreadPoolExecutor, optional): a pool to submit to (e.g. from
+            device_pool()).  When given, it is reused and NOT closed -- this
+            avoids creating a fresh pool on every call in a tight loop.  When None
+            (default), a private pool is created and closed for this one call, so
+            existing single-shot callers are unchanged.
 
     Returns:
         list: results in device order.
@@ -49,10 +81,11 @@ def run_per_device(devices, worker_fn):
         with jax.default_device(devices[i]):
             return worker_fn(i, devices[i])
 
+    if executor is not None:
+        return list(executor.map(_run_on_device, range(n)))
     # max_workers == n so every device gets a thread and they run concurrently.
-    with ThreadPoolExecutor(max_workers=n) as executor:
-        results = list(executor.map(_run_on_device, range(n)))
-    return results
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        return list(pool.map(_run_on_device, range(n)))
 
 
 def assemble_sharded(per_device_arrays, global_shape, sharding):

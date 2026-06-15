@@ -1,5 +1,14 @@
 # Sharding implementation plan (beta branch `greg/parallel_sharding`)
 
+> **SUPERSEDED FOR FORWARD PLANNING (2026-06-02).**  The current forward plan is
+> **`sharding_implementation_plan_v2.md`** (placement architecture + re-sequenced phases; Phase D
+> re-opened on the new movement interface).  **This doc is retained as the
+> completed-work record** — Phases 0/A/B/F1/D/F2 case studies — plus the
+> still-valid **cross-cutting principles, verified hardware facts, and resolved
+> open questions (O1–O4)**.  Read this for history and principles; read
+> `sharding_implementation_plan_v2.md` for what comes next.  (Note: O1 is reframed and O2 refined
+> in `sharding_implementation_plan_v2.md`.)
+
 *Created 2026-05-29.  Living checklist for the view-sharded reimplementation of
 multi-device sharding, built fresh on `prerelease`.*
 
@@ -68,7 +77,7 @@ a usable, stress-testable `direct_recon` before forward projection / VCD.
 | 3 | **B** | Sharding hooks (new view/slice axes) | filter + projectors need them |
 | 4 | **F1** | FBP filter | low-hanging: view-sharded, **zero cross-device comms** |
 | 5 | **D** | Back projection (reduce-scatter) | the harder collective; needed for direct_recon |
-| 6 | **F2** | `direct_recon` (FBP recon) | **first usable, stress-testable pipeline**; prereq for VCD |
+| 6 | **F2** | `direct_recon` (FBP recon) ✅ | **first usable end-to-end pipeline**; prereq for VCD |
 | 7 | **C** | Forward projection (all-gather) | only needed by VCD; adjoint test lands here |
 | 8 | **E** | VCD integration + halos | needs C + D |
 
@@ -95,21 +104,52 @@ projection and VCD.
    piece.  Cheap because trivial sharding unifies the paths.
 4. **No silent fallbacks.**  When the L40S host-bounce path (or any degraded
    path) is taken, log it once so it is observable, not invisible.
-5. **Native-sharding / API contract:** user-facing `forward_project` /
-   `back_project` / `direct_recon` accept either plain or sharded input and
-   **return gathered (host/plain) arrays**.  Internal `sparse_forward_project` /
-   `sparse_back_project` **expect sharded input and return sharded output** — no
-   gather inside.
-6. **Sharding primitives are internal, accessed with a prefix.**  The
+5. **User-facing vs internal: output sharding matches input.**  Two layers:
+   - **User-facing methods match their input.**  `forward_project` /
+     `back_project` / `direct_recon` / `fbp_recon` (and, later, `recon` /
+     `vcd_recon`) accept **either** a plain or a sharded array:
+       - **plain in -> plain out:** shard once at entry, run the on-device
+         pipeline, gather to a plain array at exit.
+       - **sharded in -> sharded out:** the input is already sharded, so it runs
+         on-device and the result is returned **sharded, with no gather**.
+     So a user-facing method is a plain<->sharded boundary *only for plain
+     input*; for sharded input it is a pass-through, behaving like its internal
+     counterpart.  The decision is the single check `isinstance(getattr(x,
+     'sharding', None), jax.sharding.NamedSharding)` on the primary input, read
+     **before** the entry shard.
+   - **Internal methods are pure sharded-contract:** `sparse_forward_project` /
+     `sparse_back_project` / `fbp_filter` (and its thin alias `direct_filter`)
+     **expect sharded input and return sharded output**, with **no entry-shard
+     or exit-gather transition code**.  Filtering is not exposed as a standalone
+     gathered op — only on-device, as a stage of the recon pipeline.
+   - **Why match input, not always-gather (decided 2026-06-01; see O2):** these
+     user-facing methods are *dual-use* — `back_project` is called inside
+     `fbp_recon`, and `direct_recon` is `vcd_recon`'s default init
+     (`tomography_model.py`).  Match-input lets a sharded caller (e.g. a sharded
+     VCD computing a sharded FBP init) stay on-device with no host round-trip,
+     respects the caller's placement intent, and avoids materializing a whole
+     recon volume on one device just to re-shard it.  It also subsumes the old
+     `return_sharded=True` idea: want sharded out, hand it sharded in.
+   - When no mesh is configured, the entry-shard and exit-gather are no-ops, so
+     both layers behave exactly like the single-device prerelease.
+   - **Note (F2 cleanup):** `fbp_filter` previously carried an entry
+     `_shard_sinogram` "transition" line for back-compat; it was the internal
+     stage but also shard-tolerant.  In F2 that line was removed (`fbp_filter`
+     is now strictly internal); `direct_filter` stays a thin alias for it (also
+     internal).  The user-facing `fbp_recon` / `direct_recon` / `back_project`
+     own the match-input shard-at-entry / gather-at-exit boundary.
+6. **Sharding primitives are internal, accessed with the `mjs` prefix.**  The
    `mbirjax._sharding` subpackage is internal (leading underscore; not part of
-   the public API and not re-exported at the top level).  Follow the codebase's
-   prefix convention rather than bare `from ... import name`:
-     - **Consumers** (tests, examples, experiment scripts):
-       `import mbirjax._sharding as mjs`, then call `mjs.move_shard(...)`.
-     - **In-package modules** (`tomography_model.py`, projector code): aliasing
-       mbirjax would be circular mid-import, so use
-       `from mbirjax._sharding import move_shard, ...` (direct import is the only
-       option inside the package).
+   the public API and not re-exported at the top level).  Everywhere — consumers
+   *and* in-package modules — use `import mbirjax._sharding as mjs`, then call
+   `mjs.move_shard(...)`.  Importing the **submodule directly** is safe even
+   mid-import of `mbirjax`: it forces `mbirjax._sharding` to load, and that
+   subpackage pulls in only jax/numpy/warnings, nothing that loops back into the
+   partially-initialized `mbirjax`.  (The thing that *would* be fragile mid-import
+   is aliasing the *top-level* package — `import mbirjax as mj` then reaching
+   `mj._sharding.move_shard` as an attribute before `__init__` has bound it; the
+   submodule alias avoids that.)  Verified: `import mbirjax` succeeds with
+   `tomography_model.py` using the `mjs` alias.
 
 ---
 
@@ -241,118 +281,200 @@ acts per-view, so each device filters its own views entirely locally — no
 cross-device transfer at all.  Good confidence-builder for the B hooks + A
 primitives.  Background: `parallel_performance/fbp_parallel_options.md`.
 
-- [ ] `fbp_filter` threading under the **view** axis: each device filters its
+- [x] `fbp_filter` threading under the **view** axis: each device filters its
       view-shard locally via §A.2; assemble the view-sharded filtered sinogram.
-- [ ] User-facing entry: plain or sharded input; gather at exit (contract §5).
-- **Tests:**
-  - [ ] single-device trivial-sharding == plain prerelease, bit-exact.
-  - [ ] 2-device (virtual CPU) == single-device to float noise.
-  - [ ] confirm (instrument/grep) no cross-device transfer occurs in the
-        view-sharded path.
+- [x] Plain or sharded input accepted (`_shard_sinogram` no-op on either).
+      (`fbp_filter` is the internal sharded-contract method → returns
+      view-sharded, no gather; the user-facing gather is the O2 boundary,
+      tracked separately.)
+- **Tests:** [x]
+  - [x] single-device trivial-sharding == prerelease, bit-exact.
+  - [x] 2-device (virtual CPU) == single-device to float noise.
+  - [x] no cross-device transfer in the view-sharded path (the filter is
+        per-row, per-view — embarrassingly parallel).
 
-### F1 follow-up: row-batched fbp_filter kernel (settles the reshaping item)
+### F1 follow-up: row-batched kernel — DONE (2026-05-31)
 
-**Status (2026-05-30):** jit fix landed; the per-device kernel scales (~6.5×).
-The remaining F1 item is the per-device kernel's **memory**.  GPU evidence (H100,
-`fbp_filter_scaling.py`): the default `per_view` kernel's FFT batch is
-`view_batch_size × n_rows` rows simultaneously, so at 1624³/4-dev it allocated a
-**~27–35 GB cuFFT work area** (vs a ~4 GB shard) and **OOM'd at 1 device**.  The
-batch — and thus the work area — scales with geometry.
+The per-device kernel's memory was the last F1 item (per_view's FFT batch =
+`view_batch_size × n_rows` grew with geometry → OOM at 1624³).  Resolved:
 
-**Design (the reshape that decouples memory from geometry):**
-```
-reshape (v_local, r, c) → (v_local·r, c)
-pad rows up to a multiple of B → (M·B, c),  M = ceil(v·r / B)
-reshape → (M, B, c)
-lax.map(lambda chunk: vmap(convolve_row)(chunk), axis 0)   # NO batch_size arg
-reshape → (M·B, c), crop to (v·r, c), reshape → (v_local, r, c)
-```
-- **Why not the existing `flat` kernel:** it bounds the batch via
-  `lax.map(batch_size=128)`, which is the jax#27591-unsafe path (hence the 128
-  cap) and needs the `_split_body_tail` hack for `lax.map`'s contaminating
-  internal padding.  The reshape above uses `lax.map` with **no `batch_size`**
-  (scan over `M`, `vmap` supplies the `B`-way parallelism), so **#27591 does not
-  apply** and `B` is a free knob.  Our **own zero-pad + crop** replaces body/tail
-  (each row convolves independently; zero rows give benign, cropped output).
-- **Memory:** FFT work area `≈ B × fft_len(c)`, **bounded by `B` alone** —
-  independent of `v`, `r`, and device count.  Concrete win to verify: B=256 →
-  ~tens of MB work area, so **1624³ should run on a SINGLE H100** (no OOM).
+- **Kernel:** `tomography_utils.apply_row_filter(block, filter)` — a `lax.scan`
+  over overlapping B-row windows written in place via `dynamic_update_slice` (no
+  padding copy, no concat; the clamped last window overlaps and recomputes a few
+  rows, idempotent for a per-row filter).  `vmap` supplies the B-way parallelism
+  and the scan has no `batch_size`, so jax#27591 doesn't apply.  Geometry-neutral
+  — cone beam and the rest reuse it.
+- **B = `ROW_FILTER_BATCH = 1024`** (GPU B-sweep knee).  Work area ~
+  `B × fft_len(c)`; a c-aware `B ≈ budget/fft_len(c)` is noted for later (only
+  ever *larger* than 1024 for small c).
+- **Also:** folded `pi/num_views` into the f32 filter (no f64 post-multiply).
+- **Cleanup:** removed the `_FBP_FILTER_KERNEL` switch + per_view/flat kernels and
+  the `_split_body_tail`/`_FLAT_MAP_BATCH` machinery; `view_batch_size` deprecated
+  on the user-facing methods (DeprecationWarning), gone from internals.
 
-**Decisions (Greg, 2026-05-30):**
-- Keep the public `view_batch_size` arg **for now, mark deprecated soon**; it no
-  longer governs the FFT batch.  A module constant `_FBP_ROW_BATCH` (the `B`)
-  does; **default B = 256**.
-- **B must become c-aware:** the work area is `~B × fft_len(c)` where
-  `fft_len(c) ≳ 3c−2`, so to hold a fixed per-device memory budget, `B` should
-  **decrease as `c` grows** (`B ≈ budget / fft_len(c)`).  Start with the fixed
-  default; the GPU sweep sets the budget / the `B(c)` relationship.
-
-**Step sequence:**
-1. Implement `"row_batch"` as a third option behind `_FBP_FILTER_KERNEL` (jitted,
-   `B` static).  Keep per_view/flat for A/B.
-2. CPU correctness: single-device == prerelease baseline (bit-exact); 2-dev ==
-   1-dev; non-divisible `v·r` clean (zero-pad/crop).  Adapt
-   `tests/test_sharding_fbp.py` + `test_fbp_fdk.py`.
-3. GPU (Greg runs): (a) confirm **1624³ no longer OOMs at 1 device**; (b) **sweep
-   B** (now free of #27591) for the throughput/memory sweet spot + the `B(c)`
-   budget; (c) confirm the memory-fraction curve moves toward ideal.
-4. Make `row_batch` the default; **remove the `_FBP_FILTER_KERNEL` switch, the
-   losing kernels, and the `_split_body_tail`/`_FLAT_MAP_BATCH` machinery**.
-5. Update `sharding_status.md` (close the reshaping item) → then Phase D.
-
-**Risks:** per-`B`/shape cuFFT plan compilation (fine for a sweep); ≤`B−1` padded
-rows wasted per shard (negligible when `v·r ≫ B`); small `B` may underfill a GPU
-(the sweep + #27591-freedom let us go bigger); assert `mode='valid'` keeps output
-length `c`.
+**Measured (H100):** 2× (input+output) memory floor, ~1/n scaling,
+divisibility-agnostic, ~10× faster than a small B, 1624³ on a single GPU,
+cross-platform correctness 5.6e-9.  **CPU:** ~5.4–6.5× at 8 virtual devices — a
+real speedup (see `sharding_status.md` §Targets).  Tests: `test_sharding_*` +
+`test_fbp_fdk` 28/28.
 
 ---
 
-## Step 5 — Phase D: Back projection (reduce-scatter)
+## Step 5 — Phase D: Back projection (reduce-scatter)  ✅ COMPLETE (2026-06-01, GPU-validated)
+
+**Done.**  Reduce-scatter back projection with slice-band **streaming** (no
+full-cylinder partial): peak/shard 11×→3.2× at 1024³/4-dev, single GPU 1024³
+28→~12 GB (streams by default), near-ideal scaling (3.92× on 4), no time cost.
+Device+compute-bounded band default (`_slice_band_length`); reused thread pool;
+memory-bandwidth-bound.  Remaining frontier = sino+recon floor (host streaming,
+deferred).  Detail below + in `sharding_status.md`.
+
 
 **Goal:** `sparse_back_project` with the harder collective — sum partial
 cylinders across devices, scatter to slice owners.  This is where
 summation-order and (later) adjoint-correctness live, so we tackle it before
 forward.
 
-- [ ] Per device: back-project local views into partial cylinders spanning all
+**Design (settled with Greg):** the reduce-scatter splits into a geometry-neutral
+communication pattern + a per-device compute that *can* restrict to a slice band.
+Key realization (Greg): each device holds **complete views**, so it can
+back-project **any** output slice band from purely local data — true for any
+geometry.  Partitioning the **output** cylinder means each voxel is computed
+once (no redundant compute, parallel *or* cone beam).  The memory win (your
+point #2) comes from *streaming* slice bands and freeing — deferred (see below).
+Overlapping-tail trick (F1) is reusable for slice sub-tiling *only* where the
+combine is SET (the complete reduced value), never ADD; deferred with sub-tiling.
+
+- [x] Per device: back-project local views into partial cylinders spanning all
       slices; reduce-scatter partials to slice owners (via §A.1/§A.2).
+      Two-phase: Phase 1 `run_per_device` per-device partials (reuse the existing
+      jitted projector unchanged — **no kernel edit for parallel beam**); Phase 2
+      naive all-to-all (`move_shard` each owner's band to it, owner sums).
+      `_sparse_back_project_sharded` in `tomography_model.py`; single-device body
+      extracted to `_sparse_back_project_single_device`.  Loops over the mesh —
+      not hardcoded to 2 (validated 1/2/4/8 virtual CPU).
 - [ ] Budget the transient full-cylinder partial buffer (per device, per
       pixel-batch) — note memory cost, larger for cone beam later.
-- [ ] `back_project` (user-facing): gather recon at exit.
-- **Tests:**
-  - [ ] single-device trivial-sharding == plain prerelease, bit-exact
-        (standalone gate — no forward projector exists yet to pair with).
-  - [ ] 2-device == single-device to float noise.
-  - [ ] adapt the existing back-projection tests in `tests/test_projectors.py`
-        to run in both modes rather than adding a parallel file.
+      **Deferred** (Greg): no sub-tiling now; the full-partial transient is the
+      same order as the single-device working set.  Revisit via scaling tests;
+      the streaming/overlap-tail seam (1/n transient) is the obvious next layer.
+- [x] `back_project` (user-facing): shard sinogram at entry, gather recon at exit.
+- **Tests:** (`tests/test_sharding_back_projection.py`, 7/7)
+  - [x] single-device trivial-sharding == plain prerelease, bit-exact (n_dev=1).
+  - [x] 2-device == single-device to float noise (~1e-7 rel); also 4/8.
+  - [x] internal `sparse_back_project` returns slice-sharded (no gather); public
+        `back_project` returns gathered/plain; coeff_power=2 (Hessian) matches;
+        view subset rejected (NotImplementedError) in sharded mode.
+  - **Deviation from plan:** added a dedicated `test_sharding_back_projection.py`
+    (matching the `test_sharding_fbp.py` precedent) rather than threading
+    sharded mode into `test_projectors.py` — that file is multi-geometry
+    (cone/helical/translation), and Phase D sharding is parallel-beam-only.
   - *(The `back(forward(x))` adjoint round-trip is a **Phase C** gate, when the
     sharded forward projector exists.)*
 
+**Open notes carried forward:**
+- `compute_hessian_diagonal` now returns a **slice-sharded** (recon-native)
+  array in sharded mode (the reshape preserves the slice sharding) — correct
+  values, and arguably the right sharding for VCD.  Whether it should gather
+  is a Phase-E contract decision; left sharded for now.
+- `_sparse_back_project_sharded` defensively `_shard_sinogram`s its input (a
+  no-op when already sharded) so un-ported callers (e.g. `compute_hessian_diagonal`
+  passing plain weights) work; revisit when callers shard at entry uniformly.
+- **GPU-validated (H100, 2026-06-01).** Slice-band **streaming** added (no
+  full-cylinder partial; row-sliced per-band reduce-scatter; balanced bands).
+  Multi-device peak/shard **11× → 3.2×** at 1024³/4-dev at no time cost;
+  near-ideal scaling (3.92× at 4 dev).  Default band is budget/compute-bounded
+  (`_slice_band_length`), and **single device streams by default** too (compute
+  cap) — 1024³ on one GPU 28 GB → 10.5 GB (0.37×), time flat.  Persistent thread
+  pool (`device_pool`) removes per-band pool churn.  See `sharding_status.md` for
+  the full findings.
+- **Above-floor residual is compute/working-set, NOT assembly (tried & reverted,
+  2026-06-01).** The single-device sweep plateaus at ~**1.44× the sino+recon
+  floor** for all small bands — a band-independent ~3 GB transient.  We
+  hypothesized this was the per-owner `jnp.concatenate(band_list)` doubling a
+  recon shard during assembly, and replaced it with a preallocated, donated
+  `dynamic_update_slice` write (the F1 `apply_row_filter` pattern on the recon
+  slice axis).  **Measurement disproved it:** peak got *worse* everywhere
+  (1024³/4-dev 3435 → 4840 MB, +41%; n=1 also up slightly), so the concatenate
+  was never the binding peak — it happens after the compute phase, at a
+  lower-memory moment.  The residual is the live recon + per-band compute working
+  set, not assembly.  **Reverted** (`017e37c` undone).  Lesson: don't port the F1
+  trick without confirming the *cause* of the plateau by measurement.
+- **Frontier (back projection): host↔device streaming of sino/recon.** Below the
+  ~7.3 GB floor (1024³) the full sinogram (input) and recon (output) are the
+  irreducible on-device residents; only loading per-band sino rows / evicting
+  written recon slices to host beats it.  Bigger change (overlaps the O1
+  heterogeneous-placement design); deferred.
+
 ---
 
-## Step 6 — Phase F2: `direct_recon` (FBP reconstruction)
+## Step 6 — Phase F2: `direct_recon` (FBP reconstruction)  ✅ COMPLETE (2026-06-01)
 
-**Goal:** first **usable, end-to-end, stress-testable** sharded pipeline:
+**Goal:** first **usable, end-to-end** sharded pipeline:
 shard sinogram → `fbp_filter` (F1) → `back_project` (D) → gather recon.
 Exercises the primitives and the back-projection reduce-scatter on a complete
 reconstruction with a prerelease baseline.
 
-- [ ] `direct_recon`: shard sinogram once at entry, pass through filter →
-      back_project, gather at exit.  No re-shard between filter and back_project
-      (both view-in / the back-projector owns the view→slice movement).
-- [ ] First cut is **homogeneous**: recon slice-sharded across the projection
+**What landed.**  F2 was primarily a **contract refactor**, not new collective
+machinery — `fbp_filter` (F1) and `back_project` (D) already do the on-device
+work; F2 made the user-facing/internal split (principle #5) crisp so the pieces
+chain with zero intermediate gather.  Landed in two rounds: round 1 made the
+user-facing methods always-gather; **round 2 refined the user-facing contract to
+match-input** (output sharding mirrors input — see O2) once the dual-use of
+`back_project`/`direct_recon` made on-device composition the right default.
+Changes confined to `parallel_beam.py` + `tomography_model.py` (`back_project`)
+plus tests; the internal `sparse_*` were untouched.
+
+- [x] `fbp_filter` made **strictly internal**: removed the entry
+      `_shard_sinogram` transition line (the exit had no gather to begin with).
+      Under a mesh it now *requires* view-sharded input and returns view-sharded
+      output.  No-mesh path filters the plain array directly, unchanged.
+- [x] `direct_filter` stays a thin **internal** alias for `fbp_filter` (same
+      sharded contract; not a boundary).  Filtering is not exposed as a
+      standalone gathered op — only as an on-device stage of the recon pipeline.
+- [x] `back_project` (user-facing) made **match-input** (round 2): a sharded
+      sinogram now returns a **slice-sharded 3-D recon** (no gather) via a new
+      `_assemble_recon_volume_sharded` helper — a per-device scatter of the
+      slice-sharded cylinder into a slice-sharded `(rows, cols, slices)` volume
+      using `run_per_device` / `assemble_sharded` (the scatter is identical
+      across slices, so it is embarrassingly parallel on the slice axis).  A
+      plain sinogram still gathers (plain out), unchanged.
+- [x] `fbp_recon` (user-facing) made **match-input** (round 2): shard once at
+      entry, `fbp_filter` (sharded → sharded) → `back_project` (sharded →
+      sharded), then gather at exit **only if the original input was plain**.
+      Data stays resident throughout; sharded in → sharded out with no gather.
+- [x] `direct_recon` unchanged — thin delegate to `fbp_recon`, inherits
+      match-input.
+- [x] **Homogeneous** first cut: recon slice-sharded across the projection
       devices (recon fits across the mesh).  Heterogeneous CPU-storage is O1,
       deferred.
-- **Test data note:** generate test sinograms with prerelease's **plain**
-  `forward_project` (the sharded forward projector C does not exist yet) or a
-  phantom, then shard and run.
-- **Tests:**
-  - [ ] single-device trivial-sharding == prerelease `direct_recon`, to
-        reconstruction tolerance.
-  - [ ] 2-device == single-device to reconstruction tolerance.
-  - [ ] adapt `tests/test_fbp_fdk.py` to both modes.
-  - [ ] **stress test:** larger phantom across 2 devices; confirm correctness +
-        watch memory (the back-projection partial buffer).
+- **Tests** (`tests/test_sharding_fbp_recon.py`, new; `tests/test_sharding_fbp.py`,
+  updated for the new contract):
+  - [x] single-device (no-mesh) plain-in / plain-out; `direct_recon` ==
+        `fbp_recon`.
+  - [x] trivial 1-device mesh **bit-exact** vs the unconfigured single-device
+        path (prerelease regression gate).
+  - [x] 2/4/8-device, PLAIN input == single-device to float noise, plain
+        (gathered) recon.
+  - [x] **match-input, SHARDED input** (round 2): `back_project`, `fbp_recon`,
+        and `direct_recon` of a sharded sinogram each return a **slice-sharded**
+        3-D recon (NamedSharding on the slice axis, correct shape) matching the
+        plain single-device recon to float noise.
+  - [x] **no-intermediate-gather invariant:** the sinogram `fbp_recon` hands to
+        `back_project` is still view-sharded (filter output never round-trips
+        through the host).
+  - [x] internal `fbp_filter` keeps a pre-sharded sinogram view-sharded; its
+        thin alias `direct_filter` gives the same result (same sharded contract).
+  - Suite green: `test_sharding_*` + `test_fbp_fdk` + `test_projectors` (50 +
+    12 subtests).
+- **Deferred (not blocking):**
+  - **GPU stress/scaling harness** — larger phantom across 2–4 GPUs; confirm
+    correctness + watch memory (the back-projection partial buffer).  Build as a
+    follow-up mirroring the Phase D scaling scripts; correctness landed on CPU
+    first.
+  - Adapt `tests/test_fbp_fdk.py` to run in sharded mode (it currently exercises
+    the single-device path and stays green); the new `test_sharding_fbp_recon.py`
+    covers the sharded pipeline directly.
 
 ---
 
@@ -368,8 +490,10 @@ Only needed for VCD, so it comes after the FBP pipeline is usable.
       project its local views, write its view-shard of the sinogram locally
       (sinogram never moves).
 - [ ] Pipeline: prefetch next pixel-batch's gather during current projection.
-- [ ] `forward_project` (user-facing): accept plain or sharded recon, gather
-      sinogram at exit (contract §5).
+- [ ] `forward_project` (user-facing): **match input** per contract §5 — a plain
+      recon in -> plain sinogram out (shard at entry, gather at exit); a sharded
+      recon in -> sharded sinogram out (no gather).  Design it match-input from
+      the start (mirror `back_project`'s round-2 implementation); no retrofit.
 - **Tests:**
   - [ ] single-device trivial-sharding == plain prerelease, bit-exact.
   - [ ] 2-device (virtual CPU) == single-device to float noise.
@@ -386,10 +510,17 @@ Only needed for VCD, so it comes after the FBP pipeline is usable.
 **Goal:** end-to-end VCD with sharded entry/exit and halo exchange.
 
 - [ ] Entry: shard sinogram (view) / recon (slice) / weights (view) once.
+- [ ] Default init: `vcd_recon` computes `init_recon = self.direct_recon(sinogram)`
+      when none is given (`tomography_model.py`).  With the match-input contract
+      (§5), pass it the **already-sharded** sinogram so `direct_recon` returns a
+      **sharded** init that flows straight into the loop — no gather/re-shard of
+      the recon volume.  (This is the concrete payoff that drove the match-input
+      decision; see O2.)
 - [ ] Halo exchange wired into the VCD loop using `_extract_halos` (recon is
       slice-sharded, so qggmrf halo logic from research should largely carry
       over — verify).
-- [ ] Exit: gather recon.
+- [ ] Exit: gather recon (match-input: plain in -> plain out for the typical
+      user; a sharded-in caller gets a sharded recon back).
 - [ ] Confirm no accidental re-shard or gather inside the loop body.
 - **Tests:**
   - [ ] single-device == prerelease VCD to reconstruction tolerance.
@@ -420,14 +551,32 @@ behind the same `move_shard`.  Keep §A.1's interface endpoint-agnostic now
 (already a checklist item); design the placement-policy object when a
 recon-too-big-for-GPU need forces it.
 
-**O2 — Trivially-sharded vs gathered return values (needed by Phase A.3).**
+**O2 — Trivially-sharded vs gathered return values — RESOLVED (2026-06-01, F2;
+refined to match-input in F2 round 2).**
 "Trivially sharded" = a `jax.Array` with a 1-device `NamedSharding` (still a
 device array carrying sharding metadata).  "Gathered" = a plain/uncommitted
-array (or numpy) with no sharding.  **Recommendation (per Greg, 2026-05-29):**
-user-facing `forward_project`/`back_project`/`direct_recon` return **gathered**
-arrays; internal `sparse_*` keep **trivial sharding** so the code paths unify.
-Confirm gathered output still behaves like a plain array for downstream user
-code.
+array (or numpy) with no sharding.  **Decision (Greg):** output sharding
+**matches input** for user-facing methods; internal methods are sharded-only —
+see principle #5:
+  - **User-facing methods** (`forward_project` / `back_project` / `direct_recon` /
+    `fbp_recon`) **match their input**: plain in -> plain out (shard at entry,
+    gather at exit); sharded in -> sharded out (no gather).  The single check is
+    `isinstance(x.sharding, NamedSharding)` on the primary input, read before the
+    entry shard.  (An interim F2 decision had user-facing *always* gather; round
+    2 refined it to match-input once it was clear these methods are dual-use —
+    `back_project` is called from `fbp_recon`, and `direct_recon` is
+    `vcd_recon`'s default init, so a sharded caller must be able to stay
+    on-device.)
+  - **Internal methods** (`sparse_forward_project` / `sparse_back_project` /
+    `fbp_filter`, and its thin alias `direct_filter`) are pure sharded-contract:
+    **sharded in → sharded out, no transition code.**  Advanced callers that
+    want to stay on-device call these directly.  (Filtering is not exposed as a
+    standalone gathered operation — it is only reachable on-device, as a stage
+    of the recon pipeline.)
+  This unifies the no-mesh and trivial-1-device paths (the entry-shard and
+  exit-gather are no-ops without a mesh).  Implemented and tested in F2;
+  match-input verified both directions (plain->plain, sharded->sharded), and
+  gathered output confirmed to behave as a plain array downstream.
 
 **O3 — Sparse-view regime (note only, no design now).**
 "Move the recon" is bandwidth-optimal only when views are many (recon < sino).
@@ -479,15 +628,26 @@ unchanged — that uniformity is the whole point of the new design.
           own `import jax`, independent of mbirjax import resolution.
         - `experiments/.../device_put_check.py` — intentionally mbirjax-free
           standalone probe.
+- [ ] **Default single-device sharding (auto-configure a trivial 1-device mesh).**
+      *(Greg, 2026-06-01: leave for later, but tracked here.)*  Today the sharded
+      path — and therefore single-device **slice-band streaming** — only runs
+      after an explicit `configure_sharding(...)`; a plain single-GPU
+      `back_project` still uses the old non-streaming path.  Wiring a trivial
+      1-device mesh by default (constructor? first use?) would give every
+      single-GPU user the streaming memory win automatically (1024³: ~28 GB →
+      ~10 GB, no time cost — the "stretch the recon per GPU" lever), and is the
+      enabler for collapsing the mesh-None paths below.  **Motivation is now
+      concrete** (measured single-device benefit), not just cleanup.  Risks: it
+      routes all single-device projection through the sharded path, which does
+      not yet handle the O1 heterogeneous CPU-recon/GPU-sino placement
+      (`main_device`/`sinogram_device`), so that must be reconciled first.
 - [ ] **Collapse the single-device (mesh-None) code paths.**  Once every
-      projector/recon method is ported, single-device should be just the
-      trivial-1-device-mesh case, so the `if self.mesh is None: ...` fallbacks
-      (e.g. in `fbp_filter`) and the old `main_device`/`sinogram_device`
-      machinery can be removed, leaving one sharded path.  Deferred until enough
-      methods are ported that always-on trivial sharding is safe end-to-end
-      (needs the auto-configure-trivial-mesh decision settled — see below).
-      Requires deciding where the trivial mesh gets configured by default
-      (constructor? first use?).
+      projector/recon method is ported *and* the trivial mesh is auto-configured
+      (above), single-device becomes just the trivial-1-device-mesh case, so the
+      `if self.mesh is None: ...` fallbacks (e.g. in `fbp_filter`) and the old
+      `main_device`/`sinogram_device` machinery can be removed, leaving one
+      sharded path.  Deferred until enough methods are ported that always-on
+      trivial sharding is safe end-to-end.
 - [ ] **Public shard/gather utilities.**  Add thin public wrappers
       (`shard_sinogram`, `shard_recon`, `gather_sinogram`, `gather_recon`) over
       the `_shard_*`/`_gather_*` hooks so callers/tests can pre-shard inputs to
@@ -497,7 +657,40 @@ unchanged — that uniformity is the whole point of the new design.
 
 ---
 
-## Note: research-branch content to migrate before `greg/parallel_tests` is deleted
+## Future project: simplify the sparse-projector batching machinery
+
+*(Separate, deliberately-scoped refactor — NOT part of the sharding work; tracked
+here so it isn't lost.  Greg has wanted this for a while.)*
+
+The geometry-agnostic projector core in `projectors.py` layers several batching/
+mapping helpers that are hard to follow: `sum_function_in_batches` (lax.scan over
+view batches), `concatenate_function_in_batches` (lax.map over pixel batches),
+and a `vmap` over the per-view geometry kernel — see `back_project_one_view_to_
+pixel_batch` and the forward analogue (`.claude/back_projection_overview.md`
+walks the chain).  Goals of a rewrite:
+- **Clarity** — collapse the nested scan/map/vmap layers into something
+  readable (the F1 `apply_row_filter` single-`lax.scan`-with-`vmap` is the
+  template).
+- **Remove lax.map fragility** — `concatenate_function_in_batches` uses
+  `lax.map`, which has the jax#27591 large-`batch_size` bug; a scan + vmap avoids
+  it.
+- **Possible memory win for forward / single-device** — the
+  `concatenate_function_in_batches` assembles results into a list then
+  concatenates (a transient doubling); a preallocated in-place write could help
+  *those* paths (note: it did **not** help the sharded back-projection peak —
+  measured worse, reverted — because there the concat is not the binding peak).
+
+**Development note:** This would be started with a prototype in ParallelBeam
+only by overriding the default projector functions to a class-specific
+function that would generalize to all geometries.
+
+**Why it's a separate project, not bundled:** this core is shared by forward +
+back projection, every geometry, and the single-device path, so it is
+high-blast-radius and needs full re-validation (bit-exact across both directions
+and all geometries).  Do it on its own, motivated by clarity + the jax#27591
+removal, with the projector regression suite as the gate.
+
+## Other notes
 
 Track here anything we still want off the research branch (beyond the §Migration
 table above), so nothing is lost when it is deleted:

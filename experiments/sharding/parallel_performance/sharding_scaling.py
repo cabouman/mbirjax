@@ -242,7 +242,7 @@ def main():
 
     # Pre-compute flat recon for the sparse_forward_project benchmark.
     # pixel_indices selects all in-ROR voxels; flat_recon_np is (num_pixels, n_slices).
-    _all_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=_ref_model.use_ror_mask)
+    _all_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=_ref_model.get_params('use_ror_mask'))
     _all_indices_np = np.asarray(_all_indices)
     _flat_recon_np = np.asarray(
         _ref_model.get_voxels_at_indices(jnp.array(recon_np), jnp.array(_all_indices_np)))

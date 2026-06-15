@@ -150,4 +150,27 @@ def _setup_devices() -> None:
     os.environ.setdefault("XLA_FLAGS", flag)
 
 
+def _quiet_benign_xla_logs() -> None:
+    """Hide jaxlib's benign multi-GPU allocator chatter by raising its C++ log level.
+
+    On the first multi-GPU allocation XLA's VMM allocator probes advanced
+    memory-handle types (FABRIC / POSIX_FD) for fast inter-GPU sharing.  In
+    environments that forbid them (most single-node jobs / containers) it logs a
+    scary-looking but HARMLESS warning -- ``cuMemCreate with FABRIC+POSIX_FD handle
+    types failed: CUDA_ERROR_NOT_PERMITTED; will retry with simpler handle types``
+    -- and then succeeds with a fallback handle.  These are C++ WARNING-level logs;
+    ``TF_CPP_MIN_LOG_LEVEL=2`` drops INFO+WARNING while keeping ERROR/FATAL (and all
+    Python tracebacks / ``warnings.warn`` messages, which use a different path), so
+    real failures still surface.
+
+    Set via ``setdefault`` so it is overridable: export ``TF_CPP_MIN_LOG_LEVEL=0``
+    (or ``1``) before importing mbirjax to get the full jaxlib logs back.  Like the
+    device flag above, this only takes effect if applied BEFORE jax is imported
+    (the value is read once at jaxlib init); if jax is already imported it is a
+    harmless no-op.
+    """
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+_quiet_benign_xla_logs()
 _setup_devices()
