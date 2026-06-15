@@ -298,6 +298,16 @@ per-recon overhead — so VCD time is a SOFT signal only).
 
 ## 8. Baselines & transport — a dedicated output repo (the webserver is retired)
 
+**Two correctness references, different jobs.**  (1) The **fingerprint golden**
+(`golden_<plat>.yaml`, via `capture_golden.py`) is captured on the CURRENT branch and is the
+day-to-day drift/accept reference the gate compares against.  (2) The **`.npy` deep-diff baseline**
+(via `capture_main_baseline.py`) is captured on the **`main`** branch — a *cross-version* anchor
+that answers "does the sharding branch still reproduce released `main` within tolerance?" (a few
+lax.map/scatter outliers allowed).  `main` has no sharding, so the `.npy` are single-device at one
+small representative size; the capture reuses the engine's input builders + run functions (they
+import mbirjax lazily, so a `main`-worktree run uses `main`'s API).  The deferred
+`compare_to_baseline.py` re-runs the sharding branch at that size and tolerant-compares.
+
 **Why not the mbirjax repo (Greg's note 5):** every mbirjax branch except `main` is periodically
 deleted, and we do not want to push results to `main`.  So results/golden have no stable home in
 mbirjax.  **Decision (confirmed): a dedicated git repo — `mbirjax_metrics`,
@@ -310,7 +320,10 @@ mbirjax_metrics/                    (cloned on the Mac AND the cluster)
     golden_fingerprint_<plat>.yaml  # per-cell tolerant fingerprint + perf anchor (a few KB);
                                      # ALSO the de-facto "expected state" — a failure recorded
                                      # here is a known wart (quiet); see §10a (no separate allowlist)
-    <geometry>_<op>.npy             # ONE representative SMALL array per (geom,op) — Greg note 3
+    <geometry>_<op>.npy             # cross-version correctness reference: ONE small single-device
+                                     # array per (geom,op), captured from the MAIN branch via
+                                     # capture_main_baseline.py (Greg note 3 — tolerant deep diff)
+    main_baseline_meta.yaml         # the size/seeds/branch the .npy were captured at
   results/
     cpu/regression_cpu_<YYYYMMDD>.yaml   # the time series, one file per nightly
     gpu/regression_gpu_<YYYYMMDD>.yaml
