@@ -174,8 +174,18 @@ def build_partitions(model, sino_np, weights, max_iterations):
     return partitions, partition_sequence
 
 def run_filter(model, sino):
-    """Timed op: single-device direct filter."""
-    return model.direct_filter(sino)
+    """Timed op: the FBP/FDK filter, kept in the device (sharded) form.
+
+    ``output_sharded=True`` so we measure the FILTER, not a full-sinogram gather at exit:
+    the user-facing default gathers (a fixed full-sinogram cost that does not shard --
+    it dominates the fast filter and flattens the scaling), whereas the dedicated
+    fbp_filter_scaling baseline measured prerelease's INTERNAL fbp_filter, which returned
+    the sharded form with no gather.  Falls back to the plain call on code that predates
+    the output_sharded kwarg (e.g. prerelease's fbp_filter signature)."""
+    try:
+        return model.direct_filter(sino, output_sharded=True)
+    except TypeError:
+        return model.direct_filter(sino)
 
 
 def run_forward(model, cylinders, pixel_indices):
