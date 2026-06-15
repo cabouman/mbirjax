@@ -794,6 +794,46 @@ largely **parallelizable** alongside.
 
 ## Adjacent tasks (not gating the P-phases)
 
+### Daily regression-check tool — NEXT (Greg, 2026-06-14)
+
+**Motivation.**  Almost every "regression" we chased in the 2026-06-13/14 measurement sessions was
+a RULER bug or a quietly-introduced perf change found only by accident much later (the 4b21a3c2
+gather-at-exit; the unbounded FDK filter; the n=1 forward per-dispatch memory).  A standing
+day-over-day check that exercises every geometry × op and flags time/memory drift would have caught
+all of them at the commit that introduced them.  **This is likely the next thing we do.**
+
+**Shape.**  A thin driver over the EXISTING `cone_baseline_scaling.py` harness (do NOT rebuild the
+measurement machinery — it already has the isolated-subprocess discipline, `time_op`,
+`peak_memory_mb`, the path/band YAML fields, and the ruler fixes we just landed: per-count device
+pinning, on-device input pre-placement, `output_sharded=True` for the filter, skip-OOM).  Make
+GEOMETRY a sweep dimension instead of a single constant.
+
+- **Sweep:** geometries {cone, parallel} (add translation/multiaxis as they port) × ops
+  {direct_filter, forward, back, vcd_const} × device counts {1, 2, 4} × a small fixed REGRESSION
+  size set (e.g. one or two sizes per platform — big enough to be representative, small enough to
+  run daily: ~256–512³ on GPU, ~128–256³ on CPU).  Keep it bounded to a few minutes.
+- **Record** a dated YAML `results/regression/regression_<platform>_<YYYYMMDD>.yaml` with, per
+  (geometry, op, size, n_dev): `min_ms`, `mem_mb`, `speedup`, plus the structural fields
+  (`is_sharded`, `back_n_bands_per_shard`, OOM flag) and the environment (`device_label`,
+  `topology`, **git commit hash**, mbirjax path).  Pass the date in (don't call `datetime.now()`
+  inside a worker that must stay reproducible — stamp it in the orchestrator).
+- **Diff** against the most recent PRIOR dated YAML (and optionally a checked-in-by-path "golden"
+  reference, gitignored): per cell, report the delta and flag regressions.  Exit non-zero on any
+  hard regression so it can run as a cron/CI gate.
+
+**Design notes / gotchas (so the tool isn't itself a ruler):**
+- **Memory is the robust gate, not absolute time.**  `peak_bytes_in_use` is ~deterministic; GPU
+  time has large run-to-run variance (~1.9× for cone back per §8a).  So: hard-fail on **memory**
+  growth past a tight threshold (~5–10%), hard-fail on **structural** changes (is_sharded flip,
+  band-count change, OOM appear/disappear, missing cell), and treat **absolute time** as a soft
+  signal.  Use the **speedup RATIO** (n=1 vs n=4) as the time-scaling gate — it normalizes out the
+  absolute-noise floor and is what actually regressed in the gather bug.
+- Record the **git commit hash** so a flagged regression bisects immediately (this session's whole
+  point).
+- Day-over-day catches sudden breaks; the optional golden reference catches slow cumulative drift.
+- It would have caught all three 2026-06-14 issues: the gather (memory non-sharding + speedup
+  collapse), the FDK filter (memory blow-up), the n=1 forward (memory doubling).
+
 ### Row-sharding for sinograms — consider as an alternative/future sharding axis (exploration)
 
 **STATUS: parked exploration (2026-06-13).**  The current scheme shards the sinogram by

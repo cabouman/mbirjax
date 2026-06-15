@@ -20,29 +20,19 @@ Orient first by reading, in order:
 5. `.claude/back_projection_overview.md` — required for P6 (projector internals).
 Verify claims against current code; memory/docs may lag.
 
-**Where we are (2026-06-13, P6 cone port — CONE NOW SHARDS).**  P5 done + GPU-validated (always-on
-placements, automatic multi-GPU, exactly-inert padding, `configure_devices` / `device_summary` /
-`prepare_sino_for_devices` / `output_sharded`).  P6 increments **A** (channel-major cone horizontal
-fans — CPU win, GPU-neutral; the port's GPU value is CAPACITY), **B1** (banded cone BACK kernel),
-**B2** (single-device cone on the banded back kernel; §8a-NEUTRAL both platforms), **B3**
-(module-level projector drivers — jit cache SHARED across model instances; the blocker was a fresh
-namedtuple CLASS per `get_geometry_parameters()` call, fixed via `make_geometry_params` — see
-lessons.md), and **B4.1–B4.3 are COMMITTED.  CONE SHARDS** (recon by slice ⇄ sinogram by view;
-banded reduce-scatter BACK + gather+monolithic FORWARD = decision C), CPU-validated end to end at
-DIVIDING counts (`tests/sharding/test_cone_sharded.py`: back/forward/Hessian 1e-5 + 3-iter VCD 1e-4,
-n=2/4, circular+helical).  Detail:
-`p6_increment_b_design.md` PROGRESS block.  
-
-**RESOLVED (2026-06-14):** the `cone_baseline_scaling.py` "no scaling" was a RULER bug —
-`build_and_time` never pinned the device count, so every iteration inherited the auto
-all-devices default (each count re-measured the same max-device run). FIXED: pin each count
-with `model.configure_devices(devs)` + report the full sweep with speedup + a defensive cone
-slice-padding guard. Also consolidated `jax.devices()` behind `_device_setup` accessors
-(`gpu_devices`/`cpu_devices`/`default_devices`; dead `self.cpus` deleted). Both CPU-validated
-(full suite 165p @2dev, sharding 107p @4dev; B5 cone failures unchanged). GPU+CPU re-runs now
-show **reasonable scaling** (Greg) — virtual CPUs DO scale for compute-bound ops (forward 256³
-2-dev ~1.9×; fbp_filter best, embarrassingly parallel). Next: interpret the B4.4 GPU sweep, then
-B4.5 / B5.
+**Where we are (2026-06-14, P6 cone port — CONE SHARDS; filter unified).**  P5 done + GPU-validated.
+P6: cone shards (increments A/B1–B4, committed — recon by slice ⇄ sinogram by view; banded
+reduce-scatter BACK + gather+monolithic FORWARD = decision C; CPU-validated end to end at DIVIDING
+counts via `tests/sharding/test_cone_sharded.py`).  **This session (full detail in the status TOP
+handoff 2026-06-14b — not duplicated here):** unified the FBP/FDK filter into one shared
+bounded/jitted/per-view-sharded codebase (cone's old unbounded FDK filter gone; `fdk_recon` now
+on-device like `fbp_recon`); a cone **n=1 forward single-call fix** (recovers XLA rematerialization,
+~32→16 GB at 1024³ n=1); a **`_gather_to_host` single-shard short-circuit** (single-GPU gather-at-exit
+no longer pays a host round trip); `jax.devices` consolidated behind `_device_setup`; and
+`cone_baseline_scaling.py` ruler-hardened.  **KEY lesson: most "regressions" we chased were RULER
+bugs** (device count not pinned; host input timed; the 4b21a3c2 gather-at-exit timed) — not the cone
+port.  All CPU-validated (full suite 165p @2dev, sharding 107p @4dev); staged for Greg's PyCharm
+commit.  Background: `p6_increment_b_design.md`.
 
 **KNOWN ISSUE — deferred to B5 (Greg's call; do NOT chase before B5).**  Flipping cone's
 `_supports_sharding()` enabled the geometry-agnostic P5 PADDING, but cone padding IS B5 (not done).
@@ -53,19 +43,24 @@ suite default is 2 → no padding → why CPU passed).  Cause: anisotropic cone 
 → 14 slices) padded 14→16 at 4 dev; the forward gather assembles the PADDED cylinder and the
 device-form padded shape leaks to tests that assume the real shape.  B5 fixes it.
 
-**Next (details in the status NEXT + `p6_increment_b_design.md`):**
-- **B4.4 (GPU — Greg running):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4) at
-  DIVIDING sizes (256/512/1024³ — no padding): per-device peak ~1/n_dev; the CAPACITY win (a 1024³
-  VCD that OOM'd single-device now fits sharded); the back horizontal-recompute penalty vs §8a.
-- **B4.5:** hoist the cone back horizontal fan ONLY if B4.4's penalty demands it (the pixel-batch-
-  outer loop reorder; deferred behind measurement).  We'll need to make precise what the comparison and criteria are.  
-- **B5 (inert padding for cone) — FIXES the 4 deferred tests.**  For cone: forward gather crop to
-  the real slice count (padded slices are zero → exact; prototyped+reverted in the B4.4 session);
-  reconcile device-form-vs-real shape in the geometry tests / the internal `sparse_back_project`
-  contract; consider a `_supports_slice_padding()` hook so the "B4 = dividing counts" contract is
-  explicit; the masks are mostly geometry-agnostic (done).
-- Then C (parallel conversion + delete the monolithic cone kernel + transitional branch) →
-  translation/multiaxis → retirement cascade → the multi-GPU user docs page.
+**Next (details in the status TOP handoff NEXT):**
+- **Daily regression-check tool — likely next (Greg's call):** a `cone_baseline_scaling` variant
+  sweeping ALL geometries × ops, writing a dated YAML and diffing vs the previous day's to flag
+  time/memory regressions.  Design + gotchas in the plan §Adjacent tasks ("Daily regression-check
+  tool") — memory + speedup-ratio + structural flags are the robust gates; record the git hash for
+  bisection.  Would have caught all three of this session's ruler/perf issues.
+- **GPU re-validation (Greg):** re-run cone+parallel `cone_baseline_scaling` / `fbp_filter_scaling`
+  with the ruler fixes — confirm the filter snaps back to prerelease numbers and the 1024³ cone VCD
+  fits; interpret the B4.4 sweep (per-device peak ~1/n_dev; the CAPACITY win; the back
+  horizontal-recompute penalty vs §8a).
+- **B4.5:** hoist the cone back horizontal fan ONLY if the B4.4 penalty demands it (deferred behind
+  measurement).
+- **B5 (inert padding for cone) — FIXES the 4 deferred tests** (see KNOWN ISSUE above): forward
+  gather crop to the real slice count; reconcile device-form-vs-real shape in the geometry tests /
+  the internal `sparse_back_project` contract; a `_supports_slice_padding()` hook so "B4 = dividing
+  counts" is explicit.
+- Then C (parallel conversion + delete the monolithic cone kernel) → translation/multiaxis →
+  retirement cascade → the multi-GPU user docs page.
 
 Reminders:
 - **Stage only / DRAFT commit messages; never run `git commit`** — I commit from PyCharm.

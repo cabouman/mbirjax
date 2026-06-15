@@ -19,6 +19,70 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-14b) — shared FBP/FDK filter; cone n=1 forward fix; single-shard gather short-circuit; ruler hardening (3 ruler bugs diagnosed)
+
+▶ **All CPU-validated (full suite 165p @2dev, sharding 107p @4dev); staged for Greg's PyCharm
+commit.  GPU validation pending (Greg).**  This session was mostly measurement/diagnosis — the key
+recurring lesson: the cone-vs-parallel filter/VCD "regressions" we chased were RULER bugs and one
+real (separate) library inefficiency, NOT the cone port.
+
+### Library changes (staged)
+- **Shared FBP/FDK filter codebase.**  `tomography_utils.apply_row_filter` gained an optional
+  `row_weight` (FDK cosine pre-weight, applied inside the bounded `lax.scan`; None = unchanged FBP).
+  New base method `TomographyModel._apply_direct_recon_filter` (filter scalar-fold + per-view-shard
+  `run_per_device` + apply_row_filter + output handling).  `ParallelBeamModel.fbp_filter` and
+  `ConeBeamModel.fdk_filter` both delegate (cone passes `filter_scale=alpha`, `row_weight=cosine`).
+  Cone's old FDK filter (out-of-place `sino*weight` copy + `filtered_sino_list`+concat + f64-promoting
+  `*=π/num_views` + eager Python loop, ~3–4× UNBOUNDED) is GONE → bounded ~2×, jitted, and **sharded
+  on-device** like parallel.  `fdk_recon` rewired to the on-device pipeline (entry shard →
+  `fdk_filter(output_sharded=True)` → `back_project(output_sharded=True)` → helical z-weight on the
+  slice-sharded recon → single exit); `helical_fdk_z_weight` now reads the real shape from params
+  (padding-safe).  Bit-exact across n=1/2/4 (filter), circular+helical; direct_recon ≤2.6e-7.
+- **Cone n=1 forward single-call fix** (`_forward_project_to_view_shards`): when `n_dev==1` the whole
+  cylinder is already local, so skip the per-pixel-batch gather loop and project in ONE inner call.
+  The loop's many small rigid dispatches defeat the XLA rematerialization the monolithic forward
+  relies on (static analysis: 1024³ n=1 one-shot ~16 GB realized vs the looped ~32 GB).  Fixes the
+  single-GPU forward memory; should un-OOM the 1024³ single-GPU VCD (cone was ~1.27× parallel's 64 GB
+  ≈ 82 GB; the forward wrapper + the unbounded FDK filter were the bulk of that 1.27×).
+- **`_gather_to_host` single-shard short-circuit.**  A sharded array with ONE addressable shard
+  (trivial 1-device mesh / any 1-GPU recon) now returns its on-device data directly instead of
+  `jnp.array(np.asarray(x))` (a full device→host→device round trip).  This was a REAL single-GPU
+  regression since the always-on placement path: `fbp_recon`/`direct_recon`/`direct_filter` gather at
+  exit, and every 1-GPU recon paid a host round trip the legacy path never did.  Multi-device path
+  (d2d-safe host gather) unchanged.
+- (Earlier in the session, already in the 2026-06-14 handoff below) `jax.devices()` consolidated
+  behind `_device_setup` accessors; dead `self.cpus` deleted.
+
+### The three RULER bugs we diagnosed (cone_baseline_scaling.py + fbp_filter_scaling.py)
+1. **Device count not pinned** (fixed 2026-06-14, below): every count re-measured the max-device run.
+2. **Host input timed**: `sino_np`/`cylinders` passed as numpy → host→device transfer + scatter
+   INSIDE the timing every trial.  Fix: `to_device()` pre-places on the device form (mirrors
+   `fbp_filter_scaling`'s `_shard_sinogram` "measure the op, not the scatter").
+3. **Gather-at-exit timed** (the big one, bisected to **4b21a3c2** — the P5 Stage-0 `output_sharded`
+   refactor): the scripts call the user-facing filter, whose default `output_sharded=False` GATHERS
+   via `_gather_to_host` (the host round trip above).  Fired even at n=1 → 8–12× slow + memory that
+   barely sharded (the gathered full sino sits on one device).  The filter COMPUTE is byte-identical
+   to prerelease; only the exit changed.  Fix: scripts call the filter with `output_sharded=True`
+   (`run_filter`/`run_fbp_filter`, with a `try/except TypeError` so they still run on prerelease).
+   Separately, the `_gather_to_host` short-circuit above fixes the underlying 1-GPU cost.
+
+### Scaling read (cone vs parallel, from the GPU runs before the ruler fixes — projectors unaffected)
+- BACK shards as well as parallel (3.9× vs 3.7× at 1024³/n4); FORWARD is the decision-C cost
+  (cone 2.8× vs parallel 4.7×; ~2.7× per-device memory — the gather replicates the recon).  Re-run
+  on GPU with the ruler fixes to confirm the filter snaps back and the projector times de-inflate.
+
+### NEXT
+- **Daily regression-check tool — likely next (Greg).**  Design + gotchas in the plan §Adjacent
+  tasks ("Daily regression-check tool").  Memory + speedup-ratio + structural flags are the robust
+  gates (absolute GPU time is noisy); record the git hash for bisection.  Would have caught all three
+  of this session's issues.
+- **GPU re-validation (Greg):** cone+parallel `cone_baseline_scaling` / `fbp_filter_scaling` with the
+  ruler fixes; confirm 1024³ cone VCD fits; interpret the B4.4 sweep.
+- **B5 (inert padding for cone)** — fixes the 4 deferred tests (see the top "Where we are" / the
+  KNOWN-ISSUE block in `.claude/initial_prompt.md`).  Then C → translation/multiaxis → retirement.
+
+---
+
 ## HANDOFF (2026-06-14) — cone_baseline_scaling "no scaling" = RULER bug, FIXED; jax.devices consolidated; scaling now reasonable (GPU+CPU)
 
 ▶ **Root cause: the SCRIPT, not the code.**  `cone_baseline_scaling.py`'s `build_and_time` never
