@@ -485,6 +485,49 @@ def _git_provenance(root):
             "git_dirty": bool(_g(["status", "--porcelain"]))}
 
 
+# ── Record book (best-ever per cell/metric + the commit that set it) ───────────
+# Categories tracked, and whether best is the MIN (time/memory) or MAX (speedup).
+RECORD_METRICS = {"min_ms": "min", "mem_mb": "min", "speedup": "max"}
+
+
+def update_records(records, cells, commit, date):
+    """Update the cumulative best-per-(cell, metric) record book IN PLACE and annotate cells.
+
+    ``records`` (loaded from records_<plat>.yaml, or {}) maps "geom|op|size|n_dev" -> per-metric
+    {value, commit, date, prev}.  For each MEASURED cell, every RECORD_METRICS metric is compared
+    against the stored best (min for time/memory, max for speedup): a first-ever value establishes
+    a baseline (silent); a value that BEATS the prior best overwrites it (keeping prev) and is a
+    "win" — the cell gains a ``new_records`` list naming the won metrics.  The trivial n=1 speedup
+    (always 1.0) is excluded.  Returns ``(new_lines, n_baselines)`` for the run summary.
+    """
+    new_lines, n_baselines = [], 0
+    for c in cells:
+        if c.get("failed") or c.get("skipped"):
+            continue
+        key = f"{c['geometry']}|{c['op']}|{c['size']}|{c['n_devices']}"
+        rec = records.setdefault(key, {})
+        won = []
+        for metric, direction in RECORD_METRICS.items():
+            if metric not in c:
+                continue
+            if metric == "speedup" and c["n_devices"] == 1:
+                continue   # trivially 1.0 at one device
+            val = float(c[metric])
+            cur = rec.get(metric)
+            if cur is None:
+                rec[metric] = {"value": val, "commit": commit, "date": date, "prev": None}
+                n_baselines += 1
+            elif (val < cur["value"] if direction == "min" else val > cur["value"]):
+                new_lines.append(f"  NEW RECORD  {key}  {metric}={val:.4g} "
+                                 f"(prev {cur['value']:.4g} @ {(cur.get('commit') or '?')[:8]})")
+                rec[metric] = {"value": val, "commit": commit, "date": date,
+                               "prev": cur["value"]}
+                won.append(metric)
+        if won:
+            c["new_records"] = won
+    return new_lines, n_baselines
+
+
 def _print_summary(cells):
     """Per (geometry, op): min time (ms) / peak mem (MB) / speedup, for each (size, n_dev)."""
     print("\n" + "=" * 78)
@@ -592,15 +635,35 @@ def run(config):
     if cfg_path and os.path.exists(cfg_path):
         os.remove(cfg_path)
 
+    prov = _git_provenance(sc.beta_root())
+
+    # Update the cumulative record book (best per cell/metric + the commit that set it).  It lives
+    # in out_dir, so nightly (results/regression/) and manual (results/manual/<tag>/) runs keep
+    # SEPARATE books.  Done before writing the dated YAML so its cells carry the per-cell
+    # `new_records` annotation; the records file itself, once versioned in mbirjax_metrics, has a
+    # git history that IS the record-progression log.
+    records_path = os.path.join(config.out_dir, f"records_{plat}.yaml")
+    records = (sc.load_yaml(records_path) or {}) if os.path.exists(records_path) else {}
+    new_lines, n_baselines = update_records(records, cells, prov.get("git_commit") or "?",
+                                            config.date)
+    sc.save_yaml(records_path, records)
+
     result = {
         "kind": "regression", "date": config.date, "platform": plat,
-        "device_label": dev_label, **_git_provenance(sc.beta_root()),
+        "device_label": dev_label, **prov,
         "config": config.to_dict(), "cells": cells,
     }
     out_path = os.path.join(config.out_dir, f"regression_{plat}_{config.date}.yaml")
     sc.save_yaml(out_path, result)
     _print_summary(cells)
+    if new_lines:
+        print(f"\n  {len(new_lines)} NEW RECORD(S) this run:")
+        for line in new_lines:
+            print(line)
+    elif n_baselines:
+        print(f"\n  established {n_baselines} baseline record(s) (first run for these cells)")
     print(f"\nOutput written to: {out_path}")
+    print(f"Record book:       {records_path}")
     print("Done.")
     return result
 
