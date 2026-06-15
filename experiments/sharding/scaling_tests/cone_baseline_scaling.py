@@ -188,6 +188,28 @@ def run_back(model, sino, pixel_indices):
     return model.sparse_back_project(sino, pixel_indices)
 
 
+def to_device(model, arr, kind):
+    """Pre-place a HOST input on the model's device form, OUTSIDE the timing loop.
+
+    The timed op must measure compute, not the host->device transfer + scatter that a
+    numpy input incurs on every call (fbp_filter_scaling does the same -- "measure the
+    op, not the scatter").  This matters most for the fast filter op, where the transfer
+    otherwise dominates; it also de-inflates the projector times.  ``kind`` is 'sino'
+    (view-sharded) or 'recon' (slice-sharded).  Falls back to a single-device device_put
+    on pre-sharding code (f23d3964), where the _shard_* helpers do not exist.  Blocks so
+    the transfer is fully complete before timing begins.
+    """
+    import jax
+    if kind == "sino" and hasattr(model, "_shard_sinogram"):
+        placed = model._shard_sinogram(arr)
+    elif kind == "recon" and hasattr(model, "_shard_recon"):
+        placed = model._shard_recon(arr)
+    else:
+        placed = jax.device_put(arr, model.main_device)
+    jax.block_until_ready(placed)
+    return placed
+
+
 def run_vcd(model, sino_np, weights, partitions, partition_sequence, max_iterations):
     """Timed op: one full VCD reconstruction (single device).
 
@@ -333,12 +355,20 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
             return None
         # Record which code path this row used (legacy vs sharded; back band count).
         path_by_n[n] = path_info(model, op, devs, num_pixels, num_slices)
+        # Pre-place the big host inputs on this config's device form OUTSIDE the timing
+        # loop, so time_op measures the op and not the per-call host->device transfer +
+        # scatter (see to_device).  idx is tiny (left on host); VCD keeps its numpy inputs
+        # since vcd_recon owns its entry placement and the one-time transfer is negligible
+        # against a minutes-long recon.
         if op == "direct_filter":
-            run_fn = lambda: run_filter(model, sino_np)
+            sino_dev = to_device(model, sino_np, "sino")
+            run_fn = lambda: run_filter(model, sino_dev)
         elif op == "forward":
-            run_fn = lambda: run_forward(model, cylinders, idx)
+            cyl_dev = to_device(model, cylinders, "recon")
+            run_fn = lambda: run_forward(model, cyl_dev, idx)
         elif op == "back":
-            run_fn = lambda: run_back(model, sino_np, idx)
+            sino_dev = to_device(model, sino_np, "sino")
+            run_fn = lambda: run_back(model, sino_dev, idx)
         else:
             model.setup_logger(print_logs=False)
             run_fn = lambda: run_vcd(model, sino_np, weights, partitions,
