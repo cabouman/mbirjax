@@ -112,8 +112,18 @@ def make_input(size, seed=0):
 
 
 def run_fbp_filter(model, sino):
-    """The timed op: filter a (pre-sharded if mesh) sinogram."""
-    return model.fbp_filter(sino)
+    """The timed op: filter a (pre-sharded if mesh) sinogram, kept in the device form.
+
+    ``output_sharded=True`` so we measure the FILTER, not the exit gather: post-4b21a3c2
+    the user-facing default gathers via _gather_to_host (a full device->host->device round
+    trip of the whole sinogram -- it fires even at n=1 since the trivial mesh is is_sharded,
+    and it dominates the fast filter / flattens the scaling).  Falls back to the plain call
+    on prerelease, whose internal fbp_filter has no output_sharded kwarg and already returns
+    the sharded form."""
+    try:
+        return model.fbp_filter(sino, output_sharded=True)
+    except TypeError:
+        return model.fbp_filter(sino)
 
 
 def parse_size_label(label):
