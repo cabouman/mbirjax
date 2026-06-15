@@ -400,24 +400,34 @@ derivable secondary tool (a `replot_from_yaml`-style reader), not a separate sou
 Carrying the plan's taxonomy forward (it is what actually regressed in the three 2026-06-14
 bugs):
 
+**Updated 2026-06-15 (as built — Greg's call): of the perf signals, only MEMORY hard-fails, and
+only on GPU.**  Speedup and absolute time are SOFT everywhere — both derive from timings, which are
+noisy even on GPU (especially small runs), so neither should fail the gate; memory alone is the
+HARD perf gate (deterministic `peak_bytes_in_use`, and it is what catches the gather-bug class —
+memory that fails to shard).  On CPU `mem_mb` is coarse whole-process RSS, so even memory is SOFT
+there.  Net: **HARD everywhere = correctness + structural + status + vanished-cell; HARD on GPU only
+= memory; SOFT everywhere = speedup, absolute time, CPU memory, config add/drop, improvements.**
+
 | Signal | Gate | Threshold (initial, tunable) |
 |---|---|---|
-| **Memory** `mem_mb` growth | **HARD** | > +8% vs prior or golden (GPU `peak_bytes_in_use` ~deterministic) |
-| **Structural** is_sharded flip / band-count change / OOM appears / cell expected-by-config-but-absent | **HARD** | any change (see §10a for the expected-vs-absent distinction) |
-| **Correctness** fingerprint | **HARD** | robust aggregates {sum,mean,l2norm} fail `allclose` (§7); a small fraction of out-of-tol points is ALLOWED (lax.map/scatter bug); shape/dtype exact |
-| **Speedup-ratio** n=1 vs n=max | **HARD** | drops > 15% (normalizes out absolute-time noise) |
-| **New unit-test failure** (in today's set, absent from the prior day's) | **HARD** | any |
-| **Cell status ok→fail** (passed in prior/golden, now raises/OOMs) | **HARD** | any (persistent fail→fail is a quiet known wart; fail→ok is a WARN "improved"; §10a) |
+| **Correctness** fingerprint | **HARD (all platforms)** | robust aggregates {sum,mean,l2norm} fail `allclose` (§7); a small fraction of out-of-tol points is ALLOWED (lax.map/scatter bug); shape/dtype exact |
+| **Structural** is_sharded flip / band-count change / OOM appears / cell expected-by-config-but-absent | **HARD (all platforms)** | any change (see §10a for the expected-vs-absent distinction) |
+| **Cell status ok→fail** (passed in prior/golden, now raises/OOMs) | **HARD (all platforms)** | any (persistent fail→fail is a quiet known wart; fail→ok is a WARN "improved"; §10a) |
+| **New unit-test failure** (in today's set, absent from the prior day's) | **HARD (all platforms)** | any |
+| **Memory** `mem_mb` growth | **HARD on GPU / SOFT on CPU** | > +8% (GPU `peak_bytes_in_use` ~deterministic; CPU is coarse RSS) |
+| **Speedup-ratio** drop | **SOFT (warn)** | > 15% — a ratio of noisy timings; noisy even on GPU |
+| **Absolute time** `min_ms` | **SOFT (warn)** | > +25% — GPU run-to-run variance is ~1.9× for cone back |
 | **Sweep-set change** (geometry / op / size / device-count added or dropped in `config`) | **SOFT (warn)** | any — intentional config change, not a regression (see §10a) |
-| **Absolute time** `min_ms` | **SOFT (warn)** | > +25% — GPU run-to-run variance is ~1.9× for cone back; a hard gate would false-alarm |
 
+- **Every reported delta shows BOTH the absolute and the percentage difference vs expected** (e.g.
+  `memory 1100 MB vs 1000 MB expected (+100 MB, +10.0%)`), so a reader can judge importance — a big
+  % on a tiny absolute is often noise, and vice versa.
 - **Compare to:** (a) most-recent-prior dated file [sudden breaks] AND (b) committed golden
-  [cumulative drift].  Report per-cell deltas.
+  [cumulative drift].
 - **Exit code:** non-zero on any HARD fail → cron/slurm surfaces it (MAILTO / `--mail-user`).
   WARN-only → exit 0 but flagged in the report.  Manual runs default `gate=false` (exit 0).
-- **CPU caveat encoded in the report:** on CPU `peak_memory_mb` is whole-process RSS, not
-  per-device (`scaling_common.py:617`), so the CPU memory gate is a coarser total-RSS check and
-  per-device sharding memory is not observable there.  The memory gate is sharpest on GPU.
+- **CPU caveat:** on CPU `peak_memory_mb` is whole-process RSS, not per-device
+  (`scaling_common.py:617`); the memory gate is sharpest on GPU (hence HARD only there).
 
 ### 10a. Sweep-set reconciliation — graceful add/drop of a geometry, op, size, or device count
 
@@ -613,6 +623,12 @@ survives login-node rotation.  Helpers mirror the Mac:
   speedup-ratio gate at real sizes incl. the 1024-class capacity sweep.
 - **P7 (deferred)** — `compare_to_baseline.py` (local `.npy` deep diff against the in-repo
   golden array — no webserver) + a drift time-series reader/plot over `results/<plat>/`.
+- **Visual interrogation surface (deferred, details TBD — Greg, 2026-06-15).**  The YAML time
+  series + record book want a human-friendly way to explore: a spreadsheet export, a static
+  browser page, and/or plots (time/memory/speedup vs date, per cell; record progression; the
+  latest gate report).  This is the read/analysis side that complements the write side we are
+  building now — scope and tooling to be decided later (likely reads `results/<plat>/*.yaml` +
+  `records_<plat>.yaml`, so the file formats already carry everything it needs).
 
 ---
 

@@ -875,6 +875,65 @@ def run(config):
     return result
 
 
+# ── Golden capture (the reference the gate compares against) ───────────────────
+def _merge_golden(existing, fresh, only):
+    """Selective refresh: replace the captured (geometry, op) cells, keep the rest of the golden.
+
+    Existing metadata is preserved; a ``refresh_log`` entry records what was recaptured, when, and
+    at which commit — the deliberate-baseline-change audit trail."""
+    fresh_gos = {(c["geometry"], c["op"]) for c in fresh.get("cells", [])}
+    kept = [c for c in (existing.get("cells") or []) if (c["geometry"], c["op"]) not in fresh_gos]
+    merged = dict(existing)
+    merged["kind"] = "golden"
+    merged["cells"] = kept + fresh.get("cells", [])
+    merged.setdefault("refresh_log", []).append(
+        {"date": fresh.get("date"), "commit": fresh.get("git_commit"), "only": list(only)})
+    return merged
+
+
+def capture_golden(config, golden_dir, only=None):
+    """Capture (or selectively refresh) the golden reference, written to golden_<plat>.yaml.
+
+    Runs the sweep with the gate + prior-comparison OFF (the golden IS the reference, not a tracked
+    run).  ``only`` (a list of geometry and/or op names) limits the capture to a subset and MERGES
+    it into the existing golden — additive refresh for a newly-ported geometry or an intentional
+    baseline change, leaving the other cells untouched; None -> full capture (overwrite).  The
+    capture run's dated/records files go to a throwaway temp dir.  (The representative .npy
+    deep-diff array + the push to mbirjax_metrics are the operational layer, deferred.)
+    """
+    import tempfile
+    import shutil
+    cap = Config.from_dict(config.to_dict())
+    cap.gate = False
+    cap.compare_to_prior = False
+    cap.golden_path = ""
+    cap.date = "golden"
+    cap.out_dir = tempfile.mkdtemp(prefix="golden_capture_")
+    if only:
+        geoms = [g for g in cap.geometries if g in only]
+        ops = [o for o in cap.ops if o in only]
+        if geoms:
+            cap.geometries = geoms
+        if ops:
+            cap.ops = ops
+    try:
+        result = run(cap)
+    finally:
+        shutil.rmtree(cap.out_dir, ignore_errors=True)
+    if result is None:
+        return None
+    result["kind"] = "golden"
+    os.makedirs(golden_dir, exist_ok=True)
+    golden_path = os.path.join(golden_dir, f"golden_{result['platform']}.yaml")
+    if only and os.path.exists(golden_path):
+        sc.save_yaml(golden_path, _merge_golden(sc.load_yaml(golden_path) or {}, result, only))
+        print(f"\nGolden REFRESHED ({','.join(only)}): {golden_path}")
+    else:
+        sc.save_yaml(golden_path, result)
+        print(f"\nGolden captured: {golden_path}")
+    return golden_path
+
+
 def main():
     """Default entry: the nightly config, dated today, into results/regression/.
 
