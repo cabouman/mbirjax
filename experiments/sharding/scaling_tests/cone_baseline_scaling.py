@@ -59,7 +59,7 @@ import numpy as np
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
 # Geometry under test.  'cone' is the P6 target; 'parallel' reproduces the
 # single-device parallel reference with identical timing discipline.
-GEOMETRY = "cone"
+GEOMETRY = "parallel"
 
 # Device counts to sweep.  Each (op, size) worker measures every count the hardware
 # has, PINNING each with model.configure_devices() (see build_and_time).  A count that
@@ -68,7 +68,7 @@ GEOMETRY = "cone"
 DEVICE_COUNTS = [1, 2, 4]
 
 # Ops to measure (each its own fresh worker per size).
-OPS = ("forward", "back", "vcd_const")
+OPS = ("direct_filter", )  #, "forward", "back", "vcd_const")
 
 # Ops that run a full VCD recon (subject to the VCD_MIN_DEVICES skip below).
 VCD_OPS = ("vcd_const",)
@@ -102,7 +102,7 @@ WARMUP = 1
 # cone-specific change), are cheap, and benefit from a min-of-a-few; VCD is a
 # long correctness/INTEGRATION anchor (NOT a scaling ruler — few iters
 # under-amortize fixed per-recon overhead), so one timed pass suffices.
-TRIALS_BY_OP = {"forward": 3, "back": 3, "vcd_const": 1}
+TRIALS_BY_OP = {"forward": 3, "back": 3, "vcd_const": 1, "direct_filter": 3}
 # VCD iterations per timed recon.  Kept small: VCD here checks that the integrated
 # recon is correct/bounded, not how it scales (see the §8a ruler note).
 MAX_ITERATIONS = 3
@@ -172,6 +172,10 @@ def build_partitions(model, sino_np, weights, max_iterations):
      _granularity, _reg) = model.initialize_recon(
         sino_np, weights=weights, max_iterations=max_iterations, print_logs=False)
     return partitions, partition_sequence
+
+def run_filter(model, sino):
+    """Timed op: single-device direct filter."""
+    return model.direct_filter(sino)
 
 
 def run_forward(model, cylinders, pixel_indices):
@@ -329,7 +333,9 @@ def worker_measure(op, size_label, device_counts, warmup, trials, out_file):
             return None
         # Record which code path this row used (legacy vs sharded; back band count).
         path_by_n[n] = path_info(model, op, devs, num_pixels, num_slices)
-        if op == "forward":
+        if op == "direct_filter":
+            run_fn = lambda: run_filter(model, sino_np)
+        elif op == "forward":
             run_fn = lambda: run_forward(model, cylinders, idx)
         elif op == "back":
             run_fn = lambda: run_back(model, sino_np, idx)
