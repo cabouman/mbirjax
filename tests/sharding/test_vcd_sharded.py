@@ -253,6 +253,7 @@ class TestShardedRecon(unittest.TestCase):
             # per partition instead of per subset and is exact except at gen_pixel_partition's few
             # replicated pixels.
             model._vcd_halo_per_subset = halo_per_subset
+        model.set_params(verbose=0)  # Silence warnings about background
         recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0,  # run all iters, no early stop
                                print_logs=False)
@@ -436,6 +437,7 @@ class TestShardedReconKeepsSharding(unittest.TestCase):
             model.configure_sharding(devs)
             sino = _phantom_sino(model)
             np.random.seed(0)
+            model.set_params(verbose=0)  # Silence warnings about background
             (sino2, weights, init_recon, partitions, partition_sequence,
              _granularity, _reg) = model.initialize_recon(sino, max_iterations=4, print_logs=False)
             recon, _stats = model.vcd_recon(
@@ -475,6 +477,7 @@ class TestShardedProx(unittest.TestCase):
 
     def _prox(self, model, sino, prox_input, seed=0):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
+        model.set_params(verbose=0)  # Silence warnings about background
         recon, _ = model.prox_map(prox_input, sino, max_iterations=self.MAX_ITERS,
                                   stop_threshold_change_pct=0.0,  # run all iters, no early stop
                                   print_logs=False)

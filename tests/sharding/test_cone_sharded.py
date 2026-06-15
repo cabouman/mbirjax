@@ -129,6 +129,7 @@ class TestConeShardedRecon(unittest.TestCase):
         if model.mesh is not None:
             # Re-extract halos every subset -> the exact prior path (reproduces single-device).
             model._vcd_halo_per_subset = True
+        model.set_params(verbose=0)  # Silence warnings about background
         recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0, print_logs=False)
         return np.asarray(recon)

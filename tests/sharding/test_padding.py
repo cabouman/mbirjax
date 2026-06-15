@@ -249,6 +249,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
                 sino, weights = model.prepare_sino_for_devices(sino, weights)
             else:
                 sino = model.prepare_sino_for_devices(sino)
+        model.set_params(verbose=0)  # Silence warnings about background
         recon, _ = model.recon(sino, weights=weights, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0, print_logs=False)
         return np.asarray(recon)
@@ -390,6 +391,7 @@ class TestPaddedSlices(unittest.TestCase):
             # test_vcd_sharded).  This test gates the PADDING machinery at 1e-4, so it
             # must not absorb that unrelated approximation.
             model._vcd_halo_per_subset = True
+        model.set_params(verbose=0)  # Silence warnings about background
         recon, _ = model.recon(sino, weights=weights, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0, print_logs=False)
         return np.asarray(recon)
@@ -433,6 +435,7 @@ class TestPaddedSlices(unittest.TestCase):
             self.assertTrue(np.all(back_np[..., self.NUM_ROWS:] == 0.0),
                             msg=f"back-projection padded slices not exactly zero at n_dev={n}")
             np.random.seed(0)
+            model.set_params(verbose=0)  # Silence warnings about background
             recon, _ = model.recon(sino, max_iterations=3, stop_threshold_change_pct=0.0,
                                    print_logs=False, output_sharded=True)
             recon_np = np.asarray(recon)
