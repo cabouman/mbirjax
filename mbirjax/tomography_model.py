@@ -580,6 +580,17 @@ class TomographyModel(ParameterHandler):
         """
         if not self.is_sharded:
             return x
+        # Single shard (e.g. the trivial 1-device mesh, or any 1-GPU recon): the array
+        # already lives on one device, so there is nothing to gather -- return its
+        # on-device data directly and skip the device->host->device round trip below.
+        # Without this a single-GPU gather-at-exit (the fbp_recon/direct_recon/direct_filter
+        # default) pays a full host round trip the legacy single-device path never did.
+        shards = x.addressable_shards
+        if len(shards) == 1:
+            return shards[0].data
+        # Multi-device: read all shards to a contiguous host buffer (the d2d-safe path,
+        # safe even where device-to-device writes are not) and re-wrap as an uncommitted
+        # array, leaving JAX free to place it for downstream ops.
         return jnp.array(np.asarray(x))
 
     def _shard_sinogram(self, sinogram):
