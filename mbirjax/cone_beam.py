@@ -1099,7 +1099,9 @@ class ConeBeamModel(TomographyModel):
         helical_z_shifts = self.get_params('view_params_array')[:, 1]
         z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
         if z_range > 0:
-            warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
+            from mbirjax._utils import _called_by
+            if not _called_by('vcd_recon') and self.get_params('verbose') > 0:
+                warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
             recon = self.helical_fdk_z_weight(recon, sinogram)
 
         # Single place the output form is decided.

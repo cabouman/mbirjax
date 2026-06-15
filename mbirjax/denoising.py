@@ -198,7 +198,11 @@ class QGGMRFDenoiser(TomographyModel):
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
 
         self.logger.info('Initializing QGGMRFDenoiser')
+        # Disable warning about background estimation
+        verbose = self.get_params('verbose')
+        self.set_params(verbose=0)
         regularization_params = self.auto_set_regularization_params(image)
+        self.set_params(verbose=verbose)
 
         # Generate set of voxel partitions
         image_shape, granularity = self.get_params(['recon_shape', 'granularity'])

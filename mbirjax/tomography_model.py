@@ -2477,8 +2477,7 @@ class TomographyModel(ParameterHandler):
 
         return voxel_values
 
-    @staticmethod
-    def _get_sino_indicator(sinogram):
+    def _get_sino_indicator(self, sinogram):
         """
         Compute a binary mask that indicates the region of sinogram support.
 
@@ -2508,7 +2507,8 @@ class TomographyModel(ParameterHandler):
             return indicator
 
         if max_sino < threshold:
-            warnings.warn('\nUnable to determine sinogram background. This may affect regularization.\n')
+            if self.get_params('verbose') > 0:
+                warnings.warn('\nUnable to determine sinogram background. This may affect regularization.\n')
             indicator = np.ones_like(sinogram, dtype=np.int8)
             return indicator
 
