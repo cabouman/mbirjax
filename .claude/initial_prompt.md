@@ -1,3 +1,33 @@
+We're mid-investigation on the mbirjax performance-tracking toolchain (branch `greg/conebeam_sharding`). 
+First read, in order:
+
+`experiments/sharding/plans/sharding_status.md` — the TOP HANDOFF (2026-06-15) describes the now-built 
+toolchain in `experiments/sharding/scaling_tests/` (engine `performance_tracking.py` + fingerprint + records + 
+diff/gate + `capture_golden.py` + `capture_main_baseline.py`; usage in that dir's README.md; design in 
+`plans/performance_tracking_plan.md`).
+
+In that same handoff, the "OPEN INVESTIGATION (2026-06-15) — cone back 1-device GPU penalty" block is 
+the active thread. Read it fully — it has the finding (cone back 1-device is +126–136% slower than main 
+on GPU; propagates to cone vcd), the pipeline map (`sparse_back_project` dispatches is_sharded → sharded 
+banded-reduce-scatter vs single-device path; the perf model is sharded even at 1 device), the CPU A/B 
+result (sharded path is 7.5× faster on CPU → the penalty is GPU-specific), and the GPU A/B to run with 
+its A>B vs A≈B decision tree.
+
+Immediate next step: Evaluate the GPU A/B cluster results (A sharded=1455.7  B single_device=1003.3  ratio=1.45). 
+Interpret it per the decision tree (while maintaining an open mind to anomalies/alternate explanations): 
+A>B ⇒ the sharded driver is the penalty ⇒ propose an n=1 short-circuit 
+(route a trivial 1-device mesh to `_sparse_back_project_single_device`, mirroring the forward n=1 fix, 
+honoring the slice-sharded output contract); A≈B ⇒ the kernel change ⇒ follow-up B-vs-main in a main 
+worktree.  Also consider if we need to investigate memory differences main vs 1-device sharded. 
+
+In general, verify all code claims against the current files (the memory/docs may lag). Finally, read the collaboration 
+style + workflow: `.claude/claude_prompt.md` (propose before editing, minimal localized changes, 
+suspect the ruler before the code, maintain curiosity and collaborative partnership).
+
+
+-----
+Previous version: 
+
 This is the mbirjax CT reconstruction project — multi-GPU/CPU sharding work in the
 `mbirjax` worktree on branch `greg/conebeam_sharding`.
 
