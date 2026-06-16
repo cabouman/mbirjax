@@ -27,7 +27,9 @@ import scaling_common as sc
 
 
 # ── CONFIG (edit here) ────────────────────────────────────────────────────────
-GOLDEN_DIR = os.path.join(sc.RESULTS_DIR, "golden")   # later: <mbirjax_metrics>/golden/
+# Run from the metrics repo's tooling -> writes <metrics>/golden/ (tracked; review + push).
+# Run from the mbirjax checkout -> local results/golden/ (scratch).  REG_GOLDEN_DIR overrides.
+GOLDEN_DIR = sc.golden_dir(__file__)
 ONLY = None        # None -> full capture (overwrite); or e.g. ["cone"] / ["direct_filter"]
                    # / ["cone", "vcd_nonconst"] -> recapture just those cells, merge into golden
 

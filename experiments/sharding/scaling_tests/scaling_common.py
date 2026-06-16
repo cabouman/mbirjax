@@ -246,6 +246,25 @@ def beta_root():
                                         os.pardir, os.pardir, os.pardir))
 
 
+def golden_dir(script_file):
+    """Resolve where golden/baseline files are written, by WHERE the caller runs from.
+
+    * ``REG_GOLDEN_DIR`` (env) wins (the nightly wrapper sets it).
+    * Deployed in the metrics repo (``<metrics>/tooling/scaling_tests/<script>``) -> ``<metrics>/golden/``
+      -- a TRACKED location: run capture there, then review + push the metrics repo.
+    * The mbirjax checkout (``experiments/sharding/scaling_tests/<script>``) -> local
+      ``results/golden/`` -- scratch (gitignored in mbirjax), so a dev capture never touches metrics.
+    Pass the caller's ``__file__``.
+    """
+    env = os.environ.get("REG_GOLDEN_DIR")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(script_file))
+    if os.path.basename(os.path.dirname(here)) == "tooling":
+        return os.path.abspath(os.path.join(here, os.pardir, os.pardir, "golden"))
+    return os.path.join(RESULTS_DIR, "golden")
+
+
 def build_worker_env(mem_fraction=0.9, preallocate=True, lib_root=None):
     """Orchestrator side: the environment every worker subprocess inherits.
 

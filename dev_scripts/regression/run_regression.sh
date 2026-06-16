@@ -126,10 +126,10 @@ for i in "${!CHANGED_BR[@]}"; do
       # run_tests.sh uses a path RELATIVE to dev_scripts/ (`python -m pytest -n 10 ../tests`), so it
       # MUST be invoked from there or it collects 0 tests (../tests would resolve outside the clone).
       ( cd "$WT/dev_scripts" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" bash run_tests.sh ) \
-        >"$OUT/tests_${PLAT}_${DATE}.log" 2>&1 || log "$BR: tests reported failures (non-fatal)."
+        >"$OUT/tests_${PLAT}_${DATE}.txt" 2>&1 || log "$BR: tests reported failures (non-fatal)."
     else
       ( cd "$WT" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" python -m pytest tests -q -n 10 ) \
-        >"$OUT/tests_${PLAT}_${DATE}.log" 2>&1 || log "$BR: tests reported failures (non-fatal)."
+        >"$OUT/tests_${PLAT}_${DATE}.txt" 2>&1 || log "$BR: tests reported failures (non-fatal)."
     fi
   fi
 
@@ -154,6 +154,16 @@ done
 # the paths don't overlap) and retry.  If the push ultimately fails (auth/network), this run's
 # results+state simply aren't persisted — which SELF-HEALS: next run sees no new state and re-measures.
 git -C "$METRICS_REPO" add results state >/dev/null 2>&1 || true
+# Size cap (backstop): unstage any staged file larger than MAX_PUSH_FILE_MB so a stray large
+# artifact can never be pushed.  Normal outputs (YAML/.txt/.npy) are well under this.
+git -C "$METRICS_REPO" diff --cached --name-only 2>/dev/null | while IFS= read -r f; do
+  [ -f "$METRICS_REPO/$f" ] || continue
+  mb=$(( $(wc -c <"$METRICS_REPO/$f") / 1048576 ))
+  if [ "$mb" -gt "${MAX_PUSH_FILE_MB:-25}" ]; then
+    git -C "$METRICS_REPO" reset -q -- "$f"
+    log "WARN: not pushing oversized file ($mb MB > ${MAX_PUSH_FILE_MB:-25} MB): $f"
+  fi
+done
 CHANGED_SUMMARY="$(IFS=,; echo "${CHANGED_BR[*]}")"
 if git -C "$METRICS_REPO" commit -q -m "regression $PLAT $DATE [$CHANGED_SUMMARY]" >/dev/null 2>&1; then
   pushed=0

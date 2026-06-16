@@ -38,7 +38,9 @@ import performance_tracking as pt   # module-level is JAX-free; functions import
 
 
 # ── CONFIG (edit here) ────────────────────────────────────────────────────────
-GOLDEN_DIR = os.path.join(sc.RESULTS_DIR, "golden")     # later: <mbirjax_metrics>/golden/
+# Run from the metrics repo's tooling -> writes <metrics>/golden/ (tracked; review + push).
+# Run from the mbirjax checkout -> local results/golden/ (scratch).  REG_GOLDEN_DIR overrides.
+GOLDEN_DIR = sc.golden_dir(__file__)
 GEOMETRIES = ["parallel", "cone"]
 OPS = ["direct_filter", "forward", "back", "vcd_nonconst"]
 # Small representative size for the .npy correctness array (~1 MB); the timing/memory sweep uses

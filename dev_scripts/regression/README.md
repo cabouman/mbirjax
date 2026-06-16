@@ -15,7 +15,7 @@ regressions. CPU runs on a Mac (launchd); GPU runs on the cluster (slurm/scronta
   tooling/regression/      this wrapper: run_regression.sh, regression.env, enable/disable,
                            com.mbirjax.regression.plist, cluster_preamble.sh.example, README.md
   golden/                  golden_<plat>.yaml, main_baseline_<plat>.yaml, <geom>_<op>.npy
-  results/<plat>/<branch>/ regression_<plat>_<date>.yaml  (the time series) + tests_*.log
+  results/<plat>/<branch>/ regression_<plat>_<date>.yaml  (the time series) + tests_*.txt
   state/<plat>/<branch>    last MEASURED commit per branch (fire-on-change)
   ```
   The harness is **authored in the mbirjax tree** (`experiments/sharding/scaling_tests/` +
