@@ -157,8 +157,20 @@ with correctness / memory / timing gates (Greg's request).*
   - **B4.4 NEXT (GPU — Greg running):** `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4)
     at DIVIDING sizes: per-device peak ~1/n_dev; the CAPACITY win (a 1024³ VCD that OOM'd
     single-device now fits sharded); the back horizontal-recompute penalty vs §8a.
-  - **B4.5:** hoist the cone back horizontal fan ONLY if B4.4's penalty demands it (pixel-batch-
-    outer loop reorder; deferred behind measurement).
+  - **B4.5 (REFRAMED 2026-06-16, GPU-confirmed):** the band (reduce-scatter) kernel is **~2.25× slower
+    than the monolithic pixel kernel ON GPU** — now the limiter of multi-device back scaling (n=2 back is
+    SLOWER than n=1; crossover at n≈2.25, so ≥3 GPUs are needed before sharding back pays in TIME; VCD
+    stays monotonic only because the forward parallelizes and masks it).  The n=1 case is already handled
+    by the GPU-only n=1 back short-circuit (single-GPU → the pixel kernel; see sharding_status.md
+    2026-06-16 handoff + lessons.md "Platform-divergent back-projection kernel").
+    **KEY TAKEAWAY — the two kernels are PLATFORM-OPPOSITE:** GPU loves the rolled-pixel structure (the
+    single-band kernel is 2.25× slower there); CPU loves the single-band kernel (the rolled-pixel
+    `lax.map`+transpose hits the ×62 back-vertical cache cliff, ~8× slower).  So **B4.5 is NOT just
+    "hoist the horizontal fan"** — it is "make the band kernel GPU-competitive (e.g. a rolled /
+    pixel-like internal vertical structure) WITHOUT reintroducing the CPU cliff."  A single kernel that
+    is fast on BOTH is the real design challenge; absent that, platform-specific kernel selection (what
+    the n=1 short-circuit already does) is the fallback pattern.  Horizontal-fan hoist is one sub-idea,
+    pursued only if the per-band recompute (at multi-band sizes) is shown to dominate the band-kernel cost.
   - **B5 (inert padding for cone) — FIXES the 4 deferred failures.**  Cone scope: (1) forward
     gather CROP to the real slice count (padded slices are zero → exact; PROTOTYPED + REVERTED in
     the B4.4 session — `_forward_project_to_view_shards`, crop `full_cyl[:, :recon_placement.
