@@ -910,9 +910,9 @@ def compute_weight(blank_scan, obj_scan, dark_region_ratio=0.6, safety_buffer=20
 
     # Add a safety buffer around dark boundary regions
     if safety_buffer > 0:
-        padded = np.pad(weight_mask_2d, safety_buffer, mode='constant', constant_values=True)
-        padded = binary_erosion(padded, iterations=safety_buffer)
-        weight_mask_2d = padded[safety_buffer:-safety_buffer, safety_buffer:-safety_buffer]
+        padded_mask = np.pad(weight_mask_2d, safety_buffer, mode='constant', constant_values=True)
+        padded_mask = binary_erosion(padded_mask, iterations=safety_buffer)
+        weight_mask_2d = padded_mask[safety_buffer:-safety_buffer, safety_buffer:-safety_buffer]
 
     # Broadcast the same mask to all views
     weight_mask = np.broadcast_to(
