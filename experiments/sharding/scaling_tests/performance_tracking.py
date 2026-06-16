@@ -67,8 +67,6 @@ class Config:
     })
     # Sizes where every op runs trials=1 (capacity/memory check, not a timing ruler).
     single_trial_sizes: list = field(default_factory=lambda: ["1024x1008x992"])
-    # Smallest device count to ATTEMPT for VCD at a size known to OOM below it (let it OOM once).
-    vcd_min_devices: dict = field(default_factory=lambda: {"1024x1008x992": 2})
 
     # vcd (not yet wired up)
     vcd_iterations: int = 3
@@ -375,13 +373,10 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
     skips = []
 
     def build_and_time(n, devs):
-        # Deliberate skip: a VCD config known to OOM below a device floor (avoid an hour of
-        # near-OOM thrash before the inevitable OOM).  Recorded as a skip, not a failure.
-        if op == "vcd_nonconst" and n < config.vcd_min_devices.get(size_label, 1):
-            reason = f"below vcd_min_devices={config.vcd_min_devices.get(size_label)} (known OOM)"
-            skips.append({"n_devices": n, "reason": reason})
-            print(f"  n_devices={n}: skipping {op} at {size_label} ({reason})")
-            return None
+        # We do NOT pre-skip any (size, count) we expect to OOM (Greg's call): the run_measure_loop
+        # descent already handles it — an OOM at device count n stops the descent, skipping the
+        # smaller counts (which need MORE per-device memory and would also OOM).  So an OOM is just
+        # recorded as a failure cell; nightly runs let it go until done.
         model = make_model(config, geometry, size)
         # Pin EXACTLY these n devices, so the model runs on the same devices peak_memory_mb(devs)
         # reads.  Without this the model auto-shards across ALL devices at construction.
@@ -396,8 +391,7 @@ def measure_cell_group(config, geometry, op, size_label, device_counts, out_file
         # 49->50 views, 41->42 slices).  No allowlist: the gate fires only on a CHANGE in cell
         # status vs the prior day / golden, so a persistent known failure stays a visible wart
         # without alarming, and the fix surfaces as a fail->ok improvement (prompting a deliberate
-        # golden re-capture).  The vcd_min_devices OOM-floor remains a deliberate skip (avoid an
-        # hour of OOM thrash) — a different case.
+        # golden re-capture).
         path_by_n[n] = path_info(model, op, devs, num_pixels, num_slices)
         # Pre-place big host inputs on this config's device form OUTSIDE the timing loop.
         if op == "direct_filter":
