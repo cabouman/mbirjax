@@ -1910,6 +1910,27 @@ class TomographyModel(ParameterHandler):
             jax array of shape (len(pixel_indices), num_slices), slice-sharded
             across the mesh.
         """
+        # n=1 GPU short-circuit.  A single-GPU mesh has nothing to reduce-scatter, and the
+        # banded reduce-scatter KERNEL (back_project_one_view_to_band) is ~2.25x slower than the
+        # monolithic single-device kernel (back_project_one_view_to_pixel_batch) ON GPU -- measured
+        # (cone, 512^3/1024^3): the sharded *driver* overhead is ~0 (a driver-less band loop ties
+        # the full sharded path to 1.00x), so the cost is the band kernel itself.  So route to the
+        # single-device path and wrap its output as a 1-shard slice-sharded array to honor the
+        # output contract (metadata only, no copy; padded_size == the real slice count at n=1).
+        # GPU ONLY: on CPU the SAME band kernel is ~8x FASTER -- it avoids the single-device
+        # back-vertical cache cliff -- so CPU keeps the sharded path.  (The two kernels have
+        # OPPOSITE platform rankings; see the platform-divergent back-kernel lesson in lessons.md.)
+        # Guarded on view_indices is None so a (future) view-subset request still falls through to
+        # the setup below, which rejects it -- the single-device path would silently ignore it.
+        if (view_indices is None and len(self.recon_placement.devices) == 1
+                and self.recon_placement.devices[0].platform == 'gpu'):
+            owner = self.recon_placement.devices[0]
+            out = self._sparse_back_project_single_device(
+                sinogram, pixel_indices, coeff_power=coeff_power, output_device=owner)
+            return mjs.assemble_sharded(
+                [out], (len(pixel_indices), self.recon_placement.padded_size),
+                self.recon_placement.shard_structure(2))
+
         devices, n_dev, num_slices, num_pixels, shard_info, local_pixels = \
             self._sharded_back_project_setup(sinogram, pixel_indices, view_indices)
 

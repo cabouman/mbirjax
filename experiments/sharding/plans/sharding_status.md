@@ -19,6 +19,26 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-16) — cone back 1-device GPU penalty RESOLVED: GPU-only n=1 back short-circuit implemented
+
+▶ **The cone `back` 1-device GPU penalty (the OPEN INVESTIGATION below) is RESOLVED; fix staged.**
+Root cause: at n=1 the sharded path runs the cone BAND kernel (`back_project_one_view_to_band`), which
+is **~2.25× slower than the monolithic single-device kernel ON GPU** — the sharded *driver* overhead is
+~0 (a driver-less band loop ties the full sharded path at 1.00×).  On CPU the SAME band kernel is **~8×
+FASTER** (it avoids the back-vertical ×62 cache cliff that the single-device kernel's `lax.map`+transpose
+hits).  The two kernels have OPPOSITE platform rankings — no single kernel wins both.  **Fix: a GPU-only
+n=1 short-circuit** in `_sparse_back_project_sharded` routes a single-GPU mesh to
+`_sparse_back_project_single_device` and wraps the output as a 1-shard slice-sharded array (metadata
+only); CPU keeps the band path.  Net = pixel kernel on GPU, band kernel on CPU (platform-optimal).
+**Validated (CPU):** wrap is bit-identical + same sharding to the band path; `tests/sharding/` 107p/2s
+green @4 dev.  **Memory:** B-back ≤ main-back (== at 1024³ = 21 GB; the band path's 12.5 GB is a *bonus*
+over main), so single-GPU capacity = main — **watch nonc-VCD 1024³ via the perf-tracking tool** rather
+than gating on it.  Tool added: `scaling_tests/cone_back_ab_memory.py` (A/B + per-config peak memory +
+driver-less kernel isolation).  Full write-up + the two ruler bugs that hid it: `.claude/lessons.md`
+"Platform-divergent back-projection kernel" (2026-06-16); see the RESOLVED block below.
+
+---
+
 ## HANDOFF (2026-06-15) — performance-tracking toolchain built (regression engine + golden + main baseline); VCD partition non-reproducibility found + fixed
 
 ▶ **A standing day-over-day regression tool now exists and is CPU-validated.**  Design:
@@ -62,7 +82,22 @@ baseline + GPU shakeout when his GPU request fills, then re-capture the GPU gold
 enable/disable, launchd/scrontab); then `compare_to_baseline.py` (deep-diff using the `.npy`,
 deferred) and a visual interrogation surface (deferred).
 
-### OPEN INVESTIGATION (2026-06-15) — cone back 1-device GPU penalty vs main
+### RESOLVED (2026-06-16) — cone back 1-device GPU penalty → GPU-only n=1 short-circuit
+
+**RESOLUTION (2026-06-16):** Implemented a GPU-only n=1 back short-circuit (see the top handoff).  The
+GPU A/B, fed the **already-on-device** sinogram (the original snippet below timed B's host→device
+transfer — a RULER BUG), gives A=1456 / B=647 / **main=642** → **A/B = 2.25, and B ≈ main (+1%)**: the
+branch kernel is GPU-NEUTRAL (vindicating B2), so the WHOLE +127% is the n=1 sharded path, not a
+kernel-vs-main residual.  Driver-less kernel isolation (512³) localized it to the KERNEL not the driver:
+pixel/rolled kernel ~640 ms vs band kernel ~1449 ms (a driver-less band loop = the full sharded path at
+1.00× time/mem).  On CPU the ranking INVERTS (band kernel ~8× faster; pixel kernel hits the ×62
+back-vertical cache cliff — warm execution, band-size-independent, the `lax.map`+transpose fusion
+barrier).  ⇒ route GPU n=1 → `_sparse_back_project_single_device` (pixel kernel), keep CPU on the band
+path; gated `recon_placement.devices[0].platform=='gpu'` + `view_indices is None`; output wrapped 1-shard
+slice-sharded (bit-identical, same sharding).  *(The investigation notes below are the historical record;
+the CPU-A/B "+136% is GPU-specific DRIVER overhead / decision-tree" framing was SUPERSEDED — it's the
+KERNEL, the driver is free, and the original 1.45 GPU A/B was the host-transfer ruler bug.  See
+`.claude/lessons.md`.)*
 
 **Finding (from the GPU `main_baseline_gpu.yaml` vs-main note):** cone `back` 1-device is **+126%
 (512³) to +136% (1024³)** SLOWER than main, and it propagates to cone `vcd` (+15% to +57%, +25%

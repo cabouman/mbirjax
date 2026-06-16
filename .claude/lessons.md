@@ -384,3 +384,47 @@ async run-ahead — it was object lifecycle.
   registered node) inside a function that feeds a jit STATIC arg — define the type at
   module level.**  (Also why de-closuring alone did not share the cache until the
   namedtuple classes were hoisted.)
+
+## Platform-divergent back-projection kernel → n=1 GPU short-circuit (2026-06-16)
+
+Cone `back` on ONE device was +126–136% slower than `main` on GPU (propagating to cone
+VCD).  Bisecting it produced a clean, surprising result: **the two cone back kernels have
+OPPOSITE platform rankings, the sharded driver is free, and the right fix is
+platform-gated kernel selection.**
+
+- **The cost is the KERNEL, not the sharded driver.**  Driver-less ablation (call the
+  projector functions directly, no thread pool / reduce-scatter / `assemble_sharded`): a
+  band-loop tied the FULL sharded path at **1.00× time and 1.00× memory** at n=1.  So all
+  the n=1 overhead is the per-view kernel: `back_project_one_view_to_band` (single vertical
+  fan) vs `back_project_one_view_to_pixel_batch` (rolled `lax.map`@128 + transpose).
+- **Opposite platform rankings (no kernel wins both).**  Driver-less, same batch sizes,
+  same inputs, 512³: GPU — band kernel **2.25× SLOWER** than the pixel/rolled kernel; CPU —
+  band kernel **~8× FASTER**.  On CPU the pixel kernel hits the documented back-vertical
+  cache cliff (×62/×110 at ≥~200³): the `lax.map`+transpose UNDER the view-`vmap` is a
+  fusion barrier → XLA materializes the full `(views × npix × slices)` per-view stack →
+  cache-thrash.  It is WARM execution (call-1 ≈ call-N; compile ~0.4 s), and **band-size
+  independent** (B128 ≈ Bmono), i.e. the `lax.map` itself, not the band length.  The band
+  kernel (no `lax.map`/transpose) keeps the `vmap+sum` fused → no cliff.
+- **Fix: GPU-only n=1 short-circuit** (`_sparse_back_project_sharded`): a single-GPU mesh
+  routes to `_sparse_back_project_single_device` (the pixel kernel) and wraps its output as
+  a 1-shard slice-sharded array (`assemble_sharded`, metadata only — validated bit-identical
+  + same sharding to the band path).  Gated on `recon_placement.devices[0].platform == 'gpu'`
+  (the codebase's GPU test, tomography_model ~247) AND `view_indices is None`.  CPU keeps the
+  band path (cliff-avoidance).  Net = **pixel kernel on GPU, band kernel on CPU** = the
+  platform-optimal choice.  NOT a clean mirror of the forward n=1 fix: forward's single-call
+  was win-win (time + memory); back's is a time win that gives up only the *bonus* capacity.
+- **Memory: the band kernel streams (capacity), the pixel kernel doesn't.**  At 1024³ the
+  `MAX_BAND_WORK` cap makes the band path stream the slice axis → peak **12.5 GB vs 21 GB**
+  for the pixel path.  But the pixel path's peak **= main's exactly** (B-back ≤ main-back at
+  every size), so GPU→B matches main's single-GPU capacity (which does 1024³); it forfeits
+  only the banding *bonus* headroom over main.  Watch VCD capacity via the perf-tracking tool
+  rather than gate on it.
+- **Ruler bug that hid all this for two sessions.**  The first A/B reported 1.45 and a
+  "+56% kernel residual"; both were a measurement artifact — B was timed with a FRESH HOST
+  sinogram built INSIDE the timing lambda, so it paid a host→device transfer every call.
+  Feeding the already-on-device sinogram (measure the op, not the scatter) gave A/B = **2.25**
+  and **B ≈ main (+1%)** — the kernel is GPU-NEUTRAL (vindicating the B2 claim), and the whole
+  penalty is the band kernel.  Also: an apparent "A2 (n=2) cliff / minutes-long compile" was a
+  HARNESS artifact (two full models alive per size → swap), not the code — per-call timing in
+  one process (call-1 = trace+compile, call-N = warm) is the clean instrument; use it to label
+  every number first-call vs warm.
