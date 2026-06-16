@@ -48,13 +48,12 @@ tests_data_dependent/data/*
 *.zip
 *.xrm
 *.txrm
-.npy
-.csv
-.docx
-.xlsx
-.pptx
-.ppt
-.npz
+*.npy
+*.csv
+*.docx
+*.xlsx
+*.ppt
+*.npz
 
 
 # Byte-compiled / optimized / DLL files

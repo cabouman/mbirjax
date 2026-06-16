@@ -121,28 +121,22 @@ class TestProjectors(unittest.TestCase):
 
         return ct_model
 
-    def test_all_adjoints(self):
-        for geometry_type in self.geometry_types:
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing adjoint with", geometry_type)
-                self.verify_adjoint(geometry_type)
-
-    def test_all_hessians(self):
-        for geometry_type in self.geometry_types:
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing Hessian with", geometry_type)
-                self.verify_hessian(geometry_type)
-
-    def test_view_batching(self):
-        for geometry_type in self.geometry_types:
-            with self.subTest(geometry_type=geometry_type):
-                print("Testing view batching with", geometry_type)
-                self.verify_view_batching(geometry_type)
+    # One test method per (operation, geometry) pair is generated at the bottom of this
+    # file (test_adjoint_parallel, test_hessian_cone, ...) instead of three tests looping
+    # subTests: pytest can then report, select (-k cone), and distribute (pytest-xdist)
+    # them individually.
 
     def verify_view_batching(self, geometry_type):
         self.set_view_params(geometry_type)
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
+        # View batching (view_indices) is a single-device feature: a view SUBSET breaks the
+        # equal view-shard, so the sharded projectors deliberately raise on a multi-device
+        # mesh (its only nontrivial user, vcls, runs single-device; the settable-view-params
+        # task retires view_indices entirely).  Auto-sharding is now the default on any
+        # multi-device host, so pin one device to keep testing the feature where it lives.
+        # RETIRE-AFTER: settable view parameters (then this pin is moot).
+        ct_model.configure_devices(1)
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
@@ -338,6 +332,22 @@ class TestProjectors(unittest.TestCase):
         # Determine if property holds
         hessian_test_result = jnp.allclose(hessian.reshape(x.shape)[i, j, k], finite_diff_hessian)
         self.assertTrue(hessian_test_result)
+
+
+def _add_per_geometry_projector_tests():
+    """Generate one test_<operation>_<geometry> method per pair (see note in TestProjectors)."""
+    operations = ('adjoint', 'hessian', 'view_batching')
+    for geometry_type in mj._utils._geometry_types_for_tests:
+        for operation in operations:
+            def test(self, geometry_type=geometry_type, operation=operation):
+                print('Testing {} with {}'.format(operation, geometry_type))
+                getattr(self, 'verify_' + operation)(geometry_type)
+            test.__name__ = 'test_{}_{}'.format(operation, geometry_type)
+            test.__doc__ = '{} check for the {} geometry.'.format(operation, geometry_type)
+            setattr(TestProjectors, test.__name__, test)
+
+
+_add_per_geometry_projector_tests()
 
 
 if __name__ == '__main__':

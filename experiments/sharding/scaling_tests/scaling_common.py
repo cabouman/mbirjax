@@ -26,17 +26,18 @@ Design notes
 """
 
 import os
+import gc
 import sys
-import json
 import time
 import resource
 import tempfile
+import traceback
 import subprocess
 import platform as _platform
 
 import numpy as np
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 import matplotlib
 matplotlib.use("Agg")   # file output only; no interactive backend needed
@@ -133,7 +134,7 @@ def run_worker(script_path, worker_args, extra_env=None):
 
     Each JAX-touching task (device probe, correctness, one size's measurement)
     runs in its own fresh process so the orchestrator never holds a JAX backend
-    while a worker measures peak memory.  The worker writes its result as JSON to
+    while a worker measures peak memory.  The worker writes its result as YAML to
     a temp file (passed via --out-file) and may rewrite it incrementally, so a
     worker that dies partway (e.g. GPU OOM at the largest config) still returns
     whatever it completed.  The child inherits the current environment plus
@@ -148,13 +149,13 @@ def run_worker(script_path, worker_args, extra_env=None):
         extra_env (dict|None): environment overrides for the child.
 
     Returns:
-        (result, returncode): result is the parsed JSON (or None if the worker
+        (result, returncode): result is the parsed YAML (or None if the worker
         wrote nothing parseable); returncode is the subprocess exit status.
     """
     # Flush any pending orchestrator output first so the worker's live stdout
     # interleaves in the right order even when stdout is a pipe (PyCharm console).
     sys.stdout.flush()
-    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="scaling_worker_")
+    fd, out_path = tempfile.mkstemp(suffix=".yaml", prefix="scaling_worker_")
     os.close(fd)
     env = os.environ.copy()
     if extra_env:
@@ -164,8 +165,8 @@ def run_worker(script_path, worker_args, extra_env=None):
     result = None
     try:
         with open(out_path) as f:
-            result = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            result = _yaml.load(f)   # None for an empty/never-written file
+    except (FileNotFoundError, YAMLError, ValueError):
         result = None
     finally:
         if os.path.exists(out_path):
@@ -174,16 +175,227 @@ def run_worker(script_path, worker_args, extra_env=None):
 
 
 def write_worker_result(out_file, data):
-    """Worker side: atomically (re)write a JSON result to out_file.
+    """Worker side: atomically (re)write a YAML result to out_file.
 
     Written via a temp file + os.replace so a reader (the orchestrator) never
     sees a half-written file even if the worker is killed mid-write.  Safe to
-    call repeatedly to publish partial progress.
+    call repeatedly to publish partial progress.  Uses the same ruamel YAML
+    instance as the rest of the harness (readability + consistency); numpy
+    scalars are converted to plain Python first via _to_plain so they serialize
+    cleanly.  (_yaml and _to_plain are module-level, defined below and resolved
+    at call time.)
     """
     tmp = out_file + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(data, f)
+        _yaml.dump(_to_plain(data), f)
     os.replace(tmp, out_file)
+
+
+# ── Shared scaling-driver harness ─────────────────────────────────────────────
+# The pieces every scaling driver (fbp_filter, sparse_back/forward_project,
+# direct_recon, vcd_recon) shares.  A driver supplies only the op-specific shims
+# (make_model / make_input / run_op / a correctness check) plus its size/device
+# knobs; the orchestration, isolated-subprocess discipline, and measurement loop
+# live here so all ops behave identically.
+
+# Substrings (upper-cased) marking a caught failure as memory exhaustion.  Beyond
+# the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces as
+# "Failed to create cuFFT batched plan with scratch allocator" / "Failed to
+# allocate work area" -- none of the usual OOM tokens (confirmed H100 1624^3/1dev).
+OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
+               "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
+               "FAILED TO CREATE CUFFT")
+
+
+def is_oom(text):
+    """True if ``text`` names a known out-of-memory marker.
+
+    Prefer passing the full traceback rather than ``str(e)``: an OOM often
+    surfaces as an unrelated-looking error (e.g. a numpy "setting an array element
+    with a sequence") with the real RESOURCE_EXHAUSTED only visible deeper in the
+    stack.
+    """
+    up = text.upper()
+    return any(k in up for k in OOM_MARKERS)
+
+
+def beta_root():
+    """Beta worktree root, derived from this file's location.
+
+    scaling_common.py lives at <beta>/experiments/sharding/scaling_tests/, so the
+    worktree root is three directories up from its directory.  The drivers sit in
+    the same directory, so this is the same root they used to derive themselves.
+    """
+    return os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                        os.pardir, os.pardir, os.pardir))
+
+
+def build_worker_env(mem_fraction=0.9, preallocate=True):
+    """Orchestrator side: the environment every worker subprocess inherits.
+
+    Forces the beta worktree onto PYTHONPATH so ``import mbirjax`` resolves to beta
+    regardless of how the orchestrator was launched (PyCharm or CLI), and sets the
+    JAX allocator knobs.  Preallocating the pool up front avoids per-call
+    cudaMalloc growth (clean timing); peak_bytes_in_use still tracks in-use tensors
+    so memory stays accurate.  Lower ``mem_fraction`` to probe the OOM threshold.
+    Warns if no mbirjax/ is found under the derived root.
+    """
+    root = beta_root()
+    if not os.path.isdir(os.path.join(root, "mbirjax")):
+        print(f"  WARNING: no mbirjax/ under derived beta root {root}")
+    existing = os.environ.get("PYTHONPATH", "")
+    return {
+        "PYTHONPATH": root + (os.pathsep + existing if existing else ""),
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "true" if preallocate else "false",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION": str(mem_fraction),
+    }
+
+
+def build_setup_result(plat, max_dev, dev_label, corr):
+    """Worker side: assemble + print the standard setup-result dict.
+
+    Records which mbirjax / git branch is loaded, and on GPU snapshots the
+    topology (physical GPUs / interconnect / NUMA -- the allocation-quality
+    variable behind run-to-run multi-device scaling surprises) and the
+    device-to-device safety probe.  ``corr`` is the op-specific correctness dict
+    (already computed and printed by the caller).  Returns the dict to write.
+    """
+    import mbirjax
+    topology = gpu_topology() if plat == "gpu" else {}
+    dev2dev_safe = None
+    if plat == "gpu":
+        try:
+            import jax
+            import mbirjax._sharding as mjs
+            g = jax.devices("gpu")
+            if len(g) > 1:
+                dev2dev_safe = bool(mjs.is_dev2dev_safe(g))
+        except Exception:   # noqa: BLE001 — best effort, never abort setup
+            pass
+    pkg_path = os.path.dirname(mbirjax.__file__)
+    state, branch = beta_status(pkg_path)   # by git branch, not dir name
+    result = {"platform": plat, "max_devices": max_dev, "device_label": dev_label,
+              "mbirjax_path": pkg_path, "beta_state": state, "branch": branch,
+              "correctness": corr, "topology": topology, "dev2dev_safe": dev2dev_safe}
+    print(f"[setup] platform={plat}  max_devices={max_dev}  ({dev_label})")
+    if dev2dev_safe is not None:
+        print(f"[setup] dev2dev_safe={dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    if topology.get("devices"):
+        print("[setup] GPUs:\n    " + topology["devices"].replace("\n", "\n    "))
+    return result
+
+
+def print_setup_banner(setup):
+    """Orchestrator side: print the mbirjax / beta / platform / correctness /
+    topology banner from a setup-worker result, and return the common fields
+    ``(plat, max_dev, dev_label, corr, mpath)``.  Topology / dev2dev lines print
+    only when the worker recorded them (GPU runs).
+    """
+    plat = setup["platform"]
+    max_dev = setup["max_devices"]
+    dev_label = setup["device_label"]
+    corr = setup["correctness"]
+    mpath = setup.get("mbirjax_path", "?")
+    state = setup.get("beta_state", "unknown")
+    branch = setup.get("branch")
+    if state == "beta":
+        label = f"*** beta ***  (branch {branch})"
+    elif state == "not-beta":
+        label = f"### NOT beta — branch {branch} — check PYTHONPATH ###"
+    else:
+        label = "(branch undetermined — verify path manually)"
+    print(f"  mbirjax: {label}   {mpath}")
+    print(f"  platform: {plat}   max devices: {max_dev}   ({dev_label})")
+    if corr.get("baseline_present") and corr.get("max_abs_diff") is not None:
+        print(f"  correctness: max_abs_diff={corr['max_abs_diff']:.3e}  "
+              f"pct_above={corr['pct_above_threshold']:.6f}%"
+              + ("   <-- CROSS-PLATFORM" if corr.get("cross_platform") else ""))
+    elif corr.get("baseline_present"):
+        print("  correctness: baseline present (see setup log for details)")
+    else:
+        print("  correctness: no baseline present")
+    dev2dev_safe = setup.get("dev2dev_safe")
+    if dev2dev_safe is not None:
+        print(f"  dev2dev_safe: {dev2dev_safe}"
+              + ("" if dev2dev_safe else "  <-- HOST-BOUNCE active (slow d2d!)"))
+    topology = setup.get("topology") or {}
+    if topology.get("topo"):
+        print("  GPU topology (nvidia-smi topo -m):")
+        print("    " + topology["topo"].replace("\n", "\n    "))
+    return plat, max_dev, dev_label, corr, mpath
+
+
+def run_measure_loop(size_label, device_counts, out_file, build_and_time,
+                     header_extra=""):
+    """Worker side: the shared device-count descent for one problem size.
+
+    Owns what every op's measure shares: iterate device counts DESCENDING
+    (8->4->2->1, so per-device allocation is ascending within this fresh process
+    and the cumulative peak_bytes_in_use equals each config's own allocation when
+    read right after it), catch/classify failures (an OOM stops the descent --
+    fewer-device configs need MORE per-device memory and would also OOM), sample
+    per-GPU clocks/temps and flag throttling (which silently caps multi-device
+    scaling), publish partial results incrementally (so even a hard crash returns
+    the completed configs), and free device buffers between configs.
+
+    The op supplies ``build_and_time(n, devs)``, which builds its model for this
+    device count, prepares the timed input, times the op, and returns
+    ``(stats, mem_mb, mem_kind)`` -- or ``None`` to skip this device count (e.g.
+    the count does not evenly divide the sharded axes).  Anything it raises is
+    treated as a measurement failure, classified for OOM from the full traceback.
+
+    Returns ``(rows, failures)``; both are also written to ``out_file`` as they grow.
+    """
+    desc = sorted(set(device_counts), reverse=True)
+    print(f"\n[measure {size_label}{header_extra}]  "
+          f"device counts (descending): {desc}")
+    rows, failures = [], []
+    mem_kind = "n/a"
+
+    def _publish():
+        write_worker_result(out_file, {"size": size_label, "mem_kind": mem_kind,
+                                       "rows": rows, "failures": failures})
+
+    for n in desc:
+        devs = pick_devices(n)
+        if devs is None:
+            print(f"  n_devices={n}: not enough devices, skipping")
+            continue
+        try:
+            timed = build_and_time(n, devs)
+        except Exception as e:   # noqa: BLE001 — harness: never abort the sweep
+            msg = str(e).replace("\n", " ")
+            tb = traceback.format_exc()
+            oom = is_oom(tb)   # classify from the FULL stack, not just str(e)
+            failures.append({"n_devices": n, "oom": oom, "error": msg[:300],
+                             "traceback": tb})
+            print(f"  n_devices={n:2d}  {'OOM' if oom else 'ERROR'}: {msg[:120]}")
+            if not oom:
+                print(tb)   # don't silently truncate a real failure to one line
+            _publish()
+            if oom:
+                print(f"  stopping descent at {size_label}: fewer-device configs "
+                      f"need more per-device memory and would also OOM")
+                break
+            continue
+        if timed is None:   # op signalled "skip this device count"
+            continue
+        stats, mem_mb, mem_kind = timed
+        gpu_state = sample_gpu_state()
+        hot = throttled_gpus(gpu_state)
+        rows.append({"n_devices": n, **stats, "mem_mb": mem_mb,
+                     "gpu_state": gpu_state, "throttled": bool(hot)})
+        print(f"  n_devices={n:2d}  min={stats['min_ms']:9.1f} ms  "
+              f"mean={stats['mean_ms']:9.1f} ms  mem={mem_mb:8.1f} MB ({mem_kind})")
+        if hot:
+            print("  !! THROTTLING — this timing is UNRELIABLE: "
+                  + ", ".join(f"GPU{g['index']}={g['sm_mhz']}MHz@{g['temp_c']}C"
+                              for g in hot))
+        _publish()
+        gc.collect()   # release this config's device buffers before the next
+    _publish()
+    return rows, failures
 
 
 # ── Device / platform detection ───────────────────────────────────────────────
@@ -227,6 +439,67 @@ def device_label():
     devs = pick_devices(1)
     kind = devs[0].device_kind if devs else "?"
     return f"{plat.upper()} ({kind})"
+
+
+def gpu_topology():
+    """Best-effort GPU topology snapshot for reproducibility.
+
+    Records which physical GPUs the scheduler handed us (UUIDs, via
+    ``nvidia-smi -L``) and how they interconnect (``nvidia-smi topo -m``).
+    Cross-allocation performance can hinge on this -- e.g. all GPUs on one NUMA
+    socket vs split across two changes host-side launch latency, which hits the
+    launch-heavy multi-device paths most -- so we log it next to every result.
+    Returns ``{}`` when nvidia-smi is unavailable (e.g. CPU runs).
+    """
+    out = {}
+    for key, cmd in (("devices", ["nvidia-smi", "-L"]),
+                     ("topo", ["nvidia-smi", "topo", "-m"])):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                out[key] = r.stdout.strip()
+        except Exception:   # nvidia-smi missing / CPU node — best effort
+            pass
+    return out
+
+
+def sample_gpu_state():
+    """Per-GPU SM clock (MHz) and temperature (C) via nvidia-smi.
+
+    A throttled card under load shows a collapsed SM clock at high temperature
+    (e.g. 345 MHz @ 86 C vs a healthy 1980 MHz @ 40 C), which silently caps
+    multi-device scaling.  Sampling this with each measurement lets a bad card
+    auto-flag itself in the result instead of masquerading as a code regression.
+    Returns a list of ``{index, sm_mhz, temp_c}`` (one per GPU), or ``[]`` when
+    nvidia-smi is unavailable (CPU runs).
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,clocks.sm,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return []
+        out = []
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                out.append({"index": int(parts[0]), "sm_mhz": int(parts[1]),
+                            "temp_c": int(parts[2])})
+        return out
+    except Exception:   # nvidia-smi missing / CPU node — best effort
+        return []
+
+
+def throttled_gpus(state, clock_below=1500, temp_above=80):
+    """GPUs in ``state`` that look thermally throttled (low SM clock + high temp).
+
+    The clock+temp pair discriminates throttling from a normal idle low-clock:
+    an idle card is also low-clock but COOL, while a throttling card is low-clock
+    and HOT.  Returns the sublist of throttled GPU dicts.
+    """
+    return [g for g in state
+            if g["sm_mhz"] < clock_below and g["temp_c"] > temp_above]
 
 
 def default_device_counts(max_devices):
@@ -492,6 +765,20 @@ def _label_volume(size_label):
     return v * r * c
 
 
+def _label_proj_cost(size_label):
+    """Projection compute cost for a 'VxRxC' size: num_voxels × num_views.
+
+    Tomographic forward/back projection touches each voxel once per view, so its
+    cost scales as voxels × views, NOT voxels alone.  For the cubic sweep sizes
+    (N×N×N) this is N⁴ vs the volume's N³ — the extra factor of N (the views axis,
+    the first label component) is why doubling the linear size raises projection
+    time ~16×, not 8×.  Used for the size-sweep TIME ideal curve; MEMORY still
+    scales with volume (resident sino+recon), so it keeps using _label_volume.
+    """
+    v, r, c = (int(x) for x in size_label.split("x"))
+    return (v * r * c) * v   # voxels × views (v is the views axis)
+
+
 def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
                       mem_kind, out_path):
     """Device sweep: speedup and fractional memory vs device count, per size.
@@ -556,9 +843,9 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
     # (per_view) rises above it as the shard shrinks.  Shown on both platforms.
     ax2.axhline(2.0, ls="--", color="gray", alpha=0.7,
                 label="ideal (2× = read+write)")
-    ax2.set_title("per-device memory ÷ shard size")
+    ax2.set_title("per-device memory ÷ sino shard size")
     if mem_kind == "gpu_peak_per_device":
-        ax2.set_ylabel("peak mem/device ÷ shard")
+        ax2.set_ylabel("peak mem/device ÷ sino shard")
     else:
         # CPU RSS is whole-process / shared RAM, so the ratio is not truly
         # per-device — the y-label flags the metric (the title is kept uniform).
@@ -580,7 +867,7 @@ def plot_device_sweep(op_name, grid, device_counts, sizes, dev_label,
 
 
 def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
-                    mem_kind, out_path):
+                    mem_kind, out_path, time_ideal="voxels_views"):
     """Size sweep: time and peak memory vs problem size, one curve per device count.
 
     The x-axis is the true problem size in voxels (v·r·c) on a LOG scale, so the
@@ -588,37 +875,73 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
     categorical steps; both panels are then log-log and the scaling slope is
     readable.  Ticks are labeled with the size strings at their true positions.
 
+    Time is plotted in minutes, per-device memory in GB.
+
+    TIME panel: the y-range is chosen per run — top = the smallest power of 10 that
+    holds the largest measured time, bottom = top / 1e4 (four decades) — and the
+    ideal line is anchored at that bottom-left corner, so the data rides above a
+    reference of the EXPECTED slope.  ``time_ideal`` picks that slope:
+      - "voxels_views" (default): projection cost ∝ voxels × views (N⁴ for cubic
+        sizes) — correct for the projectors (back/forward/direct) and VCD, which
+        touch each voxel once per view.
+      - "voxels": ∝ voxels (N³) — correct for fbp_filter, a per-view filter whose
+        cost is the sinogram size, not a projection.
+
+    MEMORY panel: fixed y-range 0.1 .. 100 GB (per-device memory is comparable
+    across runs), with the ∝voxels (N³, resident sino+recon) ideal anchored at
+    0.1 GB at the smallest size.
+
     Args:
         grid (dict): size_label -> list of row dicts, as produced by the driver.
         device_counts (list[int]): one curve per count.
         sizes (list[str]): size labels, in order.
         dev_label (str): device type for the suptitle.
+        time_ideal (str): "voxels_views" (default) or "voxels"; the slope of the
+            time-panel ideal line (see above).
     """
+    if time_ideal not in ("voxels", "voxels_views"):
+        raise ValueError(
+            f"time_ideal must be 'voxels' or 'voxels_views', got {time_ideal!r}")
+
+    # Stored results use ms and MB; plot in the more intuitive minutes and GB.
+    MS_PER_MIN = 60_000.0
+    MB_PER_GB = 1024.0
+
     vols = [_label_volume(s) for s in sizes]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.6))
 
+    all_tmin = []
     for n in device_counts:
-        tms, mem = [], []
+        tmin, memgb = [], []
         for size_label in sizes:
             row = _grid_lookup(grid, size_label).get(n)
-            tms.append(row["min_ms"] if row else float("nan"))
-            mem.append(row["mem_mb"] if row else float("nan"))
-        ax1.plot(vols, tms, "o-", label=f"{n} dev")
-        ax2.plot(vols, mem, "s-", label=f"{n} dev")
+            tmin.append(row["min_ms"] / MS_PER_MIN if row else float("nan"))
+            memgb.append(row["mem_mb"] / MB_PER_GB if row else float("nan"))
+        all_tmin.extend(tmin)
+        ax1.plot(vols, tmin, "o-", label=f"{n} dev")
+        ax2.plot(vols, memgb, "s-", label=f"{n} dev")
 
-    # Ideal linear-in-size references (time and memory ∝ voxels v·r·c), each
-    # anchored at the average of the smallest size across device counts.
-    base_rows = _grid_lookup(grid, sizes[0])
-    base_times = [base_rows[n]["min_ms"] for n in device_counts if n in base_rows]
-    if base_times:
-        base = sum(base_times) / len(base_times)
-        ax1.plot(vols, [base * v / vols[0] for v in vols], "k--", alpha=0.5,
-                 label="ideal (∝ size)")
-    base_mems = [base_rows[n]["mem_mb"] for n in device_counts if n in base_rows]
-    if base_mems:
-        bm = sum(base_mems) / len(base_mems)
-        ax2.plot(vols, [bm * v / vols[0] for v in vols], "k--", alpha=0.5,
-                 label="ideal (∝ size)")
+    # TIME y-range: four decades ending at the smallest power of 10 that holds the
+    # largest measured time.  floor(log10)+1 (not ceil) so a value that is itself a
+    # power of 10 still clears the top spine; fall back to 0.1 .. 1000 if nothing
+    # was measured (all-OOM run).
+    finite_t = [t for t in all_tmin if np.isfinite(t)]
+    t_top = 10.0 ** (np.floor(np.log10(max(finite_t))) + 1) if finite_t else 1000.0
+    t_bottom = t_top / 1e4
+
+    # Ideal references: a fixed-slope line anchored at each panel's BOTTOM-LEFT, so
+    # the data rides above a reference of the expected slope (identical across runs).
+    # TIME slope per `time_ideal`; MEMORY ∝ voxels (resident sino+recon, N³).
+    if time_ideal == "voxels_views":
+        tcost = [_label_proj_cost(s) for s in sizes]   # ∝ voxels × views (N⁴)
+        tlabel = "ideal (∝ voxels·views)"
+    else:
+        tcost = vols                                   # ∝ voxels (N³)
+        tlabel = "ideal (∝ voxels)"
+    ax1.plot(vols, [t_bottom * c / tcost[0] for c in tcost], "k--", alpha=0.5,
+             label=tlabel)
+    ax2.plot(vols, [0.1 * v / vols[0] for v in vols], "k--", alpha=0.5,
+             label="ideal (∝ voxels)")
 
     for ax in (ax1, ax2):
         ax.set_xscale("log")
@@ -628,12 +951,14 @@ def plot_size_sweep(op_name, grid, device_counts, sizes, dev_label,
         ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
 
-    ax1.set_ylabel("min time (ms)")
+    ax1.set_ylim(t_bottom, t_top)
+    ax1.set_ylabel("min execution time (minutes)")
     ax1.set_title("time vs size")
     ax1.legend(title="devices")
 
-    ax2.set_ylabel(f"peak memory (MB) [{mem_kind}]")
-    ax2.set_title("memory vs size")
+    ax2.set_ylim(0.1, 100)
+    ax2.set_ylabel("peak memory (GB)")
+    ax2.set_title("per-device memory vs size")
     ax2.legend(title="devices")
 
     fig.suptitle(f"{op_name} — size sweep — {dev_label}", fontweight="bold")

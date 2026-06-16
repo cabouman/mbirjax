@@ -17,7 +17,7 @@ Below are tips on important and useful features:
 
   You can tune image quality by setting the following parameters:
 
-  - ``sharpness`` -  default = 0.0. A larger value of ``sharpness=1.0`` or greater will increase sharpness, and a negative value will reduce noise.  Any float is allowable, but anything outside [-5, 5] is probably not helpful.
+  - ``sharpness`` -  default = 1.0. A larger value such as ``sharpness=1.5`` or greater will increase sharpness, and a smaller value will reduce noise.  Any float is allowable, but anything outside [-5, 5] is probably not helpful.
   - ``snr_db`` - default = 30.0. A larger value will increase resolution, but try changing ``sharpness`` first.
 
 - **Change Reconstruction Size and Shape:**

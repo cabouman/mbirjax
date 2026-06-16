@@ -4,6 +4,8 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 
+import mbirjax._sharding as mjs
+
 
 @partial(jax.jit, static_argnames=['sigma_prox'])
 def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_prox):
@@ -65,58 +67,9 @@ def qggmrf_loss(full_recon, qggmrf_params):
     return loss
 
 
-def qggmrf_gradient_and_hessian_at_indices_transfer(flat_recon, recon_shape, pixel_indices, qggmrf_params,
-                                                    main_device, worker_device, pixel_batch_size=10000):
-    """
-    Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
-    the qGGMRF prior.
-    Calculations taken from Figure 8.5 (page 119) of FCI for the qGGMRF prior model.
-
-    Args:
-        flat_recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-        recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
-        qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
-
-    Returns:
-        tuple of two arrays and a float (first_derivative, second_derivative, loss).  The first two entries have shape
-        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices. loss is 1x1.
-    """
-    # Initialize the neighborhood weights for averaging surrounding pixel values.
-    # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
-    b, sigma_x, p, q, T = qggmrf_params
-
-    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
-    cur_voxels = jax.device_put(flat_recon[pixel_indices], worker_device)
-    qggmrf_params = (b, sigma_x, p, q, T)
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
-    gradient_cyl, hessian_cyl = cylinder_map(cur_voxels, qggmrf_params)
-    gradient_cyl, hessian_cyl = jax.device_put([gradient_cyl, hessian_cyl], device=main_device)
-
-    # Then work on slices - add in the contributions from neighbors in the same slice
-    slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
-    # gradient = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
-    # hessian = jnp.zeros((len(pixel_indices), flat_recon.shape[1]), device=main_device)
-    # gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
-    # TODO: determine pixel_batch_size from TomographyModel
-    num_batches = jnp.ceil(len(pixel_indices) / pixel_batch_size).astype(int)
-    indices_batched = jnp.array_split(pixel_indices, num_batches)
-    grad, hess = [], []
-    for batch in indices_batched:
-        g = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
-        h = jnp.zeros((len(batch), flat_recon.shape[1]), device=main_device)
-        g, h = slice_map(flat_recon, recon_shape, batch, qggmrf_params, g, h)
-        grad.append(g)
-        hess.append(h)
-    gradient = jnp.concatenate(grad, axis=0)
-    hessian = jnp.concatenate(hess, axis=0)
-    gradient = gradient + gradient_cyl
-    hessian = hessian + hessian_cyl
-    return gradient, hessian
-
-
 @partial(jax.jit, static_argnames=['recon_shape', 'qggmrf_params'])
-def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params):
+def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices, qggmrf_params,
+                                           left_halo=None, right_halo=None, interface_mask=None):
     """
     Calculate the gradient and hessian at each index location in a reconstructed image using the surrogate function for
     the qGGMRF prior.
@@ -124,24 +77,55 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
 
     Args:
         flat_recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
+            When operating on a single slice-shard, num_recon_slices is the local (per-shard) slice count.
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
+            num_recon_rows and num_recon_cols are always the full (unsharded) values; the slice count entry should match
+            ``flat_recon``'s (local) slice count -- only the in-slice term uses recon_shape, and it ignores the slice count.
         pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
+        left_halo (jax.array or None): 1D array of shape (num_recon_rows x num_recon_cols,) holding the slice
+            immediately to the left (lower global slice index) of this shard, used to compute the inter-slice prior
+            term at the shard's left boundary.  Pass None at the true left edge of the full recon, which mirrors the
+            local boundary slice (reflected BC) and reproduces the single-device result exactly.
+        right_halo (jax.array or None): 1D array of shape (num_recon_rows x num_recon_cols,) holding the slice
+            immediately to the right (higher global slice index) of this shard.  Pass None at the true right edge of
+            the full recon (reflected BC).
+        interface_mask (jax.array or None): optional 1D float array of length num_recon_slices+1 (the LOCAL slice
+            count plus one) multiplying the inter-slice differences; shared by every cylinder of this shard.  Entry
+            j corresponds to the interface between local slices j-1 and j; a 0 entry decouples that pair (reflected
+            BC at that interface).  Used when the slice axis is padded for sharding: mask every interface whose
+            higher-index GLOBAL slice is padded (the predicate g0 + j < num_real_slices over the shard's global
+            range).  None applies no masking -- the unpadded/single-device path is unchanged.
 
     Returns:
-        tuple of two arrays and a float (first_derivative, second_derivative, loss).  The first two entries have shape
-        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices. loss is 1x1.
+        tuple of two arrays (first_derivative, second_derivative), each of shape
+        (N_indices, num_recon_slices) representing the gradient and Hessian values at specified indices.
     """
     # Initialize the neighborhood weights for averaging surrounding pixel values.
     # Order is [row+1, row-1, col+1, col-1, slice+1, slice-1] - see definition in _utils.py
     b, sigma_x, p, q, T = qggmrf_params
 
-    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder
-    qggmrf_params = (b, sigma_x, p, q, T)
-    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None))
-    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params)
+    # Resolve the per-cylinder boundary values for the inter-slice (cylinder) prior term.
+    # With no halo (a true edge or single-device run), mirror the local boundary slice: passing
+    # voxel_cylinder[0] as left_val and voxel_cylinder[-1] as right_val makes both boundary deltas
+    # zero, exactly reproducing the reflected-BC single-device behavior.  With a halo (a shard
+    # interior boundary), use the actual neighboring-shard slice values so the inter-slice gradient
+    # is correct at the boundary -- and no temporary extended-cylinder array is allocated.
+    lh_vals = (left_halo[pixel_indices]  if left_halo  is not None
+               else flat_recon[pixel_indices, 0])   # (N_indices,)
+    rh_vals = (right_halo[pixel_indices] if right_halo is not None
+               else flat_recon[pixel_indices, -1])  # (N_indices,)
 
-    # Then work on slices - add in the contributions from neighbors in the same slice
+    # First work on cylinders - determine the contributions from neighbors in the voxel cylinder.
+    # lh_vals / rh_vals are vmapped as per-cylinder scalars (in_axes 0); the interface mask is the
+    # same for every cylinder of the shard (the slice structure is shared), so it broadcasts
+    # (in_axes None) rather than being replicated per cylinder.
+    qggmrf_params = (b, sigma_x, p, q, T)
+    cylinder_map = jax.vmap(qggmrf_grad_and_hessian_per_cylinder, in_axes=(0, None, 0, 0, None))
+    gradient, hessian = cylinder_map(flat_recon[pixel_indices], qggmrf_params, lh_vals, rh_vals,
+                                     interface_mask)
+
+    # Then work on slices - add in the contributions from neighbors in the same slice (fully local, no halos)
     slice_map = jax.vmap(qggmrf_grad_and_hessian_per_slice, in_axes=(1, None, None, None, 1, 1), out_axes=1)
     gradient, hessian = slice_map(flat_recon, recon_shape, pixel_indices, qggmrf_params, gradient, hessian)
 
@@ -149,13 +133,29 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
 
 
 @partial(jax.jit, static_argnames='qggmrf_params')
-def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
+def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params, left_val, right_val,
+                                         interface_mask=None):
     """
     Compute the qggmrf gradient and diagonal Hessian at each voxel of a voxel_cylinder.
 
     Args:
-        voxel_cylinder (jax array): 1D array of voxel values
+        voxel_cylinder (jax array): 1D array of voxel values for one (row, col) location, spanning all slices local
+            to this shard.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
+        left_val (scalar): Value of the voxel in the slice immediately before this cylinder (global slice index -1
+            relative to the cylinder).  Pass voxel_cylinder[0] for a reflected (zero-delta) boundary at the true
+            left edge of the recon.
+        right_val (scalar): Value of the voxel in the slice immediately after this cylinder (global slice index n
+            relative to the cylinder).  Pass voxel_cylinder[-1] for a reflected (zero-delta) boundary at the true
+            right edge of the recon.
+        interface_mask (jax array or None): optional 1D float array of length len(voxel_cylinder)+1 multiplying
+            the slice-to-slice differences.  Entry j corresponds to the interface between local slices j-1 and j
+            (entries 0 and n are the left/right boundary interfaces), so a 0 entry decouples the two slices it
+            joins exactly as the reflected boundary condition does at a true edge (the boundary difference is
+            forced to zero while the Hessian keeps its b_tilde(0) term).  Used when the slice axis is padded for
+            multi-device sharding: zeroing every interface whose higher-index slice is padded reproduces the
+            reflected boundary at the last REAL slice -- even mid-shard -- and keeps the padded slices' gradient
+            exactly zero.  None (the default) applies no masking.
 
     Returns:
         tuple of gradient and Hessian, each of which is a 1D jax array of the same length as voxel_cylinder
@@ -164,11 +164,21 @@ def qggmrf_grad_and_hessian_per_cylinder(voxel_cylinder, qggmrf_params):
     b_at_slice_plus_one, b_at_slice_minus_one = b[4:6]
 
     # Voxel cylinder is 1D.
-    # Compute the differences delta[j] = voxel_cylinder[j+1] - voxel_cylinder[j], then add 0s at both ends to
-    # represent reflected boundaries at 0 and the end.
-    # Get v[0]-v[-1], v[1]-v[0], v[2]-v[1], ..., v[n]-v[n-1]  (where v[-1] = v[0], v[n]=v[n-1] in this case).
-    zero = 0 * voxel_cylinder[:1]  # Use this form rather than jnp.zeros(1) to work on the same device as voxel_cylinder
-    delta = jnp.concatenate((zero, jnp.diff(voxel_cylinder), zero))
+    # Build delta[j] = voxel_cylinder[j] - voxel_cylinder[j-1] for interior positions, with explicit boundary
+    # deltas at each end derived from the neighbor values.  Result is
+    #   v[0]-left_val, v[1]-v[0], v[2]-v[1], ..., v[n-1]-v[n-2], right_val-v[n-1].
+    # Passing left_val = voxel_cylinder[0] makes delta[0] = 0 and right_val = voxel_cylinder[-1] makes delta[n] = 0,
+    # which is the reflected boundary condition used on a single device; a true neighbor slice (a shard halo) gives
+    # the correct cross-boundary delta instead.
+    left_delta = voxel_cylinder[:1] - left_val    # shape (1,)
+    right_delta = right_val - voxel_cylinder[-1:]  # shape (1,)
+    delta = jnp.concatenate((left_delta, jnp.diff(voxel_cylinder), right_delta))
+
+    # Force masked interfaces to a zero difference.  Reflected BC at a true edge IS a zero boundary
+    # delta, so this is the same boundary condition applied at an arbitrary interface; the Hessian
+    # still receives the b_tilde(0) term from a masked interface, exactly as it does at a true edge.
+    if interface_mask is not None:
+        delta = delta * interface_mask
 
     # Compute the primary quantity used for the gradient and Hessian
     # Use b_for_delta = 1 here and scale by b_slice below.
@@ -277,6 +287,174 @@ def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
     rho_prime_over_delta = scale * numerator / denominator
     b_tilde_times_2 = b_for_delta * rho_prime_over_delta
     return b_tilde_times_2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sharded-prior orchestration (slice-sharded recon).
+#
+# The qGGMRF prior couples each slice to its slice-axis neighbors, so on a
+# slice-sharded recon each shard needs one boundary slice from each adjacent
+# shard (a HALO), and -- when the slice axis is zero-padded for sharding -- an
+# interface MASK that reproduces the reflected boundary condition at the last
+# real slice (see qggmrf_grad_and_hessian_per_cylinder).  These functions take
+# everything explicitly (the recon, the placement, the staged halos/masks) so
+# they are unit-testable without a TomographyModel; the model owns thin wrappers
+# that supply its placement state.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_halos(flat_recon, slice_axis=-1):
+    """Return per-shard boundary slices for the qGGMRF inter-slice prior term.
+
+    ``flat_recon`` is sharded along ``slice_axis`` (the last axis), so each
+    device holds ``(num_pixels, local_slices)``.  The prior couples a slice to
+    its neighbors, so each shard needs one boundary slice from each adjacent
+    shard:
+
+      left_halo[i]  = last slice of shard i-1  (None for the first shard)
+      right_halo[i] = first slice of shard i+1 (None for the last shard)
+
+    Reads ``2*(n_shards-1)`` slices to host -- negligible vs. compute.  With a
+    single shard both lists are ``[None]`` (the true-edge reflected BC).
+
+    Args:
+        flat_recon (jax array): a slice-sharded flat recon ``(num_pixels, slices)``.
+        slice_axis (int): the sharded slice axis (may be negative).
+
+    Returns:
+        (left_halos, right_halos): two lists, one entry per shard in slice-start
+        order; each entry is a numpy array of shape ``(num_pixels,)`` or None at
+        a true edge.
+    """
+    slice_axis = slice_axis % flat_recon.ndim
+    # Order shards by their start index along the sharded (slice) axis so the
+    # device sequence is deterministic.
+    shards = sorted(flat_recon.addressable_shards,
+                    key=lambda s: s.index[slice_axis].start)
+    left_halos = [None] + [np.asarray(s.data[..., -1]) for s in shards[:-1]]
+    right_halos = [np.asarray(s.data[..., 0]) for s in shards[1:]] + [None]
+    return left_halos, right_halos
+
+
+def stage_halos(flat_recon, slice_axis=-1):
+    """Extract the qGGMRF boundary halos once and pre-place each on its shard's device.
+
+    :func:`extract_halos` reads the boundary slices to host; this wrapper then
+    ``device_put``s each onto the device of the shard that will use it, so a
+    caller can stage the halos ONCE (e.g. per VCD partition pass) and hand the
+    result to :func:`qggmrf_gradient_and_hessian_sharded` for every subset in
+    that pass -- turning a per-subset host round-trip into a per-pass one (the
+    per-subset host round-trips are what cap VCD's multi-GPU scaling).
+
+    The per-shard ordering is by slice-start, matching the shard sort in
+    :func:`qggmrf_gradient_and_hessian_sharded`; the recon's sharding is constant
+    across a pass, so a halo staged on ``shards[i].device`` here lines up with
+    shard ``i`` there even though the recon array itself is replaced each subset.
+
+    Args:
+        flat_recon (jax array): the (slice-sharded) recon to read boundaries from.
+        slice_axis (int): the sharded slice axis (may be negative).
+
+    Returns:
+        (staged_left, staged_right): per-shard lists (slice-start order); each
+        entry is an on-device halo slice ``(num_pixels,)`` or ``None`` at a true
+        recon edge.
+    """
+    left_halos, right_halos = extract_halos(flat_recon, slice_axis)
+    slice_axis = slice_axis % flat_recon.ndim
+    shards = sorted(flat_recon.addressable_shards,
+                    key=lambda s: s.index[slice_axis].start)
+    staged_left = [None if h is None else jax.device_put(h, s.device)
+                   for h, s in zip(left_halos, shards)]
+    staged_right = [None if h is None else jax.device_put(h, s.device)
+                    for h, s in zip(right_halos, shards)]
+    return staged_left, staged_right
+
+
+def qggmrf_gradient_and_hessian_sharded(flat_recon, pixel_indices, qggmrf_params,
+                                        num_rows, num_cols, recon_placement,
+                                        staged_halos=None, interface_masks=None):
+    """Compute the qGGMRF prior gradient and Hessian on a slice-sharded recon.
+
+    This is the recon-domain analogue of the sharded projectors: the recon is
+    sharded by slice, so each slice-owner computes the prior on its own
+    slice-shard **locally** and the results are assembled (with no data
+    movement) into one slice-sharded array.  An interior shard boundary uses a
+    halo slice from the adjacent shard; a zero-padded slice axis uses the
+    per-shard interface masks (reflected BC at the last real slice; the padded
+    slices' gradient is exactly zero and their Hessian stays positive).  At the
+    true recon edges the halo is None and the boundary slice is mirrored
+    (reflected BC) -- matching the single-device result exactly.
+
+    The in-slice (row/col) prior term is fully local and uses only the shard's
+    own slices, so passing the *local* slice count in the kernel's recon_shape is
+    correct (and identical across equal shards, so the jitted prior compiles once).
+
+    No gather is performed: the inputs are slice-sharded and the outputs are
+    returned slice-sharded (matching ``recon_placement``).
+
+    Args:
+        flat_recon (jax array): slice-sharded recon ``(num_pixels, num_slices_device)``
+            (a 1-device mesh is the trivial 1-shard case; the slice axis may be
+            padded -- the device form).
+        pixel_indices (jax array): 1D indices into the flattened (rows, cols)
+            identifying the subset of cylinders to evaluate.
+        qggmrf_params (tuple): the prior parameters ``(b, sigma_x, p, q, T)``.
+        num_rows, num_cols (int): the recon's in-plane shape (problem-owned; the
+            pixel axis is never sharded or padded).
+        recon_placement: the slice-axis Placement (supplies the shard axis and
+            the NamedSharding used to reassemble the outputs).
+        staged_halos (tuple or None): ``(staged_left, staged_right)`` from
+            :func:`stage_halos`, pre-placed on the shard devices.  Pass these to
+            avoid re-reading the halos every subset (the VCD loop stages once per
+            pass).  When ``None``, the halos are extracted+staged here from
+            ``flat_recon`` (the self-contained path, e.g. for tests).
+        interface_masks (dict or None): device -> ``(local_slices+1,)`` float32
+            interface mask, when the slice axis is padded (see the model's
+            ``_qggmrf_interface_masks``); None when nothing is padded.
+
+    Returns:
+        (gradient, hessian): each a slice-sharded array of shape
+        ``(len(pixel_indices), num_slices_device)``.
+    """
+    slice_axis = recon_placement.axis % flat_recon.ndim
+    # The DEVICE-FORM slice count, from the array itself: padded when the slice
+    # axis does not divide the device count.
+    num_slices_device = flat_recon.shape[slice_axis]
+    num_indices = len(pixel_indices)
+
+    # Boundary slices each shard needs from its neighbors (None at the true edges),
+    # pre-placed on the shard devices.  Stage here if the caller did not.
+    if staged_halos is None:
+        staged_left, staged_right = stage_halos(flat_recon, slice_axis)
+    else:
+        staged_left, staged_right = staged_halos
+
+    # Order the shards by their start index along the sharded (slice) axis so the
+    # device sequence matches the staged-halo order and recon_placement's device
+    # order (used to reassemble below).
+    shards = sorted(flat_recon.addressable_shards,
+                    key=lambda s: s.index[slice_axis].start)
+
+    grad_owned, hess_owned = [], []
+    for i, shard in enumerate(shards):
+        device = shard.device
+        local = shard.data                       # (num_pixels, local_slices) on this device
+        local_slices = local.shape[slice_axis]
+        recon_shape_local = (num_rows, num_cols, local_slices)
+        # Indices must be resident on this shard's device; the halos/masks already are.
+        local_indices = jax.device_put(pixel_indices, device)
+        g, h = qggmrf_gradient_and_hessian_at_indices(
+            local, recon_shape_local, local_indices, qggmrf_params,
+            left_halo=staged_left[i], right_halo=staged_right[i],
+            interface_mask=None if interface_masks is None else interface_masks[device])
+        grad_owned.append(g)
+        hess_owned.append(h)
+
+    # Wrap the per-shard pieces into one slice-sharded array (no data movement).
+    structure = recon_placement.shard_structure(2)
+    gradient = mjs.assemble_sharded(grad_owned, (num_indices, num_slices_device), structure)
+    hessian = mjs.assemble_sharded(hess_owned, (num_indices, num_slices_device), structure)
+    return gradient, hessian
 
 
 def b_tilde_by_definition(delta, sigma_x, p, q, T):

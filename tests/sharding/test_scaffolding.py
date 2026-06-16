@@ -1,10 +1,10 @@
 """
-Phase 0 scaffolding test for the sharding work.
+Scaffolding test for the sharding work.
 
 Confirms that the device-setup machinery actually produces multiple devices to
 shard across, and that the conftest `preferred_devices` helper works.  This is
 the minimal gate that "the beta worktree is testable for sharding at all" —
-later phase tests rely on >= 2 devices being available (real GPUs on a cluster,
+later tests rely on >= 2 devices being available (real GPUs on a cluster,
 virtual CPU devices on a laptop/CI).
 """
 import unittest

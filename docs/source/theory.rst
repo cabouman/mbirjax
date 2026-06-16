@@ -10,7 +10,7 @@ Model-Based Iterative Reconstruction
 The following describes how Model-Based Iterative Reconstruction (MBIR) works, and the low-level parameters used to control it.
 However, while these low level MBIR parameters can be accessed, we strongly recommend that you control image quality using the meta-parameter,
 ``sharpnesss``.
-The default value of ``sharpness`` is 0. Larger values will increase sharpness, and small values will decrease it.
+The default value of ``sharpness`` is 1.0. Larger (float) values will increase sharpness, and smaller values will decrease it.
 
 MBIR reconstruction works by solving the following optimization problem
 
