@@ -93,6 +93,8 @@ class Config:
     gate: bool = True               # set the process exit code on a HARD regression
     compare_to_prior: bool = True   # compare against the most-recent prior dated file in out_dir
     golden_path: str = ""           # optional golden file (empty -> none; golden capture is later)
+    main_baseline_path: str = ""    # "" -> auto-discover results/golden/main_baseline_<plat>.yaml
+                                    # for SOFT "vs main (1 device)" relative-perf notes (not gated)
     mem_hard_pct: float = 8.0       # memory growth threshold (%); HARD on GPU, soft on CPU
     speedup_warn_pct: float = 15.0  # speedup-ratio drop WARN threshold (%); soft on all platforms
     time_soft_pct: float = 25.0     # absolute-time WARN threshold (%)
@@ -716,6 +718,33 @@ def _print_gate(g):
         print("  no changes vs reference")
 
 
+def main_perf_notes(result, main_baseline):
+    """SOFT, never-gated 'vs main (1 device)' relative-performance notes.
+
+    Compares this run's n=1 cells against the main-branch 1-device baseline (captured by
+    capture_main_baseline.py) — the pre-sharding reference — so we can see whether the sharding
+    machinery added overhead at a single device.  Each delta shows the value vs main with both
+    absolute and percentage difference.  Returns a list of note strings (informational only).
+    """
+    mb = {_cell_key(c): c for c in main_baseline.get("cells", [])
+          if c.get("n_devices") == 1 and not c.get("failed") and not c.get("skipped")}
+    notes = []
+    for c in result.get("cells", []):
+        if c.get("n_devices") != 1 or c.get("failed") or c.get("skipped"):
+            continue
+        m = mb.get(_cell_key(c))
+        if not m:
+            continue
+        parts = []
+        if c.get("min_ms") and m.get("min_ms"):
+            parts.append("time " + _fmt_delta(c["min_ms"], m["min_ms"], " ms"))
+        if c.get("mem_mb") and m.get("mem_mb"):
+            parts.append("mem " + _fmt_delta(c["mem_mb"], m["mem_mb"], " MB"))
+        if parts:
+            notes.append(f"{c['geometry']}|{c['op']}|{c['size']}  " + "  ".join(parts))
+    return notes
+
+
 def _print_summary(cells):
     """Per (geometry, op): min time (ms) / peak mem (MB) / speedup, for each (size, n_dev)."""
     print("\n" + "=" * 78)
@@ -857,6 +886,16 @@ def run(config):
         gate_dict = gate_run(result, refs, config)
         result["gate"] = gate_dict
 
+    # Relative-performance note vs the main-branch 1-device baseline (auto-discovered).  SOFT and
+    # never gated — shows whether the sharding machinery added 1-device overhead vs released main.
+    # Only n=1 cells are compared (main has no sharding).
+    mb_path = (config.main_baseline_path
+               or os.path.join(sc.RESULTS_DIR, "golden", f"main_baseline_{plat}.yaml"))
+    vs_main = []
+    if os.path.exists(mb_path):
+        vs_main = main_perf_notes(result, sc.load_yaml(mb_path) or {})
+        result["vs_main"] = {"baseline": os.path.basename(mb_path), "notes": vs_main}
+
     out_path = os.path.join(config.out_dir, f"regression_{plat}_{config.date}.yaml")
     sc.save_yaml(out_path, result)
     _print_summary(cells)
@@ -868,6 +907,10 @@ def run(config):
         print(f"\n  established {n_baselines} baseline record(s) (first run for these cells)")
     if gate_dict:
         _print_gate(gate_dict)
+    if vs_main:
+        print("\n  Relative to main (1 device) — informational:")
+        for n in vs_main:
+            print("    " + n)
     print(f"\nOutput written to: {out_path}")
     print(f"Record book:       {records_path}")
     print("Done.")

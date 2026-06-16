@@ -16,7 +16,7 @@ ablations, etc.) have been superseded by `performance_tracking.py` and moved to 
 | `performance_tracking.py` | the **engine** — sweeps geometry × op × size × device-count, writes a dated YAML, updates the record book, and runs the diff/gate.  Default run = the nightly config. |
 | `run_performance_local.py` | **manual launcher** — params at the top; runs the current working tree, writes to an isolated `results/manual/<tag>/`, gate off.  For ad-hoc / in-progress measurement. |
 | `capture_golden.py` | capture/refresh the **golden** reference the gate compares against (`results/golden/golden_<plat>.yaml`); `ONLY` for a selective refresh. |
-| `capture_main_baseline.py` | capture the cross-version **`.npy` reference** from the `main` branch (run from a `main` worktree); the sharding branch is checked against it within tolerance. |
+| `capture_main_baseline.py` | capture the **`main`-branch single-device baseline** (run from a `main` worktree): time + peak memory + fingerprint per cell at the full sweep sizes -> `main_baseline_<plat>.yaml`, plus a small `.npy` correctness array per (geom, op).  The engine auto-discovers this and prints a soft "vs main (1 device)" note. |
 
 Each measured cell is keyed `(geometry, op, size, n_dev)` and records `min_ms`, `mem_mb`,
 `speedup`, structural flags, and a tolerant correctness `fingerprint`.
@@ -54,9 +54,9 @@ descent stops there (smaller counts need more per-device memory).
 ### Golden + cross-version baseline
 ```bash
 python capture_golden.py                # results/golden/golden_<plat>.yaml (drift/accept reference)
-# capture the main-branch .npy reference (run from a main worktree so import mbirjax = main):
+# capture the main-branch 1-device baseline (run from a main worktree so import mbirjax = main):
 git worktree add ../mbirjax_main main
-PYTHONPATH=../mbirjax_main python capture_main_baseline.py   # -> results/golden/<geom>_<op>.npy
+PYTHONPATH=../mbirjax_main python capture_main_baseline.py   # -> results/golden/main_baseline_<plat>.yaml + <geom>_<op>.npy
 git worktree remove ../mbirjax_main
 ```
 
