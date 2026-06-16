@@ -13,6 +13,12 @@
 # Exits non-zero ONLY on a hard-gate perf regression (so the cron/slurm mail is a real alert); setup/
 # transport hiccups are WARNs.
 set -uo pipefail
+# Keep an INTERACTIVE terminal open on a nonzero exit so the error stays visible (some terminals
+# close the window when a command exits nonzero).  A tty-less run (cron/launchd/scrontab/slurm) has
+# no stdin tty, so it skips the pause and exits with the real code — the alert path is preserved.
+if [ -t 0 ]; then
+  trap '_ec=$?; [ "$_ec" -ne 0 ] && { echo; echo ">>> $(basename "$0") exited with status $_ec — press Enter to close."; read -r _ || true; }' EXIT
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/regression.env"

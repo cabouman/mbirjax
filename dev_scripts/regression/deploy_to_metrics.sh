@@ -10,6 +10,10 @@
 # Usage:   bash dev_scripts/regression/deploy_to_metrics.sh [path-to-metrics-clone]
 #   default metrics clone = a sibling of the mbirjax repo:  <mbirjax>/../mbirjax_metrics
 set -euo pipefail
+# Keep an interactive terminal open on a nonzero exit so the error stays visible.
+if [ -t 0 ]; then
+  trap '_ec=$?; [ "$_ec" -ne 0 ] && { echo; echo ">>> $(basename "$0") exited with status $_ec — press Enter to close."; read -r _ || true; }' EXIT
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MBIRJAX_ROOT="$(cd "$HERE/../.." && pwd)"                 # dev_scripts/regression -> repo root

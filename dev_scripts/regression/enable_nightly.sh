@@ -8,6 +8,10 @@
 #
 # (Cluster uses scrontab + nightly_regression.slurm instead — see README; this script is Mac-only.)
 set -euo pipefail
+# Keep an interactive terminal open on a nonzero exit so the error stays visible.
+if [ -t 0 ]; then
+  trap '_ec=$?; [ "$_ec" -ne 0 ] && { echo; echo ">>> $(basename "$0") exited with status $_ec — press Enter to close."; read -r _ || true; }' EXIT
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/regression.env"
