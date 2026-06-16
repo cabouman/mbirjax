@@ -141,10 +141,26 @@ for i in "${!CHANGED_BR[@]}"; do
   git -C "$MB" worktree remove --force "$WT" || true
 done
 
-# ── Publish to the metrics repo (NON-FATAL) ───────────────────────────────────────────────────
+# ── Publish to the metrics repo (conflict-safe; NON-FATAL) ────────────────────────────────────
+# CPU (Mac) and GPU (cluster) write DISJOINT paths (results/<plat>/, state/<plat>/, *_<plat>.yaml),
+# so concurrent runs never conflict on CONTENT — only at the git level (a non-fast-forward if the
+# other platform pushed between our clone and our push).  So: rebase onto the latest (always clean,
+# the paths don't overlap) and retry.  If the push ultimately fails (auth/network), this run's
+# results+state simply aren't persisted — which SELF-HEALS: next run sees no new state and re-measures.
 git -C "$METRICS_REPO" add results state >/dev/null 2>&1 || true
-git -C "$METRICS_REPO" commit -q -m "regression $PLAT $DATE" >/dev/null 2>&1 || true
-git -C "$METRICS_REPO" push >/dev/null 2>&1 || log "WARN: metrics push failed (committed locally; syncs next run)."
+CHANGED_SUMMARY="$(IFS=,; echo "${CHANGED_BR[*]}")"
+if git -C "$METRICS_REPO" commit -q -m "regression $PLAT $DATE [$CHANGED_SUMMARY]" >/dev/null 2>&1; then
+  pushed=0
+  for attempt in 1 2 3; do
+    git -C "$METRICS_REPO" pull --rebase --autostash -q >/dev/null 2>&1 || true
+    if git -C "$METRICS_REPO" push -q >/dev/null 2>&1; then pushed=1; break; fi
+    log "push attempt $attempt failed (concurrent update?); rebasing + retrying."
+  done
+  [ "$pushed" = "1" ] && log "pushed results to metrics." \
+    || log "WARN: push failed after 3 attempts; results not persisted (re-measures next run)."
+else
+  log "nothing new to commit."
+fi
 
 [ "$GATE_FAIL" = "0" ] || { log "REGRESSION DETECTED — exit 1 (alert)."; exit 1; }
 log "done — no regressions."
