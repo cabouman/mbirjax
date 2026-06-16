@@ -114,6 +114,7 @@ def worker_setup(out_file):
     version = "sharding" if hasattr(probe, "configure_devices") else "main"   # sharding-only API
     sc.write_worker_result(out_file, {"platform": plat, "mbirjax_path": path,
                                       "branch": sc.mbirjax_git_branch(path),
+                                      "mbirjax_version": sc.pyproject_version(os.path.dirname(path)),
                                       "version_marker": version, "device_label": sc.device_label()})
 
 
@@ -178,6 +179,7 @@ def main():
                           f"{cell['min_ms']:9.1f} ms  {cell['mem_mb']:8.0f} MB")
 
     result = {"kind": "main_baseline", "platform": plat, "branch": branch,
+              "mbirjax_version": setup.get("mbirjax_version"),
               "mbirjax_path": setup.get("mbirjax_path"), "device_counts": [1],
               "npy_size": list(NPY_SIZE), "geometries": GEOMETRIES, "ops": OPS,
               "sizes": size_labels, "cells": cells}

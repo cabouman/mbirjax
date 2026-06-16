@@ -494,6 +494,7 @@ def _git_provenance(root):
             return None
     return {"git_commit": _g(["rev-parse", "HEAD"]),
             "git_branch": _g(["rev-parse", "--abbrev-ref", "HEAD"]),
+            "mbirjax_version": sc.pyproject_version(root),
             "git_dirty": bool(_g(["status", "--porcelain"]))}
 
 

@@ -85,6 +85,22 @@ def mbirjax_git_branch(pkg_path):
     return None
 
 
+def pyproject_version(root):
+    """Project version string from ``<root>/pyproject.toml`` (or None).
+
+    ``root`` is the package root (one dir up from the ``mbirjax/`` package), so this matches the
+    LOADED mbirjax — including a PYTHONPATH override to a main worktree, where it reads main's
+    version (e.g. 0.6.17.1) rather than the editable install's.
+    """
+    import re
+    try:
+        with open(os.path.join(root, "pyproject.toml")) as f:
+            m = re.search(r'^\s*version\s*=\s*["\']([^"\']+)["\']', f.read(), re.M)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
 def beta_status(pkg_path):
     """Identify whether the loaded mbirjax is the beta sharding code.
 
