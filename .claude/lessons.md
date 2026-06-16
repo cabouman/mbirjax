@@ -428,3 +428,15 @@ platform-gated kernel selection.**
   HARNESS artifact (two full models alive per size → swap), not the code — per-call timing in
   one process (call-1 = trace+compile, call-N = warm) is the clean instrument; use it to label
   every number first-call vs warm.
+- **Multi-device consequence (GPU-confirmed, `run_performance_local.py`).**  Making n=1 the fast
+  pixel kernel makes the back-projection device curve NON-monotonic: n=2 (band kernel at 2.25/2 per
+  device) is SLOWER than n=1, with a crossover at **n≈2.25** — so you need **≥3 GPUs before sharding
+  back pays in TIME** (it always pays in MEMORY).  Confirmed: 512³ back n=1/n=2/n=4 = 648/741/355 ms.
+  At the WORKLOAD level VCD stays monotonic (n=2 1.18–1.26×, n=4 ~2.0–2.1×) because the parallel
+  forward masks the back crossover — so the short-circuit is a clean VCD win (faster n=1, scaling
+  intact).  **Capacity:** n=1 1024³ nonc VCD = **74 GiB** (fits a ~79 GiB H100, ~5 GiB margin) ≈ main;
+  the band path's ~10 GiB n=1 headroom is given up, so single-GPU is effectively capped ~1024³ and
+  >1024³ uses n≥2 (DECISION (a): keep the simple short-circuit; sharding is the capacity tool, the
+  memory-aware pixel-vs-band-by-fit variant was deferred).  **The band kernel's GPU cost is now the
+  limiter of multi-device back scaling — the real B4.5 lever** (make the band kernel GPU-competitive,
+  e.g. a rolled/pixel-like internal structure, WITHOUT reintroducing the CPU cliff).

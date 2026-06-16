@@ -19,9 +19,9 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
-## HANDOFF (2026-06-16) — cone back 1-device GPU penalty RESOLVED: GPU-only n=1 back short-circuit implemented
+## HANDOFF (2026-06-16) — cone back 1-device GPU penalty RESOLVED + GPU-CONFIRMED; decision (a)
 
-▶ **The cone `back` 1-device GPU penalty (the OPEN INVESTIGATION below) is RESOLVED; fix staged.**
+▶ **The cone `back` 1-device GPU penalty (the OPEN INVESTIGATION below) is RESOLVED, GPU-CONFIRMED, fix staged.**
 Root cause: at n=1 the sharded path runs the cone BAND kernel (`back_project_one_view_to_band`), which
 is **~2.25× slower than the monolithic single-device kernel ON GPU** — the sharded *driver* overhead is
 ~0 (a driver-less band loop ties the full sharded path at 1.00×).  On CPU the SAME band kernel is **~8×
@@ -31,11 +31,20 @@ n=1 short-circuit** in `_sparse_back_project_sharded` routes a single-GPU mesh t
 `_sparse_back_project_single_device` and wraps the output as a 1-shard slice-sharded array (metadata
 only); CPU keeps the band path.  Net = pixel kernel on GPU, band kernel on CPU (platform-optimal).
 **Validated (CPU):** wrap is bit-identical + same sharding to the band path; `tests/sharding/` 107p/2s
-green @4 dev.  **Memory:** B-back ≤ main-back (== at 1024³ = 21 GB; the band path's 12.5 GB is a *bonus*
-over main), so single-GPU capacity = main — **watch nonc-VCD 1024³ via the perf-tracking tool** rather
-than gating on it.  Tool added: `scaling_tests/cone_back_ab_memory.py` (A/B + per-config peak memory +
-driver-less kernel isolation).  Full write-up + the two ruler bugs that hid it: `.claude/lessons.md`
-"Platform-divergent back-projection kernel" (2026-06-16); see the RESOLVED block below.
+green @4 dev.  **GPU-CONFIRMED (cluster, `run_performance_local.py`, cone back + vcd_nonconst):** n=1
+back **2.25×** (512³ 1456→648 ms) / **2.46×** (1024³ 43.2→17.5 s) faster, now = main; n=1 mem at main
+level (5.4 GiB @512³, 21 GiB @1024³ — the band-streaming bonus given up).  VCD scales monotonically
+(n=2 1.18–1.26×, n=4 ~2.0–2.1×): the back **n≈2.25 device crossover** (n=2 back *slower* than n=1 back —
+n=1 uses the fast pixel kernel, n≥2 the 2.25×-slower band kernel) is MASKED at the workload level by the
+parallel forward.  **Capacity:** n=1 1024³ nonc VCD = **74 GiB** (fits the ~79 GiB H100, ~5 GiB margin);
+multi-device shards it to 38/19 GiB.  Single-GPU is now effectively capped ~1024³ (the banded back's
+~10 GiB n=1 headroom is given up); **>1024³ → use n≥2**.  **DECISION (a) (Greg, 2026-06-16): keep the
+simple GPU→B short-circuit** — sharding is the capacity tool beyond 1024³; the memory-aware variant was
+considered and DEFERRED.  (513 non-dividing n≥2 ERRORs = the known **B5** cone-padding bug, not the
+short-circuit; n=1 fine.)  **Next multi-device lever:** the band kernel's GPU cost (the real B4.5 — make
+it GPU-competitive so n=2 back scales).  Tool added: `scaling_tests/cone_back_ab_memory.py` (A/B + peak
+memory + driver-less kernel isolation).  Full write-up + the two ruler bugs that hid it:
+`.claude/lessons.md` "Platform-divergent back-projection kernel" (2026-06-16); see the RESOLVED block below.
 
 ---
 
