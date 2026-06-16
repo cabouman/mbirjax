@@ -19,6 +19,51 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-15) — performance-tracking toolchain built (regression engine + golden + main baseline); VCD partition non-reproducibility found + fixed
+
+▶ **A standing day-over-day regression tool now exists and is CPU-validated.**  Design:
+`plans/performance_tracking_plan.md`.  Usage (CPU + GPU): `scaling_tests/README.md`.  The old
+per-op `*_scaling.py` / `*_capture_baseline.py` scripts are SUPERSEDED → moved to
+`scaling_tests/archive/`.  Current toolchain in `scaling_tests/`:
+- **`performance_tracking.py`** — the engine: sweep geometry × op × size × device-count
+  (`direct_filter`, `forward`, `back`, `vcd_nonconst`), per-cell `min_ms` / `mem_mb` / speedup /
+  structural flags / tolerant correctness **fingerprint**; isolated-subprocess workers + an
+  `--inline` debug path; writes a dated YAML, a **record book** (`records_<plat>.yaml`, best-ever +
+  the commit), and runs the **diff/gate**.
+- **`run_performance_local.py`** — manual launcher (current tree, isolated `results/manual/<tag>/`).
+- **`capture_golden.py`** — the day-to-day drift/accept reference (current branch).
+- **`capture_main_baseline.py`** — the **`main`-branch 1-device baseline** (run from a `main`
+  worktree): time + memory + fingerprint at the full sweep sizes → `main_baseline_<plat>.yaml`
+  (+ a small `.npy` per (geom,op)).  The engine auto-discovers it and prints a SOFT "vs main
+  (1 device)" note (relative perf vs released code; never gated).
+
+**Gate model (as built):** HARD on every platform = correctness fingerprint + structural + status
+`ok→fail` + expected-but-absent; HARD on **GPU only** = memory growth (`peak_bytes_in_use` is
+deterministic; CPU `mem_mb` is coarse RSS → soft); SOFT everywhere = speedup, absolute time, CPU
+memory, sweep add/drop.  Every delta shows both absolute and % vs expected.  No allowlist — the
+gate fires on a CHANGE vs prior/golden, so persistent known failures (e.g. cone `forward` at a
+non-dividing count — cone slice padding is B5/not-done) stay quiet warts and flip to a `fail→ok`
+WARN when fixed.
+
+**Key finding this session (separate the ruler from the code):** the cross-version baseline's
+first use flagged a 5e-2 "parallel VCD vs main" divergence.  Root cause was a RULER bug —
+`gen_pixel_partition` draws from the **un-seeded global RNG**, so VCD partitions (and the recon)
+vary run-to-run ~4e-2; the sharding branch's parallel VCD matches `main` to ~1e-7 with pinned
+partitions.  **Fixes (committed):** `build_partitions` now seeds (`measure_seed`) so the tool's VCD
+is reproducible (else the day-over-day VCD gate would false-positive every run); a docstring note
+on `recon`/`prox_map` tells users to `np.random.seed(seed)` for reproducible recons.  (mbirjax VCD
+is non-deterministic run-to-run by default — library design left as a doc note, not a seed API.)
+
+**State:** all CPU-validated; the **main CPU baseline is being captured now** (Greg to run the GPU
+baseline + GPU shakeout when his GPU request fills, then re-capture the GPU golden — the earlier
+`results/golden/golden_gpu.yaml` predates the partition fix, so its VCD cells are stale).
+**NEXT:** the nightly shell wrapper (`dev_scripts/regression/`: worktree + install + tests + engine
++ repo pull/push to `github.com/gbuzzard/mbirjax_metrics` + notify, `regression.env`,
+enable/disable, launchd/scrontab); then `compare_to_baseline.py` (deep-diff using the `.npy`,
+deferred) and a visual interrogation surface (deferred).
+
+---
+
 ## HANDOFF (2026-06-14b) — shared FBP/FDK filter; cone n=1 forward fix; single-shard gather short-circuit; ruler hardening (3 ruler bugs diagnosed)
 
 ▶ **All CPU-validated (full suite 165p @2dev, sharding 107p @4dev); staged for Greg's PyCharm

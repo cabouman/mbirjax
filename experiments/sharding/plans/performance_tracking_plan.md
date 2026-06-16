@@ -1,14 +1,31 @@
 # Performance-tracking / nightly-regression tool — design plan
 
-**STATUS: PROPOSAL (2026-06-15).  No implementation yet — this doc is for review.**
-Supersedes the short sketch in `sharding_implementation_plan_v2.md` §Adjacent tasks
-("Daily regression-check tool"); that sketch's gate taxonomy and "thin driver over the
-existing harness" stance are carried forward and expanded here.
+**STATUS: MOSTLY BUILT + CPU-validated (2026-06-15).**  The engine, fingerprint, `vcd_nonconst`,
+record book, diff/gate, golden capture, manual launcher, and the `main` 1-device baseline + "vs
+main" note are implemented in `experiments/sharding/scaling_tests/` (usage: that dir's `README.md`).
+This doc is the design rationale; where the as-built behavior differs from an earlier proposal it is
+flagged inline (e.g. §10's gate-model update, §6's no-auto-skip).  **Remaining (NOT built):** the
+nightly shell wrapper (§12 — `dev_scripts/regression/`), the deferred `compare_to_baseline.py`
+(.npy deep-diff, §14 P7), and the visual interrogation surface (§14).  Supersedes the short sketch
+in `sharding_implementation_plan_v2.md` §Adjacent tasks ("Daily regression-check tool").
 
 Author intent (Greg, this session): a standing day-over-day check that exercises every
 geometry × op and flags time/memory/correctness drift, runnable as a nightly cron (CPU =
 Greg's Mac) and a nightly slurm batch (GPU = cluster), **plus** an ad-hoc manual launcher
 for the current working tree that never clobbers the nightly results.
+
+**Built-this-session notes not yet woven into the body below:**
+- **No OOM auto-skip** (`vcd_min_devices` removed): an OOM is recorded as a failure cell;
+  `run_measure_loop`'s descent already stops at the first OOM (smaller counts need more per-device
+  memory).  Supersedes §6's `vcd_min_devices` skip.
+- **`main` 1-device baseline now captures time + memory + fingerprint** at the full sweep sizes
+  (`main_baseline_<plat>.yaml`), not just the `.npy`; the engine **auto-discovers** it and prints a
+  SOFT "vs main (1 device)" relative-perf note (never gated).  Extends §8.
+- **VCD reproducibility fix:** `gen_pixel_partition` draws from the un-seeded global RNG (mbirjax,
+  both branches), so `build_partitions` now seeds (`measure_seed`) — else the day-over-day VCD
+  fingerprint would false-positive.  A docstring note on `recon`/`prox_map` documents this for
+  library users.  (How this was found: the cross-version baseline flagged a 5e-2 "parallel VCD vs
+  main" delta that turned out to be the un-seeded partitions, not a code difference.)
 
 ---
 
@@ -614,18 +631,18 @@ survives login-node rotation.  Helpers mirror the Mac:
 
 ## 14. Build order (CPU first, per Greg)
 
-- **P0** — `performance_tracking.py` engine: Config + `run()`; GEOMETRY sweep; reuse
-  scaling_common; `--inline`; write dated YAML (no gate yet).  Validate inline on CPU at tiny
-  sizes (parallel + cone, dividing counts only — cone multi-device padding is B5).
-- **P1** — correctness fingerprint capture + `vcd_nonconst`.
-- **P2** — `run_performance_local.py` manual launcher (params at top, isolated out-dir,
-  gate off).
-- **P3** — diff + gate (day-over-day; thresholds; exit code) + `tests_<date>.yaml` ingest.
-- **P4** — `mbirjax_metrics` repo skeleton (`golden/`, `results/cpu`, `results/gpu`) + the golden
-  capture/refresh mode (`--capture-golden [--only G|OP] --branch B --commit C`: automated
-  worktree@commit → clean install → measure → write fingerprint YAML + the one representative
-  `.npy` per op; full and selective refresh, §13.2).  No allowlist file — golden IS the expected
-  state (§10a).
+- ✅ **P0** — `performance_tracking.py` engine: Config + `run()`; GEOMETRY sweep; `--inline`;
+  dated YAML.  (Done + CPU-validated.)
+- ✅ **P1** — correctness fingerprint (true-shape crop + padding-zero check) + `vcd_nonconst`.
+- ✅ **P2** — `run_performance_local.py` manual launcher.
+- ✅ **P3** — diff + gate (day-over-day + golden; status transitions; exit code).  `tests_<date>.yaml`
+  ingest is the wrapper's job (P5, not built).
+- ✅ **P4 (engine side)** — `capture_golden.py` (full + `--only` selective refresh, writes
+  `results/golden/golden_<plat>.yaml`).  The worktree@commit + clean-install + push wrapping is P5.
+  No allowlist file — golden IS the expected state (§10a).
+- ✅ **(added) Record book** — `records_<plat>.yaml` (best-ever per cell/metric + the commit).
+- ✅ **(added) `main` 1-device baseline** — `capture_main_baseline.py` (time + memory + fingerprint
+  at the full sweep sizes + small `.npy`); engine auto-discovers + prints a soft "vs main" note.
 - **P5** — `dev_scripts/regression/` wrapper + `regression.env` + `enable/disable_nightly.sh` +
   README; the `BRANCHES` loop + worktree + fast/clean install + tests (`MBIRJAX_NUM_CPU_DEVICES=4`)
   + engine + repo pull/push (non-fatal) + notify; dry-run end-to-end on the Mac via `launchd`;
