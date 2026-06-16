@@ -62,6 +62,48 @@ baseline + GPU shakeout when his GPU request fills, then re-capture the GPU gold
 enable/disable, launchd/scrontab); then `compare_to_baseline.py` (deep-diff using the `.npy`,
 deferred) and a visual interrogation surface (deferred).
 
+### OPEN INVESTIGATION (2026-06-15) — cone back 1-device GPU penalty vs main
+
+**Finding (from the GPU `main_baseline_gpu.yaml` vs-main note):** cone `back` 1-device is **+126%
+(512³) to +136% (1024³)** SLOWER than main, and it propagates to cone `vcd` (+15% to +57%, +25%
+mem at 1024³).  Parallel back is fine.  All other ops are wins (cone `direct_filter` −92..−98%;
+parallel `forward` −50..−83% mem).
+
+**Pipeline (the levels — all in the sharding branch):**
+- `TomographyModel.sparse_back_project` (tomography_model.py:1703) **dispatches on `is_sharded`**:
+  `is_sharded` → `_sparse_back_project_sharded` (:1852, **banded reduce-scatter** — view-owners
+  compute partials streamed in slice-bands, reduce-scatter to slice-owners); else
+  `_sparse_back_project_single_device` (:1742, **the prerelease/main loop** over view+pixel
+  batches).  The perf model is `is_sharded=True` **even at 1 device** (trivial mesh) → it takes the
+  SHARDED path, NOT the single-device path.  So "current 1-device" = sharded path on a trivial mesh.
+- Both paths share `_sparse_back_project` (projectors.py:367, view-sum + pixel batching, SAME as
+  main).  The cone per-view kernel `back_project_one_view_to_pixel_batch` (cone_beam.py:497) does
+  horizontal-fan-once + **vertical-fan banded via `lax.map`** over `CONE_SLICE_BAND_SIZE=128` slice
+  bands; the sharded path uses a band kernel producing one band.
+
+**CPU A/B (sharding branch, 1 device, 256³; A = sharded path = `sparse_back_project`, B =
+single-device path = `_sparse_back_project_single_device`):** cone A/B = **0.13** (sharded **7.5×
+FASTER**), parallel 0.98.  So on CPU the sharded driver is the WIN — the OPPOSITE of GPU.
+**Conclusion: the +136% penalty is GPU-SPECIFIC** (GPU lowering/execution, not generic driver
+overhead).  Caveat: B uses the sharding-branch per-view kernel (internal banding), NOT main's.
+
+**NEXT — run the same A/B on GPU** (cluster, sharding branch, no worktree):
+```python
+import performance_tracking as pt, scaling_common as sc
+cfg = pt.Config(); SIZE=(512,448,384)
+m = pt.make_model(cfg,'cone',SIZE); m.configure_devices(1)
+idx = pt.make_indices(m); sino_dev = pt.to_device(m, pt.make_sinogram(cfg,SIZE), 'sino')
+A,_ = sc.time_op(lambda: m.sparse_back_project(sino_dev, idx), 1, 3)
+B,_ = sc.time_op(lambda: m._sparse_back_project_single_device(pt.make_sinogram(cfg,SIZE), idx), 1, 3)
+print('A sharded=%.1f  B single=%.1f  ratio=%.2f' % (A['min_ms'], B['min_ms'], A['min_ms']/B['min_ms']))
+```
+**Decision tree:** **A > B** on GPU → the sharded *driver* is the penalty → cheap fix = **n=1
+short-circuit** (route a trivial 1-device mesh to `_sparse_back_project_single_device`, mirroring
+the existing "n=1 forward single-call fix"); honor the slice-sharded output contract.  **A ≈ B** →
+the penalty is the *kernel change* (internal banding) → follow-up: B-vs-main in a `main` worktree.
+Deferred B4.5 ("hoist the back horizontal fan") is the heavier alternative if neither short-circuit
+suffices.
+
 ---
 
 ## HANDOFF (2026-06-14b) — shared FBP/FDK filter; cone n=1 forward fix; single-shard gather short-circuit; ruler hardening (3 ruler bugs diagnosed)
