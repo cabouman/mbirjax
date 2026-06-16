@@ -1,0 +1,17 @@
+# cluster_preamble.sh.example — node preamble for the Purdue RCAC cluster.
+#
+# Copy to a real path on the cluster (NOT committed if it ever holds secrets — this one doesn't),
+# then point regression.env at it:   PREAMBLE_FILE="$HOME/mbirjax_cluster_preamble.sh"
+#
+# It is SOURCED FIRST by run_regression.sh — before any git clone or conda activate — because the
+# proxy exports are what let git reach github from a compute node, and `module load conda` is what
+# puts conda on PATH.  Sourced, so the exported vars + PATH changes carry into the run (and through
+# the phase-2 re-exec).
+
+module load conda
+module load modtree/gpu
+module load cuda/12.9.0
+export HTTPS_PROXY=squid.rcac.purdue.edu:3128
+export HTTP_PROXY=squid.rcac.purdue.edu:3128
+module use /depot/bouman/apps/modules
+module load cudnn/9.12.0
