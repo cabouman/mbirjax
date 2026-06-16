@@ -49,12 +49,15 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
         .. code-block:: python
 
             # Get data and reconstruction parameters
-            sino, translation_params, optional_params = mbirjax.preprocess.zeiss.compute_sino_and_params(dataset_dir)
+            sino, translation_params, optional_params, weights = mbirjax.preprocess.zeiss.compute_sino_and_params(dataset_dir)
 
             # Create the model and set parameters
             tct_model = mbirjax.TranslationModel(**translation_params)
             tct_model.set_params(**optional_params)
             tct_model.set_params(sharpness=sharpness, verbose=1)
+
+            # Generates weights array
+            weights = weights
 
             # Run reconstruction
             recon, recon_dict = tct_model.recon(sino)
