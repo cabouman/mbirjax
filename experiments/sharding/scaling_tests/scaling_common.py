@@ -246,17 +246,21 @@ def beta_root():
                                         os.pardir, os.pardir, os.pardir))
 
 
-def build_worker_env(mem_fraction=0.9, preallocate=True):
+def build_worker_env(mem_fraction=0.9, preallocate=True, lib_root=None):
     """Orchestrator side: the environment every worker subprocess inherits.
 
-    Forces the beta worktree onto PYTHONPATH so ``import mbirjax`` resolves to beta
+    Forces a mbirjax checkout onto PYTHONPATH so ``import mbirjax`` resolves to it
     regardless of how the orchestrator was launched (PyCharm or CLI), and sets the
-    JAX allocator knobs.  Preallocating the pool up front avoids per-call
-    cudaMalloc growth (clean timing); peak_bytes_in_use still tracks in-use tensors
-    so memory stays accurate.  Lower ``mem_fraction`` to probe the OOM threshold.
-    Warns if no mbirjax/ is found under the derived root.
+    JAX allocator knobs.  ``lib_root`` selects WHICH checkout: pass it to measure a
+    DIFFERENT branch's library (e.g. the nightly points it at a per-branch worktree,
+    so the same harness — which may live in mbirjax_metrics, not next to mbirjax —
+    measures main / prerelease / a dev branch).  Default (None) keeps the historical
+    behavior: ``beta_root()``, the checkout this harness lives in.  Preallocating the
+    pool up front avoids per-call cudaMalloc growth (clean timing); peak_bytes_in_use
+    still tracks in-use tensors so memory stays accurate.  Lower ``mem_fraction`` to
+    probe the OOM threshold.  Warns if no mbirjax/ is found under the chosen root.
     """
-    root = beta_root()
+    root = lib_root or beta_root()
     if not os.path.isdir(os.path.join(root, "mbirjax")):
         print(f"  WARNING: no mbirjax/ under derived beta root {root}")
     existing = os.environ.get("PYTHONPATH", "")

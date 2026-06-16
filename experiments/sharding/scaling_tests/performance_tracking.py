@@ -88,12 +88,17 @@ class Config:
     out_dir: str = ""      # stable nightly dir, or results/manual/<tag> (required at run time)
     date: str = ""         # stamped by the orchestrator (never datetime.now() in a worker)
     run_tag: str = ""
+    lib_root: str = ""     # library checkout to MEASURE (PYTHONPATH + provenance); "" -> beta_root()
+                           # (this harness's own checkout).  The nightly sets it to a per-branch worktree.
 
     # diff / gate
     gate: bool = True               # set the process exit code on a HARD regression
     compare_to_prior: bool = True   # compare against the most-recent prior dated file in out_dir
-    golden_path: str = ""           # optional golden file (empty -> none; golden capture is later)
-    main_baseline_path: str = ""    # "" -> auto-discover results/golden/main_baseline_<plat>.yaml
+    golden_path: str = ""           # explicit golden file (empty -> resolve from golden_dir, if set)
+    golden_dir: str = ""            # base dir for golden_<plat>.yaml + main_baseline_<plat>.yaml
+                                    # (e.g. the metrics repo's golden/).  "" -> script-relative
+                                    # RESULTS_DIR/golden and NO auto golden gate (historical behavior)
+    main_baseline_path: str = ""    # "" -> auto-discover <golden_dir>/main_baseline_<plat>.yaml
                                     # for SOFT "vs main (1 device)" relative-perf notes (not gated)
     mem_hard_pct: float = 8.0       # memory growth threshold (%); HARD on GPU, soft on CPU
     speedup_warn_pct: float = 15.0  # speedup-ratio drop WARN threshold (%); soft on all platforms
@@ -792,7 +797,7 @@ def run(config):
         plat, max_dev = _inline_setup(config)
         dev_label = sc.device_label()
     else:
-        worker_env = sc.build_worker_env()
+        worker_env = sc.build_worker_env(lib_root=config.lib_root or None)
         # Bound the CPU virtual-device count by THIS sweep (config.device_counts), not by
         # mbirjax's DEFAULT_MAX_CPU_DEVICES.  This MUST be set before the setup probe: the probe
         # imports mbirjax, and with no override mbirjax resolves only DEFAULT_MAX_CPU_DEVICES
@@ -853,7 +858,7 @@ def run(config):
     if cfg_path and os.path.exists(cfg_path):
         os.remove(cfg_path)
 
-    prov = _git_provenance(sc.beta_root())
+    prov = _git_provenance(config.lib_root or sc.beta_root())   # provenance of the LIBRARY under test
 
     # Update the cumulative record book (best per cell/metric + the commit that set it).  It lives
     # in out_dir, so nightly (results/regression/) and manual (results/manual/<tag>/) runs keep
@@ -875,23 +880,30 @@ def run(config):
     # Diff + gate: compare against the most-recent prior dated file (and golden, if configured),
     # classify per the §10/§10a rules, and stash the gate dict in the YAML.  Done before the write
     # so the dated file records its own verdict; the exit code is set by main() from result.gate.
+    # golden_dir (e.g. the metrics repo's golden/) overrides the script-relative default for BOTH the
+    # golden gate and the vs-main baseline; plat is resolved here so the files carry the platform
+    # suffix.  Empty -> historical behavior (RESULTS_DIR/golden; golden gate only if golden_path set).
+    golden_base = config.golden_dir or os.path.join(sc.RESULTS_DIR, "golden")
+    golden_path = config.golden_path or (
+        os.path.join(golden_base, f"golden_{plat}.yaml") if config.golden_dir else "")
+
     gate_dict = None
-    if config.compare_to_prior or config.golden_path:
+    if config.compare_to_prior or golden_path:
         refs = []
         if config.compare_to_prior:
             pp = _find_prior(config.out_dir, plat, config.date)
             if pp:
                 refs.append((f"prior:{os.path.basename(pp)}", sc.load_yaml(pp)))
-        if config.golden_path and os.path.exists(config.golden_path):
-            refs.append(("golden", sc.load_yaml(config.golden_path)))
+        if golden_path and os.path.exists(golden_path):
+            refs.append(("golden", sc.load_yaml(golden_path)))
         gate_dict = gate_run(result, refs, config)
         result["gate"] = gate_dict
 
-    # Relative-performance note vs the main-branch 1-device baseline (auto-discovered).  SOFT and
-    # never gated — shows whether the sharding machinery added 1-device overhead vs released main.
-    # Only n=1 cells are compared (main has no sharding).
+    # Relative-performance note vs the main-branch 1-device baseline (auto-discovered under
+    # golden_base).  SOFT and never gated — shows whether the sharding machinery added 1-device
+    # overhead vs released main.  Only n=1 cells are compared (main has no sharding).
     mb_path = (config.main_baseline_path
-               or os.path.join(sc.RESULTS_DIR, "golden", f"main_baseline_{plat}.yaml"))
+               or os.path.join(golden_base, f"main_baseline_{plat}.yaml"))
     vs_main = []
     if os.path.exists(mb_path):
         vs_main = main_perf_notes(result, sc.load_yaml(mb_path) or {})
