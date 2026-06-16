@@ -117,7 +117,9 @@ for i in "${!CHANGED_BR[@]}"; do
   # not gated — per-branch test diffing is a later increment; the perf engine is the alert path).
   if [ "${RUN_TESTS:-0}" = "1" ]; then
     if [ -f "$WT/dev_scripts/run_tests.sh" ]; then
-      ( cd "$WT" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" bash dev_scripts/run_tests.sh ) \
+      # run_tests.sh uses a path RELATIVE to dev_scripts/ (`python -m pytest -n 10 ../tests`), so it
+      # MUST be invoked from there or it collects 0 tests (../tests would resolve outside the worktree).
+      ( cd "$WT/dev_scripts" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" bash run_tests.sh ) \
         >"$OUT/tests_${PLAT}_${DATE}.log" 2>&1 || log "$BR: tests reported failures (non-fatal)."
     else
       ( cd "$WT" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" python -m pytest tests -q -n 10 ) \
