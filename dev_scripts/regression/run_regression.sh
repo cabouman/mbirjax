@@ -5,9 +5,9 @@
 #   (proxy + modules), fresh-clone the metrics repo into $WORK_DIR/metrics, and re-exec the FRESH
 #   clone's copy of this script — so harness/engine/wrapper updates on the remote are always used.
 # Phase 2 (work, runs from the fresh metrics clone): for each tracked branch whose remote head moved
-#   since last measured (git ls-remote vs metrics state/), worktree the library at that commit from a
-#   fresh mbirjax clone, pip install -e (+platform extras), run that branch's tests + the perf engine,
-#   record results + the measured SHA into the metrics clone, and push (non-fatal).
+#   since last measured (git ls-remote vs metrics state/), make a SHALLOW single-branch clone of the
+#   library tip, pip install -e (+platform extras), run that branch's tests + the perf engine, record
+#   results + the measured SHA into the metrics clone, and push (non-fatal).
 #
 # No per-node paths are baked in — only URLs + $WORK_DIR (under $HOME or scratch).  Config: regression.env.
 # Exits non-zero ONLY on a hard-gate perf regression (so the cron/slurm mail is a real alert); setup/
@@ -97,24 +97,24 @@ for BR in "${TRACKED_BRANCHES[@]}"; do
 done
 [ "${#CHANGED_BR[@]}" -gt 0 ] || { log "no tracked branch changed — done."; exit 0; }
 
-# ── Fresh mbirjax clone (only because something changed); worktrees come from it ───────────────
-rm -rf "$WORK_DIR/mbirjax"
-log "fresh-cloning mbirjax -> $WORK_DIR/mbirjax"
-git clone --quiet "$MBIRJAX_URL" "$WORK_DIR/mbirjax" || { log "FATAL: clone mbirjax failed."; exit 2; }
-MB="$WORK_DIR/mbirjax"
-
+# Per changed branch: a SHALLOW, SINGLE-BRANCH clone of just the branch tip (no history, no other
+# branches) straight into the work dir — small + fast, and (unlike a pip-install-from-git, which
+# clones internally anyway) it still carries tests/ + dev_scripts/ for the test step and a .git for
+# provenance.  The big experiments/ tree is gitignored, so it is never cloned.
 DATE="$(date '+%Y%m%d')"
 GATE_FAIL=0
 for i in "${!CHANGED_BR[@]}"; do
-  BR="${CHANGED_BR[$i]}"; SHA="${CHANGED_SHA[$i]}"; SLUG="${BR//\//_}"
-  WT="$WORK_DIR/wt_$SLUG"; rm -rf "$WT"
-  if ! git -C "$MB" worktree add --quiet --detach "$WT" "$SHA"; then
-    log "ERROR $BR: worktree add failed — skip."; continue
+  BR="${CHANGED_BR[$i]}"; SLUG="${BR//\//_}"
+  WT="$WORK_DIR/lib_$SLUG"; rm -rf "$WT"
+  log "$BR: shallow-cloning the library tip -> $WT"
+  if ! git clone --quiet --depth 1 --branch "$BR" --single-branch "$MBIRJAX_URL" "$WT"; then
+    log "ERROR $BR: shallow clone failed — skip."; continue
   fi
+  SHA="$(git -C "$WT" rev-parse HEAD)"   # the tip we actually got; recorded as state below
 
   if ! pip install -e "$WT[$EXTRAS]" >"$WT/.install.log" 2>&1; then
     log "ERROR $BR: pip install -e '$WT[$EXTRAS]' failed (see $WT/.install.log) — skip."
-    git -C "$MB" worktree remove --force "$WT"; continue
+    rm -rf "$WT"; continue
   fi
 
   OUT="$RES/$SLUG"; mkdir -p "$OUT"
@@ -124,7 +124,7 @@ for i in "${!CHANGED_BR[@]}"; do
   if [ "${RUN_TESTS:-0}" = "1" ]; then
     if [ -f "$WT/dev_scripts/run_tests.sh" ]; then
       # run_tests.sh uses a path RELATIVE to dev_scripts/ (`python -m pytest -n 10 ../tests`), so it
-      # MUST be invoked from there or it collects 0 tests (../tests would resolve outside the worktree).
+      # MUST be invoked from there or it collects 0 tests (../tests would resolve outside the clone).
       ( cd "$WT/dev_scripts" && MBIRJAX_NUM_CPU_DEVICES="$TEST_CPU_DEVICES" bash run_tests.sh ) \
         >"$OUT/tests_${PLAT}_${DATE}.log" 2>&1 || log "$BR: tests reported failures (non-fatal)."
     else
@@ -144,7 +144,7 @@ for i in "${!CHANGED_BR[@]}"; do
   fi
 
   echo "$SHA" >"$STATE/$SLUG"   # record measured commit LAST (a crash mid-run re-measures next time)
-  git -C "$MB" worktree remove --force "$WT" || true
+  rm -rf "$WT"                  # drop the throwaway library clone
 done
 
 # ── Publish to the metrics repo (conflict-safe; NON-FATAL) ────────────────────────────────────
