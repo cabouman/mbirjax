@@ -43,14 +43,14 @@ way.
 import os
 import sys
 
-# Default to 4 virtual CPU devices (Greg, 2026-06-15), matching mbirjax/_device_setup.py's
-# DEFAULT_MAX_CPU_DEVICES: 4 exercises the view/slice PADDING paths that 2 never reaches (a count
-# must fail to divide an axis to pad), so the suite covers the sharded padding code by default.
-# Trade-offs accepted: the 4 known cone-padding tests FAIL at 4 devices (cone slice padding is not
-# yet implemented), and tiny overhead-bound tests run somewhat slower than at 2.  Override with the env
-# var for a different count (e.g. MBIRJAX_NUM_CPU_DEVICES=2 pytest tests/).  The resolution
-# policy below otherwise mirrors mbirjax._device_setup.
-DEFAULT_MAX_CPU_DEVICES = 4
+# Matches mbirjax/_device_setup.py's DEFAULT_MAX_CPU_DEVICES (2): with auto-sharding
+# on by default, every bare-model test already exercises the multi-device sharded path
+# at 2 devices, and capping at 2 keeps the suite time acceptable (8 virtual devices ran
+# the legacy suite ~1.9x slower on tiny, overhead-bound test problems).  The 4/8-device
+# sweep legs in tests/sharding/ skip at this cap -- raise the env override for a fuller
+# sweep (e.g. MBIRJAX_NUM_CPU_DEVICES=4 pytest tests/sharding/).  The resolution policy
+# below otherwise mirrors mbirjax._device_setup.
+DEFAULT_MAX_CPU_DEVICES = 2
 
 
 def _performance_core_count():

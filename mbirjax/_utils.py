@@ -43,24 +43,6 @@ def log_oom_guidance(logger, on_gpu):
         logger.error(">>> Insufficient CPU memory: try reducing recon_shape, or run where more memory is available.")
 
 
-def _called_by(name):
-    """
-    Determine if the current function has the function <name> in its call stack.
-
-    Args:
-        name (str): the name of the calling function.
-
-    Returns:
-        bool: True if the current function has the function <name> in its call stack.
-    """
-    import sys
-    frame = sys._getframe(1).f_back  # start above _called_by's own caller
-    while frame is not None:
-        if frame.f_code.co_name == name:
-            return True
-        frame = frame.f_back
-    return False
-
 # Update to include new geometries that should be included in the tests suite
 _geometry_types_for_tests = ['parallel', 'anisotropic_parallel', 'cone', 'anisotropic_cone', 'helical_cone', 'translation', 'anisotropic_translation']
 
