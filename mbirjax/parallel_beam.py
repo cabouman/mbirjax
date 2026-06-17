@@ -94,6 +94,34 @@ class ParallelBeamModel(TomographyModel):
         always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
         return True
 
+    def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
+                                         view_indices, coeff_power):
+        """Parallel-beam specialization of the sharded slice-band back projection (overrides the
+        base banded path): detector row r back-projects to slice r alone, so the slice band [g0, g1)
+        IS detector rows [g0:g1).  Crop the detector-row axis and run the standard back projector
+        (the kernel sizes its output slices from the input rows) -- cheaper than the base banded
+        path, which would process the full detector rows.  Returns the per-view-owner partial band
+        ``(num_pixels, g1 - g0)``."""
+        return self.projector_functions.sparse_back_project(
+            view_data[:, g0:g1, :], pixel_indices,
+            view_indices=view_indices, coeff_power=coeff_power)
+
+    def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
+                                     recon_shard_info, view_ranges, local_pixels):
+        """Parallel-beam specialization of the sharded forward projection (overrides the base
+        gather+monolithic path): band the slice axis and broadcast each band; each view-owner
+        projects detector rows [g0:g1) from the band (row r <- slice r) and concatenates its
+        row-bands -- never gathering the full cylinder.  Band sizing mirrors back projection
+        (see _slice_band_length); forward's transient is even smaller (no n_dev-way gather), so
+        reusing the back sizing is safe and conservative."""
+        slices_per_dev = num_slices // n_dev
+        band_len = self._slice_band_length(
+            slices_per_dev, n_dev, num_pixels,
+            fixed_band=getattr(self, 'forward_project_slice_band', None))
+        band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
+        return self._forward_project_all_bands(
+            band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
+
     def _sino_row_padding(self):
         """Parallel beam ties detector row r to recon slice r (the kernels mix channels,
         never rows; recon_shape[2] == sinogram_shape[1] is enforced in
@@ -152,8 +180,9 @@ class ParallelBeamModel(TomographyModel):
         geometry_param_values.append(self.get_psf_radius())
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
-        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
-        geometry_params = GeometryParams(*tuple(geometry_param_values))
+        # The class is shared across instances (make_geometry_params) so the projectors' jit cache
+        # is shared rather than re-traced per instance.
+        geometry_params = self.make_geometry_params(geometry_param_names, geometry_param_values)
 
         return geometry_params
 
@@ -441,78 +470,19 @@ class ParallelBeamModel(TomographyModel):
         """
         _warn_view_batch_size_deprecated(view_batch_size)
 
-        num_channels = sinogram.shape[2]
-        # The FBP weight is pi / (number of REAL views): read it from the params (always the
-        # problem's shapes), not from the array, whose view axis may be zero-padded for
-        # sharding -- padded views contribute nothing, so they must not be counted here.
-        num_views = self.get_params('sinogram_shape')[0]
-
-        # Generate the reconstruction filter with appropriate scaling.
+        # Voxel-size scaling factor: adjusts the filter to account for voxel size.  For
+        # the theoretical derivation see the zip linked at
+        # https://mbirjax.readthedocs.io/en/latest/theory.html
+        # The FBP weight pi/num_views is folded into the filter by the shared method;
+        # parallel beam has no FDK cosine pre-weight (row_weight=None).  The shared row
+        # filter keeps the peak at the input+output floor and, when a mesh is configured,
+        # filters each device's own view-shard locally (no cross-device movement).
         delta_voxel, voxel_row_aspect = self.get_params(['delta_voxel', 'voxel_row_aspect'])
         delta_voxel_row = voxel_row_aspect * delta_voxel
-        # Scaling factor adjusts the filter to account for voxel size, ensuring consistent reconstruction.
-        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
-        # https://mbirjax.readthedocs.io/en/latest/theory.html
         scaling_factor = 1.0 / (delta_voxel * delta_voxel_row)
-        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
-        # Fold BOTH scalars — the voxel-size factor and the FBP weight pi/num_views
-        # — into the filter, in place, so they cost nothing and each per-row
-        # convolution output is already fully scaled.  Convolution is linear in
-        # the filter, so scaling the filter scales every output row identically.
-        # This replaces a post-kernel `filtered_sinogram * (pi/num_views)`, which
-        # was an out-of-place, full-array multiply that promoted f32 -> f64 (np.pi
-        # is float64), ~doubling peak memory and causing the 1-device GPU OOMs at
-        # large sizes.  The in-place *= keeps the filter float32 (a tiny array).
-        recon_filter *= scaling_factor * (np.pi / num_views)
-        # Materialize the filter once as numpy; each device uploads its own copy.
-        filter_np = np.asarray(recon_filter)
-
-        # apply_row_filter batches rows internally (ROW_FILTER_BATCH), so each
-        # device filters only its LOCAL view-shard's rows — no dependence on how
-        # many views a device holds.  See tomography_utils.apply_row_filter.
-
-        if self.is_sharded:
-            # Multi-device: one thread per device, each filtering its own view
-            # shard locally (no cross-device data movement).
-
-            # Shard once at entry (no-op cost when already view-sharded) so the
-            # per-device fan-out below sees every mesh device's shard.  Mirrors
-            # fbp_recon's entry-shard; without it a plain input only has a shard
-            # on device 0 and the per-device map misses the rest of the mesh.
-            sinogram = self._shard_sinogram(sinogram)
-
-            # Map each device to the local sinogram shard already resident on it.
-            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
-
-            def worker_process(i, device):
-                # Per-device work: filter this device's contiguous block of views.
-                # Runs inside run_per_device under jax.default_device(device), so
-                # the small filter upload and the FFT all happen on `device` and
-                # the result stays there (zero host transfer).
-                shard = dev_to_shard[device]
-                filter_jax = jnp.array(filter_np)   # tiny upload: 2*channels-1 floats
-                return tomography_utils.apply_row_filter(shard, filter_jax)
-
-            # run_per_device fans worker_process out across the mesh devices (one
-            # thread each) and returns the per-device results in device order,
-            # each still resident on its own device.
-            results = mjs.run_per_device(self.shard_devices, worker_process)
-
-            # assemble_sharded stitches the per-device results back into one
-            # logically-global NamedSharding array with no data movement (the
-            # filtered shard for view-block i is already on device i).
-            filtered_sinogram = mjs.assemble_sharded(
-                results, sinogram.shape, sinogram.sharding)
-        else:
-            # Single-device path (no mesh configured): filter directly.
-            filter_jax = jnp.array(filter_np)
-            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax)
-
-        # No post-scaling: the voxel factor and pi/num_views were folded into the
-        # filter above, so each device's kernel output is already fully scaled.
-        if output_sharded:
-            return filtered_sinogram                     # keep the device form
-        return self._gather_sinogram(filtered_sinogram)  # default: plain output
+        return self._apply_direct_recon_filter(
+            sinogram, filter_name, filter_scale=scaling_factor,
+            output_sharded=output_sharded, row_weight=None)
 
     def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """

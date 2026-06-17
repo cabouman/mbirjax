@@ -85,6 +85,22 @@ def mbirjax_git_branch(pkg_path):
     return None
 
 
+def pyproject_version(root):
+    """Project version string from ``<root>/pyproject.toml`` (or None).
+
+    ``root`` is the package root (one dir up from the ``mbirjax/`` package), so this matches the
+    LOADED mbirjax — including a PYTHONPATH override to a main worktree, where it reads main's
+    version (e.g. 0.6.17.1) rather than the editable install's.
+    """
+    import re
+    try:
+        with open(os.path.join(root, "pyproject.toml")) as f:
+            m = re.search(r'^\s*version\s*=\s*["\']([^"\']+)["\']', f.read(), re.M)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
 def beta_status(pkg_path):
     """Identify whether the loaded mbirjax is the beta sharding code.
 
@@ -230,17 +246,40 @@ def beta_root():
                                         os.pardir, os.pardir, os.pardir))
 
 
-def build_worker_env(mem_fraction=0.9, preallocate=True):
+def golden_dir(script_file):
+    """Resolve where golden/baseline files are written, by WHERE the caller runs from.
+
+    * ``REG_GOLDEN_DIR`` (env) wins (the nightly wrapper sets it).
+    * Deployed in the metrics repo (``<metrics>/tooling/scaling_tests/<script>``) -> ``<metrics>/golden/``
+      -- a TRACKED location: run capture there, then review + push the metrics repo.
+    * The mbirjax checkout (``experiments/sharding/scaling_tests/<script>``) -> local
+      ``results/golden/`` -- scratch (gitignored in mbirjax), so a dev capture never touches metrics.
+    Pass the caller's ``__file__``.
+    """
+    env = os.environ.get("REG_GOLDEN_DIR")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(script_file))
+    if os.path.basename(os.path.dirname(here)) == "tooling":
+        return os.path.abspath(os.path.join(here, os.pardir, os.pardir, "golden"))
+    return os.path.join(RESULTS_DIR, "golden")
+
+
+def build_worker_env(mem_fraction=0.9, preallocate=True, lib_root=None):
     """Orchestrator side: the environment every worker subprocess inherits.
 
-    Forces the beta worktree onto PYTHONPATH so ``import mbirjax`` resolves to beta
+    Forces a mbirjax checkout onto PYTHONPATH so ``import mbirjax`` resolves to it
     regardless of how the orchestrator was launched (PyCharm or CLI), and sets the
-    JAX allocator knobs.  Preallocating the pool up front avoids per-call
-    cudaMalloc growth (clean timing); peak_bytes_in_use still tracks in-use tensors
-    so memory stays accurate.  Lower ``mem_fraction`` to probe the OOM threshold.
-    Warns if no mbirjax/ is found under the derived root.
+    JAX allocator knobs.  ``lib_root`` selects WHICH checkout: pass it to measure a
+    DIFFERENT branch's library (e.g. the nightly points it at a per-branch worktree,
+    so the same harness — which may live in mbirjax_metrics, not next to mbirjax —
+    measures main / prerelease / a dev branch).  Default (None) keeps the historical
+    behavior: ``beta_root()``, the checkout this harness lives in.  Preallocating the
+    pool up front avoids per-call cudaMalloc growth (clean timing); peak_bytes_in_use
+    still tracks in-use tensors so memory stays accurate.  Lower ``mem_fraction`` to
+    probe the OOM threshold.  Warns if no mbirjax/ is found under the chosen root.
     """
-    root = beta_root()
+    root = lib_root or beta_root()
     if not os.path.isdir(os.path.join(root, "mbirjax")):
         print(f"  WARNING: no mbirjax/ under derived beta root {root}")
     existing = os.environ.get("PYTHONPATH", "")
@@ -327,7 +366,7 @@ def print_setup_banner(setup):
 
 
 def run_measure_loop(size_label, device_counts, out_file, build_and_time,
-                     header_extra=""):
+                     header_extra="", print_traceback=True):
     """Worker side: the shared device-count descent for one problem size.
 
     Owns what every op's measure shares: iterate device counts DESCENDING
@@ -371,8 +410,12 @@ def run_measure_loop(size_label, device_counts, out_file, build_and_time,
             failures.append({"n_devices": n, "oom": oom, "error": msg[:300],
                              "traceback": tb})
             print(f"  n_devices={n:2d}  {'OOM' if oom else 'ERROR'}: {msg[:120]}")
-            if not oom:
-                print(tb)   # don't silently truncate a real failure to one line
+            if not oom and print_traceback:
+                # Full traceback for a real failure (don't truncate to one line).  A caller that
+                # EXPECTS failures (e.g. performance_tracking's known cone-padding cells) passes
+                # print_traceback=False for a clean one-line report; the full tb is still stored
+                # in the failure dict above, so nothing is lost.
+                print(tb)
             _publish()
             if oom:
                 print(f"  stopping descent at {size_label}: fewer-device configs "

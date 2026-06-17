@@ -36,7 +36,7 @@ from typing import Optional
 # Default upper bound on virtual CPU devices.  See module docstring: throughput
 # plateaus/regresses past this on tested hardware.  Override with the env var
 # MBIRJAX_NUM_CPU_DEVICES for deliberate performance tuning.
-DEFAULT_MAX_CPU_DEVICES = 2
+DEFAULT_MAX_CPU_DEVICES = 4
 
 
 def _performance_core_count() -> Optional[int]:
@@ -170,6 +170,39 @@ def _quiet_benign_xla_logs() -> None:
     harmless no-op.
     """
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+# ── Device accessors (single source of truth for jax.devices) ─────────────────
+# The rest of mbirjax queries the available devices through these helpers instead
+# of calling jax.devices() ad hoc, so device discovery lives in ONE place.  JAX
+# already caches its backend's device list per process, so these add naming and a
+# single chokepoint, not a second cache.  jax is imported lazily (inside the
+# functions) so importing this module never initialises a JAX backend -- the XLA
+# device-count flag set above must take effect BEFORE the first jax import.
+
+def gpu_devices():
+    """All GPU devices as a tuple, or () when there is no GPU backend."""
+    import jax
+    try:
+        return tuple(jax.devices("gpu"))
+    except RuntimeError:
+        return ()
+
+
+def cpu_devices():
+    """All (possibly virtual) CPU devices as a tuple."""
+    import jax
+    return tuple(jax.devices("cpu"))
+
+
+def default_devices():
+    """The default-platform devices: GPUs if any are present, otherwise CPUs.
+
+    Mirrors ``jax.devices()`` (no argument), which returns the highest-priority
+    available backend's devices -- GPU when a GPU backend exists, else CPU.
+    Returned as a list so callers can index/slice it directly.
+    """
+    return list(gpu_devices()) or list(cpu_devices())
 
 
 _quiet_benign_xla_logs()

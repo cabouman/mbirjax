@@ -1,4 +1,4 @@
-# Sharding status (beta branch `greg/parallel_sharding`)
+# Sharding status (beta branch `greg/conebeam_sharding`)
 
 *Short living status. Forward plan: `sharding_implementation_plan_v2.md`.  Completed-work record +
 principles: `sharding_implementation_plan.md`.*
@@ -16,6 +16,486 @@ principles: `sharding_implementation_plan.md`.*
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
 6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-16b) — nightly regression HARNESS built + deployed; CPU end-to-end verified; GPU cluster bring-up in progress
+
+▶ **The performance-tracking nightly regression HARNESS (plan §P5) is built, deployed, and running.**
+Design: `plans/performance_tracking_plan.md`.  Authored in `mbirjax/dev_scripts/regression/` (wrapper)
++ `experiments/sharding/scaling_tests/` (engine); DEPLOYED into `mbirjax_metrics/tooling/{regression,
+scaling_tests}/` via `dev_scripts/regression/deploy_to_metrics.sh`.  **The harness LIVES IN + RUNS FROM
+the `mbirjax_metrics` repo** (cloned per node), so edits must be deployed AND pushed to take effect (a
+run fresh-clones/updates the github tooling).
+
+**Architecture (`run_regression.sh`, two-phase, fire-on-change):**
+- Phase 1 (cron/manual entry): source `PREAMBLE_FILE` (cluster: `module load` conda/cuda + export
+  proxy; auto-skipped on the Mac), UPDATE-or-clone a PERSISTENT metrics clone at `$WORK_DIR/metrics`
+  (`$HOME/.mbirjax/regression/metrics`; `fetch`+`pull --rebase`, fresh-clone fallback), re-exec ITS
+  copy (picks up remote harness changes).
+- Phase 2: conda env (`mbirjax_regression`, AUTO-CREATED if missing) → per tracked branch: `ls-remote`
+  vs `state/<plat>/<branch>` (FIRE-ON-CHANGE) → SHALLOW single-branch clone of the library tip →
+  `pip install -e "$WT[extras]"` → tests (`run_tests.sh`, shown live via tee) → engine
+  (`run_nightly.py`, `lib_root=$WT`) → results+state into the metrics clone → conflict-safe push
+  (`pull --rebase`+retry; `TOKEN_FILE` credential; `GIT_TERMINAL_PROMPT=0`).
+- Engine changes enabling this (all back-compat, defaults = old behavior): `Config.lib_root` +
+  `build_worker_env(lib_root=)` (measure an arbitrary checkout); `Config.golden_dir`/`REG_GOLDEN_DIR`
+  (golden + main_baseline from `metrics/golden/`); `sc.golden_dir(__file__)` (capture scripts write to
+  `metrics/golden/` when run FROM the metrics repo, local scratch from mbirjax).
+
+**Config (`tooling/regression/regression.env`):** `TRACKED_BRANCHES=("greg/conebeam_sharding")` only
+(main/prerelease UNPORTED → degenerate multi-device sweep; defer until a single-device fallback);
+`WORK_DIR=$HOME/.mbirjax/regression`; `PREAMBLE_FILE=$HOME/load_conda_cuda.sh`;
+`TOKEN_FILE=$HOME/.config/mbirjax/metrics_credentials`; `CONDA_ENV=mbirjax_regression`/`CONDA_PYTHON=3.11`;
+`INSTALL_EXTRAS_{cpu=test,gpu=cuda12,test}`; `MAX_PUSH_FILE_MB=25`.  **`REG_SMOKE=1`** = isolated
+plumbing test (toy 1-cell engine → temp dir; skips tests/commit/push/state) — fast cluster check
+without a 40–60 min run.
+
+**Robustness/UX in place:** persistent work clone (a failed push is NOT lost — retried next run,
+self-heals); conflict-safe push (cpu/gpu write DISJOINT paths: `results/<plat>`, `state/<plat>`,
+`*_<plat>.yaml`); push size cap; interactive terminal stays open on nonzero exit (tty-guarded); test
+step reuses `run_tests.sh` + shows output live; `run_tests.sh` cwd bug fixed (`../tests` needs `cd
+dev_scripts/`).  **Golden:** metrics `.gitignore` un-ignores `*.npy` (keeps png/pdf/csv ignored); the
+CURRENT (post-short-circuit) CPU+GPU `golden_<plat>.yaml` + `main_baseline_<plat>.yaml` + 8 `.npy` are
+copied into `metrics/golden/`.  Golden gate fires when present.  Token: `metrics/dev_scripts/
+create_token.sh` + `create_token_instructions.md` (fine-grained PAT → git credential-store file).
+
+**VERIFIED:** CPU full pipeline END-TO-END (first real nightly pushed to github + pulled: 72 cells, 4
+expected B5 cone-padding fails @129³ n≥2, gate WARN cold-start).  Cluster (interactive): conda load
+via `PREAMBLE_FILE`, env auto-create, install, tests, engine displaying output.  Token/credential
+VERIFIED (push --dry-run authenticated; a `[rejected] fetch first` is post-auth staleness, NOT an auth
+failure — the wrapper's `pull --rebase` handles it).  Locally: lib_root, golden_dir, persistence
+(unpushed survives `pull --rebase`), REG_SMOKE isolation.
+
+**NOT yet verified (cluster):** the wrapper's AUTOMATED push end-to-end (pieces verified — token +
+pull-rebase logic; Greg is trusting the pieces, first real run = confirmation); persistence reuse
+(`REG_SMOKE` ×2 would show `updating metrics clone`); the unattended schedule.  **Test slowness:** the
+cluster suite was slow — likely first-run cold jit cache + `pytest -n 10` OVER-SUBSCRIBING the 4 GPUs
+(try fewer workers); the new per-phase logs (`installing…/running tests…/running engine…`) will split
+install vs test time next run.
+
+**NEXT:** (0) A visual interface to the mbirjax_metrics data: details to be determined, but some
+form of browser, figure generator, spreadsheet viewer, etc. (1) GPU `nightly_regression.slurm` + `scrontab` (P6 — unattended cluster path: GPU-node
+request + `PREAMBLE_FILE` + `TOKEN_FILE`).  (2) `enable_nightly.sh` (Mac launchd) to go auto-on-change.
+(3) Tune GPU pytest worker count.  (4) Optional: single-device fallback to track main/prerelease
+cleanly; lazy matplotlib import in `scaling_common`; a `REG_SMOKE_PUSH` flag to test the push without
+a full run.  (5) `compare_to_baseline.py` (.npy deep-diff, P7).
+**Uncommitted (Greg commits):** recent `run_regression.sh`/`regression.env` edits in mbirjax; the
+`metrics/dev_scripts/` + `metrics/golden/` files + the tooling re-deploy in the metrics clone.
+
+---
+
+## HANDOFF (2026-06-16) — cone back 1-device GPU penalty RESOLVED + GPU-CONFIRMED; decision (a)
+
+▶ **The cone `back` 1-device GPU penalty (the OPEN INVESTIGATION below) is RESOLVED, GPU-CONFIRMED, fix staged.**
+Root cause: at n=1 the sharded path runs the cone BAND kernel (`back_project_one_view_to_band`), which
+is **~2.25× slower than the monolithic single-device kernel ON GPU** — the sharded *driver* overhead is
+~0 (a driver-less band loop ties the full sharded path at 1.00×).  On CPU the SAME band kernel is **~8×
+FASTER** (it avoids the back-vertical ×62 cache cliff that the single-device kernel's `lax.map`+transpose
+hits).  The two kernels have OPPOSITE platform rankings — no single kernel wins both.  **Fix: a GPU-only
+n=1 short-circuit** in `_sparse_back_project_sharded` routes a single-GPU mesh to
+`_sparse_back_project_single_device` and wraps the output as a 1-shard slice-sharded array (metadata
+only); CPU keeps the band path.  Net = pixel kernel on GPU, band kernel on CPU (platform-optimal).
+**Validated (CPU):** wrap is bit-identical + same sharding to the band path; `tests/sharding/` 107p/2s
+green @4 dev.  **GPU-CONFIRMED (cluster, `run_performance_local.py`, cone back + vcd_nonconst):** n=1
+back **2.25×** (512³ 1456→648 ms) / **2.46×** (1024³ 43.2→17.5 s) faster, now = main; n=1 mem at main
+level (5.4 GiB @512³, 21 GiB @1024³ — the band-streaming bonus given up).  VCD scales monotonically
+(n=2 1.18–1.26×, n=4 ~2.0–2.1×): the back **n≈2.25 device crossover** (n=2 back *slower* than n=1 back —
+n=1 uses the fast pixel kernel, n≥2 the 2.25×-slower band kernel) is MASKED at the workload level by the
+parallel forward.  **Capacity:** n=1 1024³ nonc VCD = **74 GiB** (fits the ~79 GiB H100, ~5 GiB margin);
+multi-device shards it to 38/19 GiB.  Single-GPU is now effectively capped ~1024³ (the banded back's
+~10 GiB n=1 headroom is given up); **>1024³ → use n≥2**.  **DECISION (a) (Greg, 2026-06-16): keep the
+simple GPU→B short-circuit** — sharding is the capacity tool beyond 1024³; the memory-aware variant was
+considered and DEFERRED.  (513 non-dividing n≥2 ERRORs = the known **B5** cone-padding bug, not the
+short-circuit; n=1 fine.)  **Next multi-device lever:** the band kernel's GPU cost (the real B4.5 — make
+it GPU-competitive so n=2 back scales).  Tool added: `scaling_tests/cone_back_ab_memory.py` (A/B + peak
+memory + driver-less kernel isolation).  Full write-up + the two ruler bugs that hid it:
+`.claude/lessons.md` "Platform-divergent back-projection kernel" (2026-06-16); see the RESOLVED block below.
+
+---
+
+## HANDOFF (2026-06-15) — performance-tracking toolchain built (regression engine + golden + main baseline); VCD partition non-reproducibility found + fixed
+
+▶ **A standing day-over-day regression tool now exists and is CPU-validated.**  Design:
+`plans/performance_tracking_plan.md`.  Usage (CPU + GPU): `scaling_tests/README.md`.  The old
+per-op `*_scaling.py` / `*_capture_baseline.py` scripts are SUPERSEDED → moved to
+`scaling_tests/archive/`.  Current toolchain in `scaling_tests/`:
+- **`performance_tracking.py`** — the engine: sweep geometry × op × size × device-count
+  (`direct_filter`, `forward`, `back`, `vcd_nonconst`), per-cell `min_ms` / `mem_mb` / speedup /
+  structural flags / tolerant correctness **fingerprint**; isolated-subprocess workers + an
+  `--inline` debug path; writes a dated YAML, a **record book** (`records_<plat>.yaml`, best-ever +
+  the commit), and runs the **diff/gate**.
+- **`run_performance_local.py`** — manual launcher (current tree, isolated `results/manual/<tag>/`).
+- **`capture_golden.py`** — the day-to-day drift/accept reference (current branch).
+- **`capture_main_baseline.py`** — the **`main`-branch 1-device baseline** (run from a `main`
+  worktree): time + memory + fingerprint at the full sweep sizes → `main_baseline_<plat>.yaml`
+  (+ a small `.npy` per (geom,op)).  The engine auto-discovers it and prints a SOFT "vs main
+  (1 device)" note (relative perf vs released code; never gated).
+
+**Gate model (as built):** HARD on every platform = correctness fingerprint + structural + status
+`ok→fail` + expected-but-absent; HARD on **GPU only** = memory growth (`peak_bytes_in_use` is
+deterministic; CPU `mem_mb` is coarse RSS → soft); SOFT everywhere = speedup, absolute time, CPU
+memory, sweep add/drop.  Every delta shows both absolute and % vs expected.  No allowlist — the
+gate fires on a CHANGE vs prior/golden, so persistent known failures (e.g. cone `forward` at a
+non-dividing count — cone slice padding is B5/not-done) stay quiet warts and flip to a `fail→ok`
+WARN when fixed.
+
+**Key finding this session (separate the ruler from the code):** the cross-version baseline's
+first use flagged a 5e-2 "parallel VCD vs main" divergence.  Root cause was a RULER bug —
+`gen_pixel_partition` draws from the **un-seeded global RNG**, so VCD partitions (and the recon)
+vary run-to-run ~4e-2; the sharding branch's parallel VCD matches `main` to ~1e-7 with pinned
+partitions.  **Fixes (committed):** `build_partitions` now seeds (`measure_seed`) so the tool's VCD
+is reproducible (else the day-over-day VCD gate would false-positive every run); a docstring note
+on `recon`/`prox_map` tells users to `np.random.seed(seed)` for reproducible recons.  (mbirjax VCD
+is non-deterministic run-to-run by default — library design left as a doc note, not a seed API.)
+
+**State:** all CPU-validated; the **main CPU baseline is being captured now** (Greg to run the GPU
+baseline + GPU shakeout when his GPU request fills, then re-capture the GPU golden — the earlier
+`results/golden/golden_gpu.yaml` predates the partition fix, so its VCD cells are stale).
+**NEXT:** the nightly shell wrapper (`dev_scripts/regression/`: worktree + install + tests + engine
++ repo pull/push to `github.com/gbuzzard/mbirjax_metrics` + notify, `regression.env`,
+enable/disable, launchd/scrontab); then `compare_to_baseline.py` (deep-diff using the `.npy`,
+deferred) and a visual interrogation surface (deferred).
+
+### RESOLVED (2026-06-16) — cone back 1-device GPU penalty → GPU-only n=1 short-circuit
+
+**RESOLUTION (2026-06-16):** Implemented a GPU-only n=1 back short-circuit (see the top handoff).  The
+GPU A/B, fed the **already-on-device** sinogram (the original snippet below timed B's host→device
+transfer — a RULER BUG), gives A=1456 / B=647 / **main=642** → **A/B = 2.25, and B ≈ main (+1%)**: the
+branch kernel is GPU-NEUTRAL (vindicating B2), so the WHOLE +127% is the n=1 sharded path, not a
+kernel-vs-main residual.  Driver-less kernel isolation (512³) localized it to the KERNEL not the driver:
+pixel/rolled kernel ~640 ms vs band kernel ~1449 ms (a driver-less band loop = the full sharded path at
+1.00× time/mem).  On CPU the ranking INVERTS (band kernel ~8× faster; pixel kernel hits the ×62
+back-vertical cache cliff — warm execution, band-size-independent, the `lax.map`+transpose fusion
+barrier).  ⇒ route GPU n=1 → `_sparse_back_project_single_device` (pixel kernel), keep CPU on the band
+path; gated `recon_placement.devices[0].platform=='gpu'` + `view_indices is None`; output wrapped 1-shard
+slice-sharded (bit-identical, same sharding).  *(The investigation notes below are the historical record;
+the CPU-A/B "+136% is GPU-specific DRIVER overhead / decision-tree" framing was SUPERSEDED — it's the
+KERNEL, the driver is free, and the original 1.45 GPU A/B was the host-transfer ruler bug.  See
+`.claude/lessons.md`.)*
+
+**Finding (from the GPU `main_baseline_gpu.yaml` vs-main note):** cone `back` 1-device is **+126%
+(512³) to +136% (1024³)** SLOWER than main, and it propagates to cone `vcd` (+15% to +57%, +25%
+mem at 1024³).  Parallel back is fine.  All other ops are wins (cone `direct_filter` −92..−98%;
+parallel `forward` −50..−83% mem).
+
+**Pipeline (the levels — all in the sharding branch):**
+- `TomographyModel.sparse_back_project` (tomography_model.py:1703) **dispatches on `is_sharded`**:
+  `is_sharded` → `_sparse_back_project_sharded` (:1852, **banded reduce-scatter** — view-owners
+  compute partials streamed in slice-bands, reduce-scatter to slice-owners); else
+  `_sparse_back_project_single_device` (:1742, **the prerelease/main loop** over view+pixel
+  batches).  The perf model is `is_sharded=True` **even at 1 device** (trivial mesh) → it takes the
+  SHARDED path, NOT the single-device path.  So "current 1-device" = sharded path on a trivial mesh.
+- Both paths share `_sparse_back_project` (projectors.py:367, view-sum + pixel batching, SAME as
+  main).  The cone per-view kernel `back_project_one_view_to_pixel_batch` (cone_beam.py:497) does
+  horizontal-fan-once + **vertical-fan banded via `lax.map`** over `CONE_SLICE_BAND_SIZE=128` slice
+  bands; the sharded path uses a band kernel producing one band.
+
+**CPU A/B (sharding branch, 1 device, 256³; A = sharded path = `sparse_back_project`, B =
+single-device path = `_sparse_back_project_single_device`):** cone A/B = **0.13** (sharded **7.5×
+FASTER**), parallel 0.98.  So on CPU the sharded driver is the WIN — the OPPOSITE of GPU.
+**Conclusion: the +136% penalty is GPU-SPECIFIC** (GPU lowering/execution, not generic driver
+overhead).  Caveat: B uses the sharding-branch per-view kernel (internal banding), NOT main's.
+
+**NEXT — run the same A/B on GPU** (cluster, sharding branch, no worktree):
+```python
+import performance_tracking as pt, scaling_common as sc
+cfg = pt.Config(); SIZE=(512,448,384)
+m = pt.make_model(cfg,'cone',SIZE); m.configure_devices(1)
+idx = pt.make_indices(m); sino_dev = pt.to_device(m, pt.make_sinogram(cfg,SIZE), 'sino')
+A,_ = sc.time_op(lambda: m.sparse_back_project(sino_dev, idx), 1, 3)
+B,_ = sc.time_op(lambda: m._sparse_back_project_single_device(pt.make_sinogram(cfg,SIZE), idx), 1, 3)
+print('A sharded=%.1f  B single=%.1f  ratio=%.2f' % (A['min_ms'], B['min_ms'], A['min_ms']/B['min_ms']))
+```
+**Decision tree:** **A > B** on GPU → the sharded *driver* is the penalty → cheap fix = **n=1
+short-circuit** (route a trivial 1-device mesh to `_sparse_back_project_single_device`, mirroring
+the existing "n=1 forward single-call fix"); honor the slice-sharded output contract.  **A ≈ B** →
+the penalty is the *kernel change* (internal banding) → follow-up: B-vs-main in a `main` worktree.
+Deferred B4.5 ("hoist the back horizontal fan") is the heavier alternative if neither short-circuit
+suffices.
+
+---
+
+## HANDOFF (2026-06-14b) — shared FBP/FDK filter; cone n=1 forward fix; single-shard gather short-circuit; ruler hardening (3 ruler bugs diagnosed)
+
+▶ **All CPU-validated (full suite 165p @2dev, sharding 107p @4dev); staged for Greg's PyCharm
+commit.  GPU validation pending (Greg).**  This session was mostly measurement/diagnosis — the key
+recurring lesson: the cone-vs-parallel filter/VCD "regressions" we chased were RULER bugs and one
+real (separate) library inefficiency, NOT the cone port.
+
+### Library changes (staged)
+- **Shared FBP/FDK filter codebase.**  `tomography_utils.apply_row_filter` gained an optional
+  `row_weight` (FDK cosine pre-weight, applied inside the bounded `lax.scan`; None = unchanged FBP).
+  New base method `TomographyModel._apply_direct_recon_filter` (filter scalar-fold + per-view-shard
+  `run_per_device` + apply_row_filter + output handling).  `ParallelBeamModel.fbp_filter` and
+  `ConeBeamModel.fdk_filter` both delegate (cone passes `filter_scale=alpha`, `row_weight=cosine`).
+  Cone's old FDK filter (out-of-place `sino*weight` copy + `filtered_sino_list`+concat + f64-promoting
+  `*=π/num_views` + eager Python loop, ~3–4× UNBOUNDED) is GONE → bounded ~2×, jitted, and **sharded
+  on-device** like parallel.  `fdk_recon` rewired to the on-device pipeline (entry shard →
+  `fdk_filter(output_sharded=True)` → `back_project(output_sharded=True)` → helical z-weight on the
+  slice-sharded recon → single exit); `helical_fdk_z_weight` now reads the real shape from params
+  (padding-safe).  Bit-exact across n=1/2/4 (filter), circular+helical; direct_recon ≤2.6e-7.
+- **Cone n=1 forward single-call fix** (`_forward_project_to_view_shards`): when `n_dev==1` the whole
+  cylinder is already local, so skip the per-pixel-batch gather loop and project in ONE inner call.
+  The loop's many small rigid dispatches defeat the XLA rematerialization the monolithic forward
+  relies on (static analysis: 1024³ n=1 one-shot ~16 GB realized vs the looped ~32 GB).  Fixes the
+  single-GPU forward memory; should un-OOM the 1024³ single-GPU VCD (cone was ~1.27× parallel's 64 GB
+  ≈ 82 GB; the forward wrapper + the unbounded FDK filter were the bulk of that 1.27×).
+- **`_gather_to_host` single-shard short-circuit.**  A sharded array with ONE addressable shard
+  (trivial 1-device mesh / any 1-GPU recon) now returns its on-device data directly instead of
+  `jnp.array(np.asarray(x))` (a full device→host→device round trip).  This was a REAL single-GPU
+  regression since the always-on placement path: `fbp_recon`/`direct_recon`/`direct_filter` gather at
+  exit, and every 1-GPU recon paid a host round trip the legacy path never did.  Multi-device path
+  (d2d-safe host gather) unchanged.
+- (Earlier in the session, already in the 2026-06-14 handoff below) `jax.devices()` consolidated
+  behind `_device_setup` accessors; dead `self.cpus` deleted.
+
+### The three RULER bugs we diagnosed (cone_baseline_scaling.py + fbp_filter_scaling.py)
+1. **Device count not pinned** (fixed 2026-06-14, below): every count re-measured the max-device run.
+2. **Host input timed**: `sino_np`/`cylinders` passed as numpy → host→device transfer + scatter
+   INSIDE the timing every trial.  Fix: `to_device()` pre-places on the device form (mirrors
+   `fbp_filter_scaling`'s `_shard_sinogram` "measure the op, not the scatter").
+3. **Gather-at-exit timed** (the big one, bisected to **4b21a3c2** — the P5 Stage-0 `output_sharded`
+   refactor): the scripts call the user-facing filter, whose default `output_sharded=False` GATHERS
+   via `_gather_to_host` (the host round trip above).  Fired even at n=1 → 8–12× slow + memory that
+   barely sharded (the gathered full sino sits on one device).  The filter COMPUTE is byte-identical
+   to prerelease; only the exit changed.  Fix: scripts call the filter with `output_sharded=True`
+   (`run_filter`/`run_fbp_filter`, with a `try/except TypeError` so they still run on prerelease).
+   Separately, the `_gather_to_host` short-circuit above fixes the underlying 1-GPU cost.
+
+### Scaling read (cone vs parallel, from the GPU runs before the ruler fixes — projectors unaffected)
+- BACK shards as well as parallel (3.9× vs 3.7× at 1024³/n4); FORWARD is the decision-C cost
+  (cone 2.8× vs parallel 4.7×; ~2.7× per-device memory — the gather replicates the recon).  Re-run
+  on GPU with the ruler fixes to confirm the filter snaps back and the projector times de-inflate.
+
+### NEXT
+- **Daily regression-check tool — likely next (Greg).**  Design + gotchas in the plan §Adjacent
+  tasks ("Daily regression-check tool").  Memory + speedup-ratio + structural flags are the robust
+  gates (absolute GPU time is noisy); record the git hash for bisection.  Would have caught all three
+  of this session's issues.
+- **GPU re-validation (Greg):** cone+parallel `cone_baseline_scaling` / `fbp_filter_scaling` with the
+  ruler fixes; confirm 1024³ cone VCD fits; interpret the B4.4 sweep.
+- **B5 (inert padding for cone)** — fixes the 4 deferred tests (see the top "Where we are" / the
+  KNOWN-ISSUE block in `.claude/initial_prompt.md`).  Then C → translation/multiaxis → retirement.
+
+---
+
+## HANDOFF (2026-06-14) — cone_baseline_scaling "no scaling" = RULER bug, FIXED; jax.devices consolidated; scaling now reasonable (GPU+CPU)
+
+▶ **Root cause: the SCRIPT, not the code.**  `cone_baseline_scaling.py`'s `build_and_time` never
+pinned the device count, so every iteration inherited the construction-time auto all-devices default
+— each count re-measured the same max-device run (flat curves).  Confirmed by CPU ablation
+(`make_model` builds an already-4-device model with no configure call).
+
+### Done this session (staged for Greg's PyCharm commit; suggested as 2 commits)
+- **Ruler fix** (`cone_baseline_scaling.py`): `build_and_time` pins each count with
+  `model.configure_devices(devs)`; `_print_summary`/live print show the full sweep + speedup vs
+  1 device (they were filtering to n=1); defensive cone slice-padding guard; base model pinned to
+  1 device so reused VCD partitions carry no multi-device placement.
+- **`jax.devices()` consolidation** (Greg-approved scope): single source of truth in
+  `_device_setup.py` — `gpu_devices()` / `cpu_devices()` / `default_devices()`.  Routed
+  `tomography_model.py` (7 sites; dead `self.cpus` deleted), `denoising.py`, `vcd_utils.py`,
+  `preprocess/stripe.py` through them.  Bootstrap in `_device_setup` left as direct calls.
+  Behavior-preserving.
+- **Validated (CPU):** full suite 165p/3s @2dev; sharding 107p @4dev (baseline match); the 4 known
+  cone tests still fail for the documented B5 padding reason only (unchanged).
+- **Scaling now reasonable (Greg, GPU+CPU re-run).**  Note: virtual CPUs DO give time scaling for
+  compute-bound ops (forward 256³ 2-dev ~1.9×; fbp_filter best — embarrassingly parallel), not just
+  capacity — the earlier "CPU can't show scaling" held only at tiny sizes where overhead dominates.
+
+▶ **NEXT unchanged:** interpret the B4.4 GPU sweep (per-device peak ~1/n, the 1024³ capacity win,
+the back horizontal-recompute penalty vs §8a), then B4.5 / B5.
+
+---
+
+## HANDOFF (2026-06-13d) — P6 B3 + B4.1–4.3 DONE: CONE SHARDS, CPU-VALIDATED end to end; NEXT = B4.4 (GPU measurement)
+
+▶ **CURRENT FOCUS: P6 B4.4 (GPU — Greg), then B4.5.**  Cone now SHARDS (recon by slice ⇄
+sinogram by view), CPU-validated end to end.  **B4.4** = the GPU multi-device measurement
+(`cone_baseline_scaling.py`, n_dev 1/2/4): per-device peak ~1/n_dev; the CAPACITY win (a 1024³
+VCD that OOM'd single-device now fits sharded); the horizontal-recompute penalty vs §8a.
+**B4.5** = hoist the back horizontal fan ONLY if B4.4's penalty demands it (the loop-reorder
+risk, deferred behind measurement).  Detailed record: `p6_increment_b_design.md` PROGRESS block
+(B3, B4.1–4.3).
+
+⚠ **KNOWN FAILING TESTS — DEFERRED TO B5 (Greg's call; do NOT chase before B5).**  B4.3's
+`_supports_sharding()` flip enabled the geometry-agnostic P5 PADDING for cone, but cone padding IS
+B5 (not done).  So at non-dividing slice counts (≥4 devices) cone auto-pads and **4 tests FAIL on
+multi-device**: `test_{adjoint,hessian}_anisotropic_cone` (tests/geometries/test_projectors.py),
+`test_split_sino`, `test_vcd_anisotropic_cone` (tests/geometries/test_vcd.py).  **Reproduce on CPU
+with `MBIRJAX_NUM_CPU_DEVICES=4`** (the suite default 2 doesn't pad these → why CPU was green; the
+GPU box has 4 → red).  Cause: anisotropic cone (voxel_slice_aspect=2.9 → 14 slices) padded 14→16 at
+4 dev; the cone forward gather assembles the PADDED cylinder and the device-form padded shape leaks
+to tests that assume the real shape.  **B5 fixes it** (see the B5 bullet in `p6_increment_b_design.md`).
+Scaling tests are UNAFFECTED (256/512/1024³ divide 2/4/8 → no padding).  ALSO:
+`tests/sharding/test_cone_sharded.py` is **UNTRACKED — commit it** (the B4.3 multi-device gate).
+
+### Done since 2026-06-13c (staged, Greg commits from PyCharm)
+- **B3 — module-level projector drivers, jit cache SHARED across model instances.**  De-closured
+  projectors.py.  KEY blocker: `get_geometry_parameters()` minted a fresh namedtuple CLASS per
+  call (jax keys the static-arg cache on the pytree treedef, which includes the class) → fixed at
+  source via `ParameterHandler.make_geometry_params` (class cached by field names) + module-level
+  `ProjectorParams`.  2nd same-geometry model reuses the 1st's compiled program (16× faster first
+  call).  Lesson recorded in `.claude/lessons.md`.
+- **B4 — CONE SHARDED DRIVER (B4.1 back, B4.2 forward, B4.3 flip), CPU-validated.**  The
+  reduce-scatter/all-gather infra is geometry-agnostic; cone routes two hooks:
+  `_back_project_view_shard_to_band` (BASE = geometry-neutral BANDED reduce-scatter via
+  `Projectors.sparse_back_project_band`, batched/summed so memory ~ view_batch×pixel_batch;
+  ParallelBeam OVERRIDES with row-crop) and `_forward_project_to_view_shards` (BASE = geometry-
+  neutral GATHER+MONOLITHIC per pixel-batch — decision C; ParallelBeam OVERRIDES with banded
+  forward).  Assemble via `_sino_device_shape()` (cone keeps real det rows).  `_supports_sharding()
+  =True` for cone.  GATES: existing cone gates pass via the sharded path at n_dev=1 (full suite
+  161p/3s); `tests/sharding/test_cone_sharded.py` — back/forward/Hessian 1e-5 + 3-iter VCD 1e-4,
+  sharded (n=2,4) == single-device, circular+helical; sharding suite 107p @4dev.
+  - **Design decision (A):** back recompute-horizontal-per-band kept SIMPLE; hoist deferred to
+    B4.5 behind the GPU measurement.  The hooks mirror (BASE = geometry-neutral; ParallelBeam
+    overrides with its row-identity specialization).
+
+---
+
+## HANDOFF (2026-06-13c) — P6 B2 single-device DONE + §8a-NEUTRAL (memory+time, both platforms); forward banded kernel removed; NEXT = B3 (de-closuring)
+
+▶ **CURRENT FOCUS: P6 increment B3** — de-closure the projector drivers to module-level
+functions (kills the per-instance retrace; §4/§7 of `plans/p6_increment_b_design.md`).
+B2 (single-device cone on the banded back kernel) is COMPLETE and measurement-closed; the
+SHARDED cone driver is B4 (after B3).  Read the `p6_increment_b_design.md` PROGRESS block
+(B2 commit 1/2 + the §8a comparison record) first.
+
+### Done this session (2026-06-13c; staged, Greg commits from PyCharm)
+- **Forward banded kernel REMOVED:** the dropped Option-B `forward_project_band_to_one_view`
+  / `forward_vertical_fan_band_*` + their 3 tests deleted (forward = gather + monolithic).
+- **B2 — single-device cone back on the banded kernel (2 commits):**
+  `back_project_one_view_to_pixel_batch` rewired to horizontal-fan-once + a ROLLED
+  `jax.lax.map` over slice bands of `CONE_SLICE_BAND_SIZE`(=128) + reshape/crop (ROLLED →
+  compile size independent of slice count, so 2000+ slices are fine); deleted the monolithic
+  back vertical fan; forward det-row chunk → `CONE_FORWARD_DET_ROW_BATCH`(=128, bit-identical);
+  deleted `entries_per_cylinder_batch` + dead `slice_range_length`.  `test_cone_banded`
+  consolidated to one self-contained tiling-consistency gate (physical correctness gated by
+  test_projectors adjoint + test_vcd convergence).  Full suite green (159p/3s).  Added the
+  `slice_band_size` static kwarg (None→constant) as the band knob / test hook.
+- **§8a measurement — B2 NEUTRAL, no regression (both platforms); B2 CLOSED.**  GPU peak
+  BYTE-IDENTICAL (forward/vcd) / ≤0.5 KB (back) ⇒ single-device capacity preserved exactly;
+  time-neutral (back tracks the bit-identical-FORWARD control through the ~1.9× GPU cross-run
+  variance).  CPU back ~1.0× time, peak within ≤1.1×; the CPU forward 0.38×@256³ is increment
+  A (channel-major; OLD 6:25am yaml predates it — Greg-confirmed), used as the control, NOT B2.
+
+---
+
+## HANDOFF (2026-06-13b) — P6 cone port: increment A COMMITTED, B1 COMMITTED, forward-structure DECIDED (= C); NEXT = B2 (sharded driver: banded back + gather+monolithic forward)
+
+▶ **CURRENT FOCUS: P6 increment B2** — wire the cone sharded driver (back on the banded
+kernel; forward = per-pixel-batch all-gather + monolithic), delete
+`entries_per_cylinder_batch`, gate memory/timing vs the §8a baseline.  Read, in order:
+`plans/p6_increment_b_design.md` (the PROGRESS block + staging table + the forward open
+item) and `plans/p6_projector_rework_proposal.md` (the STATUS block at top — §8a-design is
+the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
+
+### Done / decided this session
+- **Increment A — channel-major both cone horizontal fans: DONE, COMMITTED (Greg).**
+  Measured CPU win (~13× forward-horizontal at 256³), **GPU-NEUTRAL (1.00×, build-verified)**.
+  The cross-run "~2×" was GPU run-to-run variance (caught by Greg → built a same-process
+  ablation `cone_channel_major_ablation.py`).  Kept (free CPU win, no GPU cost).
+  **Implication: no easy single-GPU projector speedup from kernel layout; the port's GPU
+  value is CAPACITY (sharding).  Cone projectors scale ~N⁴ on GPU, fit 1024³ single-device;
+  the wall is VCD ~marginal at 1024³ (§8a-results).**
+- **Increment B1 — banded cone kernels: DONE, COMMITTED (Greg).**  `cone_beam.py`:
+  `back_project_one_view_to_band` + banded vertical fans (anchor fix: z from params S_real
+  + global k = g0+L; global validity clip for inert padding), alongside the monolithic
+  kernels.  Tests `tests/geometries/test_cone_banded.py` (circular + helical): back
+  band-decomposition, full-band==monolithic, adjoint-at-(g0,L), Hessian — all pass; monolithic
+  cone suite unaffected.
+- **Forward-structure DECIDED = C** (harness `cone_forward_structure_compare.py`, CPU,
+  jit-fair, isolated-subprocess): **B (banded/streamed) is 5–14× slower on CPU**
+  (dispatch-bound — CPU is a target), for only ~13–23% memory; **C (per-pixel-batch
+  all-gather + monolithic) ≈ current (no regression)**.  ⇒ cone sharded **forward does NOT
+  band**; **back stays banded** (reduce-scatter, B1 kernel).  Retires the row-window /
+  unified-assembly / fused-accumulator threads for forward.
+  **GPU CONFIRMED (2026-06-13, H100, n=2/4, 256³–1024³):** C wins decisively — B 1.17–2.09×
+  slower at every size, and B's CPU memory edge EVAPORATES on GPU (B/C peak 0.92–1.56×,
+  often worse).  C shards memory well (1024³ per-device: mono 3551 → C n=4 1303 MB).  C is
+  correct (max_abs ~1e-5 = GPU noise); the harness's "FAIL" at ≥512³ is B's windowed-vertical
+  with a too-tight fixed margin (a B-only artifact; B is dropped).  Decision reinforced.
+- **Row-sharding the sinogram — PARKED exploration** (Greg's long-standing idea, now better
+  motivated by cone): footprint-halo scheme, parallel-beam zero-halo locality, the
+  variable-halo + thin-recon trade-offs.  Full discussion in **`.claude/sinogram_sharding.md`**;
+  pointer added to v2 §Adjacent tasks.  Decision: finish cone on view-sharding; revisit later
+  (start with parallel beam + a cheap footprint-width computation).
+
+### Measurement tooling added this session (experiments/sharding/scaling_tests/, results/ gitignored)
+- `cone_baseline_scaling.py` (single-device cone fwd/back/VCD, CPU+GPU; §8a tables).
+- `cone_fan_split_microbench.py` (horizontal vs vertical fan split, CPU+GPU; §8a-split).
+- `cone_channel_major_ablation.py` (same-process old-vs-new layout; the variance-free ruler).
+- `cone_forward_structure_compare.py` (B vs C vs mono; the forward decision).
+
+### Open items / suggested handoff tasks (next session)
+1. **Remove the forward banded kernel — DONE (2026-06-13c, staged).**
+   `forward_project_band_to_one_view` / `forward_vertical_fan_band_*` deleted from
+   cone_beam.py; the three forward-dependent test_cone_banded tests removed (incl. the
+   forward-band adjoint test, DROPPED — the banded back is gated by the back
+   band-decomposition against the monolithic back, which test_projectors gates for
+   adjointness).  Cone banded + cone projector suites green.
+2. **B2**: single-device + sharded cone driver (banded back reduce-scatter; forward gather+
+   monolithic; delete `entries_per_cylinder_batch`); memory/timing vs §8a baseline.  Then
+   B3 (de-closuring §7), B4 (sharded cone + GPU validation, stage2-pattern), B5 (inert padding).
+3. Then C (parallel conversion + delete monolithic cone kernel + transitional branch),
+   D (translation, multiaxis), E (retirement cascade: `view_indices`, `main_device`/
+   `sinogram_device`, RETIRE-AFTER sweep).
+
+---
+
+## HANDOFF (2026-06-13) — P6 step 1 DESIGN MEASURED & SETTLED (CPU+GPU baselines); cone port design data-driven; NOW CODING: channel-major cone horizontal fans (increment A)
+
+▶ **CURRENT FOCUS: coding the cone port, increment A — channel-major the two cone
+horizontal fans.**  The projector-rework design was reviewed with Greg, then
+**measured** (CPU + GPU single-device cone baselines + a horizontal/vertical fan-split
+micro-bench).  The measurements OVERTURNED several assumptions and SIMPLIFIED the design.
+Full record + data: **`plans/p6_projector_rework_proposal.md`** (read §8a-design for the
+settled design; §8a/§8a-split for the data; §1/§2/§4 rewritten to match).
+
+### The design, settled by data (GPU = production target)
+- **Channel-major BOTH cone horizontal fans — DONE (increment A), a CPU win, NOT a
+  GPU lever** (corrected 2026-06-13 by a same-process ablation).  CPU forward ~13× at
+  256³ (cache-aliasing fix); **GPU 1.00×** (channel scatter/gather is atomic-/FLOP-
+  bound, not stride-bound).  The earlier "GPU #1 lever, ~2×" was a CROSS-RUN artifact
+  (GPU run-to-run variance ~1.9× even on untouched code — Greg's catch); the
+  same-process old-vs-new ablation (`cone_channel_major_ablation.py`) refuted it.
+  KEEP it (free CPU win, GPU-neutral, correct: tests + old≈new).  **Implication: no
+  easy single-GPU projector speedup from kernel layout — the port's GPU value is
+  CAPACITY (sharding), and cone projectors already scale cleanly (~N⁴) on GPU.**
+- **Option B, NO row window:** compute the horizontal fan ONCE per view (pixel-batched
+  internally to bound the pixels×rows transient — `pixel_batch_size` in projectors.py),
+  band only the VERTICAL fan by `(g0, L)` for the multi-device reduce-scatter.  The
+  detector-row WINDOW (the old "load-bearing cone decision") was MEASURED OUT — it would
+  recompute the dominant horizontal stage per band.
+- **No fusion / sino-accumulator restructure** (fan-split: no time win; even hurts at 256³).
+- **Delete `entries_per_cylinder_batch`** — a simplification + the band loop needs it gone
+  anyway; NOT a GPU perf fix (the CPU back-vertical ×62 cliff was a CACHE artifact, gone on
+  GPU — clean ~N⁴ there).
+- Anchor rule (params, not band length) + de-closuring (§7) unchanged from the proposal.
+- **Capacity wall is at VCD, not projectors:** single-device cone projectors fit 1024³ on
+  one H100 (~16 GB); full VCD 1024³ is ~marginal (~65 GB, vcd_const OOM'd / vcd_nonc fit) —
+  so cone needs multi-GPU for VCD at 1024³+.
+
+### Measurement tooling (staged; experiments/, gitignored results/)
+- `scaling_tests/cone_baseline_scaling.py` — single-device cone forward/back/vcd_const/
+  vcd_nonc baseline (reuses scaling_common; `GEOMETRY` cone|parallel; CPU+GPU sizes wired).
+- `scaling_tests/cone_fan_split_microbench.py` — horizontal vs vertical fan split + per-view
+  scaling + fused-vs-separate; CPU+GPU (adaptive view batch, per-view normalized).
+- Baselines recorded as tables in the proposal §8a / §8a-split (binaries don't go on github).
+
+### Cone baseline headlines (no-regression reference)
+- GPU H100 single-device: forward 256³/512³/1024³ = 0.30/4.8/79 s (peak 1.3/6.0/16 GB);
+  back = 0.16/2.3/36 s (1.2/5.6/17 GB); VCD 3-iter 256³/512³ = ~3/30 s; 1024³ ~marginal.
+- Clean ~N⁴ projector scaling on GPU, NO cliff.  (CPU has a back-vertical ×62 cliff at 256³
+  that is cache-specific — does not appear on GPU.)
+
+### NEXT (in order)
+- **A (coding now):** channel-major both cone horizontal fans; gate = cone adjoint identity
+  (test_projectors) + allclose vs current; measure with the fan-split bench; GPU re-run (Greg).
+- **B:** module-level banded drivers + cone two-stage kernels (banded vertical + horizontal-once,
+  anchor, global clip, forward accumulation, entries_per_cylinder_batch deletion, de-closuring);
+  `_supports_sharding()=True` for cone; transitional "has banded kernels?" branch.
+- **C:** parallel conversion + old-driver deletion.  **D:** translation, multiaxis.  **E:** retirement cascade.
 
 ---
 
@@ -1490,7 +1970,7 @@ Consolidated to a **single** working tree (2026-06-08):
 
 | Path | Branch | Role |
 |------|--------|------|
-| `…/Research/mbirjax/` | `greg/parallel_sharding` | The repo — single worktree. All work. |
+| `…/Research/mbirjax/` | `greg/conebeam_sharding` | The repo — single worktree. All work. |
 
 The old research worktree (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`)
 was removed and its **local** branch deleted; it still exists on the remote
