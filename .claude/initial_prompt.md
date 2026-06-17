@@ -1,6 +1,7 @@
 We're mid-investigation on the mbirjax performance-tracking toolchain (branch `greg/conebeam_sharding`). 
-The performance-tracking code is now in a separate repo, `mbirjax_metrics` which lives locally in a 
-directory parallel to `mbirjax`.
+The performance-tracking code was developed in this repo but is now deployed in a separate repo, 
+`mbirjax_metrics` which lives locally in a directory parallel to `mbirjax`.
+
 First read, in order:
 
 `experiments/sharding/plans/sharding_status.md` — the TOP HANDOFF (2026-06-16b) describes the now-built 
