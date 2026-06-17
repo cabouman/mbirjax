@@ -19,6 +19,72 @@ principles: `sharding_implementation_plan.md`.*
 
 ---
 
+## HANDOFF (2026-06-16b) — nightly regression HARNESS built + deployed; CPU end-to-end verified; GPU cluster bring-up in progress
+
+▶ **The performance-tracking nightly regression HARNESS (plan §P5) is built, deployed, and running.**
+Design: `plans/performance_tracking_plan.md`.  Authored in `mbirjax/dev_scripts/regression/` (wrapper)
++ `experiments/sharding/scaling_tests/` (engine); DEPLOYED into `mbirjax_metrics/tooling/{regression,
+scaling_tests}/` via `dev_scripts/regression/deploy_to_metrics.sh`.  **The harness LIVES IN + RUNS FROM
+the `mbirjax_metrics` repo** (cloned per node), so edits must be deployed AND pushed to take effect (a
+run fresh-clones/updates the github tooling).
+
+**Architecture (`run_regression.sh`, two-phase, fire-on-change):**
+- Phase 1 (cron/manual entry): source `PREAMBLE_FILE` (cluster: `module load` conda/cuda + export
+  proxy; auto-skipped on the Mac), UPDATE-or-clone a PERSISTENT metrics clone at `$WORK_DIR/metrics`
+  (`$HOME/.mbirjax/regression/metrics`; `fetch`+`pull --rebase`, fresh-clone fallback), re-exec ITS
+  copy (picks up remote harness changes).
+- Phase 2: conda env (`mbirjax_regression`, AUTO-CREATED if missing) → per tracked branch: `ls-remote`
+  vs `state/<plat>/<branch>` (FIRE-ON-CHANGE) → SHALLOW single-branch clone of the library tip →
+  `pip install -e "$WT[extras]"` → tests (`run_tests.sh`, shown live via tee) → engine
+  (`run_nightly.py`, `lib_root=$WT`) → results+state into the metrics clone → conflict-safe push
+  (`pull --rebase`+retry; `TOKEN_FILE` credential; `GIT_TERMINAL_PROMPT=0`).
+- Engine changes enabling this (all back-compat, defaults = old behavior): `Config.lib_root` +
+  `build_worker_env(lib_root=)` (measure an arbitrary checkout); `Config.golden_dir`/`REG_GOLDEN_DIR`
+  (golden + main_baseline from `metrics/golden/`); `sc.golden_dir(__file__)` (capture scripts write to
+  `metrics/golden/` when run FROM the metrics repo, local scratch from mbirjax).
+
+**Config (`tooling/regression/regression.env`):** `TRACKED_BRANCHES=("greg/conebeam_sharding")` only
+(main/prerelease UNPORTED → degenerate multi-device sweep; defer until a single-device fallback);
+`WORK_DIR=$HOME/.mbirjax/regression`; `PREAMBLE_FILE=$HOME/load_conda_cuda.sh`;
+`TOKEN_FILE=$HOME/.config/mbirjax/metrics_credentials`; `CONDA_ENV=mbirjax_regression`/`CONDA_PYTHON=3.11`;
+`INSTALL_EXTRAS_{cpu=test,gpu=cuda12,test}`; `MAX_PUSH_FILE_MB=25`.  **`REG_SMOKE=1`** = isolated
+plumbing test (toy 1-cell engine → temp dir; skips tests/commit/push/state) — fast cluster check
+without a 40–60 min run.
+
+**Robustness/UX in place:** persistent work clone (a failed push is NOT lost — retried next run,
+self-heals); conflict-safe push (cpu/gpu write DISJOINT paths: `results/<plat>`, `state/<plat>`,
+`*_<plat>.yaml`); push size cap; interactive terminal stays open on nonzero exit (tty-guarded); test
+step reuses `run_tests.sh` + shows output live; `run_tests.sh` cwd bug fixed (`../tests` needs `cd
+dev_scripts/`).  **Golden:** metrics `.gitignore` un-ignores `*.npy` (keeps png/pdf/csv ignored); the
+CURRENT (post-short-circuit) CPU+GPU `golden_<plat>.yaml` + `main_baseline_<plat>.yaml` + 8 `.npy` are
+copied into `metrics/golden/`.  Golden gate fires when present.  Token: `metrics/dev_scripts/
+create_token.sh` + `create_token_instructions.md` (fine-grained PAT → git credential-store file).
+
+**VERIFIED:** CPU full pipeline END-TO-END (first real nightly pushed to github + pulled: 72 cells, 4
+expected B5 cone-padding fails @129³ n≥2, gate WARN cold-start).  Cluster (interactive): conda load
+via `PREAMBLE_FILE`, env auto-create, install, tests, engine displaying output.  Token/credential
+VERIFIED (push --dry-run authenticated; a `[rejected] fetch first` is post-auth staleness, NOT an auth
+failure — the wrapper's `pull --rebase` handles it).  Locally: lib_root, golden_dir, persistence
+(unpushed survives `pull --rebase`), REG_SMOKE isolation.
+
+**NOT yet verified (cluster):** the wrapper's AUTOMATED push end-to-end (pieces verified — token +
+pull-rebase logic; Greg is trusting the pieces, first real run = confirmation); persistence reuse
+(`REG_SMOKE` ×2 would show `updating metrics clone`); the unattended schedule.  **Test slowness:** the
+cluster suite was slow — likely first-run cold jit cache + `pytest -n 10` OVER-SUBSCRIBING the 4 GPUs
+(try fewer workers); the new per-phase logs (`installing…/running tests…/running engine…`) will split
+install vs test time next run.
+
+**NEXT:** (0) A visual interface to the mbirjax_metrics data: details to be determined, but some
+form of browser, figure generator, spreadsheet viewer, etc. (1) GPU `nightly_regression.slurm` + `scrontab` (P6 — unattended cluster path: GPU-node
+request + `PREAMBLE_FILE` + `TOKEN_FILE`).  (2) `enable_nightly.sh` (Mac launchd) to go auto-on-change.
+(3) Tune GPU pytest worker count.  (4) Optional: single-device fallback to track main/prerelease
+cleanly; lazy matplotlib import in `scaling_common`; a `REG_SMOKE_PUSH` flag to test the push without
+a full run.  (5) `compare_to_baseline.py` (.npy deep-diff, P7).
+**Uncommitted (Greg commits):** recent `run_regression.sh`/`regression.env` edits in mbirjax; the
+`metrics/dev_scripts/` + `metrics/golden/` files + the tooling re-deploy in the metrics clone.
+
+---
+
 ## HANDOFF (2026-06-16) — cone back 1-device GPU penalty RESOLVED + GPU-CONFIRMED; decision (a)
 
 ▶ **The cone `back` 1-device GPU penalty (the OPEN INVESTIGATION below) is RESOLVED, GPU-CONFIRMED, fix staged.**

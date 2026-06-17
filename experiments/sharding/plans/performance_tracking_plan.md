@@ -1,13 +1,21 @@
 # Performance-tracking / nightly-regression tool — design plan
 
-**STATUS: MOSTLY BUILT + CPU-validated (2026-06-15).**  The engine, fingerprint, `vcd_nonconst`,
-record book, diff/gate, golden capture, manual launcher, and the `main` 1-device baseline + "vs
-main" note are implemented in `experiments/sharding/scaling_tests/` (usage: that dir's `README.md`).
-This doc is the design rationale; where the as-built behavior differs from an earlier proposal it is
-flagged inline (e.g. §10's gate-model update, §6's no-auto-skip).  **Remaining (NOT built):** the
-nightly shell wrapper (§12 — `dev_scripts/regression/`), the deferred `compare_to_baseline.py`
-(.npy deep-diff, §14 P7), and the visual interrogation surface (§14).  Supersedes the short sketch
-in `sharding_implementation_plan_v2.md` §Adjacent tasks ("Daily regression-check tool").
+**STATUS: BUILT + CPU end-to-end verified; GPU cluster bring-up in progress (2026-06-16).**  See the
+`sharding_status.md` **HANDOFF (2026-06-16b)** for the current, authoritative P5 state — the nightly
+wrapper (§12, `dev_scripts/regression/`) is now built and deployed to the `mbirjax_metrics` repo
+(`tooling/`), CPU verified end-to-end (a real run pushed + pulled), with cluster (GPU) bring-up
+underway.  As-built deviations from the original §12/§13 sketch: harness LIVES IN the metrics repo
+(deploy via `deploy_to_metrics.sh`); two-phase wrapper with a PERSISTENT `$WORK_DIR/metrics` clone
+(`fetch`+`pull --rebase`, not throwaway — failed pushes self-heal); FIRE-ON-CHANGE (ls-remote vs
+`state/`, not unconditional nightly); per-branch SHALLOW single-branch library clone (not full clone +
+worktree); `lib_root`/`golden_dir`/`REG_GOLDEN_DIR`/`REG_SMOKE` engine knobs; node `PREAMBLE_FILE` +
+`TOKEN_FILE` for the cluster; `TRACKED_BRANCHES=("greg/conebeam_sharding")` only (main/prerelease
+deferred — unported → degenerate multi-device sweep).  The engine, fingerprint, `vcd_nonconst`, record
+book, diff/gate, golden/main-baseline capture, and manual launcher are in
+`experiments/sharding/scaling_tests/` (usage: that dir's `README.md`).  This doc is the design
+rationale; where as-built differs it is flagged inline (e.g. §10 gate-model, §6 no-auto-skip).
+**Still NOT built:** GPU `nightly_regression.slurm` + `scrontab` (§14 P6); `enable_nightly.sh` schedule
+not yet activated; deferred `compare_to_baseline.py` (.npy deep-diff, §14 P7) + visual surface (§14).
 
 Author intent (Greg, this session): a standing day-over-day check that exercises every
 geometry × op and flags time/memory/correctness drift, runnable as a nightly cron (CPU =

@@ -154,13 +154,21 @@ for i in "${!CHANGED_BR[@]}"; do
     rm -rf "$WT"; continue
   fi
 
-  OUT="$RES/$SLUG"; mkdir -p "$OUT"
+  # REG_SMOKE = isolated plumbing test: exercise the whole flow with a TOY 1-cell engine into a TEMP
+  # dir, and skip tests / commit / push / state below — so it never touches real data.  Use it to
+  # verify the wrapper (persistence, clone, install, engine) in ~1-2 min without a full measurement.
+  if [ "${REG_SMOKE:-0}" = "1" ]; then
+    OUT="$(mktemp -d)"; log "$BR: REG_SMOKE — toy output to $OUT (skipping tests / commit / push / state)."
+  else
+    OUT="$RES/$SLUG"
+  fi
+  mkdir -p "$OUT"
 
   # Tests: reuse the branch's OWN runner (your -n 10 tuning + conftest knobs); NON-FATAL (logged,
   # not gated — per-branch test diffing is a later increment; the perf engine is the alert path).
   # `tee` shows progress live (interactive) AND records to tests_*.txt; on an unattended run the
   # stdout copy just lands in the cron/slurm log.
-  if [ "${RUN_TESTS:-0}" = "1" ]; then
+  if [ "${RUN_TESTS:-0}" = "1" ] && [ "${REG_SMOKE:-0}" != "1" ]; then
     TLOG="$OUT/tests_${PLAT}_${DATE}.txt"
     log "$BR: running tests (MBIRJAX_NUM_CPU_DEVICES=$TEST_CPU_DEVICES) -> $(basename "$TLOG") ..."
     if [ -f "$WT/dev_scripts/run_tests.sh" ]; then
@@ -186,7 +194,9 @@ for i in "${!CHANGED_BR[@]}"; do
     GATE_FAIL=1; log "$BR: GATE FAIL (perf regression) — see $OUT."
   fi
 
-  echo "$SHA" >"$STATE/$SLUG"   # record measured commit LAST (a crash mid-run re-measures next time)
+  # Record the measured commit LAST (a crash mid-run re-measures next time).  Skipped in smoke so a
+  # test run never marks the branch as measured.
+  [ "${REG_SMOKE:-0}" = "1" ] || echo "$SHA" >"$STATE/$SLUG"
   rm -rf "$WT"                  # drop the throwaway library clone
 done
 
@@ -196,6 +206,10 @@ done
 # other platform pushed between our clone and our push).  So: rebase onto the latest (always clean,
 # the paths don't overlap) and retry.  If the push ultimately fails (auth/network), this run's
 # results+state simply aren't persisted — which SELF-HEALS: next run sees no new state and re-measures.
+# Skipped under REG_SMOKE — the isolated plumbing test must not touch the real metrics repo.
+if [ "${REG_SMOKE:-0}" = "1" ]; then
+  log "REG_SMOKE — skipping commit/push."
+else
 git -C "$METRICS_REPO" add results state >/dev/null 2>&1 || true
 # Size cap (backstop): unstage any staged file larger than MAX_PUSH_FILE_MB so a stray large
 # artifact can never be pushed.  Normal outputs (YAML/.txt/.npy) are well under this.
@@ -220,6 +234,7 @@ if git -C "$METRICS_REPO" commit -q -m "regression $PLAT $DATE [$CHANGED_SUMMARY
 else
   log "nothing new to commit."
 fi
+fi   # end REG_SMOKE publish guard
 
 [ "$GATE_FAIL" = "0" ] || { log "REGRESSION DETECTED — exit 1 (alert)."; exit 1; }
 log "done — no regressions."

@@ -41,6 +41,7 @@ When implementing:
 * Highlight anything that seems inconsistent, fragile, numerically unstable, inefficient, or technically risky.
 * Avoid speculative cleanup or unrelated refactors.
 * When possible, suggest ways to test or validate correctness and performance.
+* Ask if there is more to be done on a task before claiming that the task is done.
 
 Scripts and reproducibility:
 
