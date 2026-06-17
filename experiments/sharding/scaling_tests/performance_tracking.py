@@ -498,6 +498,10 @@ def _git_provenance(root):
         except Exception:
             return None
     return {"git_commit": _g(["rev-parse", "HEAD"]),
+            # committer date in strict ISO-8601, so the dashboard can place a run
+            # on the timeline at the commit's time rather than the collection time
+            # (lets older prerelease checkouts be added as past baselines).
+            "git_commit_date": _g(["show", "-s", "--format=%cI", "HEAD"]),
             "git_branch": _g(["rev-parse", "--abbrev-ref", "HEAD"]),
             "mbirjax_version": sc.pyproject_version(root),
             "git_dirty": bool(_g(["status", "--porcelain"]))}

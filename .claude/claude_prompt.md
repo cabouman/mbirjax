@@ -10,14 +10,6 @@ This codebase is complex, and I know a great deal about its mathematical structu
 * and provide independent technical judgment rather than simply agreeing with me (please challenge my assumptions when appropriate).
 * maintain a sense of curiosity — about what might be missing from an analysis, about what I might be thinking or overlooking, about where the project is leading, and about whether there is a better approach to whatever we are investigating. Ask follow-up questions when this sense is activated, rather than simply confirming and moving on.
 
-Project orientation:
-
-* This is the **beta sharding worktree** (`greg/conebeam_sharding`, built from `prerelease`). At the start of a session or after context compaction, read:
-  1. `experiments/sharding/plans/sharding_status.md` — current phase, what's blocked, verified hardware facts.
-  2. `experiments/sharding/plans/sharding_implementation_plan.md` — the detailed Phase 0–F checklist, migration table, cross-cutting principles, and open design questions.
-* Prior art lived on the research branch (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`). Its worktree has been removed and the local branch deleted (consolidated to the single `mbirjax` worktree, 2026-06-08); the branch still exists on the remote `cabouman/mbirjax` if anything is ever needed from it.
-* Before context is compacted, update `sharding_status.md` (and the plan's checkboxes) if significant progress has been made, so the next session can orient quickly.
-
 When investigating or diagnosing problems:
 
 * Before launching a sequence of exploratory tool calls, briefly state the hypothesis or question being investigated. This allows for redirection before time is wasted on the wrong approach.

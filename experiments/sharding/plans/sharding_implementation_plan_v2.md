@@ -3,12 +3,18 @@
 `greg/parallel_sharding`, which has a PR to prerelease as of 06/12/2026)
 
 
-*Created 2026-06-02.  This is the **current forward plan**.  It supersedes
-`sharding_implementation_plan.md` for forward planning; that doc is retained as
-the **completed-work record** (Phases 0/A/B/F1/D/F2 case studies) plus the
-still-valid **cross-cutting principles, verified hardware facts, and resolved
-open questions (O1–O4)** — read it for history and principles, this doc for
-where we are going next.*
+> **DEMOTED 2026-06-17 → detailed-design ARCHIVE.**  `sharding_implementation_plan_v3.md`
+> is now the **primary forward-plan / orientation doc** (current state + what's left +
+> execution order).  Read v3 first.  This doc is kept for the **detailed design rationale**
+> it records — the placement architecture, the `(g0,L)` slice-band interface, the anchor
+> rule, and forward-banding-is-accumulation (§0, §P3).  Most of its phase content (P1–P5,
+> and the cone P6 increments through B4) is now **completed work** — see v3 §3–§4 for the
+> current summary.
+
+*Created 2026-06-02.  Was the forward plan through 2026-06-16; superseded for forward
+planning by v3.  It built on `sharding_implementation_plan.md` (v1), retained as the
+**completed-work record** (Phases 0/A/B/F1/D/F2) plus the still-valid **cross-cutting
+principles, verified hardware facts, and resolved open questions (O1–O4)**.*
 
 ---
 

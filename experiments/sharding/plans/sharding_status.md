@@ -1,21 +1,36 @@
 # Sharding status (beta branch `greg/conebeam_sharding`)
 
-*Short living status. Forward plan: `sharding_implementation_plan_v2.md`.  Completed-work record +
-principles: `sharding_implementation_plan.md`.*
+*Short living status. **Forward plan + current-state overview: `sharding_implementation_plan_v3.md`
+(primary — read first).**  Detailed-design archive: `sharding_implementation_plan_v2.md`.
+Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 **New-session reading guide** (these docs have grown — read selectively):
 1. `.claude/claude_prompt.md` — collaboration style + workflow (read).
 2. **This file, the TOP handoff only** (current phase + next step) — read.  The
    older handoffs and the "Where we are" history below are **skim/reference**.
-3. **`sharding_implementation_plan_v2.md`** — the **current forward plan** (placement architecture
-   + phases P1–P6; Phase D re-opened).  Read §0 Design summary and the current
-   phase.
+3. **`sharding_implementation_plan_v3.md`** — the **primary forward plan + current-state
+   overview** (ParallelBeam milestones, cone P6 state, what's left + execution order).
+   Read first.  `sharding_implementation_plan_v2.md` is the demoted **detailed-design
+   archive** (placement architecture, `(g0,L)`/anchor rationale) — consult for design depth.
 4. `sharding_implementation_plan.md` — **completed-work record + principles**
    (Phases 0/A/B/F1/D/F2, cross-cutting principles, hardware facts, O1–O4).  Read
    §Cross-cutting principles; skim the rest for history.
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
 6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-17) — `sharding_implementation_plan_v3.md` written (primary forward plan); v2 demoted to design archive
+
+▶ **New primary doc: `plans/sharding_implementation_plan_v3.md`** — concise current-state +
+forward-plan overview.  Captures: ParallelBeam fully sharded (filter / forward / back / qGGMRF /
+VCD milestones), cone P6 state (A, B1–B4 + shared filter + GPU n=1 short-circuit DONE), and what's
+left (cone **B5 = next**; B4.5 deferred; then C / D / E).  **Read v3 first.**  v2 is now a
+detailed-design archive (banner added); the reading guide above + the forward-plan line point to v3.
+Scope note: v3 is **library-only** — the regression-harness / metrics-visualization track stays in
+`performance_tracking_plan.md` + the handoff below.  Docs only this session; no code changed.
+**Uncommitted (Greg commits):** the new v3 doc + the demotion edits to v2 / this file.
 
 ---
 
