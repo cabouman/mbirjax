@@ -202,7 +202,7 @@ class TomographyModel(ParameterHandler):
 
         Only such geometries auto-default the single-device case to a trivial 1-device mesh
         (the always-on placement path); the rest stay on the legacy single-device path until
-        their projectors are ported (P6).  Base default is False; ParallelBeamModel overrides
+        their projectors are ported.  Base default is False; ParallelBeamModel overrides
         to True.  Also gates configure_sharding()/configure_devices(): a multi-device request
         on an unported geometry raises immediately (the sharded band pipeline would fail with
         an opaque shape error deep in the projectors), and a single-device request is a no-op
@@ -295,7 +295,7 @@ class TomographyModel(ParameterHandler):
             raise ValueError("configure_sharding requires at least one device.")
 
         # Geometries without the placement/movement projector path (everything but
-        # ParallelBeam until the P6 port) cannot run the sharded band pipeline -- entering it
+        # ParallelBeam until its projectors are ported) cannot run the sharded band pipeline -- entering it
         # fails deep in the projectors with an opaque shape error.  Fail fast on a
         # multi-device request; a single-device request is simply the legacy behavior these
         # geometries already have, so honor it as a no-op (they stay on the legacy
@@ -341,12 +341,12 @@ class TomographyModel(ParameterHandler):
 
         Automatic device selection (use_gpu='automatic'/'full' on a multi-GPU box) shards across
         this many devices.  NEITHER sharded axis constrains the count anymore: a non-dividing
-        view axis (Stage 1) or slice axis (Stage 2) is zero-padded to the next multiple of the
+        view axis or slice axis is zero-padded to the next multiple of the
         device count and the padding is kept exactly inert (entry zero-fill + the projector
         output masks + the qGGMRF interface mask), so the result is independent of N.  The one
         guard: skip a count whose LAST shard would hold zero real slices (e.g. 5 slices on 4
         devices -> shards of 2 with the last entirely padding) -- correct but a wasted device;
-        fall to the next smaller count.  (The broader choose-N-vs-communication policy is a P6
+        fall to the next smaller count.  (The broader choose-N-vs-communication policy is a later
         discussion.)  There is NO per-device size floor (decided 2026-06-09 from the GPU
         band/scale sweeps): sharding's value is capacity + near-linear speedup at the sizes
         that matter, and over-sharding a small problem is only a mild overhead.
@@ -385,7 +385,8 @@ class TomographyModel(ParameterHandler):
 
         ``(sharded)`` marks the placement path (``is_sharded``), regardless of device count, so a
         single-device PLACEMENT recon (e.g. ParallelBeam) is distinguished from a single-device
-        LEGACY recon (a geometry not yet ported) -- a real difference until P6.  When automatic
+        LEGACY recon (a geometry not yet ported) -- a real difference until every geometry is
+        ported.  When automatic
         selection left GPUs idle because the device count cannot divide both sharded axes, the
         reason is appended so idle hardware is never silent.
         """
@@ -440,7 +441,7 @@ class TomographyModel(ParameterHandler):
         always keep the real shapes ("what is the problem?"); the placements own
         the padded device shapes ("what is on the devices?").  This runs on
         every recompile (set_devices), so the pad metadata tracks shape changes.
-        Both sharded axes pad: views (Stage 1) and recon slices (Stage 2; for
+        Both sharded axes pad: views and recon slices (for
         parallel beam the detector rows pad with the slices -- see
         :meth:`_sino_row_padding`).
         """
@@ -932,7 +933,7 @@ class TomographyModel(ParameterHandler):
         # set_params re-evaluates the layout (e.g. a 'full' <-> 'none' mode flip, or a
         # sinogram_shape change that changes the divisible count).  Geometries not yet ported leave
         # self.mesh = None and fall back to trivial single-device placements in _set_placements (the
-        # legacy path, retiring at P6).  _set_placements() runs in all branches (via _apply_mesh or
+        # legacy path, retiring once all geometries are ported).  _set_placements() runs in all branches (via _apply_mesh or
         # directly).
         if not self._sharding_configured and self._supports_sharding():
             if on_gpu and len(gpus) > 1:
@@ -1317,6 +1318,8 @@ class TomographyModel(ParameterHandler):
         # 1-device mesh (the auto-default placement path) there is nothing to shard, so fall
         # through to the single-device implementation; only a real multi-device mesh rejects
         # view_indices.  (The view-batching callers, e.g. vcls, run single-device.)
+        # RETIRE-AFTER-SHARDING: view_indices retires once every geometry is sharded -- see the
+        # fuller note in sparse_back_project.
         if self.is_sharded and view_indices is None:
             return self._sparse_forward_project_sharded(
                 voxel_values, pixel_indices, view_indices=None)
@@ -1510,6 +1513,15 @@ class TomographyModel(ParameterHandler):
         pixel_batch = self.pixel_batch_size_for_vmap
         # Gather slice-shards in GLOBAL slice order so the assembled cylinder is correctly ordered.
         slice_owners = sorted(devices, key=lambda d: recon_shard_info[d][1][0])
+        # The monolithic forward kernel anchors its slice->detector-row geometry on the REAL
+        # slice count (recon_shape[2]) and requires the cylinder to have exactly that length.
+        # When the slice axis is padded for sharding, the gathered cylinder carries the
+        # device-form (padded) slices; crop them off before projecting.  This is EXACT, not an
+        # approximation: the padded slices are zero (the forced-zero invariant on the
+        # slice-sharded recon), so dropping them changes nothing -- it is what makes the
+        # divisibility padding exactly inert for the cone gather-forward.  A no-op when the
+        # slice count divides the device count (real_size == device-form length).
+        real_slices = self.recon_placement.real_size
 
         def worker(i, view_owner):
             idx = local_pixels[i]                       # pixel indices, resident on view_owner
@@ -1528,11 +1540,13 @@ class TomographyModel(ParameterHandler):
             for p0 in range(0, n_local, pixel_batch):
                 p1 = min(p0 + pixel_batch, n_local)
                 # Gather THIS pixel-batch's slices from every slice-owner onto this view-owner and
-                # concatenate along the slice axis -> the full cylinder (p1 - p0, num_slices).
+                # concatenate along the slice axis -> the full cylinder (p1 - p0, device-form
+                # slices), then crop to the real slice count (the inert zero padding; see above).
                 full_cyl = jnp.concatenate(
                     [mjs.move_shard(recon_shard_info[so][0][p0:p1], view_owner,
                                     dev2dev_safe=self.dev2dev_safe)
                      for so in slice_owners], axis=1)
+                full_cyl = full_cyl[:, :real_slices]
                 part = self.projector_functions.sparse_forward_project(
                     full_cyl, idx[p0:p1], view_indices=view_ranges[view_owner])
                 owned = part if owned is None else owned + part
@@ -1716,7 +1730,12 @@ class TomographyModel(ParameterHandler):
             output_device (jax device, optional): Device on which to put the output
 
         Returns:
-            A jax array of shape (len(indices), num_slices)
+            A jax array of shape (len(indices), num_slices).  On a sharded model this is the
+            slice-sharded DEVICE FORM: its slice axis is the device-form (possibly padded) length,
+            not the problem's real slice count, and the padded slices are exactly zero.  The
+            user-facing :meth:`back_project` gathers and crops it to the real slice count; callers
+            of this internal method that need the real shape must crop ``[:, :num_real_slices]``
+            themselves (the padded slices are inert zeros, so the crop is exact).
         """
         # When a mesh is configured, take the sharded path: the
         # sinogram is expected view-sharded and the result is returned
@@ -1727,6 +1746,14 @@ class TomographyModel(ParameterHandler):
         # breaks the equal view-shard).  On a trivial 1-device mesh (the auto-default placement
         # path) there is nothing to shard, so fall through to the single-device implementation;
         # only a real multi-device mesh rejects view_indices.  (e.g. vcls runs single-device.)
+        #
+        # RETIRE-AFTER-SHARDING: ``view_indices`` is the legacy view-table index -- both the
+        # user-facing view-SUBSET selector (superseded by the single-view sibling in vcls.py) and
+        # the single-device view-batching's per-batch angle selector (the per-view kernels in
+        # projectors.py do ``view_params_array[view_indices]``).  Once every geometry is sharded
+        # it can be removed: the batching slices the traced ``view_params_array`` directly, and
+        # this parameter, the multi-device guard just below, and the forward's mirror all retire
+        # together.  (This is the home of the "mechanism" referenced in vcls.py.)
         if self.is_sharded and view_indices is None:
             return self._sparse_back_project_sharded(
                 sinogram, pixel_indices, view_indices=None,
@@ -1960,7 +1987,7 @@ class TomographyModel(ParameterHandler):
         # every consumer (the VCD gradient, the Hessian diagonal, the direct/FBP init)
         # is automatically clean with no further mask sites.  Under parallel beam the
         # slice<->row identity already makes these entries structurally zero (defense);
-        # under cone (P6) back projection bleeds real rows into padded slices and this
+        # under cone back projection bleeds real rows into padded slices and this
         # single site is what zeroes them (load-bearing).
         owned = self._mask_padded_slices(owned)
 
@@ -2217,7 +2244,7 @@ class TomographyModel(ParameterHandler):
                 problem's REAL shape (any padded slices are cropped).  If True, return the
                 internal device form (slice-sharded, slice axis possibly padded with
                 exactly-zero entries).  (The legacy ``output_device`` kwarg is reconciled
-                with this at the P6 geometry port.)
+                with this when the remaining geometries are ported.)
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
@@ -3631,7 +3658,7 @@ def update_error_sinogram(error_sinogram, alpha, delta_sinogram):
     # alpha is folded into the jit (rather than eagerly pre-scaling delta_sinogram) so XLA emits a
     # single fused multiply-add and there is no separate scaled-delta transient to free.  The FMA
     # differs from an eager pre-scale by ~1 ULP; that is within the placement path's accepted
-    # tolerance (the trivial-mesh path is no longer required to be bit-exact -- see v2 plan P6).
+    # tolerance (the trivial-mesh path is no longer required to be bit-exact).
     return error_sinogram - alpha * delta_sinogram
 
 

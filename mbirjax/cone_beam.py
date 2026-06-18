@@ -191,7 +191,7 @@ class ConeBeamModel(TomographyModel):
 
     def _supports_sharding(self):
         """Cone beam has the banded back projector (reduce-scatter) and the gather-and-monolithic
-        forward on the placement/movement path (P6 increment B), plus the shared qGGMRF prior path,
+        forward on the placement/movement path, plus the shared qGGMRF prior path,
         so it runs on the always-on placement path: the single-device case auto-defaults to a
         trivial 1-device mesh and multi-device shards (recon by slice, sinogram by view)."""
         return True
@@ -1050,16 +1050,27 @@ class ConeBeamModel(TomographyModel):
         )
         M_0 = self.get_magnification()
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-        num_slices = recon_shape[2]
-        
-        k = jnp.arange(num_slices)
-        z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+
+        # The slice->z map anchors on the REAL slice count (recon_shape[2], always the problem
+        # size), but the weight is applied to the recon AS IT EXISTS ON THE DEVICES, whose slice
+        # axis is zero-padded to a longer length when sharding does not divide evenly.  So build
+        # the weight over the recon's device-form slice count while keeping the z anchor on the
+        # real count, and force the weight to zero on the padded slices: they are identically
+        # zero (the forced-zero invariant) and a padded slice is out of coverage (coverage 0 ->
+        # num_views/0 = inf), so without this guard 0 * inf would make them NaN.  A no-op when
+        # nothing is padded (device-form length == real length, k < num_real_slices everywhere).
+        num_real_slices = recon_shape[2]
+        num_device_slices = recon.shape[2]
+
+        k = jnp.arange(num_device_slices)
+        z_k = delta_voxel_slice * (k - (num_real_slices - 1) / 2.0) + recon_slice_offset
         det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
         visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
         coverage = jnp.sum(visible, axis=1)
         z_weight = num_views / coverage
+        z_weight = jnp.where(k < num_real_slices, z_weight, 0.0)
         recon = recon * z_weight[None, None, :]
-        
+
         return recon
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,

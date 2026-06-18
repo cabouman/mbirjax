@@ -21,6 +21,53 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
+## HANDOFF (2026-06-18) — Cone B5 (exactly-inert slice padding) DONE, CPU-validated; full suite green at the default 4 devices
+
+▶ **Cone B5 is implemented and CPU-validated.**  The 4 deferred failures
+(`test_{adjoint,hessian}_anisotropic_cone`, `test_split_sino`, `test_vcd_anisotropic_cone`) PASS at
+4 devices, and the **full suite is green at the default 4 CPU devices (169 passed)**.  All four
+collapsed to ONE root cause: the cone sharded forward GATHERS the device-form (padded) cylinder and
+feeds the monolithic kernel, which anchors on / asserts the REAL slice count.
+
+**What landed (staged; Greg commits):**
+- **Load-bearing fix** — `tomography_model._forward_project_to_view_shards` crops the gathered
+  cylinder to `recon_placement.real_size` before the monolithic forward (padded slices are zero →
+  EXACT; no-op at dividing counts; ParallelBeam overrides this method, so it is cone/base-only).
+- **Test contract** — `sparse_back_project` STAYS device-form (the VCD loop / `output_sharded` need a
+  shardable padded array); the geometry tests `verify_adjoint`/`verify_hessian` crop the device-form
+  back projection to real slices.  This was a **latent, geometry-agnostic** test bug — parallel fails
+  identically at 3 devices (40→42), hidden only because 40 divides 2/4.  Docstring now states the
+  device-form return.  `_supports_slice_padding()` hook DROPPED (Greg — would be all-True/dead).
+- **Bonus real bug** (found by the new helical padding test) — `ConeBeamModel.helical_fdk_z_weight`
+  built its per-slice z-weight at the REAL slice count and applied it to the device-form (padded)
+  recon → broadcast crash; now built at device-form length, z anchored on real, padded slices forced
+  to 0 weight (guards `0*inf→NaN`).  Also `verify_adjoint` zeros the random `y`'s padded views (the
+  back projector needs padded views zero; a hand-built `y` violated that → ~3% adjoint gap at
+  view-padding counts).  Verify tests now robust at any device count (2/3/4).
+- **Tests** — the slice-padding tests were refactored into a shared `_PaddedReconMixin` with
+  `TestPaddedSlicesParallel` + `TestPaddedSlicesCone` subclasses (all real sizes read from params,
+  so the checks are geometry-agnostic; prime 7-slice geometries, cone circular+helical).  Shared
+  checks: projectors/Hessian/VCD sharded==single-device, forward+back device-form exact-zero, and a
+  NEW `test_forward_inert_to_nonzero_recon_padding` (poison the padded slices, require the forward
+  bit-identical to the clean-padded forward -- inertness tested directly, not just "padding stays
+  zero").  Cone-only fast probes: `test_curved_detector_projectors_padding` and
+  `test_fully_padded_trailing_shard` (a 3-slice cone on 4 devices -> the `n_valid<=0` mask branch).
+  `conftest.py` stale "4 cone tests fail at 4 devices" comment updated.  Recompile audit (one-off):
+  the forward crop normalizes the kernel slice dim to `real_slices`, so padding adds no forward
+  programs via the slice axis (program count tracks device count via per-owner view shapes).
+
+**Gates:** 4 deferred @4 ✓; full suite @4 169p ✓; sharding suite @4 107p+cone ✓; padding @3 & @4 ✓;
+`test_projectors` @3 21p ✓.  **NOT yet done — GPU confirmation at a non-dividing slice count (Greg's
+lane; CPU `MBIRJAX_NUM_CPU_DEVICES=4` is the proxy, the GPU box has 4 devices).**  Detail:
+`plans/p6_increment_b_design.md` B5 entry; `plans/sharding_implementation_plan_v3.md` §4.  New
+lesson recorded in `.claude/lessons.md` ("Exactly-inert cone slice padding").  **NEXT: increment C**
+(+ the FDK-filter → sharded-contract cleanup, which also touches the cone FDK init path).
+**Uncommitted (Greg commits):** `mbirjax/{tomography_model,cone_beam}.py`,
+`tests/{conftest,geometries/test_projectors,sharding/test_padding}.py`, these doc updates,
+the lessons.md entry.
+
+---
+
 ## HANDOFF (2026-06-17) — `sharding_implementation_plan_v3.md` written (primary forward plan); v2 demoted to design archive
 
 ▶ **New primary doc: `plans/sharding_implementation_plan_v3.md`** — concise current-state +

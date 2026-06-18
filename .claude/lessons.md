@@ -441,3 +441,54 @@ platform-gated kernel selection.**
   memory-aware pixel-vs-band-by-fit variant was deferred).  **The band kernel's GPU cost is now the
   limiter of multi-device back scaling — the real B4.5 lever** (make the band kernel GPU-competitive,
   e.g. a rolled/pixel-like internal structure, WITHOUT reintroducing the CPU cliff).
+
+## Exactly-inert cone slice padding (B5) + device-form footguns (2026-06-18)
+
+Turning on cone slice padding (a non-dividing slice count → zero-padded device form) was a
+small load-bearing fix plus several device-form contract subtleties.  The recurring theme:
+**a per-slice operation written for the REAL slice count silently breaks when handed the
+device-form (padded) array, and the failure mode depends on whether the wrong length crashes,
+contaminates, or NaNs.**
+
+- **The forward gather must crop to the real slice count.**  Cone's sharded forward GATHERS the
+  full slice cylinder onto each view-owner and runs the MONOLITHIC kernel (decision C), which
+  anchors its slice→detector-row geometry on `recon_shape[2]` (REAL) and ASSERTS that length.
+  The gather assembled the device-form (padded) cylinder → shape assertion crash.  Fix:
+  `full_cyl = full_cyl[:, :recon_placement.real_size]` before the kernel.  EXACT because the
+  padded slices are zero (forced-zero invariant), so cropping them is identity on the result;
+  a no-op at dividing counts.  This is the cone analogue of the masks elsewhere — the one site
+  that makes the gather-forward inert.  (The BACK projector already handled padding: the banded
+  kernel's global clip `k_global < S_real` + `_mask_padded_slices`.)
+- **Keep internal sharded methods device-form; crop at the boundary.**  The instinct to "make
+  `sparse_back_project` return the real shape" is WRONG: the VCD loop and `output_sharded` need a
+  slice-shardable padded array, and a non-dividing real count (e.g. 14) cannot shard across 4
+  devices.  The device form is the internal contract; the USER-facing `back_project` gathers+crops.
+  Callers that want the real shape crop `[:, :num_real_slices]` themselves (the pad is inert zeros).
+- **Pre-sharding tests carry a LATENT device-form assumption — exposed only at a non-dividing
+  count.**  `verify_adjoint`/`verify_hessian` did `x = uniform(bp.shape)` then `reshape((-1,
+  real_slices))` and `AtAx.reshape(real_shape)` — fine when `bp` is real, a crash/garble when it is
+  device-form.  This is GEOMETRY-AGNOSTIC: parallel fails identically at 3 devices (40 slices → 42),
+  hidden only because 40 divides the usual 2/4.  Single-variable ablation (run the SAME test at a
+  device count that does NOT divide the axis) is the cheap way to surface these.  Corollary: pinning
+  the test to 1 device would have *masked* a real latent bug — fix the contract, don't dodge it.
+- **The back projector assumes padded views are ZERO — a hand-built device-form input can violate
+  it.**  `verify_adjoint` built a random `y` over the device-form sinogram (nonzero padded-view
+  tail).  Back-projecting that tail at the clamped padding angle contaminated `Aᵀy` (~3% adjoint
+  gap) — NOT a crash, a quiet numerical error, and only at view-padding counts.  Production never
+  hits it (entry placement zero-fills the tail).  Fix in the test: zero `y[real_views:]`.
+- **`helical_fdk_z_weight`: a per-slice weight built at the real count, applied to the device form.**
+  It already handled the SINOGRAM's view-padding (real `num_views`) but built the per-recon-slice
+  `z_weight` at `recon_shape[2]` (real, 11 for the small helical) and multiplied the device-form
+  (padded, 12) recon → broadcast crash.  Two-part fix: build `z_weight` over the recon's
+  device-form slice length with the z-anchor on the REAL count (the anchor rule), AND force the
+  weight to 0 on the padded slices — because an out-of-coverage padded slice has coverage 0 →
+  `num_views/0 = inf`, and `0 * inf = NaN` would poison the otherwise-inert zero padding.  No-op at
+  dividing counts (which is why helical passed in `test_cone_sharded`).
+- **Device-form-coincidence footgun in `_pad_shard_on_axis`.**  It treats an input whose sharded-axis
+  length already equals `padded_size` as ALREADY device-form (passes it through `_shard_on_axis`, no
+  zero-fill).  So feeding a wrong-sized REAL array whose length happens to coincide with the device
+  form (e.g. a 7-slice geometry's real recon = 8, equal to the n=2 padded form of a different
+  7-slice model) is silently accepted, and its "padding" slices keep their real (nonzero) values.
+  Bit me in a test (used the wrong model helper to build the recon).  Lesson: build test arrays from
+  the SAME model under test (`self._make_model()`, `model.get_params('recon_shape')`), and don't
+  hardcode a real slice count (helical ≠ num_det_rows) — read it from params.

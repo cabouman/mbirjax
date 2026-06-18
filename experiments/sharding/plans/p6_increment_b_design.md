@@ -171,14 +171,47 @@ with correctness / memory / timing gates (Greg's request).*
     is fast on BOTH is the real design challenge; absent that, platform-specific kernel selection (what
     the n=1 short-circuit already does) is the fallback pattern.  Horizontal-fan hoist is one sub-idea,
     pursued only if the per-band recompute (at multi-band sizes) is shown to dominate the band-kernel cost.
-  - **B5 (inert padding for cone) — FIXES the 4 deferred failures.**  Cone scope: (1) forward
-    gather CROP to the real slice count (padded slices are zero → exact; PROTOTYPED + REVERTED in
-    the B4.4 session — `_forward_project_to_view_shards`, crop `full_cyl[:, :recon_placement.
-    real_size]`); (2) reconcile device-form-vs-real shape in the geometry tests / the internal
-    `sparse_back_project` contract (the tests assume `sparse_back_project` returns real-slice shape,
-    but sharded+padded it returns device-form); (3) consider a `_supports_slice_padding()` hook so
-    the "B4 = dividing counts" contract is explicit (cone False until B5); the masks (`_mask_padded_
-    slices`/`_mask_padded_views`) + the B1 global clip are already geometry-agnostic/done.  Then C/D/E.
+  - **B5 DONE (2026-06-18, staged) — exactly-inert slice padding for cone; CPU-validated.**  The 4
+    deferred failures (`test_{adjoint,hessian}_anisotropic_cone`, `test_split_sino`,
+    `test_vcd_anisotropic_cone`) PASS at 4 devices; the full suite is green at the default 4 CPU
+    devices (169p).  **One root cause for all four:** the cone sharded forward GATHERS the device-form
+    (padded) cylinder and feeds the monolithic kernel, which anchors on / asserts the REAL slice count
+    (`forward_project_pixel_batch_to_one_view`).
+    - **Fix (1) — load-bearing.**  `_forward_project_to_view_shards` (the base/cone gather path) crops
+      the gathered cylinder to `recon_placement.real_size` before the monolithic forward
+      (`full_cyl = full_cyl[:, :real_slices]`).  EXACT, not an approximation: the padded slices are
+      zero (forced-zero invariant), so dropping them changes nothing; a no-op at dividing counts.
+      ParallelBeam OVERRIDES this method (banded forward), so it is cone/base-only.
+    - **Fix (2) — the test contract.**  `sparse_back_project` STAYS device-form (architecturally
+      required: the VCD loop and `output_sharded` need a shardable padded array; cropping to a
+      non-dividing real count would break the sharding).  So the geometry tests
+      `verify_adjoint`/`verify_hessian` crop the device-form back projection to real slices
+      (`[:, :num_recon_slices]`) — a no-op without padding.  This is a **LATENT, geometry-agnostic**
+      test bug, NOT cone-specific: parallel fails identically at 3 devices (40 slices → 42), hidden
+      only because 40 divides 2/4.  `sparse_back_project`'s docstring now states the device-form return.
+    - **Fix (3) — `_supports_slice_padding()` hook DROPPED** (Greg): after B5 both sharding geometries
+      (parallel + cone) support padding, so the hook would be all-True/dead.  Revisit when a future
+      geometry is `_supports_sharding=True` before its padding work is done.
+    - **Bonus real bug (found by the new helical padding test): `helical_fdk_z_weight`.**  It built
+      its per-recon-slice z-weight at the REAL slice count and applied it to the device-form (padded)
+      recon → broadcast crash under slice padding (helical cone is 11 slices, not num_det_rows).  Now
+      built at the device-form length, z anchored on the real count, with the padded slices forced to
+      0 weight (guards `0 * inf → NaN`; an out-of-coverage padded slice has coverage 0).  A no-op when
+      nothing is padded (this is why helical passed in test_cone_sharded at dividing counts).
+    - **Also:** `verify_adjoint` now zeros the random `y`'s padded VIEWS — the back projector relies on
+      padded views being zero (production zero-fills at entry); a hand-built device-form `y` with a
+      nonzero padded tail contaminated `Aᵀy` at the clamped padding angle (~3% adjoint gap, view-padding
+      counts only).  This + the slice crop make the verify tests robust at ANY device count (now pass
+      at 2/3/4).
+    - **Tests added/extended:** new `tests/sharding/test_padding.py::TestPaddedSlicesCone` (a prime
+      7-slice cone, circular+helical: back/forward/Hessian + VCD const & non-const weights
+      sharded==single-device, and the forward/back device-form **exact-zero** invariant — padded
+      slices on back, padded views on forward, real detector rows preserved); the parallel
+      `TestPaddedSlices` exact-zero test extended to the FORWARD direction (Greg's "both directions").
+    - **Gates:** 4 deferred @4 ✓; full suite @4 169p ✓; sharding suite @4 107p+cone ✓; padding @3 & @4 ✓;
+      `test_projectors` @3 21p ✓.  **GPU confirmation at a non-dividing slice count is pending**
+      (CPU `MBIRJAX_NUM_CPU_DEVICES=4` is the proxy; the GPU box has 4 devices).  NEXT: C (+ the FDK
+      filter → sharded-contract cleanup below, which also touches the cone FDK init path).
   - **FOLLOW-UP — convert cone `fdk_filter` to the sharded-contract `fbp_filter` pattern.**  Now
     that cone is on the placement path (B4), `ConeBeamModel.fdk_filter` (cone_beam.py ~974) still
     runs SINGLE-DEVICE — its docstring "Accepted for API uniformity. Cone beam runs single-device

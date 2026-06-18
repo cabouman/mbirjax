@@ -46,8 +46,9 @@ import sys
 # Default to 4 virtual CPU devices (Greg, 2026-06-15), matching mbirjax/_device_setup.py's
 # DEFAULT_MAX_CPU_DEVICES: 4 exercises the view/slice PADDING paths that 2 never reaches (a count
 # must fail to divide an axis to pad), so the suite covers the sharded padding code by default.
-# Trade-offs accepted: the 4 known cone-padding tests FAIL at 4 devices (cone slice padding is not
-# yet implemented), and tiny overhead-bound tests run somewhat slower than at 2.  Override with the env
+# (Cone slice padding is now implemented, so the whole suite is green at 4 devices; the cone
+# projector/recon tests at a non-dividing slice count are part of that coverage.)
+# Trade-off accepted: tiny overhead-bound tests run somewhat slower than at 2.  Override with the env
 # var for a different count (e.g. MBIRJAX_NUM_CPU_DEVICES=2 pytest tests/).  The resolution
 # policy below otherwise mirrors mbirjax._device_setup.
 DEFAULT_MAX_CPU_DEVICES = 4

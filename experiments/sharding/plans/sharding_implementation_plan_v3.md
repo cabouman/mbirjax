@@ -41,7 +41,7 @@ name over the number.*
 |---|---|
 | **ParallelBeam** — filter, forward, back, qGGMRF, VCD, device-UX, inert padding | ✅ **fully sharded**, multi-GPU validated 1–4 GPU (8-GPU scaling at 1024³/1800³/2048³) |
 | **Cone (P6)** — A, B1, B2, B3, B4, shared FBP/FDK filter, GPU n=1 back short-circuit | ✅ done, CPU-validated end-to-end + GPU-confirmed |
-| **Cone B5** — exactly-inert slice padding | 🚧 **next** (unblocks 4 deferred tests at non-dividing counts) |
+| **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU confirmation at a non-dividing slice count pending) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — convert ParallelBeam to the `(g0,L)` template; retire the transitional row-crop branch (**keep both cone back kernels**) | ⬜ pending implementation, tests, and tuning |
 | **D** — translation + multiaxis ports | ⬜ pending implementation, tests, and tuning |
@@ -203,15 +203,30 @@ no-single-device-regression.
 - **Shared FBP/FDK filter** (cone delegates with a cosine `row_weight`); **GPU n=1 back
   short-circuit** (platform-divergent kernel; GPU-confirmed: 2.25–2.46× faster, back = main).
 
+- **B5 — exactly-inert slice padding for cone.  ✅ DONE (2026-06-18, staged; CPU-validated).**
+  The 4 deferred failures pass at 4 devices and the full suite is green at the default 4 CPU
+  devices.  All four collapsed to ONE root cause: the cone sharded forward GATHERS the device-form
+  (padded) cylinder and feeds the monolithic kernel, which anchors on / asserts the REAL slice
+  count.  Fixes: **(1) load-bearing —** `_forward_project_to_view_shards` crops the gathered
+  cylinder to `recon_placement.real_size` before the monolithic forward (padded slices are zero →
+  EXACT).  **(2) test contract —** `sparse_back_project` STAYS device-form (the VCD loop /
+  `output_sharded` need a shardable padded array; cropping to a non-dividing real count would break
+  the sharding), so the geometry tests `verify_adjoint`/`verify_hessian` crop the device-form back
+  projection to real slices — a no-op without padding.  This was a **latent, geometry-agnostic** test
+  bug, not cone-specific: parallel fails identically at 3 devices (40→42), hidden only because 40
+  divides 2/4.  **(3) `_supports_slice_padding()` hook DROPPED** (Greg): after B5 both sharding
+  geometries support padding, so it would be all-True/dead.  **Bonus real bug** (found by the new
+  helical padding test): `ConeBeamModel.helical_fdk_z_weight` built its per-slice z-weight at the
+  REAL slice count and applied it to the device-form (padded) recon → broadcast crash; now built at
+  the device-form length, anchored on real, padded slices forced to 0 weight (guards `0*inf→NaN`).
+  Also `verify_adjoint` now zeros the random `y`'s padded views (the back projector needs padded
+  views zero; a hand-built device-form `y` violated that → ~3% adjoint gap at view-padding counts).
+  Tests: `tests/sharding/test_padding.py::TestPaddedSlicesCone` (circular+helical: projectors/
+  Hessian/VCD sharded==single-device + forward/back device-form exact-zero); parallel exact-zero
+  test extended to the forward direction.  GPU confirmation at a non-dividing slice count pending
+  (CPU `MBIRJAX_NUM_CPU_DEVICES=4` is the proxy).  Details: `p6_increment_b_design.md` B5 entry.
+
 ### Open / next
-- **B5 — exactly-inert slice padding for cone (NEXT).**  Unblocks the **4 deferred test
-  failures** at non-dividing slice counts (≥4 devices auto-pad; the forward gather assembles
-  the padded cylinder and the device-form shape leaks to tests asserting the real shape).
-  Scope: crop the forward gather to the real slice count (padded slices are zero → exact);
-  reconcile device-form-vs-real shape in the geometry tests / the internal
-  `sparse_back_project` contract; consider a `_supports_slice_padding()` hook so "B4 =
-  dividing counts only" is explicit (cone False until B5).  The masks + the B1 global clip are
-  already geometry-agnostic.  (Failing tests reproduce on CPU with `MBIRJAX_NUM_CPU_DEVICES=4`.)
 - **B4.5 — band-kernel GPU cost (deferred).**  The band (reduce-scatter) kernel is **~2.25×
   slower than the pixel kernel ON GPU** (and the two are **platform-opposite**: CPU loves the
   band kernel, GPU loves the rolled-pixel kernel via the ×62 back-vertical cache cliff).  So
@@ -235,8 +250,8 @@ no-single-device-regression.
 
 ## 5. Remaining work & execution order
 
-1. **Cone B5** (inert padding) — finishes cone correctness at *all* device counts; unblocks the
-   4 tests.
+1. **Cone B5** (inert padding) — ✅ **DONE 2026-06-18** (CPU-validated; cone correct at *all* device
+   counts, the 4 tests pass, full suite green at the default 4 CPU devices).  **C is now next.**
 2. **C** — convert ParallelBeam to the `(g0,L)` banded template and retire the transitional
    "geometry has banded kernels?" / parallel row-crop branch; fold in the FDK-filter cleanup.
    **Do *not* delete the single-device cone back kernel** (`back_project_one_view_to_pixel_batch`):
@@ -252,7 +267,7 @@ no-single-device-regression.
    `back_project_one_view_to_pixel_batch`), which the GPU n=1 short-circuit calls; the
    `view_indices` machinery (incl. the test_projectors pin); `initialize_recon`'s early
    `device_put` block; `compute_hessian_diagonal`'s `output_device`; then a
-   `grep -rn "RETIRE-AFTER-SHARDING"` sweep (the trivial-mesh comparison tests retire).
+   `grep -rn "RETIRE-*"` sweep (e.g., the trivial-mesh comparison tests retire).
 5. **Post-P6** — the multi-GPU **user docs page** (use the word "sharding" sparingly);
    the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
    multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
