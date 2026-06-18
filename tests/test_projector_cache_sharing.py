@@ -1,7 +1,7 @@
 """
 tests/test_projector_cache_sharing.py
 ──────────────────────────────────────
-B3 (de-closuring) gate: the projector drivers are MODULE-LEVEL jitted functions
+De-closuring gate: the projector drivers are MODULE-LEVEL jitted functions
 (mbirjax.projectors._jit_sparse_forward_project / _jit_sparse_back_project), so two
 DIFFERENT model instances with the same geometry SHARE one compiled program instead of
 each re-tracing (tracing dominates the per-model first-call cost).
@@ -12,7 +12,7 @@ FIRST model's projection traces exactly one program into each module-level cache
 a SECOND fresh model with the same geometry adds NONE (it reuses the first's program) -- and
 that the two instances agree.
 
-Before B3 each instance owned its own jitted closure, so there was no shared module-level
+Before de-closuring each instance owned its own jitted closure, so there was no shared module-level
 cache to reuse; this test would not even find the module-level handles.
 
 A deliberately unusual (prime) sinogram shape is used so the module caches are cold for it

@@ -16,9 +16,9 @@ def _make_single_view_sibling(ct_model):
 
     Per-view back projection is then expressed as the natural operation "back project
     one view at these view parameters" -- ``set_view_parameters`` per view (a cheap,
-    no-recompile value update) + ``sparse_back_project`` of the one view -- instead of
-    indexing the FULL model's view table with ``view_indices`` (a view subset breaks
-    the sharded equal view-shard; the mechanism is retired at P6).
+    no-recompile value update) + ``sparse_back_project`` of the one view.  Working one
+    view at a time at its own parameters avoids selecting a SUBSET of the full model's
+    views, which would break the sharded equal view-shard.
 
     Construction: build the right class with valid required arguments, then overwrite
     the ENTIRE parameter store with a copy of ``ct_model``'s (so no geometry setting
@@ -230,7 +230,7 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     # Compute recon bases individually for each view, on a ONE-view sibling model:
     # "back project this view at its own view parameters" via set_view_parameters (a
     # cheap value update of the jitted projectors' runtime input -- no recompile per
-    # view) instead of view_indices into the full model's view table.
+    # view), rather than selecting a subset of the full model's views.
     single_view_model = _make_single_view_sibling(ct_model)
     view_params_name = ct_model.get_params('view_params_name')
     full_view_params = np.asarray(ct_model.get_params(view_params_name))

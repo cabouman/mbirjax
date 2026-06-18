@@ -1,5 +1,5 @@
 """
-Tests for sharded CONE-beam projection and reconstruction (P6 increment B4).
+Tests for sharded CONE-beam projection and reconstruction.
 
 Cone shards the recon by **slice** and the sinogram by **view**, like parallel beam, but
 its projectors use the geometry-neutral placement path rather than parallel's row identity:
