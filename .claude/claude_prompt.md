@@ -45,8 +45,7 @@ Scripts and reproducibility:
   exactly one thing and hold the rest identical.  Take the extra few minutes to
   do it properly rather than moving quickly on improper evidence.
 
-Performance and measurement (jax/GPU — learned on this project; full playbook
-with the F1 case study in `.claude/lessons.md`):
+Performance and measurement for jax/GPU:
 
 * Per-worker compute must be jitted — eager, op-by-op dispatch silently kills
   multi-device scaling.

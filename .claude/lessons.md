@@ -1,9 +1,10 @@
 # Engineering lessons (mbirjax sharding)
 
-Hard-won lessons from the Phase F1 work (sharded FBP filter), kept as a reference
-playbook.  The short, always-loaded versions live in `claude_prompt.md` (jax/perf
-specifics) and in global memory (general principles); this is the detailed
-version, with the worked example.
+Hard-won lessons from the sharding effort — the F1 sharded FBP filter, the Phase D
+back-projection reduce-scatter, the placement architecture, sharded-VCD memory + buffer
+donation, and the platform-divergent back kernel — kept as a reference playbook.  The short
+jax/perf tips live in `claude_prompt.md` and the general measurement principles in global
+memory; this is the detailed version, with the worked examples.
 
 ## General principles (apply anywhere)
 

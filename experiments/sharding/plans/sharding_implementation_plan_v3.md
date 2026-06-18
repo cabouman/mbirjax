@@ -25,6 +25,7 @@ nightly harness + the metrics-visualization surface are a **separate track** —
 | `sharding_implementation_plan.md` (v1) | completed Phases 0/A/B/F1/D/F2/C/E; **cross-cutting principles**; verified **hardware facts**; O1–O4 |
 | `p6_increment_b_design.md` | **authoritative for the cone port** — increment-B staged plan + progress (B1–B5) |
 | `p6_projector_rework_proposal.md` | projector-rework design; **§8a-design is canonical** (rest partly superseded) |
+| `performance_tracking_plan.md` | nightly perf-regression harness + metrics — **separate track**, out of scope here |
 | `.claude/lessons.md` | jax/GPU/placement/measurement playbook |
 | `.claude/back_projection_overview.md` | projector internals (read before touching cone kernels) |
 | `.claude/sinogram_sharding.md` | parked row-sharding-the-sinogram exploration |
@@ -42,9 +43,9 @@ name over the number.*
 | **Cone (P6)** — A, B1, B2, B3, B4, shared FBP/FDK filter, GPU n=1 back short-circuit | ✅ done, CPU-validated end-to-end + GPU-confirmed |
 | **Cone B5** — exactly-inert slice padding | 🚧 **next** (unblocks 4 deferred tests at non-dividing counts) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
-| **C** — convert ParallelBeam to the `(g0,L)` template; delete monolithic cone kernel | ⬜ pending |
-| **D** — translation + multiaxis ports | ⬜ pending |
-| **E** — retirement cascade (legacy single-device paths, `main_device`, `view_indices`, …) | ⬜ pending (last — needs all geometries ported) |
+| **C** — convert ParallelBeam to the `(g0,L)` template; retire the transitional row-crop branch (**keep both cone back kernels**) | ⬜ pending implementation, tests, and tuning |
+| **D** — translation + multiaxis ports | ⬜ pending implementation, tests, and tuning |
+| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
 
 ---
 
@@ -60,7 +61,7 @@ name over the number.*
   *one* code path.  `is_sharded` = `self.mesh is not None` (almost always True now).
   `_supports_sharding()` gates whether a geometry takes the placement path
   (**ParallelBeam + cone → True**; translation/multiaxis still False until ported).
-- **Threading (Path G), not `shard_map`.**  Manual collectives over `addressable_shards`
+- **Threading (ThreadPoolExecutor), not `shard_map`.**  Manual collectives over `addressable_shards`
   via the `run_per_device` threading helper and a single transfer primitive `move_shard`
   (empirical d2d-safe probe with a host-bounce fallback — see the L40S hazard in v1).
 - **Output contract (P5).**  User-facing methods take an explicit `output_sharded=False`:
@@ -108,9 +109,10 @@ The five components, each with its load-bearing technique.
   non-overlapping bands.
 - **ParallelBeam specialization:** a detector-**row crop** `[g0:g1)` (row r ↔ slice r),
   cheaper than the general banded kernel the base/cone uses.
-- **GPU n=1 short-circuit:** a single-GPU mesh routes to the monolithic **pixel** kernel
-  (~2.25× faster on GPU; the band kernel is platform-opposite — see §4), wrapped as a
-  1-shard slice-sharded array; CPU keeps the band path.
+- **GPU n=1 short-circuit (shared dispatch, cone-motivated):** a single-GPU mesh routes to the
+  single-device kernel, wrapped as a 1-shard slice-sharded array; CPU keeps the band path.  The
+  condition is geometry-agnostic, but for ParallelBeam it is ~neutral (its band path is already
+  the cheap row-crop above) — the ~2.25× win is the **cone** case (§4).
 
 ### 3.3 Forward projection (C) — banded all-gather (the adjoint)
 - Slice-sharded recon → view-sharded sino.  `broadcast_band_to_views`
@@ -191,11 +193,13 @@ no-single-device-regression.
   per call → distinct treedefs → cache misses; now `ParameterHandler.make_geometry_params`
   caches the class by field names.
 - **B4 — sharded cone driver.**  Back = banded reduce-scatter (the B1 kernel via a
-  geometry-neutral base hook; ParallelBeam overrides with its row-crop).  Forward = **decision
-  C**: per-pixel-batch all-gather + monolithic (the banded/streamed forward measured 5–14×
-  slower on CPU for ~13–23% memory).  `_supports_sharding()=True` for cone.  CPU-validated end
-  to end at dividing counts; **GPU-confirmed** (B4.4: per-device peak ~1/n_dev, the 1024³ VCD
-  capacity win).
+  geometry-neutral base hook; ParallelBeam overrides with its row-crop) **for n≥2 and CPU n=1**;
+  at **GPU n=1 it short-circuits to the monolithic single-device kernel** (next bullet), so the
+  banded reduce-scatter is never the GPU single-device path.  Forward = **decision C**:
+  per-pixel-batch all-gather + monolithic (the banded/streamed forward measured 5–14× slower on
+  CPU for ~13–23% memory).  `_supports_sharding()=True` for cone.  CPU-validated end to end at
+  dividing counts; **GPU-confirmed** (B4.4: per-device peak ~1/n_dev + the 1024³ VCD capacity win
+  — and the run that *surfaced* the band kernel's GPU back-time penalty → the short-circuit + B4.5).
 - **Shared FBP/FDK filter** (cone delegates with a cosine `row_weight`); **GPU n=1 back
   short-circuit** (platform-divergent kernel; GPU-confirmed: 2.25–2.46× faster, back = main).
 
@@ -214,7 +218,8 @@ no-single-device-regression.
   multi-device back doesn't pay in *time* until ≥3 GPUs (crossover n≈2.25); VCD stays monotonic
   only because the forward parallelizes and masks it.  The real challenge is a kernel fast on
   *both*, else platform-specific selection (what the n=1 short-circuit already does).  Deferred
-  behind **decision (a)** — sharding is the capacity tool beyond 1024³, not a back-time lever.
+  behind **decision (a)** (2026-06-16: keep the simple GPU n=1 short-circuit rather than a
+  memory-aware variant) — sharding is the capacity tool beyond 1024³, not a back-time lever.
   *Alternative axis to consider:* sharding the sinogram by **detector row** instead of by view,
   so the sino's sharded axis aligns with the recon's slice sharding — turning back projection
   into a mostly-local op (a geometry-driven footprint halo) rather than a view-reduce, which
@@ -232,13 +237,19 @@ no-single-device-regression.
 
 1. **Cone B5** (inert padding) — finishes cone correctness at *all* device counts; unblocks the
    4 tests.
-2. **C** — convert ParallelBeam to the `(g0,L)` banded template; delete the monolithic cone
-   kernel + the transitional "geometry has banded kernels?" branch; fold in the FDK-filter
-   cleanup.
+2. **C** — convert ParallelBeam to the `(g0,L)` banded template and retire the transitional
+   "geometry has banded kernels?" / parallel row-crop branch; fold in the FDK-filter cleanup.
+   **Do *not* delete the single-device cone back kernel** (`back_project_one_view_to_pixel_batch`):
+   the GPU n=1 back short-circuit (`tomography_model.py:1913`) routes single-GPU recons to it
+   because it is ~2.25× faster on GPU than the band kernel (B4.5).  The two cone back kernels are
+   platform-complementary (band = CPU + multi-device reduce-scatter; pixel = single-GPU), so F1's
+   "delete the loser" does **not** apply to cone back — both stay.
 3. **D** — translation + multiaxis ports (same template; note `MultiAxisParallelModel` extends
    `TomographyModel` directly → it gets its own `_supports_sharding` flip).
 4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
-   `sinogram_device`; the `is_sharded` else-branches + legacy single-device bodies; the
+   `sinogram_device`; the `is_sharded` else-branches + the legacy single-device *dispatch* —
+   but **keep** the single-device back driver/kernel (`_sparse_back_project_single_device` /
+   `back_project_one_view_to_pixel_batch`), which the GPU n=1 short-circuit calls; the
    `view_indices` machinery (incl. the test_projectors pin); `initialize_recon`'s early
    `device_put` block; `compute_hessian_diagonal`'s `output_device`; then a
    `grep -rn "RETIRE-AFTER-SHARDING"` sweep (the trivial-mesh comparison tests retire).

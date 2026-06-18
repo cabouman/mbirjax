@@ -1,5 +1,14 @@
 # Discussion of sinogram sharding strategies
 
+**TL;DR (decision).**  Sinograms are sharded **by view** (recon by slice) — the robust
+all-regime choice: the view axis is always large, so it scales to any GPU count, even thin
+central-slice recons.  **Detector-row sharding** (recon by slice, aligned, with a
+geometry-computed *footprint halo* — zero for parallel beam, variable for cone) is a **parked
+future exploration**: it would make back projection mostly local and finally give parallel beam
+its zero-halo locality, but it caps parallelism at the slice count (bad for thin recons) and
+needs the variable-footprint machinery.  Revisit later, **parallel-beam first**, gated on a
+cheap footprint-width measurement.  Full dialogue below.
+
 ## Overview
 
 Current (06/13/2026) code uses view-sharding for sinograms.
