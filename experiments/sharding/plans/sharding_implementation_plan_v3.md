@@ -274,7 +274,9 @@ no-single-device-regression.
      platform-complementary, so F1's "delete the loser" does **not** apply to cone back.  (E must
      likewise keep the single-device back driver/kernel.)
 3. **D** — translation + multiaxis ports (same template; note `MultiAxisParallelModel` extends
-   `TomographyModel` directly → it gets its own `_supports_sharding` flip).
+   `TomographyModel` directly → it gets its own `_supports_sharding` flip).  **Settle the multiaxis
+   FBP-filter fix with this port** — see §6 "Multiaxis FBP angular weighting" (decided in principle,
+   implementation deferred).
 4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
    `sinogram_device`; the `is_sharded` else-branches + the legacy single-device *dispatch* —
    but **keep** the single-device back driver/kernel (`_sparse_back_project_single_device` /
@@ -312,6 +314,37 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 
 ## 6. Adjacent / tracked items (off the critical path)
 
+- **Multiaxis FBP angular weighting — DECIDED in principle (option 1), implementation DEFERRED**
+  (2026-06-18; Greg to discuss with others; land with or before the multiaxis port, increment D).
+  - *Problem.*  `MultiAxisParallelModel.fbp_filter` builds a per-view directional 2-D ramp
+    `|U·d_az + V·d_el|` whose orientation and magnitude come from `jnp.gradient(angles)` — the step
+    between *list-neighbor* views.  But this geometry is **simultaneous fixed measurements** (multiple
+    lasers/detectors), so there is **no acquisition trajectory and the `angles` list order is
+    arbitrary** (laser-enumeration order).  An analytic inverse must depend only on the *set* of view
+    directions, so any order-dependent weighting is wrong: here it makes the ramp's orientation and
+    weight effectively arbitrary, and permuting the (arbitrary) list changes the recon.  The
+    directions are a sparse, limited-range **2-D point set** on the sphere (azimuth × elevation), so
+    the natural measure is a 2-D solid-angle element, not the 1-D arc-step `jnp.gradient` computes.
+  - *Decision — option 1: uniform per-view weight + standard channel ramp* (treat it as stacked 2-D
+    FBP; elevation approximated in the filter and corrected by MBIR).  Order-invariant, robust, and it
+    reduces **exactly** to `ParallelBeamModel.fbp_filter` in the azimuth-only equally-spaced limit.
+    The uniform weight is **`pi / num_views`** — the azimuthal angular measure, the *same* constant as
+    parallel beam (no special 2-D/solid-angle constant enters, precisely because option 1 is
+    2-D-FBP-per-slice; a solid-angle `dΩ` constant would appear only in the rejected option C).  Also
+    fix the filter scaling to `1/(delta_voxel·delta_voxel_row)` (the student's `1/delta_voxel²`
+    silently assumed `voxel_row_aspect == 1`).  Carries the same equispaced/limited-angle caveat as the
+    other FBP/FDK paths (it is an MBIR initializer).
+  - *Rejected — option C: order-invariant solid-angle density.*  The rigorous `dθ dφ` (weight each view
+    by its local solid-angle area) is both over-engineered and numerically ill-conditioned for **few**
+    directions (spherical Voronoi areas of a handful of points are boundary-dominated and meaningless),
+    and the missing-data null space dominates the initializer error anyway.  Revisit only if standalone
+    multiaxis FBP becomes a real deliverable.
+  - *Gate to add with the implementation:* a **reorder-invariance** test (permute the view list, same
+    set → recon unchanged to float tol) — it encodes the principle and currently FAILS; plus a
+    reduce-to-`ParallelBeamModel` check in the azimuth-only equally-spaced limit.  Multiaxis FBP is
+    currently **ungated** (not in `_geometry_types_for_tests`, no dedicated FBP/recon test).
+  - *Note:* `fbp_filter` is still single-device (accepts `output_sharded`, no-ops it); the rewrite
+    should take the per-view-shard `run_per_device` treatment when multiaxis is ported (D).
 - **Settable view parameters — ✅ done.**  `view_params_array` is a traced projector arg;
   `set_view_parameters()` updates it with no recompile; `vcls` runs as a 1-view sibling.
   Deleting the old `view_indices` plumbing is the E task above.
