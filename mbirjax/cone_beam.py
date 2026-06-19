@@ -1083,6 +1083,13 @@ class ConeBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
+        Note:
+            FDK assumes the view angles are EQUALLY SPACED over the full angular range (the
+            ``pi / num_views`` angular weight in the ramp filter), and does not apply short-scan
+            (Parker-style) redundancy weighting; on nonuniformly-spaced, limited-angle, or short
+            scans it is only approximate.  For helical scans it is approximate regardless.  FDK is
+            best used as an initializer for the iterative ``recon()``.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"

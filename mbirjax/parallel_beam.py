@@ -493,6 +493,12 @@ class ParallelBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
+        Note:
+            FBP assumes the view angles are EQUALLY SPACED over the full angular range (the
+            ``pi / num_views`` angular weight in the ramp filter).  On nonuniformly-spaced or
+            limited-angle data it is only approximate and is best used as an initializer for the
+            iterative ``recon()``, which corrects the angular weighting.
+
         This is a **user-facing** method.  The input may be plain or sharded
         (a plain sinogram is sharded on the view axis once at entry when sharding
         is on); the OUTPUT form is chosen by ``output_sharded``.  Internally the

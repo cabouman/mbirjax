@@ -2659,6 +2659,21 @@ class TomographyModel(ParameterHandler):
         when a mesh is configured each device filters its own view-shard locally (no
         cross-device movement), exactly like ParallelBeamModel.fbp_filter.
 
+        Equally-spaced-angle assumption: the ``pi / num_views`` factor is the angular
+        quadrature weight ``d(theta)`` of the backprojection sum that approximates the
+        FBP/FDK angular integral, so it assumes the views are EQUALLY SPACED over the
+        conventional full angular range (the [0, pi) period for parallel beam, via the
+        conjugate-ray symmetry).  For NONUNIFORMLY-spaced angles, LIMITED-ANGLE scans, or
+        short scans this scalar is only approximate -- the quadrature-correct weight would be
+        a PER-VIEW local angular spacing, and short scans additionally need redundancy
+        (Parker-style) weighting.  That is acceptable for the intended use of direct recon as
+        a quick analytic image or an MBIR initializer (iterative ``recon()`` absorbs a global
+        angular mis-weighting in a few iterations); a STANDALONE direct recon on such data is
+        not quantitatively accurate -- prefer ``recon()`` there.  Generalizing this to a
+        per-view weight is deliberately not done: the correct weight depends on assumptions
+        the model cannot safely infer (full vs partial angular coverage; geometry redundancy),
+        so changing it risks regressing the common equispaced case.
+
         Args:
             sinogram (jax array): (num_views, num_rows, num_channels); plain or view-sharded.
             filter_name (str): filter for generate_direct_recon_filter (e.g. 'ramp').
