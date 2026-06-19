@@ -57,14 +57,18 @@ feeds the monolithic kernel, which anchors on / asserts the REAL slice count.
   programs via the slice axis (program count tracks device count via per-owner view shapes).
 
 **Gates:** 4 deferred @4 ✓; full suite @4 169p ✓; sharding suite @4 107p+cone ✓; padding @3 & @4 ✓;
-`test_projectors` @3 21p ✓.  **NOT yet done — GPU confirmation at a non-dividing slice count (Greg's
-lane; CPU `MBIRJAX_NUM_CPU_DEVICES=4` is the proxy, the GPU box has 4 devices).**  Detail:
+`test_projectors` @3 21p ✓.  **GPU-CONFIRMED (nightly, commit b1237d4):** the 4 non-dividing cone
+cells `513x449x385` (forward + vcd_nonconst, devices 2 & 4) flipped failing→ok on H100 — the
+non-dividing-slice-count confirmation that was the last open B5 item.  Detail:
 `plans/p6_increment_b_design.md` B5 entry; `plans/sharding_implementation_plan_v3.md` §4.  New
-lesson recorded in `.claude/lessons.md` ("Exactly-inert cone slice padding").  **NEXT: increment C**
-(+ the FDK-filter → sharded-contract cleanup, which also touches the cone FDK init path).
-**Uncommitted (Greg commits):** `mbirjax/{tomography_model,cone_beam}.py`,
-`tests/{conftest,geometries/test_projectors,sharding/test_padding}.py`, these doc updates,
-the lessons.md entry.
+lesson in `.claude/lessons.md` ("Exactly-inert cone slice padding").
+**Increment C's substance also landed interspersed with B4/B5** (the polymorphic override-dispatch
+`(g0,L)` template, the cone FDK filter on the shared per-view-shard path, both cone back kernels
+kept, and ParallelBeam's row-crop/banded-forward overrides KEPT by decision 2026-06-18 — cheaper
+for parallel).  So **NEXT substantive code = D** (translation + multiaxis; the porting footgun in
+`sharding_implementation_plan_v3.md` §5 now applies).
+**Committed:** B5 = `7d82493`; the plan-notation sweep + the `view_indices` RETIRE markers + the
+vcls.py comment durability fix = `b1237d4`.  (Working tree clean.)
 
 ---
 

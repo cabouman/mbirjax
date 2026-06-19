@@ -212,9 +212,13 @@ with correctness / memory / timing gates (Greg's request).*
       `test_projectors` @3 21p ✓.  **GPU confirmation at a non-dividing slice count is pending**
       (CPU `MBIRJAX_NUM_CPU_DEVICES=4` is the proxy; the GPU box has 4 devices).  NEXT: C (+ the FDK
       filter → sharded-contract cleanup below, which also touches the cone FDK init path).
-  - **FOLLOW-UP — convert cone `fdk_filter` to the sharded-contract `fbp_filter` pattern.**  Now
-    that cone is on the placement path (B4), `ConeBeamModel.fdk_filter` (cone_beam.py ~974) still
-    runs SINGLE-DEVICE — its docstring "Accepted for API uniformity. Cone beam runs single-device
+  - **FOLLOW-UP — convert cone `fdk_filter` to the sharded-contract `fbp_filter` pattern. ✅ DONE**
+    (landed interspersed with B4/B5; see `sharding_implementation_plan_v3.md` §4).  `fdk_filter` now
+    uses the shared `_apply_direct_recon_filter` (the FDK cosine pre-weight folded into `row_weight`)
+    and `fdk_recon` stays sharded throughout — no gather, no single-device init bottleneck.  The
+    original analysis is kept below for the record.  Now
+    that cone is on the placement path (B4), `ConeBeamModel.fdk_filter` (cone_beam.py ~974) ~~still
+    runs SINGLE-DEVICE~~ — its docstring "Accepted for API uniformity. Cone beam runs single-device
     UNTIL THE PLACEMENT PORT" is now STALE (the placement port = B4, done).  So a sharded cone
     `direct_recon`/`fdk_recon` (the VCD FDK init) gathers the sinogram, filters single-device, then
     re-shards for the sharded `back_project` — a host round-trip + single-device bottleneck at init
@@ -396,8 +400,14 @@ harness; GPU runs are Greg's.
 | **B4** | sharded cone (reduce-scatter on banded vertical); `_supports_sharding()=True` | NEW `tests/sharding/` cone tests: sharded vs single-device 1e-4 iterated (const + non-const weights), adjoint identity; trivial-1-device-mesh vs single-device 1e-5 | `cone_baseline_scaling.py` multi-device sweep (n_dev 1/2/4, GPU): per-device peak ~1/n_dev | multi-device speedup ≥ projectors' measured ceiling; VCD 1024³ that OOM'd single-device now FITS sharded (the capacity win) |
 | **B5** | exactly-inert padding for cone (global clip already in B1; wire masks + non-dividing n) | NEW: padded-slice exact-zero invariant (constructed-zero → EXACT equality); padded recon vs unpadded 1e-4; auto-pads a prime slice count | per-device peak unchanged by padding (inert) | padding cost in the noise (report) |
 
-Parallel beam is untouched through B1–B5 (its row-crop path stays); increment C
-converts it and deletes the monolithic cone kernel + the transitional branch.
+Parallel beam is untouched through B1–B5 (its row-crop path stays).  (SUPERSEDED: this
+note originally said "increment C converts it and deletes the monolithic cone kernel +
+the transitional branch."  As it played out — see `sharding_implementation_plan_v3.md`
+§5 item 2 — the transitional branch became polymorphic override dispatch in B4 (no
+deletion needed), ParallelBeam's row-crop / banded-forward overrides are KEPT by decision
+2026-06-18 (cheaper for parallel), and the monolithic single-device cone back kernel is
+KEPT (the GPU n=1 short-circuit routes to it).  So C's substance landed interspersed with
+B4/B5 rather than as a separate phase.)
 
 ### B1 — LANDED (CPU-green, 2026-06-13)
 Added to `cone_beam.py` ALONGSIDE the monolithic kernels (not yet wired):

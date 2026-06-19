@@ -41,9 +41,9 @@ name over the number.*
 |---|---|
 | **ParallelBeam** — filter, forward, back, qGGMRF, VCD, device-UX, inert padding | ✅ **fully sharded**, multi-GPU validated 1–4 GPU (8-GPU scaling at 1024³/1800³/2048³) |
 | **Cone (P6)** — A, B1, B2, B3, B4, shared FBP/FDK filter, GPU n=1 back short-circuit | ✅ done, CPU-validated end-to-end + GPU-confirmed |
-| **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU confirmation at a non-dividing slice count pending) |
+| **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU-confirmed in the nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok on H100) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
-| **C** — convert ParallelBeam to the `(g0,L)` template; retire the transitional row-crop branch (**keep both cone back kernels**) | ⬜ pending implementation, tests, and tuning |
+| **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
 | **D** — translation + multiaxis ports | ⬜ pending implementation, tests, and tuning |
 | **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
 
@@ -240,25 +240,39 @@ no-single-device-regression.
   into a mostly-local op (a geometry-driven footprint halo) rather than a view-reduce, which
   would sidestep the band-kernel reduce-scatter cost entirely.  Parked exploration; full
   analysis in `.claude/sinogram_sharding.md`.
-- **FDK filter → sharded contract (cleanup).**  `ConeBeamModel.fdk_filter` still runs
-  single-device, so a sharded cone `direct_recon`/`fdk_recon` init gathers → filters → re-shards
-  (host round-trip + single-device bottleneck at init).  Convert to the `fbp_filter` pattern:
-  dispatch the cone FDK weighting+ramp per view-shard via `run_per_device`, honor
-  `output_sharded`.  Non-blocking (FDK = init only); likely lands with C.
+- **FDK filter → sharded contract — ✅ DONE** (landed interspersed with B4/B5).
+  `ConeBeamModel.fdk_filter` now uses the shared `_apply_direct_recon_filter` (the `fbp_filter`
+  pattern: per-view-shard `run_per_device`, the FDK cosine pre-weight folded into `row_weight`),
+  and `fdk_recon` stays sharded throughout (`_shard_sinogram` → `fdk_filter(output_sharded=True)`
+  → `back_project(output_sharded=True)`) — no gather, no single-device init bottleneck.
 
 ---
 
 ## 5. Remaining work & execution order
 
 1. **Cone B5** (inert padding) — ✅ **DONE 2026-06-18** (CPU-validated; cone correct at *all* device
-   counts, the 4 tests pass, full suite green at the default 4 CPU devices).  **C is now next.**
-2. **C** — convert ParallelBeam to the `(g0,L)` banded template and retire the transitional
-   "geometry has banded kernels?" / parallel row-crop branch; fold in the FDK-filter cleanup.
-   **Do *not* delete the single-device cone back kernel** (`back_project_one_view_to_pixel_batch`):
-   the GPU n=1 back short-circuit (`tomography_model.py:1913`) routes single-GPU recons to it
-   because it is ~2.25× faster on GPU than the band kernel (B4.5).  The two cone back kernels are
-   platform-complementary (band = CPU + multi-device reduce-scatter; pixel = single-GPU), so F1's
-   "delete the loser" does **not** apply to cone back — both stay.
+   counts, the 4 tests pass, full suite green at the default 4 CPU devices; GPU-confirmed in the
+   nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok).  **D is now next**
+   (C's substance landed interspersed with B4/B5 — see item 2).
+2. **C — substance DONE, landed interspersed with B4/B5** (no separate code phase; the deviations
+   that did parts of C happened alongside earlier items).  What C originally scoped, vs reality:
+   - *ParallelBeam on the `(g0,L)` banded template* — done: the back/forward sharded drivers
+     dispatch through polymorphic hooks (`_back_project_view_shard_to_band` /
+     `_forward_project_to_view_shards`); the base is the geometry-neutral banded/gather path (cone),
+     and ParallelBeam **overrides** with its row-crop back + banded-broadcast forward.  The
+     transitional "geometry has banded kernels?" conditional is gone — it *became* this override
+     dispatch in B4.
+   - *ParallelBeam's overrides are **KEPT*** (decision 2026-06-18): the row-crop back-projects only
+     detector rows `[g0:g1)` (= the slice band) and the banded forward never gathers the cylinder —
+     both cheaper / more memory-bounded for parallel than the general path, so unifying onto the
+     general template would be a parallel regression for pure code-simplicity.  The override pattern
+     already gives "one template, one geometry-specific seam each."
+   - *FDK-filter sharded contract* — done (see §4).
+   - **Both cone back kernels stay**: the GPU n=1 back short-circuit (`_sparse_back_project_sharded`)
+     routes single-GPU recons to `back_project_one_view_to_pixel_batch` (~2.25× faster on GPU than
+     the band kernel; B4.5).  band = CPU + multi-device reduce-scatter, pixel = single-GPU —
+     platform-complementary, so F1's "delete the loser" does **not** apply to cone back.  (E must
+     likewise keep the single-device back driver/kernel.)
 3. **D** — translation + multiaxis ports (same template; note `MultiAxisParallelModel` extends
    `TomographyModel` directly → it gets its own `_supports_sharding` flip).
 4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
@@ -272,6 +286,23 @@ no-single-device-regression.
    the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
    multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
    PnP-at-scale need appears.
+
+**Porting footgun for C/D (the lesson from the B5 cone port):** the place a new geometry breaks
+under sharding is wherever a **per-slice or per-view operation assumes the problem's REAL count but
+is handed the device (padded) form.**  That single shape is exactly what bit the two cone seams in
+B5 — the gather-forward (the monolithic kernel asserts `recon_shape[2]`, the real slice count) and
+`helical_fdk_z_weight` (a per-slice weight built at the real slice count, multiplied against the
+padded device-form recon → broadcast crash).  **Front-run it when porting:** grep the geometry's
+projector *and* its init/filter paths (FBP/FDK, any per-slice or per-view weighting) for
+`recon_shape[2]` / `sinogram_shape[0]` (or `x.shape[axis]`) used as a **loop bound, a reshape
+target, or an `arange`/weight length**, and reconcile each against the device-form length — crop to
+the real count (forward gather), or build at the device-form length but anchor the physics on the
+real count and mask the padded tail (the z-weight).  The padding *infrastructure* (entry zero-fill,
+`_mask_padded_views` / `_mask_padded_slices`, the `k_global < real_count` clip) is already
+geometry-agnostic, so the only new work per geometry is finding and fixing its own non-inert seam.
+The strongest gate for "is it inert?" is the poison-the-padding test (forward of a recon with
+*nonzero* padded slices must bit-match the clean-padded forward — `test_forward_inert_to_nonzero_recon_padding`),
+not just "the padding stayed zero."
 
 **Footgun to carry into E:** `is_sharded` and `n_devices > 1` have **decoupled** —
 `is_sharded` is ~always True now, so every `is_sharded` site must be re-read for which question
