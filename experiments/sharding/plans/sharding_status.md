@@ -1,4 +1,4 @@
-# Sharding status (beta branch `greg/conebeam_sharding`)
+# Sharding status (working branch `greg/sharding_extensions`; cone sharding is in a PR from `greg/conebeam_sharding`)
 
 *Short living status. **Forward plan + current-state overview: `sharding_implementation_plan_v3.md`
 (primary — read first).**  Detailed-design archive: `sharding_implementation_plan_v2.md`.
@@ -18,6 +18,38 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
 6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-18b) — Cone done & in a PR; increment D (translation) is next, staged plan written
+
+▶ **Cone sharding is complete and in a PR to prerelease**, and work has moved to branch
+**`greg/sharding_extensions`**.  (Cone B5 + the increment-C reconciliation; B5 GPU-confirmed in the
+nightly; C's substance landed interspersed with B4/B5; ParallelBeam's overrides KEPT; both cone back
+kernels KEPT.  Details in the B5 handoff below.)
+
+▶ **Next substantive code = increment D, starting with TRANSLATION.**  Staged plan:
+**`plans/increment_d_translation_design.md`** (T1 FDK filter → T2 banded back kernel → T3 forward
+anchor fix → T4 flip `_supports_sharding` → T5 inert padding).  **Key finding:** `TranslationModel`
+is `ConeBeamModel` *pre-port* — copied FDK filter (same `weight_map`/`alpha`/`π·num_views⁻¹`), still
+has `entries_per_cylinder_batch`, same fan architecture — so the cone increments map ~1:1 and the
+sharding infra is already geometry-agnostic; the port is mostly kernel + filter work.  **Decisions
+(2026-06-18):** mirror cone & **defer the kernel consolidation** (keeps row-sharding per-geometry
+open); **keep both back kernels + the GPU n=1 short-circuit** (need expected, but MEASURE the platform
+split).  **T1** (convert `fdk_filter` to the shared `_apply_direct_recon_filter`, no sharding flip) is
+the clean first move.
+
+▶ **Multiaxis** is the sibling D sub-effort — its FBP angular-weighting fix is decided-in-principle in
+`sharding_implementation_plan_v3.md` §6 (option 1: uniform `π/num_views` + channel ramp, order-invariant;
+the gradient-based weighting is wrong because these are simultaneous fixed measurements with no
+trajectory/ordering).  Settle it with the multiaxis port.
+
+▶ **Prereq for tracking the port:** add `translation` to the mbirjax_metrics harness + capture
+correctness/memory/time baselines, with a dividing/non-dividing size pair (mirror cone's 128/129) and
+an anisotropic-translation size (Greg + a separate session; may need dashboard redesign).
+
+**Uncommitted (Greg commits):** the new `plans/increment_d_translation_design.md` + the v3 / this-file
+doc edits.
 
 ---
 
@@ -66,9 +98,9 @@ lesson in `.claude/lessons.md` ("Exactly-inert cone slice padding").
 `(g0,L)` template, the cone FDK filter on the shared per-view-shard path, both cone back kernels
 kept, and ParallelBeam's row-crop/banded-forward overrides KEPT by decision 2026-06-18 — cheaper
 for parallel).  So **NEXT substantive code = D** (translation + multiaxis; the porting footgun in
-`sharding_implementation_plan_v3.md` §5 now applies).
+`sharding_implementation_plan_v3.md` §5 now applies; the translation port plan is the newer handoff above).
 **Committed:** B5 = `7d82493`; the plan-notation sweep + the `view_indices` RETIRE markers + the
-vcls.py comment durability fix = `b1237d4`.  (Working tree clean.)
+vcls.py comment durability fix = `b1237d4`.
 
 ---
 
