@@ -76,6 +76,16 @@ class MultiAxisParallelModel(TomographyModel):
         super().__init__(sinogram_shape, angles=view_params_array, view_params_name='angles', recon_slice_offset=0.0)
         self.set_params(geometry_type=str(type(self)))
 
+    def _supports_sharding(self):
+        """MultiAxisParallelModel runs on the always-on placement path: the single-device case
+        auto-defaults to a trivial 1-device mesh and multi-device shards (recon by slice,
+        sinogram by view).  It adds NO projector/driver overrides beyond this flag -- it uses
+        the geometry-neutral base hooks (back = banded reduce-scatter via the
+        back_project_one_view_to_band kernel, forward = gather + monolithic + the inert-padding
+        crop), mirroring ConeBeamModel and TranslationModel.  The GPU n=1 back short-circuit is
+        geometry-agnostic and already active here."""
+        return True
+
     def get_psf_radius(self):
         """
         Compute the integer radius of the PSF kernel (mirrors get_psf_radius in ConeBeamModel and TranslationModel).
@@ -198,6 +208,15 @@ class MultiAxisParallelModel(TomographyModel):
         Forward project a set of voxel cylinders to one view.
         Splits the operation into Vertical (Z -> V) and Horizontal (V -> U) steps (mirrors ConeBeamModel).
         """
+        # The vertical fan anchors the slice<->row map on the REAL slice count (recon_shape[2]);
+        # require the input cylinder to have exactly that length so the params anchor and the
+        # input agree (the forward is monolithic -- never banded -- so the global slice index
+        # equals the local index).  Mirrors TranslationModel.forward_project_pixel_batch_to_one_view.
+        num_recon_slices = projector_params.recon_shape[2]
+        if voxel_values.shape[0] != pixel_indices.shape[0] or len(voxel_values.shape) < 2 or \
+                voxel_values.shape[1] != num_recon_slices:
+            raise ValueError('voxel_values must have shape[0:2] = (num_indices, num_slices)')
+
         # 1. Vertical Projection: Project voxel cylinders (slices) to detector rows
         # Output: (num_pixels, num_det_rows)
         vertical_projector = MultiAxisParallelModel.forward_vertical_fan_pixel_batch_to_one_view
@@ -232,7 +251,14 @@ class MultiAxisParallelModel(TomographyModel):
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
-        num_slices = voxel_cylinder.shape[0]
+        # Anchor the slice<->z map on the REAL slice count from params (recon_shape[2]), NOT the
+        # input cylinder length, so the forward stays consistent with the back projector (which
+        # anchors z on recon_shape[2]) and the validity test below is a GLOBAL one (k < S_real).
+        # The forward is monolithic -- never banded (decision C) -- so the global slice index
+        # equals the local index here; the batch entry asserts the per-pixel cylinder is
+        # num_recon_slices long, so this is value-identical today and becomes the inert-padding
+        # anchor once the slice axis is zero-padded for sharding.
+        num_slices = recon_shape[2]
 
         azimuth, elevation = single_view_params[0], single_view_params[1]
 

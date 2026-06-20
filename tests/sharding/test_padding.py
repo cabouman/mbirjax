@@ -713,6 +713,82 @@ class TestPaddedSlicesTranslation(_PaddedReconMixin, unittest.TestCase):
                         msg="fully-padded trailing shard not exactly zero")
 
 
+class TestPaddedSlicesMultiAxis(_PaddedReconMixin, unittest.TestCase):
+    """Multiaxis parallel beam: with a nonzero elevation a slice maps to a RANGE of detector
+    rows, so detector rows do NOT pad with slices (PADS_ROWS=False, like cone/translation).  The
+    geometry is tuned (per-variant num_det_rows) so auto_set_recon_geometry lands on a prime
+    7-slice recon, which pads at every device count > 1.  RUN_SHARDED_VCD=False: the sharded VCD
+    loop is geometry-independent and gated by parallel + cone (see test_multiaxis_sharded.py); the
+    single-shot projector/forward-inertness checks are the geometry-specific padding gates."""
+
+    VARIANTS = ('isotropic', 'anisotropic')
+    RUN_SHARDED_VCD = False
+    PADS_ROWS = False
+    NUM_VIEWS = 8
+    # Per-variant num_det_rows tuned so auto_set_recon_geometry lands on 7 (prime) slices: the
+    # isotropic slice count tracks the detector rows, while the anisotropic slice pitch (2.9)
+    # needs a proportionally taller detector.  recon_shape is computed deterministically from
+    # params, so these are platform-stable; guarded by test_prime_slice_count.
+    _NDR = {'isotropic': 7, 'anisotropic': 22}
+
+    @staticmethod
+    def _angles(nv):
+        az = np.linspace(0.0, np.pi, nv, endpoint=False)
+        el = np.deg2rad(np.linspace(-5.0, 5.0, nv))   # modest tilt: slices spread across rows
+        return jnp.asarray(np.stack([az, el], axis=1))
+
+    def _make_model(self, variant='isotropic'):
+        nv, ndr, ndc = self.NUM_VIEWS, self._NDR[variant], self.NUM_CHANNELS
+        model = mbirjax.MultiAxisParallelModel((nv, ndr, ndc), self._angles(nv))
+        if variant == 'anisotropic':
+            model.set_params(voxel_row_aspect=1.9, voxel_slice_aspect=2.9)
+        model.auto_set_recon_geometry()
+        model.configure_devices(1)   # deterministic single-device reference; sharded tests override
+        return model
+
+    def _label(self, variant):
+        return variant
+
+    def test_prime_slice_count(self):
+        """Guard the tuned geometry: both variants must auto-size to the prime 7-slice count the
+        padding coverage relies on (a drift in auto_set_recon_geometry would silently stop
+        exercising the padded path)."""
+        for variant in self.VARIANTS:
+            with self.subTest(variant=variant):
+                self.assertEqual(int(self._make_model(variant).get_params('recon_shape')[2]), 7)
+
+    def test_fully_padded_trailing_shard(self):
+        """A tiny 3-slice multiaxis on 4 devices makes the LAST shard entirely padding
+        (n_valid == 0): exercises the _mask_padded_* n_valid<=0 branch + a gather that
+        concatenates a fully-zero shard (which auto-config avoids by skipping such a count, so
+        only an explicit configure reaches it).  Projector-level, so it stays fast."""
+        devs = preferred_devices(4)
+        if devs is None:
+            self.skipTest("need 4 devices")
+        nv, ndc = self.NUM_VIEWS, self.NUM_CHANNELS
+
+        def tiny():
+            m = mbirjax.MultiAxisParallelModel((nv, 3, ndc), self._angles(nv))  # 3 det rows -> 3 slices
+            m.auto_set_recon_geometry()
+            m.configure_devices(1)
+            return m
+
+        ref_model = tiny()
+        # 3 slices over 4 devices -> shards of 1, so the last shard is entirely padding.
+        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 3)
+        sino = self._sino(ref_model)
+        recon = self._recon_array(ref_model)
+        ref_back = np.asarray(ref_model.back_project(sino))
+        ref_fwd = np.asarray(ref_model.forward_project(recon))
+        model = tiny()
+        model.configure_sharding(devs)
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
+        back_dev = np.asarray(model.back_project(sino, output_sharded=True))
+        self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
+                        msg="fully-padded trailing shard not exactly zero")
+
+
 class TestQggmrfInterfaceMask(unittest.TestCase):
     """Kernel-level slice-padding mask, with NO mesh.
 
