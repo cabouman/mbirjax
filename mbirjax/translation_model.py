@@ -329,7 +329,14 @@ class TranslationModel(mj.TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
         recon_shape = projector_params.recon_shape
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
-        num_slices = voxel_cylinder.shape[0]
+        # Anchor the slice<->z map on the REAL slice count from params (recon_shape), NOT the
+        # input cylinder length, so the forward stays consistent with the back projector (which
+        # anchors z on recon_shape) and the validity clip below is a GLOBAL test (k < S_real).
+        # The forward is monolithic -- it is never banded (decision C) -- so the global slice
+        # index equals the local index here; the batch method asserts the per-pixel cylinder is
+        # num_recon_slices long, so this is value-identical today and becomes the inert-padding
+        # anchor once the slice axis is zero-padded for sharding.
+        num_slices = num_recon_slices
 
         delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
 
@@ -341,7 +348,7 @@ class TranslationModel(mj.TomographyModel):
         # Here we compute cos_phi_p:  1 / cos_phi_p determines the projection length through a voxel
         # For computational efficiency, we use that to scale the voxel_cylinder values.
         ### possibly convert to a jitted function with donate_argnames to avoid copies for z, v, phi_p, cos_phi_p
-        k = jnp.arange(len(voxel_cylinder))
+        k = jnp.arange(num_slices)
         z = delta_voxel_slice * (k - (num_recon_slices - 1) / 2.0) - translation_vector[2]  # recon_ijk_to_xyz
         v = pixel_mag * z  # geometry_xyz_to_uv_mag
         # Compute vertical cone angle of voxels
