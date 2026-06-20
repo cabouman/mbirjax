@@ -30,7 +30,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_model_and_sino(num_views=8, num_rows=16, num_channels=64, seed=0):
@@ -78,7 +78,7 @@ class TestFbpFilterSingleDevice(unittest.TestCase):
         finally:
             tu.ROW_FILTER_BATCH = saved
             jax.clear_caches()
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out, ref)
 
 
 class TestFbpFilterSharded(unittest.TestCase):
@@ -105,13 +105,13 @@ class TestFbpFilterSharded(unittest.TestCase):
         out_plain = model.fbp_filter(sino)
         self.assertNotIsInstance(getattr(out_plain, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out_plain), ref)
 
         # output_sharded=True: the device form, view-sharded on axis 0.
         out = model.fbp_filter(sino, output_sharded=True)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
         self.assertEqual(out.sharding.spec[0], 'devices')
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_direct_filter_is_fbp_filter_alias(self):
         """direct_filter is a thin alias for fbp_filter: same contract
@@ -131,8 +131,7 @@ class TestFbpFilterSharded(unittest.TestCase):
         # executable).
         self.assertIsInstance(via_direct.sharding, jax.sharding.NamedSharding)
         self.assertEqual(via_direct.sharding.spec[0], 'devices')
-        np.testing.assert_allclose(np.asarray(via_direct), np.asarray(via_fbp),
-                                   rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(via_direct), np.asarray(via_fbp))
 
     def test_sharded_input_output_sharded_stays_sharded(self):
         """A pre-sharded sinogram with output_sharded=True stays sharded (no
@@ -146,12 +145,12 @@ class TestFbpFilterSharded(unittest.TestCase):
         sharded_in = model._shard_sinogram(sino)
         out = model.fbp_filter(sharded_in, output_sharded=True)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
         out_plain = model.fbp_filter(sharded_in)
         self.assertNotIsInstance(getattr(out_plain, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out_plain), ref)
 
 
 if __name__ == "__main__":

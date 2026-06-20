@@ -30,7 +30,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_cone_model(helical=False, num_views=8, num_det_rows=24, num_det_channels=32):
@@ -92,9 +92,8 @@ class TestConeShardedProjectors(unittest.TestCase):
             model = _make_cone_model(helical=helical)
             model.configure_sharding(devs)
             out = np.asarray(shard_fn(model))
-            np.testing.assert_allclose(
-                out, ref, rtol=self.TOL, atol=self.TOL,
-                err_msg=f"{label} mismatch: helical={helical} n_dev={n}")
+            assert_sharded_allclose(out, ref, tol=self.TOL,
+                                    msg=f"{label} mismatch: helical={helical} n_dev={n}")
 
     def test_back_matches_single_device(self):
         for helical in self.GEOMETRIES:
@@ -147,9 +146,8 @@ class TestConeShardedRecon(unittest.TestCase):
                     model = _make_cone_model(helical=helical)
                     model.configure_sharding(devs)
                     out = self._recon(model, sino)
-                    np.testing.assert_allclose(
-                        out, ref, rtol=self.TOL, atol=self.TOL,
-                        err_msg=f"VCD recon mismatch: helical={helical} n_dev={n}")
+                    assert_sharded_allclose(out, ref, tol=self.TOL,
+                                            msg=f"VCD recon mismatch: helical={helical} n_dev={n}")
 
 
 if __name__ == "__main__":

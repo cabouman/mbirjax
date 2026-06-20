@@ -40,7 +40,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 NUM_VIEWS = 7          # prime: never divides a device count > 1
@@ -165,11 +165,11 @@ class TestPaddedProjectors(unittest.TestCase):
         self.assertEqual(out_dev.shape[0], _padded_views(NUM_VIEWS, 2))
         out_np = np.asarray(out_dev)
         np.testing.assert_array_equal(out_np[NUM_VIEWS:], 0.0)
-        np.testing.assert_allclose(out_np[:NUM_VIEWS], ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out_np[:NUM_VIEWS], ref)
         # Default: plain output cropped to the real view count.
         out_plain = model.forward_project(recon)
         self.assertEqual(tuple(out_plain.shape), tuple(ref.shape))
-        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out_plain), ref)
 
     def test_back_project_matches(self):
         ref_model = _make_model()
@@ -180,8 +180,7 @@ class TestPaddedProjectors(unittest.TestCase):
             if model is None:
                 continue
             out = model.back_project(sino)
-            np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"padded back_project mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(out), ref, msg=f"padded back_project mismatch at n_dev={n}")
 
     def test_fbp_recon_matches(self):
         """Covers the filter (pi over the REAL view count) + back projection chain."""
@@ -194,8 +193,7 @@ class TestPaddedProjectors(unittest.TestCase):
                 continue
             for fn_name in ('fbp_recon', 'direct_recon'):
                 out = getattr(model, fn_name)(sino)
-                np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                           err_msg=f"padded {fn_name} mismatch at n_dev={n}")
+                assert_sharded_allclose(np.asarray(out), ref, msg=f"padded {fn_name} mismatch at n_dev={n}")
 
     def test_hessian_diagonal_matches(self):
         """Constant-weights Hessian: the device-form ones must have ZERO padded views
@@ -204,7 +202,7 @@ class TestPaddedProjectors(unittest.TestCase):
         ref = np.asarray(ref_model.compute_hessian_diagonal())
         model = self._sharded_model()
         out = np.asarray(model.compute_hessian_diagonal())
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out, ref)
 
     def test_adjoint_round_trip_padded(self):
         """<A x, y> == <x, A^T y> with padding: the mask keeps the forward/back pair
@@ -265,8 +263,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
             model = _make_model()
             model.configure_sharding(devs)
             out = self._recon(model, sino)
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"padded recon mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"padded recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -285,8 +282,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
         model = _make_model()
         model.configure_sharding(devs)
         out = self._recon(model, sino, weights=weights)
-        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                   err_msg="padded non-const-weights recon mismatch")
+        assert_sharded_allclose(out, ref, msg="padded non-const-weights recon mismatch", tol=1e-4)
 
     def test_prepared_input_recon_matches(self):
         """recon() accepts a prepare_sino_for_devices result (no silent gather, no
@@ -303,8 +299,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
         model_prep = _make_model()
         model_prep.configure_sharding(devs)
         out = self._recon(model_prep, sino, prepared=True)
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                   err_msg="prepared-input recon diverged from plain-input recon")
+        assert_sharded_allclose(out, ref, msg="prepared-input recon diverged from plain-input recon")
 
 
 class _PaddedReconMixin:
@@ -387,18 +382,9 @@ class _PaddedReconMixin:
                 ref_hess = np.asarray(ref_model.compute_hessian_diagonal())
                 ran = False
                 for n, model in self._sharded_models(variant):
-                    np.testing.assert_allclose(
-                        np.asarray(model.back_project(sino)), ref_back,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"back mismatch {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        np.asarray(model.forward_project(recon)), ref_fwd,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"forward mismatch {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        np.asarray(model.compute_hessian_diagonal()), ref_hess,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"hessian mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg=f"back mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
+                    assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg=f"forward mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
+                    assert_sharded_allclose(np.asarray(model.compute_hessian_diagonal()), ref_hess, msg=f"hessian mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
                     ran = True
                 if not ran:
                     self.skipTest("no usable device count > 1")
@@ -422,15 +408,11 @@ class _PaddedReconMixin:
                     out = self._recon(model, sino)
                     self.assertTrue(np.all(np.isfinite(out)),
                                     msg=f"NaN/inf {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        out, ref_const, rtol=self.RECON_TOL, atol=self.RECON_TOL,
-                        err_msg=f"const recon mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(out, ref_const, msg=f"const recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     model_w = self._make_model(variant)
                     model_w.configure_sharding(preferred_devices(n))
                     out_w = self._recon(model_w, sino, weights=weights)
-                    np.testing.assert_allclose(
-                        out_w, ref_wts, rtol=self.RECON_TOL, atol=self.RECON_TOL,
-                        err_msg=f"weighted recon mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(out_w, ref_wts, msg=f"weighted recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     ran = True
                 if not ran:
                     self.skipTest("no usable device count > 1")
@@ -541,9 +523,7 @@ class TestPaddedSlicesParallel(_PaddedReconMixin, unittest.TestCase):
         ref = np.asarray(self._make_model().fbp_recon(sino))
         ran = False
         for n, model in self._sharded_models('parallel'):
-            np.testing.assert_allclose(np.asarray(model.fbp_recon(sino)), ref,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"fbp_recon mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(model.fbp_recon(sino)), ref, msg=f"fbp_recon mismatch at n_dev={n}", tol=self.PROJ_TOL)
             ran = True
         if not ran:
             self.skipTest("no usable device count > 1")
@@ -594,12 +574,8 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
                 continue
             model = self._make_model(curved=True)
             model.configure_sharding(devs)
-            np.testing.assert_allclose(np.asarray(model.back_project(sino)), ref_back,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"curved back mismatch n_dev={n}")
-            np.testing.assert_allclose(np.asarray(model.forward_project(recon)), ref_fwd,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"curved forward mismatch n_dev={n}")
+            assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg=f"curved back mismatch n_dev={n}", tol=self.PROJ_TOL)
+            assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg=f"curved forward mismatch n_dev={n}", tol=self.PROJ_TOL)
             ran = True
         if not ran:
             self.skipTest("no usable device count > 1")
@@ -631,12 +607,8 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         ref_fwd = np.asarray(ref_model.forward_project(recon))
         model = tiny()
         model.configure_sharding(devs)
-        np.testing.assert_allclose(np.asarray(model.back_project(sino)), ref_back,
-                                   rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                   err_msg="fully-padded-shard back mismatch")
-        np.testing.assert_allclose(np.asarray(model.forward_project(recon)), ref_fwd,
-                                   rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                   err_msg="fully-padded-shard forward mismatch")
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))
         self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
                         msg="fully-padded trailing shard not exactly zero")

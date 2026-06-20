@@ -340,6 +340,32 @@ async run-ahead — it was object lifecycle.
   (2) CONSTRUCTED-ZERO invariants (padded entries == 0.0 — the "exactly inert" spec;
   allclose would hide a leak into the padding, the precise failure the invariant exists
   to catch).
+- **Scale-invariant tolerances for sharded-vs-single comparisons (2026-06-19, translation T4).**
+  Two refinements to the rule above, both surfaced by a translation Hessian test that "failed"
+  at the suite's flat `rtol=atol=1e-5`:
+  - **Even CPU is not deterministic ACROSS PROCESSES for the reduce-scatter sum.**  The earlier
+    "CPU compiles both identically and stays exact" (above) holds only WITHIN one process.
+    MEASURED: the sharded-vs-single back/Hessian difference on CPU is usually EXACTLY 0 but
+    occasionally ~1e-7 of the peak — and IDENTICAL across device counts (n=2 == n=4) within a
+    process, so it is a per-PROCESS XLA reduction-ORDER / autotuning choice, not per-call
+    scatter-add reorder.  Consequence: a sharded-comparison test can FLAKE process-to-process on
+    CPU, not just "fail first on the GPU suite."  So the bit-exact-on-CPU assumption is wrong for
+    anything crossing a reduce-scatter / all-gather.
+  - **A fixed `atol` is a scale-dependent ruler; gate on a scale-invariant relative-max.**  The
+    reduce-scatter noise scales with the PEAK magnitude (~1e-7 of it), so a fixed `atol=1e-5`
+    silently PASSES a small-magnitude operator (cone Hessian peak ~1.8 → noise ~2e-7 ≪ atol) and
+    FALSE-FAILS / flakes a large-magnitude one (translation Hessian peak ~5e3 → noise ~5e-4 ≫
+    atol) for the SAME relative noise.  `coeff_power=2` (Hessian) squares the coefficients → the
+    largest peak → hit first.  This was a RULER bug, not a sharding error: cone and translation
+    had the same relative noise AND the same fraction of near-zero entries; only the value SCALE
+    differed.  Fix = gate on `max|out-ref| / max|ref| ≤ TOL` (the shared `tests/sharding/
+    conftest.rel_max_err`).  NOT a per-element `rtol` (atol=0): that divides by each element's
+    OWN value, so a near-zero entry — whose noise comes from the large terms that cancelled —
+    gets a near-zero threshold and the relative diff explodes.  The shared gate is
+    `conftest.assert_sharded_allclose`, used for every sharded-vs-single comparison in the
+    sharding suite; exact equality / `assert_array_equal` stays for data-movement and
+    constructed-zero invariants, and the 1e-6 elementwise qGGMRF kernel band tests keep their
+    tight gate (no reduce-scatter, so the peak-scaled noise does not apply).
 - **Donation-engagement gotchas.**  (a) Release aliases first: for constant weights
   `weighted_error_sinogram IS error_sinogram`, so `= None` it or donation silently falls
   back to a copy.  (b) Donating 2 inputs for 1 output warns "Some donated buffers were

@@ -34,7 +34,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_model(num_views=8, num_rows=8, num_channels=32):
@@ -102,9 +102,10 @@ class TestBackProjectSharded(unittest.TestCase):
         RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
         while both paths coexist; once every geometry runs on placements there is
         one path and nothing to compare.  Relaxed from exact equality because the
-        banded sharded path reorders non-associative FP sums -> ~1 ULP GPU
-        difference (CPU compiles both identically and stays exact).  A tight
-        tolerance still trips on any real algorithmic drift.
+        banded sharded path reorders non-associative FP sums vs the legacy kernel
+        (~1 ULP on GPU; and even on CPU the reduction order is a per-PROCESS XLA
+        autotuning choice, not bit-stable across runs -- see conftest.rel_max_err).
+        The scale-invariant gate still trips on any real algorithmic drift.
         """
         single_dev = preferred_devices(1)
         if single_dev is None:
@@ -116,8 +117,7 @@ class TestBackProjectSharded(unittest.TestCase):
         shard_model = _make_model()
         shard_model.configure_sharding(single_dev)
         out = np.asarray(shard_model.back_project(sino))
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                   err_msg="trivial sharding diverged beyond float noise")
+        assert_sharded_allclose(out, ref, msg="trivial sharding diverged beyond float noise")
 
     def test_sharded_matches_single_device(self):
         """2-device public back_project matches single-device to float noise and
@@ -133,7 +133,7 @@ class TestBackProjectSharded(unittest.TestCase):
         # User-facing, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_output_sharded_returns_sharded_recon(self):
         """output_sharded=True returns a slice-sharded 3-D recon (no gather) even
@@ -157,7 +157,7 @@ class TestBackProjectSharded(unittest.TestCase):
         for ax in range(out.ndim):
             if ax != recon_axis:
                 self.assertIsNone(out.sharding.spec[ax])
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_sharded_input_default_returns_plain(self):
         """The default (output_sharded=False) gathers to a plain array even when
@@ -173,7 +173,7 @@ class TestBackProjectSharded(unittest.TestCase):
         out = shard_model.back_project(sharded_in)
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_internal_returns_slice_sharded(self):
         """sparse_back_project keeps the result slice-sharded (no gather inside)."""
@@ -205,7 +205,7 @@ class TestBackProjectSharded(unittest.TestCase):
         shard_model = _make_model()
         shard_model.configure_sharding(self.devs)
         out = np.asarray(shard_model.compute_hessian_diagonal(weights))
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out, ref)
 
     def test_view_indices_not_supported(self):
         """A view subset is rejected in sharded mode (full view-sharded input only)."""
@@ -234,8 +234,7 @@ class TestBackProjectSharded(unittest.TestCase):
                 continue
             model.configure_sharding(devs)
             out = np.asarray(model.back_project(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"mismatch at n_dev={n}")
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -257,8 +256,7 @@ class TestBackProjectSharded(unittest.TestCase):
                 model.back_project_slice_band = band
             model.configure_sharding(self.devs)
             out = np.asarray(model.back_project(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"mismatch at slice band {band}")
+            assert_sharded_allclose(out, ref, msg=f"mismatch at slice band {band}")
 
     def test_single_device_streaming_matches(self):
         """A 1-device mesh with an explicit small band streams the slice axis on
@@ -277,8 +275,7 @@ class TestBackProjectSharded(unittest.TestCase):
             model.back_project_slice_band = band
             model.configure_sharding(single)                  # 1-device mesh
             out = np.asarray(model.back_project(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"single-device band {band} mismatch")
+            assert_sharded_allclose(out, ref, msg=f"single-device band {band} mismatch")
 
 
 class TestBalancedSliceBounds(unittest.TestCase):

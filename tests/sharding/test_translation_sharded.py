@@ -33,7 +33,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_translation_model(anisotropic=False, num_views=8, num_det_rows=32, num_det_channels=32):
@@ -90,28 +90,18 @@ class TestTranslationShardedProjectors(unittest.TestCase):
     GEOMETRIES = (False, True)   # isotropic, anisotropic
     TOL = 1e-5
 
-    def _sweep(self, anisotropic, ref_fn, shard_fn, label, atol_floor_from_peak=False):
+    def _sweep(self, anisotropic, ref_fn, shard_fn, label):
         ref_model = _make_translation_model(anisotropic=anisotropic)
         counts = _usable_device_counts(ref_model)
         if not counts:
             self.skipTest("no usable device count > 1 (need >= 2 devices and divisible axes)")
         ref = np.asarray(ref_fn(ref_model))
-        # The Hessian (coeff_power=2) squares the projection coefficients, giving the
-        # back-projection a large dynamic range.  The reduce-scatter summation-reorder
-        # difference between the sharded and single-device sums is unbiased and ~1e-7 of the
-        # PEAK magnitude (measured), but on the near-zero diagonal entries that absolute noise
-        # is a large RELATIVE diff -> a pure rtol gate false-fails.  Anchor the absolute floor
-        # to the peak (atol = TOL * max|ref|, ~100x the measured noise) so small entries are
-        # judged against the noise floor.  back/forward have no such squaring and keep the
-        # plain tight TOL on both rtol and atol.
-        atol = self.TOL * float(np.max(np.abs(ref))) if atol_floor_from_peak else self.TOL
         for n, devs in counts:
             model = _make_translation_model(anisotropic=anisotropic)
             model.configure_sharding(devs)
             out = np.asarray(shard_fn(model))
-            np.testing.assert_allclose(
-                out, ref, rtol=self.TOL, atol=atol,
-                err_msg=f"{label} mismatch: anisotropic={anisotropic} n_dev={n}")
+            assert_sharded_allclose(out, ref, tol=self.TOL,
+                                    msg=f"{label} mismatch: anisotropic={anisotropic} n_dev={n}")
 
     def test_back_matches_single_device(self):
         for anisotropic in self.GEOMETRIES:
@@ -128,12 +118,21 @@ class TestTranslationShardedProjectors(unittest.TestCase):
                             lambda m: m.forward_project(recon), "forward")
 
     def test_hessian_diagonal_matches_single_device(self):
+        """coeff_power=2 (Hessian diagonal) sharded == single-device.
+
+        This is the case that motivated the scale-invariant gate (conftest.assert_sharded_allclose).
+        Squaring the projection coefficients gives the translation Hessian a large dynamic range
+        (peak ~5e3 here), so the reduce-scatter summation-reorder noise -- unbiased and ~1e-7 of the
+        PEAK -- lands on the near-zero diagonal entries as a large RELATIVE diff.  A fixed atol
+        false-failed/flaked it (~5e-4 noise vs atol 1e-5); the scale-invariant
+        max|out-ref|/max|ref| <= TOL clears it with margin.  back/forward have no such squaring
+        (smaller peak), so they were never at risk -- but they use the same gate.
+        """
         for anisotropic in self.GEOMETRIES:
             with self.subTest(anisotropic=anisotropic):
                 weights = _random_sino(_make_translation_model(anisotropic=anisotropic), seed=7)
                 self._sweep(anisotropic, lambda m: m.compute_hessian_diagonal(weights),
-                            lambda m: m.compute_hessian_diagonal(weights), "hessian",
-                            atol_floor_from_peak=True)
+                            lambda m: m.compute_hessian_diagonal(weights), "hessian")
 
 
 class TestTranslationShardedRecon(unittest.TestCase):
@@ -165,9 +164,8 @@ class TestTranslationShardedRecon(unittest.TestCase):
                     model = _make_translation_model(anisotropic=anisotropic)
                     model.configure_sharding(devs)
                     out = self._recon(model, sino)
-                    np.testing.assert_allclose(
-                        out, ref, rtol=self.TOL, atol=self.TOL,
-                        err_msg=f"VCD recon mismatch: anisotropic={anisotropic} n_dev={n}")
+                    assert_sharded_allclose(out, ref, tol=self.TOL,
+                                            msg=f"VCD recon mismatch: anisotropic={anisotropic} n_dev={n}")
 
 
 if __name__ == "__main__":

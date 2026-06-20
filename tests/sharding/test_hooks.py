@@ -19,7 +19,7 @@ import numpy as np
 import jax
 from jax.errors import JaxRuntimeError
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _capture_jax_error_guidance(model, message):
@@ -273,9 +273,7 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model._platform_label(model.shard_devices[0]), 'CPU')
 
         out = np.asarray(model.sparse_back_project(sino, idx))
-        np.testing.assert_allclose(
-            out, ref, rtol=1e-5, atol=1e-5,
-            err_msg="auto CPU-sharded back projection diverged from single device")
+        assert_sharded_allclose(out, ref, msg="auto CPU-sharded back projection diverged from single device")
 
         # Opt-out: flag False + re-select -> back to a trivial single-device layout.
         model_out = mbirjax.ParallelBeamModel(idx_shape, angles)
