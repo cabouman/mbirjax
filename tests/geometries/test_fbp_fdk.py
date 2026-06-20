@@ -149,6 +149,7 @@ class TestFBPReconstruction(unittest.TestCase):
         # Perform FBP reconstruction
         print('  Starting recon')
         filter_name = "ramp"
+        ct_model.set_params(verbose=0)  # Silence warnings about helical fdk
         recon = ct_model.direct_recon(sinogram, filter_name=filter_name)
         
         # if anisotropic, rescale the recon to the phantom shape

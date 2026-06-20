@@ -67,14 +67,15 @@ class TestAxisHooks(unittest.TestCase):
 class TestNoMeshNoOp(unittest.TestCase):
     """Without a mesh, the base-class hooks are no-ops (mesh is None).
 
-    RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh
-    (Option B), so it no longer exercises the no-mesh branch.  That branch survives only
-    for the not-yet-ported geometries (cone / translation / multiaxis) and retires at P6.
+    RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh, so it
+    no longer exercises the no-mesh branch.  That branch survives only for the not-yet-ported
+    geometries (cone / translation / multiaxis) and retires once they are ported.
     These tests used ParallelBeam as a convenient concrete model, so they are skipped until
-    the no-mesh path either gets a non-ParallelBeam home or is removed at P6.
+    the no-mesh path either gets a non-ParallelBeam home or is removed once those geometries
+    are ported.
     """
 
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only (P6).")
+    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
     def test_shard_and_gather_are_noops(self):
         model = _make_model()
         self.assertIsNone(model.mesh)
@@ -85,7 +86,7 @@ class TestNoMeshNoOp(unittest.TestCase):
         self.assertIs(model._shard_recon(sino), sino)
         self.assertIs(model._gather_recon(sino), sino)
 
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only (P6).")
+    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
     def test_extract_halos_no_mesh(self):
         model = _make_model()
         left, right = model._extract_halos(np.ones((6, 16), dtype=np.float32))
@@ -181,7 +182,7 @@ class TestModelPlacements(unittest.TestCase):
 
     def test_single_device_trivial_placements(self):
         model = _make_model()   # _make_model pins a single device
-        # ParallelBeam runs the always-on placement path (Option B), so even a single device is
+        # ParallelBeam runs the always-on placement path, so even a single device is
         # "sharded" over one device with trivial (1-shard) placements on that device.
         self.assertTrue(model.is_sharded)
         self.assertEqual(len(model.shard_devices), 1)
@@ -196,7 +197,7 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
 
     def test_auto_device_count_uses_all_devices(self):
-        # Auto selection (P5 Step 4 Stage 2): _auto_device_count(k) uses ALL k available
+        # Auto selection: _auto_device_count(k) uses ALL k available
         # devices -- neither sharded axis constrains the count (non-dividing view/slice
         # counts are zero-padded, exactly inert) -- EXCEPT a count whose last shard would
         # be entirely padding (a wasted device), which falls to the next smaller count.

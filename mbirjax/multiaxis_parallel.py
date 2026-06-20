@@ -113,8 +113,9 @@ class MultiAxisParallelModel(TomographyModel):
         geometry_param_values.append(self.entries_per_cylinder_batch)
         geometry_param_values.append(self.get_psf_radius())
 
-        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
-        return GeometryParams(*tuple(geometry_param_values))
+        # The class is shared across instances (make_geometry_params) so the projectors' jit cache
+        # is shared rather than re-traced per instance.
+        return self.make_geometry_params(geometry_param_names, geometry_param_values)
 
     def get_magnification(self):
         """For parallel beam geometries, magnification is always 1.0 (same as ParallelBeamModel)."""

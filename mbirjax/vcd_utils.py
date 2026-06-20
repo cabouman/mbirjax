@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
+from mbirjax._device_setup import gpu_devices, cpu_devices
 
 
 def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, crop_radius_fraction=0.0):
@@ -403,12 +404,9 @@ def gen_weights(sinogram, weight_type):
     weight_list = []
     num_views = sinogram.shape[0]
     batch_size = 128
-    main_device = jax.devices('cpu')[0]
-    try:
-        gpus = jax.devices('gpu')
-        worker_device = gpus[0]
-    except RuntimeError:
-        worker_device = main_device
+    main_device = cpu_devices()[0]
+    gpus = gpu_devices()
+    worker_device = gpus[0] if gpus else main_device
 
     for i in range(0, num_views, batch_size):
         sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], worker_device)

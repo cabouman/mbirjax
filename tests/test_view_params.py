@@ -113,7 +113,7 @@ class TestSetViewParameters(unittest.TestCase):
     def test_setter_matches_fresh_model_cone(self):
         # Multi-component view params (angle, z-shift) on an unported (legacy
         # single-device) geometry: nothing baked depends on the values
-        # (psf_radius / magnification / slice_range_length are distance-derived).
+        # (psf_radius / bp_psf_radius / magnification are distance-derived).
         angles_a, angles_b = self._angles(9), self._angles(10)
         kwargs = dict(source_detector_dist=4 * self.SINO_SHAPE[2],
                       source_iso_dist=2 * self.SINO_SHAPE[2])

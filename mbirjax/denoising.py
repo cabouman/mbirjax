@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax.lax as lax
 import mbirjax as mj
 from mbirjax import TomographyModel
+from mbirjax._device_setup import gpu_devices
 
 QGGMRFDenoiserParamNames = mj.ParamNames | Literal['sigma_noise']
 
@@ -27,10 +28,9 @@ class QGGMRFDenoiser(TomographyModel):
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
-        try:
-            jax.devices('gpu')
+        if gpu_devices():
             self.set_params(use_gpu='full')  # If the denoising problem doesn't fit on the gpu, we should divide it up.
-        except RuntimeError:
+        else:
             self.set_params(use_gpu='none')
 
     @overload
@@ -198,7 +198,11 @@ class QGGMRFDenoiser(TomographyModel):
             self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
 
         self.logger.info('Initializing QGGMRFDenoiser')
+        # Disable warning about background estimation
+        verbose = self.get_params('verbose')
+        self.set_params(verbose=0)
         regularization_params = self.auto_set_regularization_params(image)
+        self.set_params(verbose=verbose)
 
         # Generate set of voxel partitions
         image_shape, granularity = self.get_params(['recon_shape', 'granularity'])

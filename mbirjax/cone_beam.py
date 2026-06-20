@@ -12,6 +12,24 @@ from mbirjax import TomographyModel, tomography_utils, ParameterHandler
 
 ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
+# Default slice-band size for the cone back projector's rolled vertical-fan loop.  The
+# back projector computes the horizontal fan once per view, then walks the recon slice
+# axis in bands of this many slices using a jax.lax.map.  The loop is ROLLED (the band
+# body compiles once and iterates at runtime), so the compiled program size is
+# independent of the slice count -- which can range from tens of slices on one device to
+# thousands across many devices.  The band size bounds the per-band scratch to
+# (pixel_batch x CONE_SLICE_BAND_SIZE); it is the back projector's memory knob, replacing
+# the old entries_per_cylinder_batch geometry parameter.  128 matches that old default.
+CONE_SLICE_BAND_SIZE = 128
+
+# Detector-row batch size for the cone FORWARD vertical fan's rolled jax.lax.map over
+# detector rows.  Like the back band size, this is a memory/compile knob that bounds the
+# per-batch transient.  The forward projection does NOT band the slice axis (it stays
+# monolithic -- see the banded-back section), so this chunks the OUTPUT detector rows
+# instead.  It also replaces the old entries_per_cylinder_batch parameter; 128 matches the
+# old default, so the forward output is unchanged.
+CONE_FORWARD_DET_ROW_BATCH = 128
+
 
 class ConeBeamModel(TomographyModel):
     """
@@ -54,8 +72,6 @@ class ConeBeamModel(TomographyModel):
                  use_curved_detector=False):
 
         self.bp_psf_radius = 1
-        self.entries_per_cylinder_batch = 128
-        self.slice_range_length = 0
 
         if helical_z_shifts is None:
             # If helical_z_shifts is not provided or None,
@@ -162,19 +178,23 @@ class ConeBeamModel(TomographyModel):
 
         # Then get additional parameters:
         geometry_param_names += ['magnification', 'psf_radius', 'bp_psf_radius',
-                                 'entries_per_cylinder_batch', 'slice_range_length', 'use_curved_detector']
+                                 'use_curved_detector']
         geometry_param_values.append(self.get_magnification())
         geometry_param_values.append(self.get_psf_radius())
         geometry_param_values.append(self.bp_psf_radius)
-        geometry_param_values.append(self.entries_per_cylinder_batch)
-        geometry_param_values.append(self.slice_range_length)
         geometry_param_values.append(self.get_params('use_curved_detector'))
 
-        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.  
-        GeometryParams = namedtuple('GeometryParams', geometry_param_names)
-        geometry_params = GeometryParams(*tuple(geometry_param_values))
+        # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
+        geometry_params = self.make_geometry_params(geometry_param_names, geometry_param_values)
 
         return geometry_params
+
+    def _supports_sharding(self):
+        """Cone beam has the banded back projector (reduce-scatter) and the gather-and-monolithic
+        forward on the placement/movement path, plus the shared qGGMRF prior path,
+        so it runs on the always-on placement path: the single-device case auto-defaults to a
+        trivial 1-device mesh and multi-device shards (recon by slice, sinogram by view)."""
+        return True
 
     def get_psf_radius(self):
         """
@@ -214,9 +234,6 @@ class ConeBeamModel(TomographyModel):
         min_voxel_pitch = jnp.minimum(jnp.minimum(delta_voxel, delta_voxel_row), delta_voxel_slice)
         max_voxels_per_detector = delta_det / (min_magnification * min_voxel_pitch)
         self.bp_psf_radius = int(jnp.ceil(jnp.ceil(max_voxels_per_detector) / 2))
-
-        self.slice_range_length = int(1 + 2 * self.bp_psf_radius + \
-                                  jnp.ceil(self.entries_per_cylinder_batch * max_voxels_per_detector))
 
         return psf_radius
 
@@ -343,8 +360,15 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Allocate the sinogram array
-        sinogram_view = jnp.zeros((num_det_rows, num_det_channels))
+        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
+        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
+        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
+        # power-of-2 num_det_channels column stride aliases the CPU cache, and the
+        # channel scatter is (measured) the dominant cone-forward cost on both CPU and
+        # GPU; the contiguous write avoids it.  Transpose back to (rows, channels) on
+        # return (one cheap pass, fused by XLA) so the output layout is unchanged.  This
+        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view.
+        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
 
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
@@ -353,9 +377,9 @@ class ConeBeamModel(TomographyModel):
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view = sinogram_view.at[:, n].add(A_chan_n.reshape((1, -1)) * voxel_values.T)
+            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
-        return sinogram_view
+        return sinogram_view_T.T
 
     @staticmethod
     def forward_vertical_fan_one_pixel_to_one_view(voxel_cylinder, pixel_index, single_view_params, projector_params):
@@ -414,7 +438,7 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
 
         # Set up detector row indices array (0, 10, 20, ..., 10*num_slice_batches)
-        det_rows_per_batch = gp.entries_per_cylinder_batch
+        det_rows_per_batch = CONE_FORWARD_DET_ROW_BATCH
         det_rows_per_batch = min(det_rows_per_batch, num_det_rows)
         num_det_row_batches = (num_det_rows + det_rows_per_batch - 1) // det_rows_per_batch
         det_row_indices = det_rows_per_batch * jnp.arange(num_det_row_batches)
@@ -456,10 +480,19 @@ class ConeBeamModel(TomographyModel):
         return det_column
 
     @staticmethod
-    @partial(jax.jit, static_argnames='projector_params')
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=1):
+    @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
+                                             coeff_power=1, slice_band_size=None):
         """
-        Use vmap to do a backprojection from one view to multiple pixels (voxel cylinders).
+        Back project one view to multiple pixels (voxel cylinders).
+
+        The horizontal fan is computed ONCE per view (it does not depend on the recon
+        slice), then the recon slice axis is walked in fixed-size bands with a ROLLED loop
+        (jax.lax.map): the band body compiles once and iterates at runtime, so the
+        compiled program does not grow with the slice count.  Each band back-projects onto
+        its block of global slices via the banded vertical fan; the bands are stacked and
+        cropped to the real slice count (the last band is padded up to a whole band and the
+        banded kernel's global validity clip zeros that padded tail, so the crop is exact).
 
         Args:
             sinogram_view (2D jax array): one view of the sinogram to be back projected.
@@ -469,19 +502,39 @@ class ConeBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
+            slice_band_size (int or None): number of recon slices per band (the memory knob).
+                None uses the module default CONE_SLICE_BAND_SIZE; tests pass a small value to
+                exercise the multi-band assembly on a small geometry.  Static (sets shapes).
 
         Returns:
             The voxel values for all slices at the input index (i.e., a voxel cylinder) obtained by backprojecting
-            the input sinogram view.
+            the input sinogram view.  Shape (len(pixel_indices), num_recon_slices).
         """
+        num_recon_slices = projector_params.recon_shape[2]
+        num_pixels = pixel_indices.shape[0]
 
-        vertical_fan_projector = ConeBeamModel.back_vertical_fan_one_view_to_pixel_batch
-        horizontal_fan_projector = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch
+        # Horizontal fan once per view -> detector-based voxel cylinder (num_pixels, num_det_rows).
+        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
 
-        det_voxel_cylinder = horizontal_fan_projector(sinogram_view, pixel_indices, single_view_params,
-                                                      projector_params, coeff_power=coeff_power)
-        back_projection = vertical_fan_projector(det_voxel_cylinder, pixel_indices, single_view_params,
-                                                 projector_params, coeff_power=coeff_power)
+        # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
+        # the last band runs past num_recon_slices and is cropped off below.
+        band_size = CONE_SLICE_BAND_SIZE if slice_band_size is None else slice_band_size
+        band_size = min(band_size, num_recon_slices)
+        num_bands = (num_recon_slices + band_size - 1) // band_size
+        band_starts = band_size * jnp.arange(num_bands)        # g0 for each band (mapped over)
+
+        def back_one_band(g0):
+            # (num_pixels, band_size) back projection onto global slices [g0, g0 + band_size).
+            return ConeBeamModel.back_vertical_fan_band_pixel_batch(
+                det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+                g0, band_size, coeff_power=coeff_power)
+
+        bands = jax.lax.map(back_one_band, band_starts)        # (num_bands, num_pixels, band_size)
+        # Reassemble into (num_pixels, num_bands * band_size): for pixel p and band b, slice
+        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.
+        back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
+        back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
 
         return back_projection
 
@@ -515,6 +568,15 @@ class ConeBeamModel(TomographyModel):
         L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
+        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows)
+        # up front so the per-pixel channel gather reads a CONTIGUOUS row (stride 1)
+        # instead of a column of stride num_det_channels.  A power-of-2 num_det_channels
+        # column stride aliases the CPU cache, and the channel gather is (measured) the
+        # dominant cone-back cost on GPU; the contiguous access avoids it.  This is the
+        # adjoint of the forward kernel's channel-major scatter (mirror of
+        # ParallelBeamModel.back_project_one_view_to_pixel_batch).
+        sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
+
         # Allocate the voxel cylinder array
         det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
 
@@ -526,98 +588,105 @@ class ConeBeamModel(TomographyModel):
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
             A_chan_n *= (n >= 0) * (n < num_det_channels)
             A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view[:, n].T)
+            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
 
         return det_voxel_cylinder
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Banded vertical fans + per-view banded kernels
+    #
+    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
+    # [g0, g0+L): the vertical fan is restricted to that slice range, while the
+    # horizontal fan is the same for every band and is computed once per view.  This
+    # is the interface the multi-device back projector uses -- the recon's slice axis
+    # is split into bands so each device handles a slice range, and the per-band
+    # results are concatenated.  It also lets a single device process the slices in
+    # bands instead of holding the whole cylinder at once.
+    #
+    # The FORWARD projection does NOT band.  A band of input slices reaches a wide,
+    # mostly-empty window of detector rows, so a banded forward recomputes the
+    # dominant horizontal stage per band for little memory gain (measured: streaming
+    # the bands was 5-14x slower on CPU for ~13-23% transient memory -- a bad trade).
+    # The multi-device forward instead gathers the slice cylinder per pixel-batch and
+    # runs the monolithic forward, so there is no banded forward kernel here.
+    #
+    # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice
+    # index (k = g0 + k_local), never from the length of the band that is passed in,
+    # so a sub-band gives exactly the same coordinates as the full cylinder.  A slice
+    # whose global index is at or beyond the real slice count (a padded slice, used
+    # when the slice axis is padded to split evenly across devices) receives nothing,
+    # so padding is inert.
+    #
+    # These are the production cone back vertical fan: back_project_one_view_to_pixel_batch
+    # walks the slice axis in bands of these via back_vertical_fan_band_pixel_batch (the
+    # monolithic vertical fan they replaced has been removed).  back_project_one_view_to_band
+    # (horizontal fan once + one band) is the per-band entry the multi-device back projector
+    # will use.  The monolithic forward stays -- the sharded forward gathers the slice
+    # cylinder and calls it.
+    # ──────────────────────────────────────────────────────────────────────────
+
     @staticmethod
-    def back_vertical_fan_one_view_to_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,
-                                                  projector_params, coeff_power=1):
+    def back_vertical_fan_band_one_pixel(detector_column_values, pixel_index, single_view_params,
+                                         projector_params, g0, num_band_slices, coeff_power=1):
+        """Back vertical fan for one pixel, producing a BAND of output slices.
+
+        Back-projects this pixel's detector column onto the GLOBAL recon slices
+        [g0, g0+L) (output length L = num_band_slices) -- "band" names the output
+        slice range.  compute_vertical_data_single_pixel already anchors z on the
+        problem's recon_shape, so this just passes the global band indices; padded
+        global slices (index >= the real slice count) are zeroed.  Concatenating the
+        per-band outputs over a tiling of the slices reconstructs the monolithic
+        vertical fan (the bands tile disjointly).
         """
-        Apply a fan beam backward projection in the vertical direction to the pixel determined by indices
-        into the flattened array of size num_rows x num_cols.  This returns a vector obtained from the projection of
-        the detector-based voxel cylinders onto voxel cylinders in recon space, so the output vector has length
-        num_recon_slices.
-
-        Args:
-            det_voxel_cylinder (2D jax array): 2D array of shape (num_pixels, num_det_rows) of voxel values, where
-                det_voxel_cylinder[i, j] is the value of the voxel in row j at the location determined by indices[i].
-            pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
-            single_view_params: These are the view dependent parameters for the view being back projected.
-            projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
-            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
-                Normally 1, but should be 2 when computing Hessian diagonal.
-
-        Returns:
-            2D jax array of shape (num_pixels, num_recon_slices) of voxel values.
-        """
-        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_one_view_to_one_pixel,
-                             in_axes=(0, 0, None, None, None))
-        new_pixels = pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params, coeff_power)
-
-        return new_pixels
-
-    @staticmethod
-    def back_vertical_fan_one_view_to_one_pixel(detector_column_values, pixel_index, single_view_params, projector_params,
-                                                coeff_power=1):
-        """
-        Apply the back projection of a vertical fan beam transformation to a single voxel cylinder and return the column
-        vector of the resulting values.
-
-        Args:
-            detector_column_values (1D jax array): 1D array of shape (num_det_rows,) of voxel values, where
-                detector_column_values[i, j] is the value of the voxel in row j at the location determined by indices[i].
-            pixel_index (int):  Index into flattened array of size num_rows x num_cols.
-            single_view_params: These are the angle and helical_z_shift for the view being back projected.
-            projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
-            coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
-                Normally 1, but should be 2 when computing Hessian diagonal.
-
-        Returns:
-            1D jax array of shape (num_recon_slices,) of voxel values.
-        """
-        # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
-        # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
+        # Get the geometry parameters; short name gp since we access many fields.
         gp = projector_params.geometry_params
-
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
-        recon_shape = projector_params.recon_shape
-        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+        num_recon_slices = projector_params.recon_shape[2]
 
-        # Set up slice indices array (0, slices_per_batch, 2*slices_per_batch, ..., num_slice_batches*slices_per_batch)
-        slices_per_batch = gp.entries_per_cylinder_batch
-        slices_per_batch = min(slices_per_batch, num_recon_slices)
-        num_slice_batches = (num_recon_slices + slices_per_batch - 1) // slices_per_batch
-        slice_indices = slices_per_batch * jnp.arange(num_slice_batches)
+        slice_indices = g0 + jnp.arange(num_band_slices)            # GLOBAL band indices
+        m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(
+            pixel_index, slice_indices, single_view_params, projector_params)
+        L_max = jnp.minimum(1, W_p_r)
 
-        # Set up a function to map over the slices of the cylinder
-        # Here we can use a map over subsections of the voxel cylinder because we are indexing by slice,
-        # so there is no overlap from one section to the next.
-        def create_voxel_cylinder_slices(start_index):
-            # Allocate space
-            new_cylinder = jnp.zeros(slices_per_batch)
-            # Get the data needed for vertical projection
-            cur_slice_indices = start_index + jnp.arange(slices_per_batch)
-            m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(pixel_index, cur_slice_indices, single_view_params,
-                                                                                                     projector_params)
-            L_max = jnp.minimum(1, W_p_r)  # Maximum fraction of a detector that can be covered by one voxel.
+        new_cylinder = jnp.zeros(num_band_slices)
+        for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+            m = m_p_center + m_offset
+            abs_delta_p_r_m = jnp.abs(m_p - m)
+            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+            A_row_m = L_p_r_m / cos_alpha_p_z
+            A_row_m *= (m >= 0) * (m < num_det_rows)
+            A_row_m = A_row_m ** coeff_power
+            new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
+        # Padded global slices (index >= S_real) are inert.  No-op when g0+L <= S_real.
+        new_cylinder = new_cylinder * (slice_indices < num_recon_slices)
+        return new_cylinder
 
-            # Do the vertical projection
-            for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
-                m = m_p_center + m_offset
-                abs_delta_p_r_m = jnp.abs(m_p - m)  # Distance from projection of center of voxel to center of detector
-                L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-                A_row_m = L_p_r_m / cos_alpha_p_z
-                A_row_m *= (m >= 0) * (m < num_det_rows)
-                A_row_m = A_row_m ** coeff_power
-                new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
+    @staticmethod
+    def back_vertical_fan_band_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,
+                                           projector_params, g0, num_band_slices, coeff_power=1):
+        """Vmap the banded back vertical fan over a pixel batch.
 
-            return new_cylinder, None
+        ``det_voxel_cylinder`` is (num_pixels, num_det_rows); returns
+        (num_pixels, num_band_slices) for global slices [g0, g0+L)."""
+        pixel_map = jax.vmap(ConeBeamModel.back_vertical_fan_band_one_pixel,
+                             in_axes=(0, 0, None, None, None, None, None))
+        return pixel_map(det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+                         g0, num_band_slices, coeff_power)
 
-        recon_voxel_cylinder, _ = jax.lax.map(create_voxel_cylinder_slices, slice_indices)
-        recon_voxel_cylinder = recon_voxel_cylinder.flatten()
-        recon_voxel_cylinder = jax.lax.slice_in_dim(recon_voxel_cylinder, 0, num_recon_slices)
-        return recon_voxel_cylinder
+    @staticmethod
+    @partial(jax.jit, static_argnames=['projector_params', 'num_band_slices'])
+    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, projector_params,
+                                      g0, num_band_slices, coeff_power=1):
+        """Banded back projection of one view onto GLOBAL recon slices [g0, g0+L).
+
+        Horizontal fan once (full det rows) -> banded vertical fan.  Returns
+        (num_pixels, num_band_slices).  ``g0`` is traced; ``num_band_slices`` (= L)
+        is static."""
+        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+        return ConeBeamModel.back_vertical_fan_band_pixel_batch(
+            det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+            g0, num_band_slices, coeff_power=coeff_power)
 
     @staticmethod
     def compute_vertical_data_single_pixel(pixel_index, slice_indices, single_view_params, projector_params):
@@ -892,12 +961,14 @@ class ConeBeamModel(TomographyModel):
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
+            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+                return the view-sharded device form (on an unsharded model the output is the same
+                either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            view-sharded if output_sharded=True.
         """
         return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
                                output_sharded=output_sharded)
@@ -907,77 +978,54 @@ class ConeBeamModel(TomographyModel):
         """
         Perform FDK filtering on the given sinogram.
 
+        Uses the shared row-batched filter kernel (tomography_utils.apply_row_filter via
+        TomographyModel._apply_direct_recon_filter), the same path as
+        ParallelBeamModel.fbp_filter, with an FDK cosine pre-weight applied per detector
+        row.  The peak stays at the input+output floor (no full-sinogram out-of-place
+        copy or concatenate), and when a mesh is configured each device filters its own
+        view-shard locally.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
+                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
+            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+                return the view-sharded device form (on an unsharded model the output is the same
+                either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering.
+            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            view-sharded if output_sharded=True.
         """
-        # Get parameters
-        num_views, num_rows, num_channels = sinogram.shape
-        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
+        # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared
+        # row filter does the rest (bounded peak, jitted, sharded per view-shard).
+        num_rows, num_channels = sinogram.shape[1], sinogram.shape[2]
+        source_detector_dist = self.get_params('source_detector_dist')
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(
+            ['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
-        
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-        
         voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
-        
-        if view_batch_size is None:
-            view_batch_size = self.view_batch_size_for_vmap
-            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
-            view_batch_size = min(view_batch_size, max_view_batch_size)
-
-        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        # Magnification M_0 = source-detector distance / source-isocenter distance.
         M_0 = self.get_magnification()
 
-        # Define the index arrays for channels and rows
-        m = jnp.arange(num_rows)  # Column vector for rows
-        n = jnp.arange(num_channels)  # Row vector for channels
-        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
-
-        # Coordinate transformation to physical distances:
+        # FDK cosine pre-weight (rows, channels), view-INDEPENDENT.  Passed to the shared
+        # kernel, which applies it per detector row inside the bounded scan (no full
+        # out-of-place sinogram * weight copy).
+        m_grid, n_grid = jnp.meshgrid(jnp.arange(num_rows), jnp.arange(num_channels), indexing='ij')
         u_grid, v_grid = self.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
                                                 det_channel_offset, det_row_offset, num_rows, num_channels)
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid ** 2 + v_grid ** 2)
 
-        # Compute the weight
-        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
-
-        # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
-
-        # Compute the scaled filter
-        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
-        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # FDK filter scale alpha (voxel-size factor); pi/num_views is folded in by the
+        # shared method.  For the derivation see the theory zip at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        recon_filter = tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         alpha = delta_det_row / (voxel_volume * M_0)
-        recon_filter = alpha * recon_filter
-
-        # Define convolution for a single row (across its channels)
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
-
-        # Apply above convolve func across each row of a view
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
-
-        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views
-        return filtered_sinogram
+        return self._apply_direct_recon_filter(
+            sinogram, filter_name, filter_scale=alpha,
+            output_sharded=output_sharded, row_weight=weight_map)
 
     def helical_fdk_z_weight(self, recon, sinogram):
         """
@@ -991,25 +1039,38 @@ class ConeBeamModel(TomographyModel):
             recon (jax array): The helical FDK reconstruction with correctly weighted slice intensity.
         """
         
-        num_views, num_rows, num_channels = sinogram.shape
+        # Real sinogram shape from params: the passed ``sinogram`` may be view-sharded and
+        # zero-padded, so num_views must be the real count for the coverage weight to be
+        # correct.  (sinogram is otherwise unused here -- the weighting is per recon slice.)
+        num_views, num_rows, num_channels = self.get_params('sinogram_shape')
         view_params_array = self.get_params('view_params_array')
         helical_z_shifts = view_params_array[:, 1]
         delta_voxel, voxel_slice_aspect, recon_shape, recon_slice_offset, delta_det_row = self.get_params(
             ['delta_voxel', 'voxel_slice_aspect', 'recon_shape', 'recon_slice_offset', 'delta_det_row']
         )
         M_0 = self.get_magnification()
-        num_rows = self.get_params('sinogram_shape')[1]
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-        num_slices = recon_shape[2]
-        
-        k = jnp.arange(num_slices)
-        z_k = delta_voxel_slice * (k - (num_slices - 1) / 2.0) + recon_slice_offset
+
+        # The slice->z map anchors on the REAL slice count (recon_shape[2], always the problem
+        # size), but the weight is applied to the recon AS IT EXISTS ON THE DEVICES, whose slice
+        # axis is zero-padded to a longer length when sharding does not divide evenly.  So build
+        # the weight over the recon's device-form slice count while keeping the z anchor on the
+        # real count, and force the weight to zero on the padded slices: they are identically
+        # zero (the forced-zero invariant) and a padded slice is out of coverage (coverage 0 ->
+        # num_views/0 = inf), so without this guard 0 * inf would make them NaN.  A no-op when
+        # nothing is padded (device-form length == real length, k < num_real_slices everywhere).
+        num_real_slices = recon_shape[2]
+        num_device_slices = recon.shape[2]
+
+        k = jnp.arange(num_device_slices)
+        z_k = delta_voxel_slice * (k - (num_real_slices - 1) / 2.0) + recon_slice_offset
         det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
         visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
         coverage = jnp.sum(visible, axis=1)
         z_weight = num_views / coverage
+        z_weight = jnp.where(k < num_real_slices, z_weight, 0.0)
         recon = recon * z_weight[None, None, :]
-        
+
         return recon
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
@@ -1026,27 +1087,36 @@ class ConeBeamModel(TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  Cone beam runs
-                single-device until the placement port, so the output is the same either way.
+            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
+            output_sharded (bool, optional): If False (default), return a plain array.  If
+                True, return the slice-sharded device form (on an unsharded model the output
+                is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction.
+            recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
+            default, slice-sharded if ``output_sharded=True``.
         """
+        # Shard once at entry so the filter receives view-sharded data (no-op when no mesh
+        # is configured or already sharded).  The pipeline then stays on-device throughout
+        # -- fdk_filter then back_project, both output_sharded=True (zero host transfer) --
+        # exactly like ParallelBeamModel.fbp_recon.
+        sinogram = self._shard_sinogram(sinogram)
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=True)
+        recon = self.back_project(filtered_sinogram, output_sharded=True)
 
-        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
-
-        # Apply backprojection
-        recon = self.back_project(filtered_sinogram, output_sharded=output_sharded)
-        
-        # Slice dependent filtering for helical recon
-        view_params_array = self.get_params('view_params_array')
-        helical_z_shifts = view_params_array[:, 1]
+        # Slice-dependent weighting for helical recon: a per-recon-slice multiply (the recon's
+        # slice axis), so it works directly on the slice-sharded device form -- each device
+        # scales its own slices.  Circular scans (z_range == 0) skip it and stay on-device.
+        helical_z_shifts = self.get_params('view_params_array')[:, 1]
         z_range = jnp.max(helical_z_shifts) - jnp.min(helical_z_shifts)
         if z_range > 0:
-            warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
+            from mbirjax._utils import _called_by
+            if not _called_by('vcd_recon') and self.get_params('verbose') > 0:
+                warnings.warn('Using FDK for helical direct reconstruction. This will produce an approximate reconstruction with artifacts, but is suitable for MBIR initialization.')
             recon = self.helical_fdk_z_weight(recon, sinogram)
 
-        return recon
+        # Single place the output form is decided.
+        return recon if output_sharded else self._gather_recon(recon)
 
     def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
                          first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):

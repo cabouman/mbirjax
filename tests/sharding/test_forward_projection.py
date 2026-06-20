@@ -230,7 +230,7 @@ class TestForwardProjectSharded(unittest.TestCase):
             self.skipTest("no usable multi-device configuration")
 
     def test_adjoint_round_trip(self):
-        """The P3 gate: <A x, y> == <x, A^T y> for the sharded forward/back pair.
+        """The adjoint gate: <A x, y> == <x, A^T y> for the sharded forward/back pair.
 
         x is random slice cylinders, y a random sinogram.  A = forward (all-gather),
         A^T = back (reduce-scatter).  The inner-product identity must hold to float

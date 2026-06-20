@@ -259,8 +259,12 @@ class TestProjectors(unittest.TestCase):
         sinogram = jnp.array(sinogram)
         indices = jnp.array(indices)
 
-        # Run once to finish compiling and get backprojection shape
-        bp = ct_model.sparse_back_project(sinogram, indices[0])
+        # Run once to finish compiling and get backprojection shape.
+        # On a sharded model whose slice count does not divide the device count, the slice
+        # axis is zero-padded to the device form and sparse_back_project (a sharded-contract
+        # internal method) returns that device form; crop the inert zero padding so the
+        # adjoint identity is checked on the problem's real slices.  A no-op without padding.
+        bp = ct_model.sparse_back_project(sinogram, indices[0])[:, :num_recon_slices]
 
         # ##########################
         # Test the adjoint property
@@ -269,11 +273,19 @@ class TestProjectors(unittest.TestCase):
         x = jax.random.uniform(subkey, shape=bp.shape)
         key, subkey = jax.random.split(key)
         y = jax.random.uniform(subkey, shape=sinogram.shape)
+        # When the view count does not divide the device count, ``sinogram`` is the device form
+        # with a zero-padded view tail; the back projector relies on those padded views being
+        # zero (production zero-fills them at entry), so back-projecting a nonzero random tail
+        # would contaminate A^T y at the clamped padding angle.  Zero the padded views to respect
+        # that contract.  A no-op without view padding (num_real_views == sinogram.shape[0]).
+        num_real_views = ct_model.get_params('sinogram_shape')[0]
+        y = y.at[num_real_views:].set(0.0)
 
-        # Do a forward projection, then a backprojection
+        # Do a forward projection, then a backprojection (crop the device-form padded
+        # slices, as above, so <Aty, x> is taken on the real slices).
         voxel_values = x.reshape((-1, num_recon_slices))[indices[0]]
         Ax = ct_model.sparse_forward_project(voxel_values, indices[0])
-        Aty = ct_model.sparse_back_project(y, indices[0])
+        Aty = ct_model.sparse_back_project(y, indices[0])[:, :num_recon_slices]
 
         # Calculate <Aty, x> and <y, Ax>
         Aty_x = jnp.sum(Aty * x)
@@ -326,7 +338,10 @@ class TestProjectors(unittest.TestCase):
         x = x.at[i, j, k].set(eps)
         voxel_values = x.reshape((-1, num_recon_slices))[indices]
         Ax = ct_model.sparse_forward_project(voxel_values, indices)
-        AtAx = ct_model.sparse_back_project(Ax, indices).reshape(x.shape)
+        # Crop the device-form padded slices (sharded, non-dividing slice count) before
+        # reshaping to the real recon shape; the padded slices are inert zeros.  No-op
+        # without padding.  The tested pixel (i, j, k) has k < num_recon_slices (real).
+        AtAx = ct_model.sparse_back_project(Ax, indices)[:, :num_recon_slices].reshape(x.shape)
         finite_diff_hessian = AtAx[i, j, k] / eps
 
         # Determine if property holds

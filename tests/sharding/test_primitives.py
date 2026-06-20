@@ -165,7 +165,7 @@ class TestConfigureSharding(unittest.TestCase):
         self.assertIsInstance(model.dev2dev_safe, bool)
 
     def test_non_dividing_axes_pad_instead_of_raising(self):
-        """Neither sharded axis constrains the device count anymore (P5 Step 4 Stage 2):
+        """Neither sharded axis constrains the device count anymore:
         a non-dividing view count AND a non-dividing slice count are zero-padded to the
         device form, with the tails exactly zero.  num_views=8 over 3 devices pads to 9;
         num_slices=4 over 3 devices pads to 6 (an explicitly configured count may even
@@ -204,7 +204,7 @@ class TestConfigureSharding(unittest.TestCase):
         Also: a STALE device-form array from the previous (padded) layout is rejected
         with a clear error once the new layout no longer pads, even though its size
         happens to divide the device count (the silent-wrong-results corner from
-        Stage 1, closed by the entry shape check).
+        view padding, closed by the entry shape check).
         """
         devs = preferred_devices(2)
         if devs is None:

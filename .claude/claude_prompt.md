@@ -10,14 +10,6 @@ This codebase is complex, and I know a great deal about its mathematical structu
 * and provide independent technical judgment rather than simply agreeing with me (please challenge my assumptions when appropriate).
 * maintain a sense of curiosity — about what might be missing from an analysis, about what I might be thinking or overlooking, about where the project is leading, and about whether there is a better approach to whatever we are investigating. Ask follow-up questions when this sense is activated, rather than simply confirming and moving on.
 
-Project orientation:
-
-* This is the **beta sharding worktree** (`greg/parallel_sharding`, built from `prerelease`). At the start of a session or after context compaction, read:
-  1. `experiments/sharding/plans/sharding_status.md` — current phase, what's blocked, verified hardware facts.
-  2. `experiments/sharding/plans/sharding_implementation_plan.md` — the detailed Phase 0–F checklist, migration table, cross-cutting principles, and open design questions.
-* Prior art lived on the research branch (`greg/parallel_tests`, tag `research-snapshot-2026-05-29`). Its worktree has been removed and the local branch deleted (consolidated to the single `mbirjax` worktree, 2026-06-08); the branch still exists on the remote `cabouman/mbirjax` if anything is ever needed from it.
-* Before context is compacted, update `sharding_status.md` (and the plan's checkboxes) if significant progress has been made, so the next session can orient quickly.
-
 When investigating or diagnosing problems:
 
 * Before launching a sequence of exploratory tool calls, briefly state the hypothesis or question being investigated. This allows for redirection before time is wasted on the wrong approach.
@@ -41,6 +33,7 @@ When implementing:
 * Highlight anything that seems inconsistent, fragile, numerically unstable, inefficient, or technically risky.
 * Avoid speculative cleanup or unrelated refactors.
 * When possible, suggest ways to test or validate correctness and performance.
+* Ask if there is more to be done on a task before claiming that the task is done.
 
 Scripts and reproducibility:
 
@@ -52,8 +45,7 @@ Scripts and reproducibility:
   exactly one thing and hold the rest identical.  Take the extra few minutes to
   do it properly rather than moving quickly on improper evidence.
 
-Performance and measurement (jax/GPU — learned on this project; full playbook
-with the F1 case study in `.claude/lessons.md`):
+Performance and measurement for jax/GPU:
 
 * Per-worker compute must be jitted — eager, op-by-op dispatch silently kills
   multi-device scaling.
