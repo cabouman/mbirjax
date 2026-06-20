@@ -464,6 +464,12 @@ class MultiAxisParallelModel(TomographyModel):
                      output_sharded=False):
         return self.fbp_recon(sinogram, filter_name, view_batch_size, output_sharded=output_sharded)
 
+    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+        """Thin alias for :meth:`fbp_filter` — the FBP filtering step of a direct recon (mirrors
+        ParallelBeamModel.direct_filter so ``model.direct_filter`` works uniformly across geometries).
+        ``output_sharded`` chooses the output form (plain by default, view-sharded when True)."""
+        return self.fbp_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
+
     def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
         """
         Filters the sinogram using a Velocity-Weighted Directional 1D Ramp filter.
