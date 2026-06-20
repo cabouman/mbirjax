@@ -326,6 +326,40 @@ class TestProjectors(unittest.TestCase):
         print("relative difference =", rel_diff)
         self.assertTrue(adjoint_test_result)
 
+    def test_multiaxis_forward_reduces_to_parallel(self):
+        """At zero elevation the multiaxis forward projector must reduce EXACTLY to
+        ParallelBeamModel (isotropic) and to anisotropic_parallel (with a row aspect).
+
+        This is a strong ABSOLUTE-magnitude anchor that the adjoint identity cannot provide:
+        the adjoint passes for any consistent-but-mis-scaled forward/back pair, whereas
+        matching a validated reference model pins the scaling.  voxel_slice_aspect is left at 1
+        here because once slices spread across detector rows (any aspect or elevation) parallel
+        beam is no longer a valid reference (it is slice-independent).
+        """
+        nv, ndr, ndc = 16, 32, 32
+        az = jnp.linspace(0.0, jnp.pi, nv, endpoint=False) + 1e-4
+        ma_angles = jnp.stack([az, jnp.zeros(nv)], axis=1)     # zero elevation
+        rng = np.random.default_rng(0)
+        for row_aspect in (1.0, 1.9):
+            with self.subTest(voxel_row_aspect=row_aspect):
+                ma = mj.MultiAxisParallelModel((nv, ndr, ndc), ma_angles)
+                ma.set_params(verbose=0, voxel_row_aspect=row_aspect)
+                ma.auto_set_recon_geometry()
+                recon_shape = tuple(int(v) for v in ma.get_params('recon_shape'))
+                # ParallelBeam reference with the SAME recon geometry + row aspect.
+                pb = mj.ParallelBeamModel((nv, ndr, ndc), az)
+                pb.set_params(verbose=0, voxel_row_aspect=row_aspect, recon_shape=recon_shape,
+                              delta_voxel=float(ma.get_params('delta_voxel')))
+                phantom = jnp.asarray(rng.random(recon_shape, dtype=np.float32))
+                s_ma = np.asarray(ma.forward_project(phantom))
+                s_pb = np.asarray(pb.forward_project(phantom))
+                # Scale-invariant gate (project rule: never exact equality for computed floats);
+                # the value is ~0 on CPU, the 1e-6 margin absorbs any GPU reduction reordering.
+                rel = float(np.max(np.abs(s_ma - s_pb)) / np.max(np.abs(s_pb)))
+                self.assertLess(rel, 1e-6,
+                                f"multiaxis(el=0) forward != parallel: rel-max {rel:.3e} "
+                                f"(voxel_row_aspect={row_aspect})")
+
     def verify_hessian(self, geometry_type):
         """
         Verify the hessian property of the back projector:

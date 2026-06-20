@@ -358,6 +358,28 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     currently **ungated** (not in `_geometry_types_for_tests`, no dedicated FBP/recon test).
   - *Note:* `fbp_filter` is still single-device (accepts `output_sharded`, no-ops it); the rewrite
     should take the per-view-shard `run_per_device` treatment when multiaxis is ported (D).
+- **Multiaxis vertical-fan absolute magnitude (the `1/cos(elevation)` question) — OPEN, deferred.**
+  - *What is verified.*  At elevation 0 the multiaxis forward projector reduces **bit-exactly** to
+    `ParallelBeamModel` (isotropic) and to `anisotropic_parallel` (with `voxel_row_aspect ≠ 1`) — a
+    permanent gate (`test_projectors.test_multiaxis_forward_reduces_to_parallel`).  So the in-plane
+    density (incl. the channel-major fans and the M-aniso row-aspect) is calibrated against validated
+    reference models, not merely adjoint-consistent.
+  - *What is NOT pinned.*  The vertical (elevation) fan uses `scaling = 1.0` — no path-length
+    normalization — so for **elevation ≠ 0** or **`voxel_slice_aspect ≠ 1`** the absolute magnitude is
+    only *self-consistent* (forward/back adjoint holds, Hessian holds), not anchored to a reference; the
+    adjoint is blind to a consistent scaling error, and parallel beam is not a valid reference once
+    slices spread across rows.  Cone/translation carry a `1/cos(phi)` (cone-angle) path-length factor on
+    their vertical fans; multiaxis has no analog.  But the geometry differs: the multiaxis detector is
+    held **perpendicular to the (tilted) ray** (verified from the coordinate maps — the ray direction is
+    `(−sinθ·cosφ, cosθ·cosφ, sinφ)` and the detector axes are both ⟂ to it), so there is **no
+    detector-incidence obliquity** (unlike cone's fixed detector); the only tilt effect is the ray
+    cutting obliquely through the axis-aligned voxel grid.  So the right factor must be **derived from
+    that path length**, not copied from cone — it may not be a clean `1/cos(elevation)`.
+  - *Decision.*  Left as `scaling = 1.0` through the M-aniso work (a path-length factor changes values
+    even at unit aspects, so it cannot ride the reduce-to-isotropic gate).  Take it up as a **separate
+    change** with its own **physical-fidelity gate** — forward-project a known object at elevation ≠ 0
+    and compare to an analytic line integral (the adjoint cannot gate it).  Acceptable as-is for the
+    intended use (an MBIR initializer; the iterative recon absorbs a global mis-scaling).
 - **Settable view parameters — ✅ done.**  `view_params_array` is a traced projector arg;
   `set_view_parameters()` updates it with no recompile; `vcls` runs as a 1-view sibling.
   Deleting the old `view_indices` plumbing is the E task above.
