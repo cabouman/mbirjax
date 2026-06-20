@@ -21,6 +21,60 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
+## HANDOFF (2026-06-19) — TRANSLATION PORT COMPLETE (increment D, T1–T5), CPU-validated; sharded-test tolerances made scale-invariant
+
+▶ **The `TranslationModel` sharding port is DONE (T1–T5), CPU-validated end to end.**  Per-stage record:
+`plans/increment_d_translation_design.md` (T1–T5 rows all ✅).  Translation now runs the always-on
+placement path (single-device = trivial 1-device mesh; multi-device shards recon-by-slice /
+sino-by-view), correct at ALL device counts incl. padding.  Key framing held: `TranslationModel` was
+`ConeBeamModel` *pre-port*, so the cone increments mapped ~1:1 and the infra was already
+geometry-agnostic.  Per stage:
+  - **T1** — `fdk_filter` → shared `_apply_direct_recon_filter` (drops the out-of-place weight/π
+    multiplies + the `fftconvolve`/`lax.map` fragility); value-identical (ablation 2.9e-7).
+  - **T2** — banded back kernel (`back_project_one_view_to_band` + global validity clip) + a rolled
+    `lax.map` single-device rewire; deleted `entries_per_cylinder_batch`; **bit-identical** back.
+  - **T3** — forward vertical fan anchors the slice count on params (fixed a latent params-vs-input-
+    length inconsistency); **bit-identical** (the batch method asserts the real slice count).
+  - **T4** — flipped `_supports_sharding()=True` (**one line**; translation adds NO projector/driver
+    overrides — uses the geometry-neutral base hooks + the GPU n=1 short-circuit).  New
+    `tests/sharding/test_translation_sharded.py`.
+  - **T5** — inert slice padding: **ZERO production changes** (the cone-B5 infra + the T2/T3 clips
+    already made it inert); test-only `TestPaddedSlicesTranslation` (prime 7-slice, isotropic +
+    anisotropic, incl. the poison-the-padding inertness check + the fully-padded-shard branch).
+Full suite **185p/2s @4 CPU dev**.
+
+▶ **Cross-cutting: the sharded-test tolerances are now SCALE-INVARIANT** (`conftest.assert_sharded_allclose`
+= `max|out-ref|/max|ref| ≤ TOL`).  Surfaced by the translation Hessian (coeff_power=2 → peak ~5e3): the
+sharded-vs-single diff is reduction-ORDER float noise that scales with the PEAK and is
+**process-nondeterministic on CPU** (usually 0, occasionally ~1e-7 of peak — a per-process XLA
+autotuning choice), so a fixed `atol` was both scale-fragile AND flaky.  Migrated EVERY sharded-vs-single
+comparison in `tests/sharding`; kept exact/tight gates for data-movement, constructed-zero, and the 1e-6
+elementwise qGGMRF kernel band tests.  New lesson in `.claude/lessons.md`; corrected the stale
+"CPU compiles both identically and stays exact" comments.
+
+▶ **⚠ GPU CONFIRMATIONS (Greg's cluster) — correctness is CPU-validated; these are GPU-only:**
+(1) the **GPU n=1 back short-circuit** band-vs-pixel platform split for translation (decision 2b —
+geometry-agnostic and active, but UNMEASURED for translation); (2) per-device **memory/time scaling**
+(the capacity win) at dividing counts; (3) GPU confirmation at a **non-dividing slice count** (the
+4-CPU-device run is the proxy, as for cone B5).
+
+▶ **NEXT substantive code = MULTIAXIS** (the remaining increment-D sub-effort): `MultiAxisParallelModel`
+extends `TomographyModel` directly → its own `_supports_sharding` flip, and the **FBP angular-weighting
+fix** should land with it (v3 §6 option 1: uniform `π/num_views` + channel ramp, order-invariant; the
+gradient-based weighting is wrong for simultaneous fixed measurements with no trajectory/ordering).
+Then **increment E** (the retirement cascade — `main_device`/`view_indices`/legacy dispatch — only after
+ALL geometries are ported; keep the single-device back driver the GPU n=1 short-circuit calls).
+
+▶ **Still a prereq:** add `translation` to the mbirjax_metrics harness + capture correctness/memory/time
+baselines (dividing/non-dividing size pair + an anisotropic-translation size) — Greg + a separate session.
+
+**Committed (Greg, from PyCharm):** T1 `d1ab7ca`, direct_filter wrapper `c051c3b`, T2 `c7dcc2c`, T3
+`673ae06`, param-name `cf0c8ec`, T4 `c49109c`, tolerance hardening `090290e`.  **Staged (Greg commits):**
+T5 = `tests/sharding/test_padding.py` (`TestPaddedSlicesTranslation`) + the
+`increment_d_translation_design.md` T-row updates.
+
+---
+
 ## HANDOFF (2026-06-18b) — Cone done & in a PR; increment D (translation) is next, staged plan written
 
 ▶ **Cone sharding is complete and in a PR to prerelease**, and work has moved to branch

@@ -614,6 +614,87 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
                         msg="fully-padded trailing shard not exactly zero")
 
 
+class TestPaddedSlicesTranslation(_PaddedReconMixin, unittest.TestCase):
+    """Translation: like cone, the recon slice count is independent of the detector rows (it is
+    auto-sized from the z-translation extent), so the sharded forward GATHERS + CROPS the
+    device-form cylinder before the monolithic kernel and the detector rows do NOT pad with the
+    slices (PADS_ROWS=False).  Variants: isotropic and anisotropic (voxel_slice_aspect=2.9, the
+    suite's anisotropic_translation aspect -> a slice count that is NOT num_det_rows).  Both
+    z-ranges are tuned to a prime slice count (7), so every device count > 1 pads."""
+
+    VARIANTS = ('isotropic', 'anisotropic')
+    PADS_ROWS = False
+    NUM_VIEWS = 8
+    NUM_DET_ROWS = 32
+    # z-translation half-range per variant, tuned so auto_set_recon_geometry lands on 7 slices
+    # (prime).  recon_shape is computed deterministically from params (no GPU reordering), so
+    # these are platform-stable; the surrounding plateau is wide enough that the exact value is
+    # not knife-edge.
+    _ZRANGE = {'isotropic': 1.65, 'anisotropic': 4.6}
+
+    def _make_model(self, variant='isotropic'):
+        nv, ndr, ndc = self.NUM_VIEWS, self.NUM_DET_ROWS, self.NUM_CHANNELS
+        zr = self._ZRANGE[variant]
+        tv = np.zeros((nv, 3))
+        tv[:, 0] = np.linspace(-8.0, 8.0, nv)        # x translations (set the recon row extent)
+        tv[:, 2] = np.linspace(-zr, zr, nv)          # z translations (set the slice extent)
+        sdd = 4.0 * ndc
+        model = mbirjax.TranslationModel((nv, ndr, ndc), jnp.asarray(tv),
+                                         source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
+        if variant == 'anisotropic':
+            model.set_params(voxel_row_aspect=1.9)
+            model.set_params(voxel_slice_aspect=2.9)
+            model.auto_set_recon_geometry()
+        model.configure_devices(1)   # deterministic single-device reference; sharded tests override
+        return model
+
+    def _label(self, variant):
+        return variant
+
+    def test_prime_slice_count(self):
+        """Guard the tuned geometry: both variants must auto-size to the prime slice count the
+        padding coverage relies on (a drift in auto_set_recon_geometry would silently stop
+        exercising the padded path)."""
+        for variant in self.VARIANTS:
+            with self.subTest(variant=variant):
+                self.assertEqual(int(self._make_model(variant).get_params('recon_shape')[2]), 7)
+
+    def test_fully_padded_trailing_shard(self):
+        """A tiny 3-slice translation on 4 devices makes the LAST shard entirely padding
+        (n_valid == 0): exercises the _mask_padded_* n_valid<=0 branch + a gather that
+        concatenates a fully-zero shard (which auto-config avoids by skipping such a count, so
+        only an explicit configure reaches it).  Projector-level, so it stays fast."""
+        devs = preferred_devices(4)
+        if devs is None:
+            self.skipTest("need 4 devices")
+        nv, ndr, ndc = self.NUM_VIEWS, self.NUM_DET_ROWS, self.NUM_CHANNELS
+        sdd = 4.0 * ndc
+
+        def tiny():
+            tv = np.zeros((nv, 3))
+            tv[:, 0] = np.linspace(-8.0, 8.0, nv)
+            tv[:, 2] = np.linspace(-0.65, 0.65, nv)   # short z-range -> 3 slices
+            m = mbirjax.TranslationModel((nv, ndr, ndc), jnp.asarray(tv),
+                                         source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
+            m.configure_devices(1)
+            return m
+
+        ref_model = tiny()
+        # 3 slices over 4 devices -> shards of 1, so the last shard is entirely padding.
+        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 3)
+        sino = self._sino(ref_model)
+        recon = self._recon_array(ref_model)
+        ref_back = np.asarray(ref_model.back_project(sino))
+        ref_fwd = np.asarray(ref_model.forward_project(recon))
+        model = tiny()
+        model.configure_sharding(devs)
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
+        back_dev = np.asarray(model.back_project(sino, output_sharded=True))
+        self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
+                        msg="fully-padded trailing shard not exactly zero")
+
+
 class TestQggmrfInterfaceMask(unittest.TestCase):
     """Kernel-level slice-padding mask, with NO mesh.
 
