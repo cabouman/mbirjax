@@ -484,11 +484,13 @@ class _PaddedReconMixin:
         on the VALUES in the recon's padded slices (the stronger claim than 'the padding stays
         zero').  Forward-project a device-form recon twice on the SAME sharded model -- once
         zero-filled, once with the padded slices poisoned with a large constant -- and require
-        the results to be IDENTICAL (same model => same FP reorder, so the only possible
-        difference is the poison).  The poison reaches only cropped-away entries: cone crops the
-        padded slices before the kernel; parallel projects them solely to padded detector rows,
-        which the gather drops.  Exact equality is the right gate here -- it is a crop identity,
-        not a computed-float comparison."""
+        the results to MATCH.  The poison reaches only cropped-away entries: the base gather-forward
+        crops the padded slices before the kernel; parallel projects them solely to padded detector
+        rows, which the gather drops.  On CPU this is bit-exact even for a 1e6 poison, so the padding
+        truly is inert; but forward_project is run-to-run NONDETERMINISTIC on GPU (scatter-add atomics
+        reorder summation between two separate calls), so the two results differ by ~1 ULP regardless
+        of the poison.  So gate on a scale-invariant peak-relative max: a real leak is ~O(1) relative
+        (the 1e3 poison), while the GPU run-to-run noise is ~1e-6."""
         for variant in self.VARIANTS:
             with self.subTest(self._label(variant)):
                 model0 = self._make_model(variant)
@@ -502,9 +504,13 @@ class _PaddedReconMixin:
                     clean = np.asarray(model.forward_project(padded))
                     poisoned = padded.at[..., real_slices:].set(1.0e3)
                     out = np.asarray(model.forward_project(poisoned))
-                    np.testing.assert_array_equal(
-                        out, clean,
-                        err_msg=f"forward not inert to padded values {self._label(variant)} n_dev={n}")
+                    # Inline scale-invariant gate (peak-relative max): dependency-free, so this is
+                    # byte-identical on conebeam_sharding (no conftest.assert_sharded_allclose) and
+                    # sharding_extensions -> the rebase/merge into prerelease does not conflict here.
+                    denom = float(np.max(np.abs(clean))) or 1.0
+                    rel = float(np.max(np.abs(out - clean)) / denom)
+                    self.assertLess(rel, 1e-3, msg=f"forward not inert to padded values "
+                                    f"{self._label(variant)} n_dev={n} (rel={rel:.2e})")
                     ran = True
                 if not ran:
                     self.skipTest("no padded device count available")
