@@ -1,4 +1,4 @@
-We're returning to the multi-GPU/CPU sharding work on `mbirjax` (working branch `greg/sharding_extensions`; the cone-beam sharding is complete and in a PR to prerelease). The next step is the **library sharding port, increment D — the `TranslationModel` port**, starting with the **FDK filter (T1)**.
+We're continuing multi-GPU/CPU sharding work on `mbirjax` (working branch `greg/sharding_extensions`; the cone-beam sharding is complete and in a PR to prerelease). The next step is the **library sharding port, increment D — the `TranslationModel` port**, starting with the **FDK filter (T1)**.
 
 First read, in order:
 1. `.claude/claude_prompt.md` — collaboration style + workflow.

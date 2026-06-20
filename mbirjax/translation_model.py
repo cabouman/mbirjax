@@ -744,77 +744,57 @@ class TranslationModel(mj.TomographyModel):
         """
         Perform FDK filtering on the given sinogram.
 
+        Uses the shared row-batched filter kernel (tomography_utils.apply_row_filter via
+        TomographyModel._apply_direct_recon_filter), the same path as
+        ParallelBeamModel.fbp_filter and ConeBeamModel.fdk_filter, with an FDK cosine
+        pre-weight applied per detector row.  The peak stays at the input+output floor (no
+        full-sinogram out-of-place ``sinogram * weight`` copy, no concatenate, no f64
+        promotion of the sinogram), and the fragile per-view ``lax.map`` (jax-ml/jax#27591)
+        is gone.  The TranslationModel runs single-device until the placement port, so the
+        result is the same with or without ``output_sharded``; the argument is plumbed
+        through for API uniformity and takes effect when the projectors are ported.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
+            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
+                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
             output_sharded (bool, optional): Accepted for API uniformity.  The translation model
                 runs single-device until the placement port, so the output is the same either way.
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FDK filtering.
         """
-        # Get parameters
-        num_views, num_rows, num_channels = sinogram.shape
-        source_detector_dist, source_iso_dist = self.get_params(['source_detector_dist', 'source_iso_dist'])
-        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
+        # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared row
+        # filter does the rest (bounded peak, jitted, sharded per view-shard once ported).
+        # TranslationModel reuses ConeBeamModel.detector_mn_to_uv (it has no detector map of
+        # its own), matching the fan architecture it shares with cone.
+        num_rows, num_channels = sinogram.shape[1], sinogram.shape[2]
+        source_detector_dist = self.get_params('source_detector_dist')
+        delta_voxel, delta_det_row, delta_det_channel, voxel_row_aspect, voxel_slice_aspect = self.get_params(
+            ['delta_voxel', 'delta_det_row', 'delta_det_channel', 'voxel_row_aspect', 'voxel_slice_aspect'])
         det_row_offset, det_channel_offset = self.get_params(['det_row_offset', 'det_channel_offset'])
-
         delta_voxel_row = voxel_row_aspect * delta_voxel
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
-
         voxel_volume = delta_voxel * delta_voxel_row * delta_voxel_slice
-
-        if view_batch_size is None:
-            view_batch_size = self.view_batch_size_for_vmap
-            max_view_batch_size = 128  # Limit the view batch size here and ParallelBeam due to https://github.com/jax-ml/jax/issues/27591
-            view_batch_size = min(view_batch_size, max_view_batch_size)
-
-        # Magnification factor M_0 = Source-Detector Distance / Source-Isocenter Distance
+        # Magnification M_0 = source-detector distance / source-isocenter distance.
         M_0 = self.get_magnification()
 
-        # Define the index arrays for channels and rows
-        m = jnp.arange(num_rows)  # Column vector for rows
-        n = jnp.arange(num_channels)  # Row vector for channels
-        m_grid, n_grid = jnp.meshgrid(m, n, indexing='ij')
-
-        # Coordinate transformation to physical distances:
+        # FDK cosine pre-weight (rows, channels), view-INDEPENDENT.  Passed to the shared
+        # kernel, which applies it per detector row inside the bounded scan (no full
+        # out-of-place sinogram * weight copy).
+        m_grid, n_grid = jnp.meshgrid(jnp.arange(num_rows), jnp.arange(num_channels), indexing='ij')
         u_grid, v_grid = mj.ConeBeamModel.detector_mn_to_uv(m_grid, n_grid, delta_det_channel, delta_det_row,
                                                             det_channel_offset, det_row_offset, num_rows, num_channels)
+        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid ** 2 + v_grid ** 2)
 
-        # Compute the weight
-        weight_map = source_detector_dist / jnp.sqrt(source_detector_dist ** 2 + u_grid**2 + v_grid**2)
-
-        # Apply the pre-weighting factor to the sinogram
-        weighted_sinogram = jax.device_put(sinogram * weight_map[None, :, :], self.sinogram_device)
-
-        # Compute the scaled filter
-        # Scaling factor alpha adjusts the filter to account for voxel size, ensuring consistent reconstruction.
-        # For a detailed theoretical derivation of this scaling factor, please refer to the zip file linked at
+        # FDK filter scale alpha (voxel-size factor); pi/num_views is folded in by the
+        # shared method.  For the derivation see the theory zip at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
-        recon_filter = mj.tomography_utils.generate_direct_recon_filter(num_channels, filter_name=filter_name)
         alpha = delta_det_row / (voxel_volume * M_0)
-        recon_filter = alpha * recon_filter
-
-        # Define convolution for a single row (across its channels)
-        def convolve_row(row):
-            return jax.scipy.signal.fftconvolve(row, recon_filter, mode="valid")
-
-        # Apply above convolve func across each row of a view
-        def apply_convolution_to_view(view):
-            return jax.vmap(convolve_row)(view)
-
-        # Apply convolution across the channels of the weighted sinogram per each fixed view & row
-        num_views = sinogram.shape[0]
-        filtered_sino_list = []
-        for i in range(0, num_views, view_batch_size):
-            sino_batch = jax.device_put(weighted_sinogram[i:min(i + view_batch_size, num_views)], self.sinogram_device)
-            filtered_sinogram_batch = jax.lax.map(apply_convolution_to_view, sino_batch, batch_size=view_batch_size)
-            filtered_sinogram_batch.block_until_ready()
-            filtered_sino_list.append(jax.device_put(filtered_sinogram_batch, self.sinogram_device))
-        filtered_sinogram = jnp.concatenate(filtered_sino_list, axis=0)
-        filtered_sinogram *= jnp.pi / num_views
-        return filtered_sinogram
+        return self._apply_direct_recon_filter(
+            sinogram, filter_name, filter_scale=alpha,
+            output_sharded=output_sharded, row_weight=weight_map)
 
     def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
                   output_sharded=False):
@@ -825,6 +805,13 @@ class TranslationModel(mj.TomographyModel):
         perform the backprojection.  This is different from many implementations, in which the backprojection is not
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
+
+        Note:
+            The ``pi / num_views`` angular weight in the filter assumes EQUALLY SPACED views over
+            the conventional full angular range and applies no short-scan (Parker-style) redundancy
+            weighting.  Translation tomography is an inherently limited-angle geometry, so this
+            direct FDK reconstruction is only approximate; it is intended as an initializer for the
+            iterative ``recon()``, which absorbs a global angular mis-weighting in a few iterations.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).

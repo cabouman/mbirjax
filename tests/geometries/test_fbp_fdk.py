@@ -14,7 +14,18 @@ class TestFBPReconstruction(unittest.TestCase):
     def setUp(self):
         """Set up before each test method."""
         
-        # Choose the geometry types
+        # Choose the geometry types.
+        #
+        # translation / anisotropic_translation are deliberately EXCLUDED from this
+        # recon-NRMSE gate: translation tomography is an inherently limited-angle (TCT)
+        # geometry, so a direct FDK reconstruction is only an MBIR initializer and a
+        # Shepp-Logan NRMSE tolerance would be loose to the point of meaninglessness.
+        # Their direct-recon COMPONENTS are gated separately instead:
+        #   - the FDK filter (fdk_filter / direct_filter) -- by the per-component
+        #     correctness baseline (.npy fingerprint) in the mbirjax_metrics harness;
+        #   - the projectors -- by the adjoint identity in test_projectors and the
+        #     convergence/sanity recon in test_vcd.
+        # See experiments/sharding/plans/increment_d_translation_design.md (T1 / Tests).
         self.geometry_types = mj._utils._geometry_types_for_tests.copy()
         self.geometry_types.remove("translation")
         self.geometry_types.remove("anisotropic_translation")
