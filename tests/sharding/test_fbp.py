@@ -45,6 +45,59 @@ def _make_model_and_sino(num_views=8, num_rows=16, num_channels=64, seed=0):
     return model, sino
 
 
+class TestMultiAxisFbpFilter(unittest.TestCase):
+    """Correctness gates for the MultiAxisParallelModel FBP filter.
+
+    The old fbp_filter built a per-view directional 2-D ramp from jnp.gradient(angles) --
+    the step between LIST-NEIGHBOR views.  Because this geometry is simultaneous fixed
+    measurements with no acquisition trajectory, the angles list order is arbitrary, so
+    that filter was order-dependent and ill-defined.  The fix uses the standard 1-D channel
+    ramp + a uniform pi/num_views weight (the shared _apply_direct_recon_filter path), which
+    is order-INVARIANT and reduces exactly to ParallelBeamModel.fbp_filter in the
+    azimuth-only, zero-elevation, equally-spaced limit."""
+
+    def test_fbp_filter_reorder_invariant(self):
+        """Permuting the arbitrary view list (set unchanged) must not change the filtered
+        result -- the defining property the old directional ramp violated (it gave
+        rel-max ~8.5)."""
+        rng = np.random.default_rng(7)
+        num_views, num_rows, num_channels = 16, 32, 32
+        az = np.linspace(0.0, np.pi, num_views, endpoint=False)
+        el = np.deg2rad(rng.uniform(-15, 15, num_views))
+        angles = np.stack([az, el], axis=1)
+        perm = rng.permutation(num_views)
+
+        m = mbirjax.MultiAxisParallelModel((num_views, num_rows, num_channels), jnp.asarray(angles))
+        m_perm = mbirjax.MultiAxisParallelModel((num_views, num_rows, num_channels),
+                                                jnp.asarray(angles[perm]))
+        for model in (m, m_perm):
+            model.configure_devices(1)
+            model.auto_set_recon_geometry()
+
+        y = jnp.asarray(rng.standard_normal((num_views, num_rows, num_channels), dtype=np.float32))
+        f = np.asarray(m.fbp_filter(y))
+        f_perm_aligned = np.asarray(m_perm.fbp_filter(y[perm]))[np.argsort(perm)]
+        rel = float(np.max(np.abs(f - f_perm_aligned)) / np.max(np.abs(f)))
+        self.assertLess(rel, 1e-6, f"fbp_filter not order-invariant: rel-max diff {rel:.3e}")
+
+    def test_fbp_filter_reduces_to_parallel(self):
+        """Zero elevation + equally-spaced azimuths: the multiaxis FBP filter must equal
+        ParallelBeamModel.fbp_filter (same shared kernel, same scaling)."""
+        num_views, num_rows, num_channels = 16, 32, 32
+        az = np.linspace(0.0, np.pi, num_views, endpoint=False)
+        m_ma = mbirjax.MultiAxisParallelModel((num_views, num_rows, num_channels),
+                                              jnp.asarray(np.stack([az, np.zeros_like(az)], axis=1)))
+        m_pb = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), jnp.asarray(az))
+        # Pin identical voxel scaling so the only thing under test is the filter itself.
+        for model in (m_ma, m_pb):
+            model.configure_devices(1)
+            model.set_params(delta_voxel=1.0, voxel_row_aspect=1.0)
+
+        rng = np.random.default_rng(3)
+        y = jnp.asarray(rng.random((num_views, num_rows, num_channels), dtype=np.float32))
+        assert_sharded_allclose(np.asarray(m_ma.fbp_filter(y)), np.asarray(m_pb.fbp_filter(y)))
+
+
 class TestFbpFilterSingleDevice(unittest.TestCase):
     """Single-device (pinned 1-device mesh) behavior: a plain input is filtered and shape-preserved."""
 

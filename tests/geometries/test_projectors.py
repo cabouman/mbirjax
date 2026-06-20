@@ -6,6 +6,18 @@ import jax.numpy as jnp
 import mbirjax as mj
 
 
+# Geometries gated by the adjoint/Hessian projector tests.  Multiaxis is gated HERE but
+# intentionally kept OUT of mj._utils._geometry_types_for_tests, so it is NOT pulled into the
+# VCD-convergence net (test_vcd) or the recon-NRMSE net (test_fbp_fdk): multiaxis is a
+# limited-angle geometry whose direct recon is only an MBIR initializer, and (as with
+# translation) its iterated VCD loop is geometry-independent and already gated by parallel +
+# cone.  Only the anisotropic variant is listed: it subsumes the isotropic case (aspects ==
+# 1), so a separate isotropic entry would be redundant.  (Anisotropic voxels are not yet wired
+# into the multiaxis kernels, so this currently behaves isotropically; once they are wired,
+# this same entry exercises the anisotropic path with no test change.)
+_PROJECTOR_GEOMETRY_TYPES = list(mj._utils._geometry_types_for_tests) + ['anisotropic_multiaxis']
+
+
 class TestProjectors(unittest.TestCase):
     """
     Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
@@ -18,8 +30,9 @@ class TestProjectors(unittest.TestCase):
 
     def setUp(self):
         """Set up before each test method."""
-        # Choose the geometry type
-        self.geometry_types = mj._utils._geometry_types_for_tests
+        # Choose the geometry type (adds multiaxis to the shared list; see
+        # _PROJECTOR_GEOMETRY_TYPES at module top for why it is not in the shared list).
+        self.geometry_types = _PROJECTOR_GEOMETRY_TYPES
 
         # Set parameters
         self.num_views = 64
@@ -73,6 +86,12 @@ class TestProjectors(unittest.TestCase):
         # See experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False) + 1e-4
 
+        # Multiaxis takes (num_views, 2) = [azimuth, elevation]: reuse the azimuth sweep above
+        # and add a deterministic spread of elevations (~ +/-17 deg) so the vertical (tilt) fan
+        # is exercised, not just the azimuth-only (parallel-equivalent) limit.
+        self.multiaxis_angles = jnp.stack(
+            [self.angles, jnp.linspace(-0.30, 0.30, self.num_views)], axis=1)
+
     def set_translation_vectors(self, geometry_type):
         if geometry_type in ('translation', 'anisotropic_translation'):
             self.translation_vectors = np.zeros((self.num_views, 3))
@@ -113,6 +132,11 @@ class TestProjectors(unittest.TestCase):
             ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
                                            source_detector_dist=self.source_detector_dist,
                                            source_iso_dist=self.source_iso_dist)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
+        elif geometry_type == 'anisotropic_multiaxis':
+            ct_model = mj.MultiAxisParallelModel(self.sinogram_shape, self.multiaxis_angles)
             ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
             ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
             ct_model.auto_set_recon_geometry()
@@ -352,7 +376,7 @@ class TestProjectors(unittest.TestCase):
 def _add_per_geometry_projector_tests():
     """Generate one test_<operation>_<geometry> method per pair (see note in TestProjectors)."""
     operations = ('adjoint', 'hessian', 'view_batching')
-    for geometry_type in mj._utils._geometry_types_for_tests:
+    for geometry_type in _PROJECTOR_GEOMETRY_TYPES:
         for operation in operations:
             def test(self, geometry_type=geometry_type, operation=operation):
                 print('Testing {} with {}'.format(operation, geometry_type))
