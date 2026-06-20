@@ -45,7 +45,8 @@ name over the number.*
 | **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU-confirmed in the nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok on H100) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
-| **D** — translation + multiaxis ports | ⬜ pending; **translation staged plan written** (`increment_d_translation_design.md`); multiaxis FBP fix decided (§6) |
+| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
+| **D — multiaxis** | ⬜ **NEXT**; `MultiAxisParallelModel` flips its own `_supports_sharding`; land the FBP angular-weighting fix with it (§6, decided in principle) |
 | **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
 
 ---
@@ -275,13 +276,18 @@ no-single-device-regression.
      platform-complementary, so F1's "delete the loser" does **not** apply to cone back.  (E must
      likewise keep the single-device back driver/kernel.)
 3. **D** — translation + multiaxis ports (same template).
-   - **Translation** — staged plan in `increment_d_translation_design.md` (T1 FDK filter → T2 banded
-     back kernel → T3 forward anchor → T4 flip `_supports_sharding` → T5 inert padding).  Key framing:
-     `TranslationModel` is `ConeBeamModel` *pre-port* (copied FDK filter, `entries_per_cylinder_batch`,
-     same fan architecture), so the cone increments map ~1:1 and the infra is already geometry-agnostic.
-     Decided (2026-06-18): **mirror cone, defer the kernel consolidation** (keeps row-sharding
-     per-geometry open); **keep both back kernels + GPU n=1 short-circuit** (measure the platform split).
-   - **Multiaxis** — `MultiAxisParallelModel` extends `TomographyModel` directly → its own
+   - **Translation — ✅ DONE 2026-06-19/20** (CPU + GPU validated; full record in
+     `increment_d_translation_design.md`).  T1–T5 landed exactly as planned (`TranslationModel` was
+     `ConeBeamModel` *pre-port*, so the increments mapped ~1:1 and T5 needed zero production changes).
+     Post-port refinements this session: a **scale-invariant sharded-test gate**
+     (`conftest.assert_sharded_allclose`, surfaced by the translation Hessian + CPU reduction-order
+     nondeterminism), and **dropping the redundant sharded VCD-recon test** for translation
+     (`_PaddedReconMixin.RUN_SHARDED_VCD`; the sharded VCD loop is geometry-independent, gated on
+     parallel + cone).  In `greg/sharding_extensions`, rebased onto prerelease (PR-ready).
+     **GPU follow-ups (Greg's cluster, not blocking):** the GPU n=1 back short-circuit band-vs-pixel
+     platform split for translation (decision 2b — active but UNMEASURED), and per-device memory/time
+     scaling.  **Prereq:** `translation` baselines in mbirjax_metrics (separate session).
+   - **Multiaxis — ⬜ NEXT** — `MultiAxisParallelModel` extends `TomographyModel` directly → its own
      `_supports_sharding` flip; **settle the FBP-filter fix with this port** (see §6 "Multiaxis FBP
      angular weighting", decided in principle, implementation deferred).
 4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /

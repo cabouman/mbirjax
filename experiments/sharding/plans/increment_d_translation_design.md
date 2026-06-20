@@ -1,4 +1,14 @@
-# Increment D — TranslationModel port: design note (2026-06-18, forward plan)
+# Increment D — TranslationModel port: design note (2026-06-18; ✅ COMPLETE 2026-06-19/20)
+
+> **STATUS: T1–T5 DONE, CPU + GPU validated.**  TranslationModel is on the always-on placement path
+> (sharded recon-by-slice / sino-by-view), correct at all device counts incl. padding, no single-device
+> regression.  Lives in `greg/sharding_extensions` (rebased onto prerelease, PR-ready).  Per-stage
+> record in the §3 table (each row marked ✅).  Post-port: scale-invariant sharded-test gate
+> (`conftest.assert_sharded_allclose`) + dropped the redundant sharded VCD-recon test (`RUN_SHARDED_VCD`,
+> §5).  **Open (GPU, Greg's cluster — not blocking):** the n=1 back short-circuit band-vs-pixel platform
+> split for translation (decision 2b, UNMEASURED); per-device memory/time scaling.  **Prereq:**
+> `translation` baselines in mbirjax_metrics (§6).  This doc is now the COMPLETED-WORK record for
+> translation; **multiaxis is the next sub-effort** (its FBP fix in v3 §6 — NOT covered here).
 
 *The staged plan to put `TranslationModel` on the always-on placement path (sharded recon-by-slice /
 sino-by-view), mirroring the cone port.  Read `p6_increment_b_design.md` (the cone port) for the

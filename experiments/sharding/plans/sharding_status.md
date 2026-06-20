@@ -1,4 +1,4 @@
-# Sharding status (working branch `greg/sharding_extensions`; cone sharding is in a PR from `greg/conebeam_sharding`)
+# Sharding status (working branch `greg/sharding_extensions`, rebased onto prerelease; cone sharding MERGED into prerelease via PR #208)
 
 *Short living status. **Forward plan + current-state overview: `sharding_implementation_plan_v3.md`
 (primary — read first).**  Detailed-design archive: `sharding_implementation_plan_v2.md`.
@@ -18,6 +18,59 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
 6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-20) — Translation port DONE + GPU-validated; cone PR merged to prerelease; sharding_extensions rebased onto prerelease (PR-ready).  NEXT = MULTIAXIS
+
+▶ **Translation port (increment D, T1–T5) is COMPLETE and GPU-validated.**  Full record:
+`plans/increment_d_translation_design.md` (now the completed-work doc; STATUS banner at top).  T1–T5
+landed as planned; T5 needed **zero production changes** (the cone-B5 padding infra + the T2/T3 global
+clips already made translation padding inert).  See the 2026-06-19 handoff below for the per-stage
+detail.
+
+▶ **Two post-port refinements this session (both general, not translation-specific):**
+- **Scale-invariant sharded-test gate** — `conftest.assert_sharded_allclose` = `max|out-ref|/max|ref| ≤ TOL`,
+  replacing fixed `atol` for every sharded-vs-single comparison in `tests/sharding`.  Surfaced by the
+  translation Hessian (coeff_power=2 → peak ~5e3): the sharded-vs-single diff is XLA reduction-ORDER
+  noise that scales with the PEAK and is **process-nondeterministic even on CPU** (usually 0,
+  occasionally ~1e-7 of peak), so a fixed atol was scale-fragile AND flaky.  Lesson in `.claude/lessons.md`.
+- **Dropped the redundant sharded VCD-recon test** for translation (and the pattern for multiaxis):
+  the sharded VCD LOOP is geometry-independent (gated on parallel + cone), so a per-geometry sharded
+  recon only re-runs shared machinery.  Mechanism: `_PaddedReconMixin.RUN_SHARDED_VCD` (default True;
+  False in the translation subclass) + removed `TestTranslationShardedRecon`.  Bonus: removes the
+  tiny-recon partition-granularity warning at the root.
+
+▶ **GPU forward-inert test fix (landed on the cone branch, now in prerelease):**
+`test_forward_inert_to_nonzero_recon_padding` asserted bit-exact equality between two `forward_project`
+calls — fails on GPU (scatter-add atomics are run-to-run nondeterministic; the poison is cropped before
+the kernel, so the padding IS inert — confirmed CPU bit-exact even for a 1e6 poison).  Replaced with an
+inline scale-invariant gate (`< 1e-3`), kept dependency-free + byte-identical across branches so the
+rebase didn't conflict.  Committed on `greg/conebeam_sharding` (`a5b249e`), merged into prerelease via the
+cone PR (#208).
+
+▶ **BRANCH STATE — clean and PR-ready:**
+- The **cone PR (#208) is ACCEPTED into prerelease** (`origin/prerelease` tip = merge `987a2ad`; its tree
+  == conebeam tip `a5b249e`).
+- **`greg/sharding_extensions`** (renamed this session from `sharding_extensions`; old remote ref deleted)
+  **was rebased onto `origin/prerelease`** (CLI, not PyCharm — PyCharm produced a
+  rebase+merge tangle earlier that we cleaned up).  Now tip `e8a12a4`, a **linear descendant of
+  prerelease** → its eventual PR is a fast-forward.  Content is byte-identical to the verified green
+  state (the rebase added no content — prerelease had nothing conebeam didn't).  Local + origin in sync;
+  force-pushed with `--force-with-lease`.
+
+▶ **NEXT substantive code = MULTIAXIS** (the remaining increment-D sub-effort).  `MultiAxisParallelModel`
+extends `TomographyModel` directly → its own `_supports_sharding` flip; **land the FBP angular-weighting
+fix with it** (`sharding_implementation_plan_v3.md` §6 option 1: uniform `π/num_views` + channel ramp,
+order-invariant — the gradient-based weighting is wrong for simultaneous fixed measurements).  Apply the
+same lean test pattern as translation (no per-geometry sharded VCD recon).  Then **increment E** (the
+retirement cascade — only after ALL geometries are ported; keep the single-device back driver the GPU
+n=1 short-circuit calls).
+
+▶ **Open GPU items (Greg's cluster — not blocking):** the GPU n=1 back short-circuit band-vs-pixel
+platform split for **translation** (decision 2b — active but UNMEASURED); per-device memory/time scaling.
+**Prereq for tracking:** add `translation` to the mbirjax_metrics harness + capture baselines
+(dividing/non-dividing pair + an anisotropic size).
 
 ---
 
