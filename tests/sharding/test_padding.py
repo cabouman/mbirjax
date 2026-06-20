@@ -319,6 +319,12 @@ class _PaddedReconMixin:
     VARIANTS = ()          # model descriptors handed to _make_model (e.g. a helical flag)
     PADS_ROWS = False      # True when detector rows pad with the slices (parallel: row r <-> slice r)
     NUM_CHANNELS = 32
+    # Run the sharded VCD-recon checks (the iterated-loop paths).  The sharded VCD LOOP is
+    # geometry-independent, so it is gated once per beam family (parallel + cone); a geometry that
+    # only adds projectors/filters (translation, multiaxis) sets this False -- its projector-level
+    # padding is still gated by the single-shot checks below.  See the NOTE in the translation
+    # subclass / test_translation_sharded.py.
+    RUN_SHARDED_VCD = True
     # Mode-vs-mode comparison: discriminates from iteration 1, and fewer iterations
     # accumulate less FP-reorder divergence (gate-safening as well as faster).
     MAX_ITERS = 3
@@ -393,6 +399,8 @@ class _PaddedReconMixin:
         """A short VCD recon (const and non-const weights) at a padded slice count matches
         the single-device recon: projectors + the qGGMRF interface mask are all
         padding-correct, so the result is independent of the padding."""
+        if not self.RUN_SHARDED_VCD:
+            self.skipTest("sharded VCD loop is geometry-independent (gated on parallel + cone)")
         for variant in self.VARIANTS:
             with self.subTest(self._label(variant)):
                 ref_model = self._make_model(variant)
@@ -447,16 +455,20 @@ class _PaddedReconMixin:
                 else:
                     self.assertEqual(fwd.shape[1], real_rows,
                                      msg=f"{self._label(variant)}: forward must keep real detector rows")
-                # RECON device form: padded slices stay exactly zero through the VCD loop.
-                np.random.seed(0)
-                model.set_params(verbose=0)  # Silence warnings about background
-                rec = np.asarray(model.recon(sino, max_iterations=self.MAX_ITERS,
-                                             stop_threshold_change_pct=0.0, print_logs=False,
-                                             output_sharded=True)[0])
-                if rec.shape[-1] != real_slices:
-                    self.assertTrue(np.all(rec[..., real_slices:] == 0.0),
-                                    msg=f"recon padded slices not zero {self._label(variant)} n_dev={n}")
-                self.assertTrue(np.all(np.isfinite(rec)))
+                # RECON device form: padded slices stay exactly zero through the VCD loop.  The
+                # iterated-loop padding inertness is geometry-independent (gated on parallel +
+                # cone); skip it where RUN_SHARDED_VCD is off -- the back/forward forced-zero above
+                # is the geometry-specific part and always runs.
+                if self.RUN_SHARDED_VCD:
+                    np.random.seed(0)
+                    model.set_params(verbose=0)  # Silence warnings about background
+                    rec = np.asarray(model.recon(sino, max_iterations=self.MAX_ITERS,
+                                                 stop_threshold_change_pct=0.0, print_logs=False,
+                                                 output_sharded=True)[0])
+                    if rec.shape[-1] != real_slices:
+                        self.assertTrue(np.all(rec[..., real_slices:] == 0.0),
+                                        msg=f"recon padded slices not zero {self._label(variant)} n_dev={n}")
+                    self.assertTrue(np.all(np.isfinite(rec)))
                 ran = True
         if not ran:
             self.skipTest("no padded device count available")
@@ -620,9 +632,15 @@ class TestPaddedSlicesTranslation(_PaddedReconMixin, unittest.TestCase):
     device-form cylinder before the monolithic kernel and the detector rows do NOT pad with the
     slices (PADS_ROWS=False).  Variants: isotropic and anisotropic (voxel_slice_aspect=2.9, the
     suite's anisotropic_translation aspect -> a slice count that is NOT num_det_rows).  Both
-    z-ranges are tuned to a prime slice count (7), so every device count > 1 pads."""
+    z-ranges are tuned to a prime slice count (7), so every device count > 1 pads.
+
+    RUN_SHARDED_VCD=False: the sharded VCD loop is geometry-independent (gated on parallel + cone);
+    translation's projector-level padding is gated by the single-shot checks (projectors/Hessian,
+    forward/back device-form exact-zero, forward-inert).  This also keeps the tiny translation
+    recon out of the suite, so no partition-granularity warning."""
 
     VARIANTS = ('isotropic', 'anisotropic')
+    RUN_SHARDED_VCD = False
     PADS_ROWS = False
     NUM_VIEWS = 8
     NUM_DET_ROWS = 32

@@ -17,8 +17,11 @@ tests/geometries already exercise the n_dev=1 path.  These tests add the MULTI-D
 sharded path must match the single-device path to float noise, for both an isotropic and an
 anisotropic (voxel_slice_aspect != 1) translation geometry:
 
-  - back / forward / Hessian-diagonal (coeff_power=2) single-shot projector comparisons;
-  - a short VCD reconstruction (the full pipeline incl. the qGGMRF prior) sharded vs single.
+  - back / forward / Hessian-diagonal (coeff_power=2) single-shot projector comparisons.
+
+There is deliberately NO sharded VCD-recon test here: the sharded VCD loop is geometry-independent
+and gated by the cone + parallel VCD tests (translation adds no loop overrides); see the NOTE at
+the bottom of this file.
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU devices
 otherwise); skips device counts that the small geometry's axes do not divide.  The
@@ -135,37 +138,12 @@ class TestTranslationShardedProjectors(unittest.TestCase):
                             lambda m: m.compute_hessian_diagonal(weights), "hessian")
 
 
-class TestTranslationShardedRecon(unittest.TestCase):
-    """The full VCD recon (projectors + qGGMRF prior) sharded == single-device."""
-
-    MAX_ITERS = 3
-    TOL = 1e-4   # iterated: per-step FP-reorder differences accumulate (matches the cone sweep)
-
-    def _recon(self, model, sino):
-        np.random.seed(0)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
-            # Re-extract halos every subset -> the exact prior path (reproduces single-device).
-            model._vcd_halo_per_subset = True
-        model.set_params(verbose=0)
-        recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
-                               stop_threshold_change_pct=0.0, print_logs=False)
-        return np.asarray(recon)
-
-    def test_vcd_recon_matches_single_device(self):
-        for anisotropic in (False, True):
-            with self.subTest(anisotropic=anisotropic):
-                ref_model = _make_translation_model(anisotropic=anisotropic)
-                counts = _usable_device_counts(ref_model)
-                if not counts:
-                    self.skipTest("no usable device count > 1")
-                sino = _random_sino(ref_model, seed=2)
-                ref = self._recon(_make_translation_model(anisotropic=anisotropic), sino)
-                for n, devs in counts:
-                    model = _make_translation_model(anisotropic=anisotropic)
-                    model.configure_sharding(devs)
-                    out = self._recon(model, sino)
-                    assert_sharded_allclose(out, ref, tol=self.TOL,
-                                            msg=f"VCD recon mismatch: anisotropic={anisotropic} n_dev={n}")
+# NOTE: there is deliberately NO sharded VCD-recon test for translation.  The sharded VCD LOOP
+# (reduce-scatter back / gather forward / halo-exchanged qGGMRF prior / partitioning / donation) is
+# geometry-INDEPENDENT and is gated sharded by the cone + parallel VCD tests; translation adds no
+# loop overrides, and its sharded projectors are gated above (back/forward/Hessian == single).  A
+# per-geometry sharded recon would only re-run that shared machinery (same rationale as
+# tests/geometries/test_vcd.py gating full convergence on parallel + cone only).
 
 
 if __name__ == "__main__":
