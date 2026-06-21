@@ -46,7 +46,7 @@ name over the number.*
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
 | **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
-| **D — multiaxis** | ⬜ **NEXT**; `MultiAxisParallelModel` flips its own `_supports_sharding`; land the FBP angular-weighting fix with it (§6, decided in principle) |
+| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
 | **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
 
 ---
@@ -287,9 +287,32 @@ no-single-device-regression.
      **GPU follow-ups (Greg's cluster, not blocking):** the GPU n=1 back short-circuit band-vs-pixel
      platform split for translation (decision 2b — active but UNMEASURED), and per-device memory/time
      scaling.  **Prereq:** `translation` baselines in mbirjax_metrics (separate session).
-   - **Multiaxis — ⬜ NEXT** — `MultiAxisParallelModel` extends `TomographyModel` directly → its own
-     `_supports_sharding` flip; **settle the FBP-filter fix with this port** (see §6 "Multiaxis FBP
-     angular weighting", decided in principle, implementation deferred).
+   - **Multiaxis — ✅ DONE 2026-06-20** (CPU-validated).  `MultiAxisParallelModel` extends
+     `TomographyModel` directly and now runs the always-on placement path, correct at all device
+     counts incl. padding.  Staged M0–M5 (gates folded into the existing `test_projectors` /
+     `test_fbp` / `test_padding` harnesses, no new VCD gating — multiaxis is NOT in
+     `_geometry_types_for_tests`):
+       - **M0** adjoint/Hessian (via `anisotropic_multiaxis` in `test_projectors`).
+       - **M1** FBP angular-weighting fix (§6 option 1): the directional 2-D ramp (order-DEPENDENT,
+         from `jnp.gradient(angles)`) → the shared `_apply_direct_recon_filter` channel ramp +
+         uniform `pi/num_views`.  Order-invariant; reduces exactly to `ParallelBeamModel.fbp_filter`.
+       - **M-aniso** anisotropic voxels (`voxel_row_aspect` + `voxel_slice_aspect` through all four
+         fans + `auto_set_recon_geometry` + `get_psf_radius`); horizontal fan adopts ParallelBeam's
+         `footprint_xy` density.  Bit-identical to the prior kernels at unit aspects.
+       - **M2** banded back kernel (`back_project_one_view_to_band`, global anchor + `k < S_real`
+         clip) + rolled-`lax.map` rewire + **channel-major** horizontal fans; `entries_per_cylinder_batch`
+         → module band/batch consts.
+       - **M3** forward anchor on `recon_shape[2]` (global validity test; the inert-padding anchor).
+       - **M4** `_supports_sharding=True` — ONE line, no driver overrides (geometry-neutral base
+         hooks); `test_multiaxis_sharded`.
+       - **M5** inert slice padding — **zero production changes** (`TestPaddedSlicesMultiAxis`).
+     Calibration anchored to ParallelBeam/anisotropic_parallel at el=0 (forward **bit-exact**,
+     `test_multiaxis_forward_reduces_to_parallel`).  **Open (not blocking):** GPU-cluster confirmation
+     (channel-major, band kernel, sharding — the n=1 back band-vs-pixel split is geometry-agnostic and
+     active but UNMEASURED for multiaxis); the `1/cos(elevation)` vertical path-length factor (§6).
+   - **Translation channel-major** — the cone/parallel increment-A transpose was also applied to
+     translation's two horizontal fans (it shared the cache-aliasing gap): forward ~1.8× faster on
+     CPU at 512 channels (back neutral), value-preserving (forward rel ~7e-8, back bit-identical).
 4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
    `sinogram_device`; the `is_sharded` else-branches + the legacy single-device *dispatch* —
    but **keep** the single-device back driver/kernel (`_sparse_back_project_single_device` /
@@ -327,8 +350,7 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 
 ## 6. Adjacent / tracked items (off the critical path)
 
-- **Multiaxis FBP angular weighting — DECIDED in principle (option 1), implementation DEFERRED**
-  (2026-06-18; Greg to discuss with others; land with or before the multiaxis port, increment D).
+- **Multiaxis FBP angular weighting — ✅ DONE (option 1), 2026-06-20** (multiaxis port M1).
   - *Problem.*  `MultiAxisParallelModel.fbp_filter` builds a per-view directional 2-D ramp
     `|U·d_az + V·d_el|` whose orientation and magnitude come from `jnp.gradient(angles)` — the step
     between *list-neighbor* views.  But this geometry is **simultaneous fixed measurements** (multiple
@@ -352,12 +374,15 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     directions (spherical Voronoi areas of a handful of points are boundary-dominated and meaningless),
     and the missing-data null space dominates the initializer error anyway.  Revisit only if standalone
     multiaxis FBP becomes a real deliverable.
-  - *Gate to add with the implementation:* a **reorder-invariance** test (permute the view list, same
-    set → recon unchanged to float tol) — it encodes the principle and currently FAILS; plus a
-    reduce-to-`ParallelBeamModel` check in the azimuth-only equally-spaced limit.  Multiaxis FBP is
-    currently **ungated** (not in `_geometry_types_for_tests`, no dedicated FBP/recon test).
-  - *Note:* `fbp_filter` is still single-device (accepts `output_sharded`, no-ops it); the rewrite
-    should take the per-view-shard `run_per_device` treatment when multiaxis is ported (D).
+  - *Gates (added with M1):* a **reorder-invariance** test (permute the view list, same set → filter
+    unchanged) — it went from rel-max ~8.5 (old directional ramp) to <1e-6 — plus a
+    reduce-to-`ParallelBeamModel` check in the azimuth-only equally-spaced limit; both in
+    `tests/sharding/test_fbp.py::TestMultiAxisFbpFilter`.  (Multiaxis is still NOT in
+    `_geometry_types_for_tests` — no VCD-convergence/recon-NRMSE gating — but the projectors are now
+    gated via `anisotropic_multiaxis` in `test_projectors`.)
+  - *Done:* `fbp_filter` now delegates to the shared `_apply_direct_recon_filter` (per-view-shard
+    `run_per_device` path, sharded once `_supports_sharding` is on — which it now is), so it is no
+    longer single-device.
 - **Multiaxis vertical-fan absolute magnitude (the `1/cos(elevation)` question) — OPEN, deferred.**
   - *What is verified.*  At elevation 0 the multiaxis forward projector reduces **bit-exactly** to
     `ParallelBeamModel` (isotropic) and to `anisotropic_parallel` (with `voxel_row_aspect ≠ 1`) — a

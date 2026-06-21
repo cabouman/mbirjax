@@ -65,7 +65,7 @@ def main():
 
     # Perform MBIR reconstruction
     direct_recon, direct_dict = tct_model.recon(sinogram, max_iterations=0)
-    mbir_recon, mbir_dict = tct_model.recon(sinogram, max_iterations=200, stop_threshold_change_pct=0.1)
+    mbir_recon, mbir_dict = tct_model.recon(sinogram, max_iterations=30, stop_threshold_change_pct=0.1)
 
     # Save reconstruction results
     os.makedirs(output_path, exist_ok=True)

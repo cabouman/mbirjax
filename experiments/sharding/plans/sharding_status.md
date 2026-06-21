@@ -21,6 +21,80 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
+## HANDOFF (2026-06-20b) — MULTIAXIS port DONE (M0–M5), CPU-validated; translation channel-major added.  ALL geometries ported → NEXT = increment E (retirement cascade)
+
+▶ **The `MultiAxisParallelModel` sharding port is COMPLETE (M0–M5), CPU-validated end to end.**  It now
+runs the always-on placement path (trivial 1-device mesh single-device; multi-device shards recon-by-
+slice / sino-by-view), correct at all device counts incl. padding, no single-device regression.  Forward
+record in `sharding_implementation_plan_v3.md` §5 (item 3, multiaxis bullet) + §6.  Per stage:
+  - **M0** — single-device adjoint/Hessian gated via a new `anisotropic_multiaxis` entry in a
+    **projector-local** list in `test_projectors.py` (NOT added to `_utils._geometry_types_for_tests`, so
+    multiaxis gets no VCD-convergence / recon-NRMSE gating — same "no VCD on multiaxis" stance as
+    translation).
+  - **M1** — **FBP angular-weighting fix (the §6 option-1 decision, now implemented).**  The directional
+    2-D ramp (orientation/magnitude from `jnp.gradient(angles)` → order-DEPENDENT, ill-defined for these
+    order-arbitrary simultaneous measurements) → the shared `_apply_direct_recon_filter` channel ramp +
+    uniform `pi/num_views`, scale `1/(delta_voxel·delta_voxel_row)`.  Order-invariant (reorder rel-max
+    8.5→<1e-6) and reduces exactly to `ParallelBeamModel.fbp_filter`.  Gates in `test_fbp.py::TestMultiAxisFbpFilter`.
+  - **M-aniso** — **anisotropic voxels** (`voxel_row_aspect` + `voxel_slice_aspect`) plumbed through all
+    four fans + `auto_set_recon_geometry` + `get_psf_radius` + the geometry-params namedtuple; horizontal
+    fan adopts ParallelBeam's `footprint_xy` density.  **Bit-identical to the prior kernels at unit
+    aspects** (verified by an old-vs-new ablation).  Greg's call: gate aniso only (it subsumes iso).
+  - **M2** — **banded back kernel** (`back_vertical_fan_band_*` + `back_project_one_view_to_band`; global
+    `k = g0+arange(L)`, z anchored on `recon_shape[2]`, global clip `k < S_real`) + rolled-`lax.map`
+    rewire (`MULTIAXIS_SLICE_BAND_SIZE`); deleted the monolithic back vertical fan; **channel-major**
+    transpose on the two horizontal fans (forward bit-identical, back ~1e-7 reduction noise; CPU forward
+    1.15×@256ch → 1.29×@512ch, back neutral — MEASURED); removed `entries_per_cylinder_batch` →
+    `MULTIAXIS_FORWARD_SLICE_BATCH`.  New `tests/geometries/test_multiaxis_banded.py`.
+  - **M3** — forward anchor on `recon_shape[2]` (was the input cylinder length); validity test becomes a
+    global `k < S_real` (the inert-padding anchor).  Bit-identical (static-value); batch entry asserts the
+    cylinder length.
+  - **M4** — **`_supports_sharding()=True` (one line, NO driver/projector overrides** — geometry-neutral
+    base hooks: banded reduce-scatter back, gather+monolithic+crop forward).  New
+    `tests/sharding/test_multiaxis_sharded.py` (back/forward/Hessian sharded==single, n=2,4, iso+aniso,
+    scale-invariant gate).  The flip makes the existing `test_projectors` auto-shard multiaxis WITH
+    PADDING (14 slices → 4 dev, 14→16) and it passes → padding already inert.
+  - **M5** — inert slice padding: **ZERO production changes** (the M2/M3 global clips + the
+    geometry-agnostic padding infra already make it inert).  `TestPaddedSlicesMultiAxis(_PaddedReconMixin)`
+    with `RUN_SHARDED_VCD=False`, iso+aniso, prime 7-slice + fully-padded-trailing-shard.
+
+▶ **Calibration anchored to a real reference** (the adjoint can't catch a consistent scaling error): a new
+permanent `test_multiaxis_forward_reduces_to_parallel` shows the el=0 forward is **bit-exact** to
+`ParallelBeamModel` (isotropic) and `anisotropic_parallel` (row aspect).  The composed pipeline
+(`direct_recon` + `recon`) was also smoke-checked (finite, sane, data-fit converges) but NOT made a
+permanent test (VCD machinery is geometry-independent, already gated — Greg's call).
+
+▶ **OPEN modeling item — `1/cos(elevation)` vertical path-length** (v3 §6, new tracked bullet): the
+vertical fan uses `scaling=1.0`, so for elevation≠0 / `voxel_slice_aspect`≠1 the absolute magnitude is
+adjoint-consistent but UNREFERENCED.  Deferred (it can't ride the reduce-to-isotropic gate); take it up
+separately with a forward-vs-analytic-line-integral fidelity gate.  Detector is ⟂ to the ray here (no
+detector-incidence obliquity, unlike cone's `1/cos(phi)`), so the factor must be derived, not copied.
+
+▶ **Translation channel-major (task done this session):** the cone/parallel increment-A transpose was
+also applied to translation's two horizontal fans (it shared the same cache-aliasing gap): forward
+**~1.8× faster** on CPU at 512 channels (back neutral), value-preserving (forward rel ~7e-8, back
+bit-identical).  All translation gates green.
+
+▶ **ALL geometries now ported** (ParallelBeam, cone, translation, multiaxis).  **NEXT = increment E**
+(the retirement cascade — `main_device`/`sinogram_device`, `view_indices`, the legacy single-device
+*dispatch* but KEEP the single-device back driver/kernel the GPU n=1 short-circuit calls, the
+`RETIRE-*` sweep).  Still standing: GPU-cluster confirmation of multiaxis (channel-major, band kernel,
+sharding; the n=1 back band-vs-pixel split is geometry-agnostic + active but UNMEASURED for multiaxis)
+and translation (decision 2b); `translation`/`multiaxis` baselines in mbirjax_metrics.
+
+▶ **Test state:** multiaxis blast-radius + shared files green — `test_padding` / `test_multiaxis_sharded`
+/ `test_fbp` / `test_projectors` / `test_multiaxis_banded` = **75 passed, 2 skipped** (the 2 skips are the
+geometry-independent VCD-recon padding checks for translation + multiaxis).
+
+▶ **Commits (staged; Greg commits from PyCharm).**  Suggested boundaries: (1) M1 FBP fix
+(`multiaxis_parallel.py` fbp_filter/fbp_recon + `test_fbp.py` TestMultiAxisFbpFilter) — independently
+reviewable; (2) M-aniso (kernels + auto_set + psf_radius + geometry_params + the `anisotropic_multiaxis`
+test entry + `bp_psf_radius` removal); (3) M2 (banded back + channel-major + `test_multiaxis_banded` +
+the forward-reduce-to-parallel test); (4) M3 (forward anchor); (5) M4 (`_supports_sharding` +
+`test_multiaxis_sharded`); (6) M5 (`TestPaddedSlicesMultiAxis`, test-only); (7) translation channel-major.
+
+---
+
 ## HANDOFF (2026-06-20) — Translation port DONE + GPU-validated; cone PR merged to prerelease; sharding_extensions rebased onto prerelease (PR-ready).  NEXT = MULTIAXIS
 
 ▶ **Translation port (increment D, T1–T5) is COMPLETE and GPU-validated.**  Full record:
