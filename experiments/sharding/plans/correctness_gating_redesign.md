@@ -181,8 +181,9 @@ it must be clearable once reviewed, or it's standing noise.  Two clearing paths:
   is **no list and no composition** — a new clear simply **overrides** the date (monotonic forward by
   default).  This is the "I've reviewed everything through Friday, start fresh" button, and nothing else.
 
-- **The guided script** (`tooling/.../clear_correctness.py`, run from a terminal): prints the current
-  watermark and the divergences that *would* be cleared, then offers **"clear through today? [Y/n]"** —
+- **The guided script** (`action_scripts/clear_correctness.sh` — the dashboard banner points here; it
+  wraps a small Python helper, run from a terminal): prints the current watermark and the divergences
+  that *would* be cleared, then offers **"clear through today? [Y/n]"** —
   **defaulting to a blanket clear through the current date**.  (It will also accept an explicit earlier
   date if asked, but today is the default and the only thing it suggests.)  Writes `cleared_through`,
   ready to commit from PyCharm.  No finicky data entry — it's one confirmation.
