@@ -89,28 +89,21 @@ class TomographyModel(ParameterHandler):
         self.prox_data = None
 
         # Multi-device sharding.  An explicit configure_sharding() builds a mesh over the
-        # chosen devices and sets _sharding_configured = True.  Absent that, geometries whose
-        # _supports_sharding() is True (ParallelBeam) auto-default the homogeneous single-device
-        # case to a trivial 1-device mesh at the end of set_devices(), so the
-        # placement path is always on; other geometries keep mesh = None (legacy single-device).
+        # chosen devices and sets _sharding_configured = True.  Absent that, set_devices()
+        # auto-defaults to a mesh at the end of __init__ (a trivial 1-device mesh when single),
+        # so the placement path is always on (mesh is never None after construction).
         self.mesh = None
         self.shard_devices = None
         self.dev2dev_safe = True   # set empirically in configure_sharding
         self._sharding_configured = False  # True only after an explicit configure_sharding()
-        # Let AUTOMATIC selection shard across CPU devices too (ON by default, 2026-06-11).
-        # mbirjax._device_setup exposes a conservative number of virtual CPU devices (capped at
-        # 2) on CPU-only hosts.  Measured (M3 Max, 2 devices, 8-iter VCD): 1.30x at 256^3 and
-        # better at larger sizes, vs 0.83x at 128^3 and 0.64x at 64^3 -- i.e. a real win where
-        # time matters and a few absolute seconds where it does not (small recons also use LESS
-        # peak RSS sharded).  The deciding benefit is platform-UNIFORM auto resolution: every
-        # CPU user (and the whole CPU test suite, which gets 8 virtual devices from
-        # tests/conftest.py) runs the same auto-sharded path as a multi-GPU machine -- a
-        # platform-dependent policy is how "sharded + X" gaps stay invisible to the CPU suite.
-        # Set False to keep automatic selection single-device on CPU; explicit CPU sharding via
-        # configure_devices(n)/configure_sharding(cpu_devices) never consults this flag.
-        # CPU-CLUSTER tuning (real multi-socket hosts, more than 2 devices) is still an open
-        # adjacent task (see the plan); the library's device-count cap is the conservative knob.
-        self._auto_shard_cpu = True
+        # AUTOMATIC selection shards across CPU devices too, the same path as multi-GPU (the
+        # platform-UNIFORM auto policy -- a platform-dependent policy is how "sharded + X" gaps
+        # stayed invisible to the CPU suite).  mbirjax._device_setup exposes a conservative number
+        # of virtual CPU devices on CPU-only hosts.  Measured (M3 Max, 2 devices, 8-iter VCD): 1.30x
+        # at 256^3 and better at larger sizes, vs 0.83x at 128^3 and 0.64x at 64^3 -- a real win
+        # where time matters and a few absolute seconds where it does not (small recons also use
+        # LESS peak RSS sharded).  To force single-device, pin it with configure_devices(1).
+        # CPU-CLUSTER tuning (real multi-socket hosts) remains an open adjacent task (see the plan).
         # Cached per-device qGGMRF interface masks for a padded slice axis (built lazily
         # by _qggmrf_interface_masks; invalidated by _set_placements on every recompile).
         self._qggmrf_interface_masks_cache = None
@@ -187,28 +180,16 @@ class TomographyModel(ParameterHandler):
 
     @property
     def is_sharded(self):
-        """True when multi-device sharding is configured (the sharded code path is active).
+        """True when a device mesh is configured (the placement code path is active).
 
-        Single source of truth for "are we sharded?", so call sites read intent rather
-        than the current implementation detail (``self.mesh is not None``).  When the
-        device representation migrates from ``mesh`` to placements this property's body
-        changes in one place; and once every geometry uses the sharded/placement path,
-        this (and the branches that test it) is what gets retired.
+        Single source of truth for "are we on the placement path?", so call sites read
+        intent rather than ``self.mesh is not None``.  Every geometry now auto-configures a
+        mesh (at least a trivial 1-device mesh -- see ``set_devices``), so in practice this is
+        always True; the no-mesh path has been retired.  The remaining ``if is_sharded`` checks
+        are vacuously True and are being collapsed incrementally (the ones gated against the
+        single-device ``main_device`` fallback retire with that scalar).
         """
         return self.mesh is not None
-
-    def _supports_sharding(self):
-        """Whether this geometry has the placement/movement projector path implemented.
-
-        Only such geometries auto-default the single-device case to a trivial 1-device mesh
-        (the always-on placement path); the rest stay on the legacy single-device path until
-        their projectors are ported.  Base default is False; ParallelBeamModel overrides
-        to True.  Also gates configure_sharding()/configure_devices(): a multi-device request
-        on an unported geometry raises immediately (the sharded band pipeline would fail with
-        an opaque shape error deep in the projectors), and a single-device request is a no-op
-        (the legacy path is already single-device).
-        """
-        return False
 
     def configure_devices(self, devices=None):
         """
@@ -294,20 +275,6 @@ class TomographyModel(ParameterHandler):
         if n_devices < 1:
             raise ValueError("configure_sharding requires at least one device.")
 
-        # Geometries without the placement/movement projector path (everything but
-        # ParallelBeam until its projectors are ported) cannot run the sharded band pipeline -- entering it
-        # fails deep in the projectors with an opaque shape error.  Fail fast on a
-        # multi-device request; a single-device request is simply the legacy behavior these
-        # geometries already have, so honor it as a no-op (they stay on the legacy
-        # single-device path, whose device choice follows the use_gpu parameter).
-        if not self._supports_sharding():
-            if n_devices > 1:
-                raise NotImplementedError(
-                    f"Multi-device sharding is not yet supported for {type(self).__name__} "
-                    f"(currently ParallelBeamModel only); requested {n_devices} devices. "
-                    f"Single-device reconstruction works as always.")
-            return
-
         # No divisibility constraint: a non-dividing view or slice axis is zero-padded to
         # the next multiple of the device count, and the padding is exactly inert (the
         # result is independent of the device count).  The device report notes any padding.
@@ -351,9 +318,9 @@ class TomographyModel(ParameterHandler):
         band/scale sweeps): sharding's value is capacity + near-linear speedup at the sizes
         that matter, and over-sharding a small problem is only a mild overhead.
 
-        Returns 1 for unsupported geometries or n_available <= 1.
+        Returns 1 for n_available <= 1.
         """
-        if n_available <= 1 or not self._supports_sharding():
+        if n_available <= 1:
             return 1
         recon_shape = self.get_params('recon_shape')
         num_recon = int(recon_shape[self.recon_shard_axis() % len(recon_shape)])
@@ -428,12 +395,10 @@ class TomographyModel(ParameterHandler):
         return self._device_report()
 
     def _set_placements(self):
-        """Build recon_placement / sino_placement from the current device config.
+        """Build recon_placement / sino_placement from the current device mesh.
 
-        A configured mesh gives placements over its devices (recon on the slice
-        axis, sino on the view axis); otherwise each is a trivial 1-device
-        placement on the configured single device -- which may differ for recon
-        and sino (e.g. recon on CPU and sino on GPU for a large recon).
+        The mesh gives placements over its devices (recon on the slice axis, sino on the
+        view axis); a single-device mesh is the trivial 1-device case.
 
         Each placement also receives the problem-owned (REAL) length of its
         sharded axis from the params, so it knows the device-form (padded)
@@ -454,18 +419,11 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         num_views = sinogram_shape[sino_axis % len(sinogram_shape)]
         num_slices = recon_shape[recon_axis % len(recon_shape)]
-        if self.is_sharded:
-            devices = self.shard_devices
-            self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
-            self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        else:
-            # Single-device.  This runs at the end of set_devices
-            # (which has just set both devices) or configure_sharding (mesh path
-            # above), so the devices are always concrete here.
-            assert self.main_device is not None and self.sinogram_device is not None, \
-                "main_device/sinogram_device must be set before _set_placements"
-            self.recon_placement = mjs.Placement([self.main_device], axis=recon_axis, real_size=num_slices)
-            self.sino_placement = mjs.Placement([self.sinogram_device], axis=sino_axis, real_size=num_views)
+        # A mesh is always configured (set_devices auto-meshes, at least a trivial 1-device
+        # mesh), so shard_devices is the device list for both placements.
+        devices = self.shard_devices
+        self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
+        self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -922,23 +880,20 @@ class TomographyModel(ParameterHandler):
         else:
             self.main_device, self.sinogram_device = cpus[0], cpus[0]
 
-        # (2) Establish the device layout.  Geometries that implement the placement/movement
-        # projector path (_supports_sharding -> ParallelBeam) run an ALWAYS-ON placement path; unless
-        # the caller has already pinned a configuration with configure_sharding()/configure_devices(),
-        # auto-select here.  Auto SHARDS across ALL GPUs (non-dividing view/slice counts are
-        # zero-padded, exactly inert; _auto_device_count only skips a count whose last shard
-        # would be entirely padding) -- and across CPU devices too unless the _auto_shard_cpu
-        # default is disabled (on by default; see __init__).  One GPU / one CPU / opt-out -> a
-        # trivial 1-device mesh.  user_selected=False keeps it overridable, so a later
-        # set_params re-evaluates the layout (e.g. a 'full' <-> 'none' mode flip, or a
-        # sinogram_shape change that changes the divisible count).  Geometries not yet ported leave
-        # self.mesh = None and fall back to trivial single-device placements in _set_placements (the
-        # legacy path, retiring once all geometries are ported).  _set_placements() runs in all branches (via _apply_mesh or
-        # directly).
-        if not self._sharding_configured and self._supports_sharding():
+        # (2) Establish the device layout.  Every geometry runs the ALWAYS-ON placement path:
+        # unless the caller has already pinned a configuration with
+        # configure_sharding()/configure_devices(), auto-select here.  Auto SHARDS across ALL
+        # GPUs (non-dividing view/slice counts are zero-padded, exactly inert; _auto_device_count
+        # only skips a count whose last shard would be entirely padding) -- and across CPU devices
+        # too (the platform-uniform auto policy).  One GPU / one CPU -> a trivial 1-device mesh; to
+        # force single-device on a multi-device host, pin it with configure_devices(1).
+        # user_selected=False keeps it overridable, so a later set_params re-evaluates the layout
+        # (e.g. a 'full' <-> 'none' mode flip, or a sinogram_shape change).  _set_placements() runs
+        # in both branches (via _apply_mesh when auto-selecting, or directly under a pinned config).
+        if not self._sharding_configured:
             if on_gpu and len(gpus) > 1:
                 auto_pool = list(gpus)
-            elif not on_gpu and self._auto_shard_cpu and len(cpus) > 1:
+            elif not on_gpu and len(cpus) > 1:
                 auto_pool = list(cpus)
             else:
                 auto_pool = None
@@ -948,10 +903,11 @@ class TomographyModel(ParameterHandler):
             else:
                 self._apply_mesh([self.main_device], user_selected=False)
         else:
-            # User-selected config (or an unported geometry).  A geometry change under a
-            # user-selected multi-device config needs no divisibility warning anymore: a
-            # non-dividing axis is zero-padded (inert), and _set_placements re-derives the
-            # pad metadata from the new shapes.
+            # User-pinned config (configure_sharding/configure_devices already built the mesh):
+            # just re-derive placements from it.  A geometry change under a user-selected
+            # multi-device config needs no divisibility warning anymore -- a non-dividing axis is
+            # zero-padded (inert), and _set_placements re-derives the pad metadata from the new
+            # shapes.
             self._set_placements()
         return
 
@@ -1307,55 +1263,12 @@ class TomographyModel(ParameterHandler):
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        # A mesh is always configured now (every geometry auto-defaults to at least a trivial
-        # 1-device mesh), so the sharded path runs in all cases: the recon cylinders are expected
-        # slice-sharded and the result is returned view-sharded (no gather here; the user-facing
-        # forward_project gathers).  The single-device else-branch survives only for a geometry
-        # that does not support sharding (none today; it retires with the no-mesh path).
-        if self.is_sharded:
-            return self._sparse_forward_project_sharded(voxel_values, pixel_indices)
-        return self._sparse_forward_project_single_device(
-            voxel_values, pixel_indices, output_device=output_device)
-
-    def _sparse_forward_project_single_device(self, voxel_values, pixel_indices, output_device=None):
-        """
-        Single-device forward projection (the original prerelease implementation).
-
-        See :meth:`sparse_forward_project` for the full argument description.  This
-        method carries the unchanged single-device body so the sharded path can be
-        added alongside it without disturbing single-device behavior.
-        """
-        # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.view_batch_size_for_vmap
-        transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        sinogram_shape = self.get_params('sinogram_shape')
-        view_indices = jnp.arange(sinogram_shape[0])      # all views (transfer-batched below)
-        num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
-        sinogram_shape = self.get_params('sinogram_shape')
-
-        num_pixels = len(pixel_indices)
-        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
-        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
-
-        sinogram = []
-        for view_indices_batch in view_indices_batched:
-            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.sinogram_device)
-            # Loop over pixel batches
-            for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
-                # Send a batch of pixels to sinogram_device
-                pixel_index_end = pixel_batch_boundaries[k + 1]
-                voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                                 pixel_indices[pixel_index_start:pixel_index_end]],
-                                                                self.sinogram_device)
-                sinogram_views = sinogram_views.block_until_ready()
-                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, owned_view_indices=view_indices_batch)
-
-            # Include these views in the sinogram
-            sinogram.append(jax.device_put(sinogram_views, output_device))
-
-        sinogram = jnp.concatenate(sinogram)
-        return sinogram
+        # Every geometry runs the placement path (a trivial 1-device mesh when single-device), so
+        # the sharded projector handles all cases: the recon cylinders are slice-sharded in and the
+        # result is returned view-sharded (no gather here; the user-facing forward_project gathers).
+        # ``output_device`` is accepted for back-compat but ignored on the placement path (it
+        # retires in the output_device cleanup).
+        return self._sparse_forward_project_sharded(voxel_values, pixel_indices)
 
     def _sharded_forward_project_setup(self, voxel_values, pixel_indices):
         """Shared setup for sharded forward projection (adjoint of the back setup).
@@ -1713,35 +1626,31 @@ class TomographyModel(ParameterHandler):
             of this internal method that need the real shape must crop ``[:, :num_real_slices]``
             themselves (the padded slices are inert zeros, so the crop is exact).
         """
-        # A mesh is always configured now, so the sharded path runs in all cases: the sinogram is
-        # expected view-sharded and the result is returned slice-sharded (no gather here; the
-        # user-facing back_project gathers).  The single-device else-branch survives only for a
-        # geometry that does not support sharding (none today; it retires with the no-mesh path).
-        # The single-device back DRIVER itself stays live regardless -- the GPU n=1 short-circuit
-        # in _sparse_back_project_sharded routes a single-GPU recon to it (the pixel kernel is
-        # ~2.25x faster than the band kernel on GPU).
-        if self.is_sharded:
-            return self._sparse_back_project_sharded(
-                sinogram, pixel_indices, coeff_power=coeff_power)
-        return self._sparse_back_project_single_device(
-            sinogram, pixel_indices, coeff_power=coeff_power, output_device=output_device)
+        # Every geometry runs the placement path, so the sharded projector handles all cases: the
+        # sinogram is view-sharded in and the result is slice-sharded out (no gather here; the
+        # user-facing back_project gathers).  The single-device back DRIVER below stays live -- the
+        # GPU n=1 short-circuit in _sparse_back_project_sharded routes a single-GPU recon to it (the
+        # pixel kernel is ~2.25x faster than the band kernel on GPU).  ``output_device`` is accepted
+        # for back-compat but ignored on the placement path (it retires in the output_device cleanup).
+        return self._sparse_back_project_sharded(sinogram, pixel_indices, coeff_power=coeff_power)
 
     def _sparse_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """
-        Single-device back projection (the original prerelease implementation).
+        Single-device back projection: project ALL views (transfer-batched) to voxel cylinders.
 
-        See :meth:`sparse_back_project` for the full argument description.  This
-        method carries the unchanged single-device body so the sharded
-        path can be added alongside it without disturbing single-device behavior.
+        No longer a dispatch target of :meth:`sparse_back_project` (which always takes the
+        placement path); it is kept LIVE because the GPU n=1 back short-circuit in
+        :meth:`_sparse_back_project_sharded` routes a single-GPU recon here -- the monolithic
+        pixel kernel is ~2.25x faster than the band kernel on a single GPU.
         """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
-        view_indices = jnp.arange(num_views)              # all views (transfer-batched below)
+        all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        view_indices_batched = jnp.array_split(all_view_indices, num_view_batches)
 
         pixel_indices = jax.device_put(pixel_indices, self.sinogram_device)
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)

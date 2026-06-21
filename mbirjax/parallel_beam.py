@@ -89,11 +89,6 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
-    def _supports_sharding(self):
-        """Parallel beam has the placement/movement projector + prior path, so it runs on the
-        always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
-        return True
-
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
                                          owned_view_indices, coeff_power):
         """Parallel-beam specialization of the sharded slice-band back projection (overrides the

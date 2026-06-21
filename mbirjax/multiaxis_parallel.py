@@ -76,16 +76,6 @@ class MultiAxisParallelModel(TomographyModel):
         super().__init__(sinogram_shape, angles=view_params_array, view_params_name='angles', recon_slice_offset=0.0)
         self.set_params(geometry_type=str(type(self)))
 
-    def _supports_sharding(self):
-        """MultiAxisParallelModel runs on the always-on placement path: the single-device case
-        auto-defaults to a trivial 1-device mesh and multi-device shards (recon by slice,
-        sinogram by view).  It adds NO projector/driver overrides beyond this flag -- it uses
-        the geometry-neutral base hooks (back = banded reduce-scatter via the
-        back_project_one_view_to_band kernel, forward = gather + monolithic + the inert-padding
-        crop), mirroring ConeBeamModel and TranslationModel.  The GPU n=1 back short-circuit is
-        geometry-agnostic and already active here."""
-        return True
-
     def get_psf_radius(self):
         """
         Compute the integer radius of the PSF kernel (mirrors get_psf_radius in ConeBeamModel and TranslationModel).

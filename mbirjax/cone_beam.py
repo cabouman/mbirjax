@@ -189,13 +189,6 @@ class ConeBeamModel(TomographyModel):
 
         return geometry_params
 
-    def _supports_sharding(self):
-        """Cone beam has the banded back projector (reduce-scatter) and the gather-and-monolithic
-        forward on the placement/movement path, plus the shared qGGMRF prior path,
-        so it runs on the always-on placement path: the single-device case auto-defaults to a
-        trivial 1-device mesh and multi-device shards (recon by slice, sinogram by view)."""
-        return True
-
     def get_psf_radius(self):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.

@@ -64,36 +64,6 @@ class TestAxisHooks(unittest.TestCase):
         self.assertEqual(model.recon_shard_axis(), -1)     # last axis = slices
 
 
-class TestNoMeshNoOp(unittest.TestCase):
-    """Without a mesh, the base-class hooks are no-ops (mesh is None).
-
-    RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh, so it
-    no longer exercises the no-mesh branch.  That branch survives only for the not-yet-ported
-    geometries (cone / translation / multiaxis) and retires once they are ported.
-    These tests used ParallelBeam as a convenient concrete model, so they are skipped until
-    the no-mesh path either gets a non-ParallelBeam home or is removed once those geometries
-    are ported.
-    """
-
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
-    def test_shard_and_gather_are_noops(self):
-        model = _make_model()
-        self.assertIsNone(model.mesh)
-        sino = np.ones((8, 4, 16), dtype=np.float32)
-        # _shard_* returns the input unchanged (same object) when no mesh.
-        self.assertIs(model._shard_sinogram(sino), sino)
-        self.assertIs(model._gather_sinogram(sino), sino)
-        self.assertIs(model._shard_recon(sino), sino)
-        self.assertIs(model._gather_recon(sino), sino)
-
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
-    def test_extract_halos_no_mesh(self):
-        model = _make_model()
-        left, right = model._extract_halos(np.ones((6, 16), dtype=np.float32))
-        self.assertEqual(left, [None])
-        self.assertEqual(right, [None])
-
-
 class TestShardGatherRoundTrip(unittest.TestCase):
 
     def setUp(self):
@@ -240,12 +210,11 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model5._auto_device_count(4), 3)
 
     def test_auto_shards_cpu_by_default(self):
-        # AUTOMATIC selection shards across CPU devices BY DEFAULT (_auto_shard_cpu=True,
-        # 2026-06-11): a bare model on a multi-CPU-device host auto-shards exactly like a
-        # multi-GPU box (platform-uniform auto policy -- a platform-dependent policy is how
-        # "sharded + X" gaps stayed invisible to the CPU suite).  Setting the flag False and
-        # re-selecting opts back out to single-device.  Note: this builds bare models directly
-        # (not _make_model, which pins a single device).
+        # AUTOMATIC selection shards across CPU devices BY DEFAULT: a bare model on a
+        # multi-CPU-device host auto-shards exactly like a multi-GPU box (the platform-uniform auto
+        # policy -- a platform-dependent policy is how "sharded + X" gaps stayed invisible to the
+        # CPU suite).  configure_devices(1) is the way to opt back out to single-device.  Note: this
+        # builds bare models directly (not _make_model, which pins a single device).
         if preferred_devices(2) is None:
             self.skipTest("need >= 2 devices")
         try:
@@ -275,12 +244,11 @@ class TestModelPlacements(unittest.TestCase):
         out = np.asarray(model.sparse_back_project(sino, idx))
         assert_sharded_allclose(out, ref, msg="auto CPU-sharded back projection diverged from single device")
 
-        # Opt-out: flag False + re-select -> back to a trivial single-device layout.
+        # Opt-out: configure_devices(1) pins a trivial single-device layout (the explicit way to
+        # opt out of CPU auto-sharding).
         model_out = mbirjax.ParallelBeamModel(idx_shape, angles)
-        model_out._auto_shard_cpu = False
-        model_out.set_devices()
+        model_out.configure_devices(1)
         self.assertEqual(len(model_out.shard_devices), 1)
-        self.assertFalse(len(model_out.shard_devices) > 1)
 
     def test_sharded_placements_over_mesh(self):
         devs = preferred_devices(2)

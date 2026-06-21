@@ -78,15 +78,6 @@ class TranslationModel(mj.TomographyModel):
         
         self.set_params(max_overrelaxation=1.3)  # We override this value due to observed instabilities with larger values
 
-    def _supports_sharding(self):
-        """Translation has the banded back projector (reduce-scatter) and the gather-and-monolithic
-        forward on the placement/movement path, plus the shared qGGMRF prior path, so it runs on the
-        always-on placement path: the single-device case auto-defaults to a trivial 1-device mesh and
-        multi-device shards (recon by slice, sinogram by view).  The projector kernels and driver
-        hooks are the geometry-neutral base versions (it adds no overrides beyond this flag),
-        mirroring ConeBeamModel."""
-        return True
-
     def get_magnification(self):
         """
         Returns the magnification for the cone beam geometry.
