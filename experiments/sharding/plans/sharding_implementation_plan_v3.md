@@ -25,6 +25,7 @@ nightly harness + the metrics-visualization surface are a **separate track** —
 | `sharding_implementation_plan.md` (v1) | completed Phases 0/A/B/F1/D/F2/C/E; **cross-cutting principles**; verified **hardware facts**; O1–O4 |
 | `p6_increment_b_design.md` | **authoritative for the cone port** — increment-B staged plan + progress (B1–B5) |
 | `increment_d_translation_design.md` | **authoritative for the translation port** — increment-D staged plan (T1–T5) |
+| `increment_e_retirement_design.md` | **authoritative for increment E** — the retirement-cascade staged plan (E1–E5), verified architecture facts + open design decisions (DRAFT) |
 | `p6_projector_rework_proposal.md` | projector-rework design; **§8a-design is canonical** (rest partly superseded) |
 | `performance_tracking_plan.md` | nightly perf-regression harness + metrics — **separate track**, out of scope here |
 | `.claude/lessons.md` | jax/GPU/placement/measurement playbook |
