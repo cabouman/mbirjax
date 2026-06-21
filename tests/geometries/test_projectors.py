@@ -150,81 +150,6 @@ class TestProjectors(unittest.TestCase):
     # subTests: pytest can then report, select (-k cone), and distribute (pytest-xdist)
     # them individually.
 
-    def verify_view_batching(self, geometry_type):
-        self.set_view_params(geometry_type)
-        self.set_translation_vectors(geometry_type)
-        ct_model = self.get_model(geometry_type)
-        # View batching (view_indices) is a single-device feature: a view SUBSET breaks the
-        # equal view-shard, so the sharded projectors deliberately raise on a multi-device
-        # mesh (its only nontrivial user, vcls, runs single-device; the settable-view-params
-        # task retires view_indices entirely).  Auto-sharding is now the default on any
-        # multi-device host, so pin one device to keep testing the feature where it lives.
-        # RETIRE-AFTER: settable view parameters (then this pin is moot).
-        ct_model.configure_devices(1)
-
-        # Generate phantom
-        recon_shape = ct_model.get_params('recon_shape')
-        phantom_shape = recon_shape
-        embed_slice_start = 0
-        embed_slice_stop = recon_shape[2]
-        if geometry_type == 'helical_cone':
-            embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
-                ct_model,
-                self.helical_pitch,
-                self.helical_z_shifts
-            )
-            phantom_shape = (
-                recon_shape[0],
-                recon_shape[1],
-                embed_slice_stop - embed_slice_start,
-            )
-        phantom_core = mj.gen_cube_phantom(phantom_shape)
-        if geometry_type == 'helical_cone':
-            phantom = jnp.zeros(recon_shape)
-            phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
-        else:
-            phantom = phantom_core
-
-        # Generate indices of pixels and get the voxel cylinders
-        use_ror_mask = ct_model.get_params('use_ror_mask')
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)[0]
-        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
-
-        # Compute forward projection with all the views at once
-        sinogram = ct_model.sparse_forward_project(voxel_values, full_indices)
-
-        # Then compute the sinogram over multiple batches and reassemble them
-        num_views = sinogram.shape[0]
-        num_subsets = np.random.randint(2, 8)
-        view_subsets = [jnp.arange(j, num_views, num_subsets) for j in range(num_subsets)]  # We don't use array_split because we want the entries to be interleaved for testing.
-        sinogram_batched = [ct_model.sparse_forward_project(voxel_values, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
-        sinogram_stitched = np.zeros_like(sinogram)
-        for j in range(sinogram.shape[0]):
-            sinogram_stitched[j] = sinogram_batched[j % num_subsets][j // num_subsets]
-
-        forward_view_batch_test_result = np.allclose(sinogram, sinogram_stitched, atol=1e-5)
-        self.assertTrue(forward_view_batch_test_result)
-
-        # Then repeat for back projection
-        back_projection = ct_model.sparse_back_project(sinogram, full_indices)
-        back_projection_batched = [ct_model.sparse_back_project(sinogram, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
-        back_projection_batched = np.stack(back_projection_batched, axis=0)
-        back_projection_stitched = np.sum(back_projection_batched, axis=0)
-        proj_diff = np.abs(back_projection_stitched - back_projection)
-        # # The following is designed to highlight the bug associated with rounding in jax.
-        # if np.sum(proj_diff > 1e-4) > 10:
-        #     print('Num above threshold = {}, max diff = {}'.format(np.sum(proj_diff > 1e-4), np.amax(proj_diff)))
-        #     row_index0, col_index0 = jnp.unravel_index(full_indices, recon_shape[:2])
-        #     recon0 = jnp.zeros(recon_shape)
-        #     recon0 = recon0.at[row_index0, col_index0].set(back_projection)
-        #     recon1 = jnp.zeros(recon_shape)
-        #     recon1 = recon1.at[row_index0, col_index0].set(back_projection_stitched)
-        #     title = 'Standard backprojection (left) and \nabs diff with back projection via multiple view subsets (right)'
-        #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs_and_artifacts'
-        #     mj.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
-        back_view_batch_test_result = np.sum(proj_diff > 1e-4) < 1000 and np.amax(proj_diff) < 0.2
-        self.assertTrue(back_view_batch_test_result)
-
     def verify_adjoint(self, geometry_type):
         """
         Verify the adjoint property of the projectors:
@@ -409,7 +334,7 @@ class TestProjectors(unittest.TestCase):
 
 def _add_per_geometry_projector_tests():
     """Generate one test_<operation>_<geometry> method per pair (see note in TestProjectors)."""
-    operations = ('adjoint', 'hessian', 'view_batching')
+    operations = ('adjoint', 'hessian')
     for geometry_type in _PROJECTOR_GEOMETRY_TYPES:
         for operation in operations:
             def test(self, geometry_type=geometry_type, operation=operation):

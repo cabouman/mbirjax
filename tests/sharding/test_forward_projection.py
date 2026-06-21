@@ -16,8 +16,7 @@ These tests check:
   - output_sharded=True returns a view-sharded sinogram (no gather), and the
     default returns a plain array regardless of input placement;
   - sparse_forward_project keeps the result view-sharded (no gather inside);
-  - the forward/back adjoint identity holds across device counts;
-  - a view subset (view_indices != None) is rejected in sharded mode.
+  - the forward/back adjoint identity holds across device counts.
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
 devices otherwise).
@@ -199,17 +198,6 @@ class TestForwardProjectSharded(unittest.TestCase):
         for ax in range(out.ndim):
             if ax != view_axis:
                 self.assertIsNone(out.sharding.spec[ax])
-
-    def test_view_indices_not_supported(self):
-        """A view subset is rejected in sharded mode (full view-sharded output only)."""
-        model = _make_model()
-        self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
-        idx = _indices(model)
-        cyl = model._shard_recon(_random_cylinders(model))
-        num_views = model.get_params('sinogram_shape')[0]
-        with self.assertRaises(NotImplementedError):
-            model.sparse_forward_project(cyl, idx, view_indices=jnp.arange(num_views))
 
     def test_device_count_sweep(self):
         """The all-gather is correct across device counts, not just two."""

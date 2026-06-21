@@ -19,8 +19,7 @@ These tests check:
     back_project and the coeff_power=2 (Hessian-diagonal) path;
   - the result scales correctly across device counts (2/4/8 where available) —
     the reduce-scatter is not hardcoded to two devices;
-  - the internal sparse_back_project returns a slice-sharded array (no gather);
-  - a view subset (view_indices != None) is rejected in sharded mode for now.
+  - the internal sparse_back_project returns a slice-sharded array (no gather).
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
 devices otherwise).
@@ -207,17 +206,6 @@ class TestBackProjectSharded(unittest.TestCase):
         out = np.asarray(shard_model.compute_hessian_diagonal(weights))
         assert_sharded_allclose(out, ref)
 
-    def test_view_indices_not_supported(self):
-        """A view subset is rejected in sharded mode (full view-sharded input only)."""
-        model = _make_model()
-        self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
-        recon_shape = model.get_params('recon_shape')
-        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
-        sharded_in = model._shard_sinogram(_random_sino(model))
-        num_views = model.get_params('sinogram_shape')[0]
-        with self.assertRaises(NotImplementedError):
-            model.sparse_back_project(sharded_in, idx, view_indices=jnp.arange(num_views))
 
     def test_device_count_sweep(self):
         """The reduce-scatter is correct across device counts, not just two."""

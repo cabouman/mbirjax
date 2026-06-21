@@ -1293,7 +1293,7 @@ class TomographyModel(ParameterHandler):
         return mjs.assemble_sharded(
             results, (rows, cols, recon_cylinder.shape[-1]), recon_sharding)
 
-    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
+    def sparse_forward_project(self, voxel_values, pixel_indices, output_device=None):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -1302,37 +1302,22 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             pixel_indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (jax array): Array of indices of views to project
             output_device (jax device): Device on which to put the output
 
         Returns:
             jnp array: The resulting 3D sinogram after projection.
         """
-        # When a mesh is configured, take the sharded path: the recon cylinders are
-        # expected slice-sharded and the result is returned view-sharded (no gather
-        # here; the user-facing forward_project gathers).  Otherwise the
-        # single-device path runs unchanged.
-        #
-        # Partial-view projection (view_indices) is single-device-only: a subset of views
-        # breaks the equal view-shard, so the sharded path does not implement it.  On a trivial
-        # 1-device mesh (the auto-default placement path) there is nothing to shard, so fall
-        # through to the single-device implementation; only a real multi-device mesh rejects
-        # view_indices.  (The view-batching callers, e.g. vcls, run single-device.)
-        # RETIRE-AFTER-SHARDING: view_indices retires once every geometry is sharded -- see the
-        # fuller note in sparse_back_project.
-        if self.is_sharded and view_indices is None:
-            return self._sparse_forward_project_sharded(
-                voxel_values, pixel_indices, view_indices=None)
-        if self.is_sharded and len(self.shard_devices) > 1:
-            raise NotImplementedError(
-                "Sharded forward projection with view_indices is not supported on a "
-                "multi-device mesh (a subset of views breaks the equal view-shard).")
+        # A mesh is always configured now (every geometry auto-defaults to at least a trivial
+        # 1-device mesh), so the sharded path runs in all cases: the recon cylinders are expected
+        # slice-sharded and the result is returned view-sharded (no gather here; the user-facing
+        # forward_project gathers).  The single-device else-branch survives only for a geometry
+        # that does not support sharding (none today; it retires with the no-mesh path).
+        if self.is_sharded:
+            return self._sparse_forward_project_sharded(voxel_values, pixel_indices)
         return self._sparse_forward_project_single_device(
-            voxel_values, pixel_indices, view_indices=view_indices,
-            output_device=output_device)
+            voxel_values, pixel_indices, output_device=output_device)
 
-    def _sparse_forward_project_single_device(self, voxel_values, pixel_indices,
-                                              view_indices=None, output_device=None):
+    def _sparse_forward_project_single_device(self, voxel_values, pixel_indices, output_device=None):
         """
         Single-device forward projection (the original prerelease implementation).
 
@@ -1344,8 +1329,7 @@ class TomographyModel(ParameterHandler):
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         sinogram_shape = self.get_params('sinogram_shape')
-        if view_indices is None:
-            view_indices = jnp.arange(sinogram_shape[0])
+        view_indices = jnp.arange(sinogram_shape[0])      # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
         sinogram_shape = self.get_params('sinogram_shape')
@@ -1365,7 +1349,7 @@ class TomographyModel(ParameterHandler):
                                                                  pixel_indices[pixel_index_start:pixel_index_end]],
                                                                 self.sinogram_device)
                 sinogram_views = sinogram_views.block_until_ready()
-                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
+                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, owned_view_indices=view_indices_batch)
 
             # Include these views in the sinogram
             sinogram.append(jax.device_put(sinogram_views, output_device))
@@ -1373,12 +1357,11 @@ class TomographyModel(ParameterHandler):
         sinogram = jnp.concatenate(sinogram)
         return sinogram
 
-    def _sharded_forward_project_setup(self, voxel_values, pixel_indices, view_indices):
+    def _sharded_forward_project_setup(self, voxel_values, pixel_indices):
         """Shared setup for sharded forward projection (adjoint of the back setup).
 
-        Validates the contract (no view subset), defensively slice-shards the
-        recon cylinders (a no-op when already slice-sharded), and builds the
-        per-device data the band streaming needs.
+        Defensively slice-shards the recon cylinders (a no-op when already
+        slice-sharded), and builds the per-device data the band streaming needs.
 
         Returns:
             (devices, n_dev, num_padded_views, num_slices, num_pixels, recon_shard_info,
@@ -1390,10 +1373,6 @@ class TomographyModel(ParameterHandler):
             it produces (its sinogram view-shard); ``local_pixels`` is
             ``pixel_indices`` placed on each device once.
         """
-        if view_indices is not None:
-            raise NotImplementedError(
-                "Sharded forward projection currently requires view_indices=None "
-                "(the full view-sharded sinogram).")
         # Defensively slice-shard the cylinders (idempotent, no-op when already
         # slice-sharded) so internal callers that pass a plain array still work.
         voxel_values = self._shard_recon(voxel_values)
@@ -1431,7 +1410,7 @@ class TomographyModel(ParameterHandler):
         return (devices, n_dev, num_padded_views, num_slices, num_pixels,
                 recon_shard_info, view_ranges, local_pixels)
 
-    def _sparse_forward_project_sharded(self, voxel_values, pixel_indices, view_indices=None):
+    def _sparse_forward_project_sharded(self, voxel_values, pixel_indices):
         """
         Sharded forward projection: slice-sharded recon -> view-sharded sinogram.
 
@@ -1462,14 +1441,13 @@ class TomographyModel(ParameterHandler):
             voxel_values (jax array): slice-sharded recon cylinders
                 ``(num_pixels, num_slices)``.
             pixel_indices (jax array): 1D indices into the flattened (rows, cols).
-            view_indices: must be None in sharded mode.
 
         Returns:
             jax array of shape sinogram_shape, view-sharded across the mesh.
         """
         (devices, n_dev, num_padded_views, num_slices, num_pixels,
          recon_shard_info, view_ranges, local_pixels) = \
-            self._sharded_forward_project_setup(voxel_values, pixel_indices, view_indices)
+            self._sharded_forward_project_setup(voxel_values, pixel_indices)
 
         # Produce each view-owner's forward-projected view-shard.  The default (geometry-neutral)
         # path gathers the full slice cylinder per view-owner and runs the monolithic forward;
@@ -1535,7 +1513,7 @@ class TomographyModel(ParameterHandler):
             if n_dev == 1:
                 full_cyl = recon_shard_info[slice_owners[0]][0]
                 return self.projector_functions.sparse_forward_project(
-                    full_cyl, idx, view_indices=view_ranges[view_owner])
+                    full_cyl, idx, owned_view_indices=view_ranges[view_owner])
             owned = None
             for p0 in range(0, n_local, pixel_batch):
                 p1 = min(p0 + pixel_batch, n_local)
@@ -1548,7 +1526,7 @@ class TomographyModel(ParameterHandler):
                      for so in slice_owners], axis=1)
                 full_cyl = full_cyl[:, :real_slices]
                 part = self.projector_functions.sparse_forward_project(
-                    full_cyl, idx[p0:p1], view_indices=view_ranges[view_owner])
+                    full_cyl, idx[p0:p1], owned_view_indices=view_ranges[view_owner])
                 owned = part if owned is None else owned + part
             return owned
 
@@ -1711,21 +1689,19 @@ class TomographyModel(ParameterHandler):
         def worker(i, device):
             band = band_on_views[device]                       # (num_pixels, L)
             return self.projector_functions.sparse_forward_project(
-                band, local_pixels[i], view_indices=view_ranges[device])
+                band, local_pixels[i], owned_view_indices=view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
 
-    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1, output_device=None):
         """
         Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
-        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
+        associated with all of the angles used to define the ct model.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
-        be the indices into the sinogram that is passed in here.
+        all voxels with those indices across all the slices.
 
         Args:
             sinogram (jnp array): 3D jax array containing the full sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
             coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
             output_device (jax device, optional): Device on which to put the output
 
@@ -1737,36 +1713,20 @@ class TomographyModel(ParameterHandler):
             of this internal method that need the real shape must crop ``[:, :num_real_slices]``
             themselves (the padded slices are inert zeros, so the crop is exact).
         """
-        # When a mesh is configured, take the sharded path: the
-        # sinogram is expected view-sharded and the result is returned
-        # slice-sharded (no gather here; the user-facing back_project gathers).
-        # Otherwise the single-device path runs unchanged.
-        #
-        # Partial-view back projection (view_indices) is single-device-only (a subset of views
-        # breaks the equal view-shard).  On a trivial 1-device mesh (the auto-default placement
-        # path) there is nothing to shard, so fall through to the single-device implementation;
-        # only a real multi-device mesh rejects view_indices.  (e.g. vcls runs single-device.)
-        #
-        # RETIRE-AFTER-SHARDING: ``view_indices`` is the legacy view-table index -- both the
-        # user-facing view-SUBSET selector (superseded by the single-view sibling in vcls.py) and
-        # the single-device view-batching's per-batch angle selector (the per-view kernels in
-        # projectors.py do ``view_params_array[view_indices]``).  Once every geometry is sharded
-        # it can be removed: the batching slices the traced ``view_params_array`` directly, and
-        # this parameter, the multi-device guard just below, and the forward's mirror all retire
-        # together.  (This is the home of the "mechanism" referenced in vcls.py.)
-        if self.is_sharded and view_indices is None:
+        # A mesh is always configured now, so the sharded path runs in all cases: the sinogram is
+        # expected view-sharded and the result is returned slice-sharded (no gather here; the
+        # user-facing back_project gathers).  The single-device else-branch survives only for a
+        # geometry that does not support sharding (none today; it retires with the no-mesh path).
+        # The single-device back DRIVER itself stays live regardless -- the GPU n=1 short-circuit
+        # in _sparse_back_project_sharded routes a single-GPU recon to it (the pixel kernel is
+        # ~2.25x faster than the band kernel on GPU).
+        if self.is_sharded:
             return self._sparse_back_project_sharded(
-                sinogram, pixel_indices, view_indices=None,
-                coeff_power=coeff_power)
-        if self.is_sharded and len(self.shard_devices) > 1:
-            raise NotImplementedError(
-                "Sharded back projection with view_indices is not supported on a "
-                "multi-device mesh (a subset of views breaks the equal view-shard).")
+                sinogram, pixel_indices, coeff_power=coeff_power)
         return self._sparse_back_project_single_device(
-            sinogram, pixel_indices, view_indices=view_indices,
-            coeff_power=coeff_power, output_device=output_device)
+            sinogram, pixel_indices, coeff_power=coeff_power, output_device=output_device)
 
-    def _sparse_back_project_single_device(self, sinogram, pixel_indices, view_indices=None,
+    def _sparse_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """
         Single-device back projection (the original prerelease implementation).
@@ -1779,8 +1739,7 @@ class TomographyModel(ParameterHandler):
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
-        if view_indices is None:
-            view_indices = jnp.arange(num_views)
+        view_indices = jnp.arange(num_views)              # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(view_indices, num_view_batches)
 
@@ -1803,7 +1762,7 @@ class TomographyModel(ParameterHandler):
             for pixel_index_batch in pixel_indices_batched:
                 # Back project a batch
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batch,
+                                                                           owned_view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
                 voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
@@ -1812,13 +1771,12 @@ class TomographyModel(ParameterHandler):
 
         return recon_at_indices
 
-    def _sharded_back_project_setup(self, sinogram, pixel_indices, view_indices):
+    def _sharded_back_project_setup(self, sinogram, pixel_indices):
         """Shared setup for the sharded back-projection paths.
 
-        Validates the view-sharded contract (no view subset), defensively shards
-        the sinogram (a no-op when already view-sharded, so internal callers that
-        pass a plain array -- e.g. compute_hessian_diagonal with plain weights --
-        still work), and builds the data needed for each view-owner.
+        Defensively shards the sinogram (a no-op when already view-sharded, so internal
+        callers that pass a plain array -- e.g. compute_hessian_diagonal with plain
+        weights -- still work), and builds the data needed for each view-owner.
 
         Returns:
             (devices, n_dev, num_slices, num_pixels, shard_info, local_pixels):
@@ -1827,13 +1785,6 @@ class TomographyModel(ParameterHandler):
             angles; ``local_pixels`` is ``pixel_indices`` placed on each view-owner
             once.
         """
-        if view_indices is not None:
-            # A view subset would mean filtering each view-owner's view-shard to the
-            # requested views and adjusting the angle lookup per shard; not needed
-            # by the consumers (back_project / direct_recon pass all views).
-            raise NotImplementedError(
-                "Sharded back projection currently requires view_indices=None "
-                "(the full view-sharded sinogram).")
         # Defensively run the (idempotent, no-op-when-already-sharded) shard so
         # internal callers that pass a plain array still work correctly.
         sinogram = self._shard_sinogram(sinogram)
@@ -1876,8 +1827,7 @@ class TomographyModel(ParameterHandler):
         local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
         return devices, n_dev, num_slices, num_pixels, shard_info, local_pixels
 
-    def _sparse_back_project_sharded(self, sinogram, pixel_indices, view_indices=None,
-                                     coeff_power=1):
+    def _sparse_back_project_sharded(self, sinogram, pixel_indices, coeff_power=1):
         """
         Sharded back projection: view-sharded sinogram -> slice-sharded recon.
 
@@ -1928,9 +1878,6 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jax array): view-sharded sinogram (NamedSharding on axis 0).
             pixel_indices (jax array): 1D indices into the flattened (rows, cols).
-            view_indices: must be None in sharded mode (the full view-sharded
-                sinogram is expected).  A view subset would require per-shard
-                filtering or masking and is deferred.
             coeff_power (int): 1 normally, 2 for the Hessian diagonal.
 
         Returns:
@@ -1947,9 +1894,7 @@ class TomographyModel(ParameterHandler):
         # GPU ONLY: on CPU the SAME band kernel is ~8x FASTER -- it avoids the single-device
         # back-vertical cache cliff -- so CPU keeps the sharded path.  (The two kernels have
         # OPPOSITE platform rankings; see the platform-divergent back-kernel lesson in lessons.md.)
-        # Guarded on view_indices is None so a (future) view-subset request still falls through to
-        # the setup below, which rejects it -- the single-device path would silently ignore it.
-        if (view_indices is None and len(self.recon_placement.devices) == 1
+        if (len(self.recon_placement.devices) == 1
                 and self.recon_placement.devices[0].platform == 'gpu'):
             owner = self.recon_placement.devices[0]
             out = self._sparse_back_project_single_device(
@@ -1959,7 +1904,7 @@ class TomographyModel(ParameterHandler):
                 self.recon_placement.shard_structure(2))
 
         devices, n_dev, num_slices, num_pixels, shard_info, local_pixels = \
-            self._sharded_back_project_setup(sinogram, pixel_indices, view_indices)
+            self._sharded_back_project_setup(sinogram, pixel_indices)
 
         # Each device owns a slice-shard, a contiguous range of slices_per_dev slices
         # (exact, since configure_sharding requires num_slices % n_dev == 0).  That
@@ -2132,7 +2077,7 @@ class TomographyModel(ParameterHandler):
         return mjs.run_per_device(devices, worker, executor=pool)
 
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
-                                         view_indices, coeff_power):
+                                         owned_view_indices, coeff_power):
         """Back-project one view-owner's full view-shard onto the GLOBAL slice band [g0, g1).
 
         Default (geometry-neutral) behavior: run the geometry's BANDED back kernel on the FULL
@@ -2148,7 +2093,7 @@ class TomographyModel(ParameterHandler):
         """
         return self.projector_functions.sparse_back_project_band(
             view_data, pixel_indices, g0, g1 - g0,
-            view_indices=view_indices, coeff_power=coeff_power)
+            owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):

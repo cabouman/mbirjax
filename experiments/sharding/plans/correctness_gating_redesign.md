@@ -1,11 +1,11 @@
 # Correctness gating & visibility redesign — design note (DRAFT, 2026-06-21)
 
-> **STATUS: PLAN — design SETTLED with Greg 2026-06-21, not yet coded.**  Written after reading the live
-> harness code (`mbirjax_metrics`, branch `greg/sharding_extensions`), not the docs.  Agreed shape:
-> layered references (vs-main + cross-device + CPU↔GPU; prior-run demoted to a tripwire), adjoint left to
-> the existing test suite, dashboard-native alert (sticky banner + tab/favicon badge — no email, no
-> issue), and a single `cleared_through` watermark cleared via a guided script.  All §4 decisions are
-> settled; phased plan in §5 — **start with P1.**  **Lives in the mbirjax repo plans dir by
+> **STATUS: COMPLETE — P1–P5 shipped in `mbirjax_metrics` (2026-06-21).  P4's CPU↔GPU check activates once the next nightly collects the shared cells; the P4 tolerance is SAFE-LOOSE pending one calibration pass.**  Written
+> after reading the live harness code (`mbirjax_metrics`), not the docs.  Agreed shape: layered
+> references (vs-main + cross-device + CPU↔GPU; prior-run demoted to a tripwire), adjoint left to the
+> existing test suite, dashboard-native alert (sticky banner + tab/favicon badge — no email, no issue),
+> and a single `cleared_through` watermark cleared via a guided script.  All §4 decisions settled;
+> implementation status per phase in §5.  **Lives in the mbirjax repo plans dir by
 > convention, but ALL code changes land in `mbirjax_metrics`** (`tooling/scaling_tests/performance_tracking.py`,
 > `tooling/viewer/build_dashboard.py` + `dashboard.js` + `template.html`).  Line numbers are a
 > 2026-06-21 snapshot — **trust the symbol name over the number.**  Sibling: `performance_tracking_plan.md`.
@@ -200,8 +200,13 @@ compose, and "newest clear wins" is unambiguous.
 ### D7 — Data / coverage changes
 
 - **Shared CPU/GPU cell per geometry** for the cross-platform check: today `geom_sizes` differ by
-  platform.  Designate (at least) one *small* size per geometry that runs on **both** CPU and GPU, at
-  n=1, so there's an apples-to-apples fingerprint to compare.  Keep it small (CPU cost).
+  platform (zero overlap — verified by dry-run).  **DONE (2026-06-21):** the §4.3 "smallest GPU size →
+  CPU" pick would put cone 512³ on CPU (heavy nightly add), so we flipped to **largest CPU size → GPU**
+  (Option B): the first GPU entry of each geometry now mirrors the largest CPU size — cone/parallel
+  `200×208×160`, multiaxis `129×113×97`, translation `15×65×65`.  CPU unchanged; GPU adds a few tiny
+  cells.  Same correctness coverage (fingerprint agreement is size-insensitive), near-zero cost.  The
+  shared cells appear on the next nightly and the check activates automatically (all measured n, not just
+  n=1 — the fingerprint is device-count-independent).
 - **Fingerprints at build time**: already available (`_parse_run` loads the full doc).  The analyzer reads
   `doc["cells"][i]["fingerprint"]`; only derived findings go into the JSON.  (If we later want the raw
   numbers in the UI, emit a 2-field slim `{l2norm, sum}` — decide in implementation.)
@@ -215,7 +220,9 @@ compose, and "newest clear wins" is unambiguous.
 2. **Reference branch = `main`** (literally), not prerelease — untracked branches can be pulled into
    prerelease before they're fully vetted, so prerelease isn't a trustworthy correctness reference; `main`
    is.  *(Implementation note: still expose it as a single `Config`/builder constant so it's swappable.)*
-3. **Cross-platform shared cell** = the **smallest existing GPU size** per geometry, mirrored to CPU at n=1.
+3. **Cross-platform shared cell** = ~~smallest GPU size → CPU~~ → **flipped to largest CPU size → GPU**
+   after the P4 dry-run showed the original puts cone 512³ on CPU (heavy nightly add); Option B has the
+   same coverage at near-zero cost.  See D7.
 4. **No per-commit acks** — the single `cleared_through` watermark (D6) is the whole ack model for v1.
 5. **Banner + tab badge only** — no GitHub issue, no email; a `CORRECTNESS ALERT` line at the **end** of
    `run_one_night` (D5.4).
@@ -224,23 +231,34 @@ compose, and "newest clear wins" is unambiguous.
 
 ## 5. Phased implementation plan
 
-- **P1 — Severity split + dashboard surfacing (no baseline change).**  Classify correctness vs perf in
-  `build_dashboard`; add the History correctness marker, the red tile badge/tint, the sticky banner, and
-  the tab-title/favicon badge.  Banner driven *only* by the existing prior-run correctness hits at first.
-  *Buys the "second-class" fix and most of the "I'd miss it" fix immediately, low risk.*
-- **P2 — Correctness analyzer: cross-device + vs-main.**  **First, dry-run the analyzer over the existing
-  corpus** (all current run YAMLs) and report what *would* trigger — cross-device spreads and vs-main
-  divergences per cell — so we calibrate tolerances against real data and confirm there's no surprise
-  false-positive burst *before* wiring anything into the UI (Greg's call; matches "calibrate from data").
-  Then add the build-time analyzer (D3), the `Config` tolerances, wire findings into the banner/markers,
-  and emit the cross-device floor in the nightly for ongoing tuning.
-- **P3 — Acknowledge-through-date.**  `results/correctness_acks.yaml` + fold-in + grey-out + blanket
-  clear (D6).
-- **P4 — Cross-platform reference.**  Designate the shared CPU/GPU cell (D7); add the cross-platform
-  comparison to the analyzer.
-- **P5 (optional) — Nightly CORRECTNESS ALERT block / GitHub issue.**
+- **P1 — Severity split + dashboard surfacing (no baseline change). ✅ DONE (2026-06-21).**  Classify
+  correctness vs perf in `build_dashboard`; History ✕ marker, red tile badge/tint, sticky banner,
+  tab-title/favicon badge.  Shipped.
+- **P2 — Correctness analyzer: cross-device + vs-main. ✅ DONE (2026-06-21).**  Corpus dry-run first:
+  cross-device noise floor ~1e-6 (clean, value-preserving), vs-main meaningful reorders at 4–8e-5 vs
+  ~1e-6 drift → tolerances **1e-5 single / 1e-4 VCD / 1e-5 cross-device**.  Build-time analyzer with the
+  degenerate-reference guard; unified `correctness` findings (prior + cross-device + vs-main) wired into
+  the banner/markers/drill-down.  Reference branch = `main`.  *(Remaining P2 tail: emit the cross-device
+  floor in the nightly — folded into P5.)*
+- **P3 — Acknowledge-through-date. ✅ DONE (2026-06-21).**  Single `cleared_through` watermark
+  (`results/correctness_acks.yaml`), folded in by `build_dashboard` (acked = greyed, dropped from
+  banner/badge, audit retained); guided `action_scripts/clear_correctness.sh` (+ `clear_correctness.py`,
+  reusing `collect_data`) defaulting to "clear through today? [Y/n]", with `--status` and explicit-date.
+- **P4 — Cross-platform reference. ✅ DONE (2026-06-21, activates on next nightly).**  Analyzer matches
+  CPU↔GPU runs by (branch, commit) and compares shared cells (symmetric — both sides flagged), guarded
+  against degenerate baselines.  Shared cell = largest CPU size → GPU (D7).  Tolerance **1e-3 single /
+  3e-3 VCD — SAFE-LOOSE**, to calibrate from the first shared-cell data (re-run the cross-platform
+  dry-run and tighten).
+- **P5 — CORRECTNESS ALERT block + cross-device-floor emission. ✅ DONE (2026-06-21).**  Both print at
+  the end of every dashboard build (`build_dashboard._correctness_summary`) — i.e. "the rebuild's
+  correctness scan" (D5.4).  *(Note: it lives in `build_dashboard`, not `run_one_night`: the nightly
+  forwards to `run_regression.sh` which measures + pushes but does NOT build the dashboard; the build —
+  where the corpus analysis runs — is the right home, and is what Greg runs to view results.)*  The ALERT
+  lists the unacknowledged divergences (same set as the banner, latest-per-branch), or a clean
+  "cleared through <date>" line; the floor reports the max cross-device reldiff for tuning.
 
-Each phase is independently shippable and leaves the dashboard correct.
+Each phase is independently shippable and leaves the dashboard correct.  **State: P1–P5 shipped in
+`mbirjax_metrics` (P4's cross-platform check activates once the shared cells land on the next nightly).**
 
 ---
 
