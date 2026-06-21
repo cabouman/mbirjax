@@ -12,3 +12,7 @@
   planning by `sharding_implementation_plan_v2.md`; read it for history and principles.
 - `sharding_status.md` — short living status: current phase, phase tracker,
   verified hardware facts, open items.
+- `correctness_gating_redesign.md` — **design note (2026-06-21, PLAN/for-review)** for the metrics
+  harness (`mbirjax_metrics`): make correctness its own severity tier, add layered references (vs-main +
+  cross-device + CPU↔GPU) to stop the prior-run ratchet, surface it as a dashboard banner + tab/favicon
+  badge (no email), and clear reviewed divergences via an acknowledge-through-date file.  Phased plan §5.

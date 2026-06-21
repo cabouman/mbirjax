@@ -1,9 +1,11 @@
 # Increment E — the retirement cascade: design note (DRAFT, 2026-06-20)
 
-> **STATUS: DRAFT PLAN — not started.**  Written after a read-only survey of the current code (not the
-> docs).  All geometries are now ported (ParallelBeam + cone + translation + multiaxis, all
-> `_supports_sharding()=True`), which is the precondition E waited for.  This doc stages the cleanup and
-> flags the design decisions that need Greg before coding.  Line numbers here are a 2026-06-20 snapshot;
+> **STATUS: PLAN — design decisions SETTLED (2026-06-20), not yet coded.**  Written after a read-only
+> survey of the current code (not the docs).  All geometries are now ported (ParallelBeam + cone +
+> translation + multiaxis, all `_supports_sharding()=True`), the precondition E waited for.  The four
+> design decisions (§3, D1–D4) are settled with Greg; staged plan in §4.  **Start condition:** begin E1
+> once tomorrow's nightly confirms the multiaxis/translation GPU baselines (so E's no-behavior-change
+> claim has a green GPU reference to regress against).  Line numbers here are a 2026-06-20 snapshot;
 > **trust the symbol name over the number.**  Sibling docs: `sharding_implementation_plan_v3.md` §5 item 4
 > (the one-paragraph E sketch this expands), `increment_d_translation_design.md` (the staging template).
 
@@ -80,28 +82,31 @@ projector kernels and the band/pixel platform split are untouched (that is B4.5,
 
 ---
 
-## 3. Design decisions to settle with Greg (before coding)
+## 3. Design decisions — SETTLED with Greg (2026-06-20)
 
-- **D1 — `view_indices` user-facing feature: remove entirely?**  vcls (the single-view sibling +
-  `set_view_parameters`) already supersedes it and does NOT use `view_indices`.  Proposal: drop the
-  user-facing view-subset kwarg from `sparse_forward_project`/`sparse_back_project` (+ the multi-device
-  `NotImplementedError` guard + the single-device view-batching loop), and keep ONLY the internal
-  per-owner slicing (renamed so it reads as an internal shard detail, e.g. the sharded driver passes a
-  pre-sliced `view_params_array`).  *Confirm no supported user workflow still needs arbitrary view
-  subsets outside vcls.*
-- **D2 — the `_supports_sharding()` gate + the no-mesh path: delete or keep as a guard?**  Two options:
-  (a) **delete the no-mesh path entirely** and flip the base default to True (or drop the gate) — cleanest,
-  one code path, but removes the fallback for a future not-yet-ported geometry; (b) **keep the gate**
-  (base default False) as the seam for a future geometry, and only delete the *currently-dead branches* it
-  guards — safer/more conservative but leaves a dormant single-device path.  Proposal: **(a)** — the gate's
-  whole purpose was the porting transition, which is done; a future geometry would re-introduce the seam
-  deliberately.  Needs Greg's call (it is the most load-bearing decision).
-- **D3 — `output_device` (on `sparse_*_project` + `compute_hessian_diagonal`): retire or keep?**  It is a
-  single-device-only output-placement knob; `output_sharded` is the unified control.  Proposal: retire
-  `output_device` from the public surface, route internal callers to `recon_placement.devices[0]` /
-  `sino_placement.devices[0]`, and let `output_sharded` decide device-form-vs-gathered.  Confirm no caller
-  needs to pin the gathered output to an arbitrary device.
-- **D4 — staging granularity / commit boundaries** (see §4): one PR with staged commits, or smaller PRs?
+- **D1 — `view_indices`: drop the user-facing feature; keep + RENAME the internal mechanism.  RESOLVED.**
+  Drop the user-facing view-subset kwarg from the *model* `sparse_forward_project`/`sparse_back_project`
+  (+ the `None`-vs-subset dispatch, the multi-device `NotImplementedError` guard, and the single-device
+  per-batch view loop).  vcls already supersedes it (1-view sibling + `set_view_parameters`, never
+  `view_indices`).  Keep the **projector-level** param (Option A — the wrapper already has it, so zero new
+  plumbing; Option B's pre-sliced-`view_params_array` override was the alternative, rejected as
+  equal-code/higher-risk), and **RENAME it `owned_view_indices`** everywhere it survives (projector
+  wrappers + jit drivers + gather; the sharded-driver `view_ranges[owner]` calls; ParallelBeam's
+  `_back_project_view_shard_to_band` override) — it names the views a shard OWNS, not a user subset.  Do
+  NOT rename the unrelated locals also called `view_indices` (`preprocess/zeiss_cb.py`, the zeiss/repro
+  experiments — a different concept).  *Survey of public callers (2026-06-20):* the only GATED callers are
+  three tests (retired in E1, §4); NO demo uses it; the un-gated experiments
+  (`sandboxes/cone_beam_dev.py` — already stale vs the current API, `bugs_and_artifacts/...`, an archived
+  ablation) are **left alone by decision** (housecleaning deferred, out of scope for E).
+- **D2 — delete the no-mesh path entirely.  RESOLVED (option a).**  Remove the `is_sharded==False`
+  branches and flip/drop the `_supports_sharding()` gate so there is ONE code path (the gate's purpose was
+  the porting transition, now complete; a future unported geometry would re-introduce the seam
+  deliberately).  Keep the single-device back driver/kernel + the forward `n_dev==1` one-shot (§2).
+- **D3 — retire `output_device` entirely.  RESOLVED.**  Remove it from the public surface
+  (`sparse_*_project`, `compute_hessian_diagonal`); internal callers use `recon_placement.devices[0]` /
+  `sino_placement.devices[0]`; `output_sharded` is the sole output-form control.
+- **D4 — one commit; no PR yet.  RESOLVED.**  Land E as a single staged commit (Greg commits from
+  PyCharm); a PR waits until the sharding work has settled more fully.
 
 ---
 
@@ -114,7 +119,7 @@ next one touches.
 
 | Stage | Work | Key symbols / files | Gate |
 |---|---|---|---|
-| **E1 — retire `view_indices` (user-facing)** | Remove the kwarg from `sparse_forward_project` / `sparse_back_project` + their docstrings + the multi-device `NotImplementedError` guards; delete the single-device view-batching loop; **re-home per-owner selection** so the sharded driver slices `view_params_array` directly (no public kwarg).  Drop the projector-driver `view_indices` param in `projectors.py` once callers are converted.  Retire the `verify_view_batching` test + the `test_view_indices_not_supported` tests + the `test_projectors` `configure_devices(1)` pin. | `tomography_model.py` (sparse_*_project, the two RETIRE-AFTER notes, `_sharded_*_setup`, `_forward_project_to_view_shards`, `_back_project_view_shard_to_band`); `projectors.py` (`_jit_sparse_*`, `_sparse_*_project`); `tests/geometries/test_projectors.py`, `tests/sharding/test_{forward,back}_projection.py` | full suite green; adjoint/Hessian/VCD unchanged; vcls still runs |
+| **E1 — retire user-facing `view_indices`; rename the internal arg to `owned_view_indices`** | Remove the kwarg from the *model* `sparse_forward_project`/`sparse_back_project` + docstrings + the `None`-vs-subset dispatch + the multi-device `NotImplementedError` guards + the single-device per-batch view loop (every call → the sharded path; the trivial mesh handles n=1).  **Option A:** the projector-level arg STAYS (the wrappers already have it) — **rename `view_indices` → `owned_view_indices`** in `projectors.py` (wrappers + jit drivers + the `view_params_array[...]` gather) and at the sharded-driver call sites (`view_ranges[owner]`) + ParallelBeam's `_back_project_view_shard_to_band` override; it names the views a shard OWNS.  Leave the unrelated `view_indices` locals (`zeiss_cb.py`, experiments) untouched.  Retire `verify_view_batching` + the two `test_view_indices_not_supported` tests + the `test_projectors` `configure_devices(1)` pin.  (No demo uses it; un-gated experiments left alone.) | `tomography_model.py` (sparse_*_project, the two RETIRE-AFTER notes, `_forward_project_to_view_shards`, `_back_project_view_shard_to_band`); `projectors.py` (`*_public`, `_jit_sparse_*`, `_sparse_*_project`); `parallel_beam.py`; `tests/geometries/test_projectors.py`, `tests/sharding/test_{forward,back}_projection.py` | full suite green; adjoint/Hessian/VCD unchanged; sharded n≥2 still selects per-owner views; vcls still runs |
 | **E2 — delete the dead no-mesh path** | Remove the `is_sharded==False` `else` branches (now unreachable) across `tomography_model.py`: the no-mesh dispatch in `sparse_*_project`, the no-mesh placements branch in `_set_placements`, the `_extract_halos`/`_stage_halos`/`_shard_*`/`_gather_*` no-op early-returns, etc.  **Keep** `_sparse_back_project_single_device` + the pixel kernel + the forward `n_dev==1` one-shot (re-homed as short-circuit helpers).  Resolve **D2** (gate flip vs keep).  Re-read each of the ~40 `is_sharded` sites for the footgun: a site that really meant "≥2 physical devices" becomes `len(shard_devices) > 1` (the 4 dispatch sites at the `sparse_*_project` heads). | `tomography_model.py` (is_sharded sites, `_set_placements`, `set_devices` gate); `tests/sharding/test_hooks.py` (the two skipped no-mesh tests delete) | full suite green; the trivial-1-device path still works (it is now the only single-device path) |
 | **E3 — retire `main_device`/`sinogram_device`** | Replace the scalars with placement accessors (`recon_placement.devices[0]` / `sino_placement.devices[0]`) at all ~75 use sites (incl. `vcd_utils.py`, `denoising.py`, `utilities.py`, `preprocess/mar.py`); MORPH `set_devices` to pick the default device locally instead of storing the attrs; keep `initialize_recon`'s early `device_put` guard (device refs → placement accessors).  Update `test_hooks` placement-vs-scalar assertions. | `tomography_model.py` (`set_devices`, `_set_placements`, `initialize_recon`, `vcd_*`, `compute_hessian_diagonal`); `vcd_utils.py`, `denoising.py`, `utilities.py`, `preprocess/mar.py`; `tests/sharding/test_hooks.py`, `tests/geometries/test_vcd.py` | full suite green; device placement unchanged |
 | **E4 — reconcile `output_device` with `output_sharded`** | Per **D3**: retire `output_device` from the public surface (`sparse_*_project`, `compute_hessian_diagonal`); internal callers use placement accessors; `output_sharded` is the sole output-form control. | `tomography_model.py` (the three signatures + callers); any test passing `output_device` | full suite green |
