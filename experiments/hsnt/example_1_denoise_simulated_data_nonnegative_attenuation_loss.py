@@ -21,7 +21,7 @@ from plot_utils import plot_images, plot_spectra
 def newton_update(W, H, T):
     X = W @ H
     Z = np.exp(-X)
-    init_loss = (Z + T * X).sum()
+    best_loss = (Z + T * X).sum()
 
     dL_dW = (T - Z) @ H.T
     dL_dH = W.T @ (T - Z)
@@ -32,17 +32,19 @@ def newton_update(W, H, T):
     dW = dL_dW / (d2L_dW2 + 1e-10)
     dH = dL_dH / (d2L_dH2 + 1e-10)
 
+    W_new = W.copy()
+    H_new = H.copy()
     for learning_rate in np.logspace(0.5, -3, 15):
         W_temp = np.maximum(W - learning_rate * dW, 1e-10)
         H_temp = np.maximum(H - learning_rate * dH, 1e-10)
         X_temp = W_temp @ H_temp
         temp_loss = (np.exp(-X_temp) + T * X_temp).sum()
-        if temp_loss < init_loss:
-            W = W_temp
-            H = H_temp
-            break
+        if temp_loss < best_loss:
+            W_new = W_temp
+            H_new = H_temp
+            best_loss = temp_loss
 
-    return W, H
+    return W_new, H_new
 
 def multiplicative_update(W, H, T):
     Z = np.exp(-W @ H)
@@ -58,13 +60,13 @@ def main():
     num_angles = 1  # Number of projection angles
     detector_rows = 64  # Number of rows in the detector
     detector_columns = 64  # Number of columns in the detector
-    dosage_rate = 50  # Neutron dosage rate
+    dosage_rate = 20  # Neutron dosage rate
     material_density = {"Ni": 0.25, "Cu": 0.25, "Al": 0.75}  # Define material density (vol. fraction)
     dataset_type = 'attenuation'  # Choose between 'attenuation' or 'transmission'
 
     # Denoiser parameters
     num_materials = 3  # Number of materials
-    verbose = 2  # Verbosity level
+    verbose = 0  # Verbosity level
     N = 500  # Number of fine-tuning iterations
 
     # Display parameters
@@ -118,31 +120,21 @@ def main():
     H_newt = np.random.rand(*H.shape)
     W_mu = W_newt.copy()
     H_mu = H_newt.copy()
-    D_newt = []
-    D_mu = []
     for i in range(N):  # Run for a fixed number of iterations
         print(f'Iteration {i + 1}/{N}')
 
-        # Newton update
+        # Perform optimization step
         W_newt, H_newt = newton_update(W_newt, H_newt, T)
-        newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
-        newton_loss = (np.exp(-newton_hyper_projection) + T.reshape(gt_hyper_projection.shape) * newton_hyper_projection).sum() / gt_loss
-
-        # Multiplicative update
         W_mu, H_mu = multiplicative_update(W_mu, H_mu, T)
-        mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
-        mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / gt_loss
-
-        # Compute least squares estimate of material coefficients for current projections
-        theta_newt = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
-        theta_mu = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
-
-        # Compute MSE of material spectra
-        D_newt.append(np.linalg.norm(theta_newt @ H_newt - material_basis) ** 2 / material_basis.size)
-        D_mu.append(np.linalg.norm(theta_mu @ H_mu - material_basis) ** 2 / material_basis.size)
 
         # Plot hyperspectral projections and spectra
         if verbose > 1 and (i % 20 == 0 or i == N - 1):  # Plot at regular intervals and the last iteration
+            # Compute current projections and losses
+            newton_hyper_projection = (W_newt @ H_newt).reshape(gt_hyper_projection.shape)
+            newton_loss = (np.exp(-newton_hyper_projection) + T.reshape(gt_hyper_projection.shape) * newton_hyper_projection).sum() / gt_loss
+            mult_hyper_projection = (W_mu @ H_mu).reshape(gt_hyper_projection.shape)
+            mult_loss = (np.exp(-mult_hyper_projection) + T.reshape(gt_hyper_projection.shape) * mult_hyper_projection).sum() / gt_loss
+
             plot_images(images=[gt_hyper_projection[0, :, :, display_wave_idx],
                                 noisy_hyper_projection[0, :, :, display_wave_idx],
                                 frob_hyper_projection[0, :, :, display_wave_idx],
@@ -190,41 +182,41 @@ def main():
 
             plt.close('all')
 
-    # Plot MSE of spectra reconstructions across iterations
-    plt.figure(figsize=(10, 6))
-    plt.plot(D_newt, label='Newton')
-    plt.plot(D_mu, label='Multiplicative')
-    plt.xlabel('Iteration')
-    plt.ylabel('MSE')
-    plt.title('Mean Squared Error of Spectra Reconstructions')
-    plt.legend()
-    plt.ylim(0, 0.005)
-    plt.tight_layout()
-    plt.savefig(f'example_1_nonnegative_attenuation_loss_distance_to_material_basis_{gt_hyper_projection.shape[-1]}.png')
+    # Compute least squares estimate of material coefficients for current projections
+    theta_frob = np.linalg.lstsq(H.T, material_basis.T)[0].T
+    theta_newt = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
+    theta_mu = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
 
     # Plot reconstructed spectra
-    plot_spectra(spectra=[(theta_newt @ H_newt)[0],
-                          (theta_newt @ H_newt)[1],
-                          (theta_newt @ H_newt)[2],
-                          (theta_mu @ H_mu)[0],
-                          (theta_mu @ H_mu)[1],
-                          (theta_mu @ H_mu)[2],
-                          material_basis[0],
-                          material_basis[1],
-                          material_basis[2]],
-                labels=["Ni Recon (Newton)", "Cu Recon (Newton)", "Al Recon (Newton)",
-                        "Ni Recon (MU)", "Cu Recon (MU)", "Al Recon (MU)",
-                        "Ni Basis", "Cu Basis", "Al Basis"],
-                title='Material attenuation spectra reconstructions',
-                x_label='wavelength index',
-                y_label='attenuation',
-                filename=f'example_1_nonnegative_attenuation_loss_spectra_reconstruction.png')
+    plt.rcParams['figure.constrained_layout.use'] = True
+    plt.rc('font', size=30)
+    plt.figure(figsize=(50, 10), dpi=80)
+    plt.suptitle('Material attenuation spectra reconstructions')
+    for i, (spectra, title) in enumerate([
+        (material_basis, 'Ground Truth'),
+        (theta_frob @ H, r'$L^2$ Loss'),
+        (theta_newt @ H_newt, 'NNA Loss (Quasi-Newton)'),
+        (theta_mu @ H_mu, 'NNA Loss (Mann-Multiplicative)')]):
+        ax = plt.subplot(1, 4, i + 1)
+        ax.plot(spectra[0], label='Ni')
+        ax.plot(spectra[1], label='Cu')
+        ax.plot(spectra[2], label='Al')
+
+        ax.set_title(title)
+        ax.set_xlabel('wavelength index')
+        if i == 0:
+            ax.set_ylabel('attenuation')
+        else:
+            ax.set_yticklabels([])
+        ax.set_ylim(0, 1.1)
+        ax.legend(loc='upper left')
+    plt.savefig('example_1_nonnegative_attenuation_loss_spectra_reconstruction.png')
 
     # Plot reconstructed material coefficient maps
     plot_images(images=[(W_newt @ np.linalg.pinv(theta_newt)).reshape(detector_rows, detector_columns, num_materials),
                         (W_mu @ np.linalg.pinv(theta_mu)).reshape(detector_rows, detector_columns, num_materials)],
-                titles=[f'Fig (a): Newton material coefficient maps\nIteration: {N}',
-                        f'Fig (b): Multiplicative material coefficient maps\nIteration: {N}]'],
+                titles=[f'Newton material coefficient maps',
+                        f'Multiplicative material coefficient maps'],
                 filename='example_1_nonnegative_attenuation_loss_material_maps.png')
 
     # Save GIFs of projections and spectra across iterations
