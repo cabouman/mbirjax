@@ -38,7 +38,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -124,7 +124,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(single_dev)
+        shard_model.configure_devices(single_dev)
         out = np.asarray(shard_model.forward_project(recon))
         assert_sharded_allclose(out, ref, msg="trivial sharding diverged beyond float noise")
 
@@ -137,7 +137,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.forward_project(recon)
         # User-facing, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
@@ -154,7 +154,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.forward_project(recon, output_sharded=True)
 
         # The device form: a view-sharded sinogram.
@@ -177,7 +177,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         sharded_recon = shard_model._shard_recon(recon)
         out = shard_model.forward_project(sharded_recon)
         self.assertNotIsInstance(getattr(out, 'sharding', None),
@@ -188,7 +188,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         """sparse_forward_project keeps the result view-sharded (no gather inside)."""
         model = _make_model()
         self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
         idx = _indices(model)
         cyl = model._shard_recon(_random_cylinders(model))
         out = model.sparse_forward_project(cyl, idx)
@@ -210,7 +210,7 @@ class TestForwardProjectSharded(unittest.TestCase):
             if devs is None or not self._divisible(ref_model, n):
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             out = np.asarray(m.forward_project(recon))
             assert_sharded_allclose(out, ref)
             ran_multi = True
@@ -234,7 +234,7 @@ class TestForwardProjectSharded(unittest.TestCase):
             if devs is None or (n > 1 and not self._divisible(ref_model, n)):
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             ax = np.asarray(m.sparse_forward_project(m._shard_recon(x_cyl), idx))
             aty = np.asarray(m.sparse_back_project(m._shard_sinogram(y_sino), idx))
             lhs = float(np.sum(ax * np.asarray(y_sino)))

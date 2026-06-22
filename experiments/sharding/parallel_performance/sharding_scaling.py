@@ -82,7 +82,7 @@ def _make_model(n_views, n_rows, n_channels, n_devices=1):
     devs = _pick_devices(n_devices)
     if devs is None:
         return None
-    model.configure_sharding(devs)
+    model.configure_devices(devs)
     return model
 
 

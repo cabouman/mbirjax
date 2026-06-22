@@ -89,7 +89,7 @@ def make_model(size, devices=None):
     """Build a ParallelBeamModel for the given (views, rows, channels).
 
     Returns None if the requested device count does not evenly divide the
-    sharded axes (configure_sharding raises) — the caller skips that point.
+    sharded axes (configure_devices raises) — the caller skips that point.
     """
     import mbirjax
     n_views, n_rows, n_channels = size
@@ -97,7 +97,7 @@ def make_model(size, devices=None):
     model = mbirjax.ParallelBeamModel((n_views, n_rows, n_channels), angles)
     if devices is not None:
         try:
-            model.configure_sharding(devices)
+            model.configure_devices(devices)
         except ValueError as e:
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")

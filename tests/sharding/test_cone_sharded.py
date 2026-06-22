@@ -37,7 +37,7 @@ def _make_cone_model(helical=False, num_views=8, num_det_rows=24, num_det_channe
     """Small cone model.  At magnification 2 the auto-sized recon has num_det_rows slices, so
     num_views=8 and num_det_rows=24 keep both sharded axes divisible by 2 and 4.  Pinned to a
     single device so the bare model is a deterministic single-device REFERENCE; the multi-device
-    tests override with their own configure_sharding(devs)."""
+    tests override with their own configure_devices(devs)."""
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     sdd = 4.0 * num_det_channels
     kwargs = dict(source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
@@ -90,7 +90,7 @@ class TestConeShardedProjectors(unittest.TestCase):
         ref = np.asarray(ref_fn(ref_model))
         for n, devs in counts:
             model = _make_cone_model(helical=helical)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(shard_fn(model))
             assert_sharded_allclose(out, ref, tol=self.TOL,
                                     msg=f"{label} mismatch: helical={helical} n_dev={n}")
@@ -144,7 +144,7 @@ class TestConeShardedRecon(unittest.TestCase):
                 ref = self._recon(_make_cone_model(helical=helical), sino)
                 for n, devs in counts:
                     model = _make_cone_model(helical=helical)
-                    model.configure_sharding(devs)
+                    model.configure_devices(devs)
                     out = self._recon(model, sino)
                     assert_sharded_allclose(out, ref, tol=self.TOL,
                                             msg=f"VCD recon mismatch: helical={helical} n_dev={n}")

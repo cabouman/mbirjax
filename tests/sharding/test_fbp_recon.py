@@ -46,7 +46,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -125,7 +125,7 @@ class TestFbpReconSharded(unittest.TestCase):
         ref = np.asarray(model.fbp_recon(sino))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(single_dev)
+        shard_model.configure_devices(single_dev)
         out = np.asarray(shard_model.fbp_recon(sino))
         assert_sharded_allclose(out, ref, msg="trivial sharding diverged beyond float noise")
 
@@ -138,7 +138,7 @@ class TestFbpReconSharded(unittest.TestCase):
         ref = np.asarray(model.fbp_recon(sino))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.fbp_recon(sino)
         # Match-input, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
@@ -155,7 +155,7 @@ class TestFbpReconSharded(unittest.TestCase):
         ref = np.asarray(model.fbp_recon(sino))        # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         recon_axis = shard_model.recon_shard_axis()
         for fn_name in ('fbp_recon', 'direct_recon'):
             out = getattr(shard_model, fn_name)(sino, output_sharded=True)
@@ -178,7 +178,7 @@ class TestFbpReconSharded(unittest.TestCase):
         and back projection)."""
         model = _make_model()
         self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
 
         captured = {}
         original_back_project = model.back_project
@@ -209,7 +209,7 @@ class TestFbpReconSharded(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(model.fbp_recon(sino))
             assert_sharded_allclose(out, ref, msg=f"mismatch at n_dev={n}")
             ran_multi = True

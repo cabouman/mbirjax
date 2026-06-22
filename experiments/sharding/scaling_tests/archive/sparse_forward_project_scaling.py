@@ -62,7 +62,7 @@ DEVICE_COUNTS = [1, 2, 4, 8]  # [1, 2, 3]
 
 # Problem sizes (n_views, n_rows, n_channels).  Same ladder as back projection:
 # the view axis (n_views) and the slice axis (≈ n_rows for parallel beam) must
-# both divide every device count used, else configure_sharding raises and the
+# both divide every device count used, else configure_devices raises and the
 # point is skipped.  Multiples of 12 admit a 3-device ladder (cooler first three
 # GPUs); multiples of 16 are the power-of-two sizes.
 SIZES_BY_12 = {
@@ -90,7 +90,7 @@ def make_model(size, devices=None):
     """Build a ParallelBeamModel for the given (views, rows, channels).
 
     Returns None if the requested device count does not evenly divide the
-    sharded axes (configure_sharding raises) — the caller skips that point.
+    sharded axes (configure_devices raises) — the caller skips that point.
     """
     import mbirjax
     n_views, n_rows, n_channels = size
@@ -98,7 +98,7 @@ def make_model(size, devices=None):
     model = mbirjax.ParallelBeamModel((n_views, n_rows, n_channels), angles)
     if devices is not None:
         try:
-            model.configure_sharding(devices)
+            model.configure_devices(devices)
         except ValueError as e:
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")

@@ -43,7 +43,7 @@ def _make_multiaxis_model(anisotropic=False, num_views=8, num_det_rows=32, num_d
     recon to 32 slices isotropic / 16 slices anisotropic (slice aspect 2), so both the view axis
     (8) and the slice axis stay divisible by 2 and 4.  Pinned to a single device so the bare model
     is a deterministic single-device REFERENCE; the multi-device tests override with their own
-    configure_sharding(devs)."""
+    configure_devices(devs)."""
     az = np.linspace(0.0, np.pi, num_views, endpoint=False)
     el = np.deg2rad(np.linspace(-8.0, 8.0, num_views))
     angles = jnp.asarray(np.stack([az, el], axis=1))
@@ -108,7 +108,7 @@ class TestMultiAxisShardedProjectors(unittest.TestCase):
         ref = np.asarray(ref_fn(ref_model))
         for n, devs in counts:
             model = _make_multiaxis_model(anisotropic=anisotropic)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(shard_fn(model))
             assert_sharded_allclose(out, ref, tol=self.TOL,
                                     msg=f"{label} mismatch: anisotropic={anisotropic} n_dev={n}")

@@ -62,7 +62,7 @@ SHARPNESS = 1.0
 # *trivial 1-device mesh* so recon takes the SHARDED VCD path on ONE device.  This
 # isolates the "1-device-mesh heaviness" question apples-to-apples against the
 # no-mesh run: same arrays, same harness, one variable changed.  Leave False on a
-# prerelease checkout (it has no configure_sharding).  The output YAML name encodes
+# prerelease checkout (it has no configure_devices).  The output YAML name encodes
 # the mode, so a MESH=True run does not overwrite the no-mesh baseline.
 MESH = False
 
@@ -90,11 +90,11 @@ def run_one(size):
         # path (entry-sharding a plain host sinogram, band-streamed projectors,
         # _qggmrf_prior_sharded) -- on a single device, so the only difference from
         # the no-mesh run is the code path, not the device count.
-        if not hasattr(model, "configure_sharding"):
+        if not hasattr(model, "configure_devices"):
             raise RuntimeError(
                 "MESH=True needs the beta sharded path, but this checkout has no "
-                "configure_sharding (it is prerelease).  Run with MESH=False here.")
-        model.configure_sharding(devs)
+                "configure_devices (it is prerelease).  Run with MESH=False here.")
+        model.configure_devices(devs)
     np.random.seed(SEED)
     sino = np.random.rand(*size).astype(np.float32)   # host array; recon shards nothing
 

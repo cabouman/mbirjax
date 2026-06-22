@@ -2,7 +2,7 @@
 Tests for the sharding primitives.
 
 Covers the model-agnostic helpers in mbirjax._sharding (transfer +
-thread_execution) and TomographyModel.configure_sharding.  Runs on whatever
+thread_execution) and TomographyModel.configure_devices.  Runs on whatever
 devices are present: real GPUs on a cluster, virtual CPU devices on a laptop/CI
 (set up by conftest).
 """
@@ -130,7 +130,7 @@ class TestExecution(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(assembled), global_arr)
 
 
-class TestConfigureSharding(unittest.TestCase):
+class TestConfigureDevices(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -160,7 +160,7 @@ class TestConfigureSharding(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         if num_slices % 2 != 0:
             self.skipTest(f"num_slices {num_slices} not divisible by 2")
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         self.assertEqual(model.mesh.devices.size, 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
@@ -180,7 +180,7 @@ class TestConfigureSharding(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         num_rows = model.get_params('sinogram_shape')[1]
         self.assertNotEqual(num_slices % 3, 0)
-        model.configure_sharding(devs)   # no warning, no raise: padding handles both axes
+        model.configure_devices(devs)   # no warning, no raise: padding handles both axes
         # Views pad 8 -> 9 and rows pad with the slices; all padded entries exactly zero.
         sino = np.ones(model.get_params('sinogram_shape'), dtype=np.float32)
         sharded = model._shard_sinogram(sino)
@@ -212,7 +212,7 @@ class TestConfigureSharding(unittest.TestCase):
         model = self._make_model()                          # num_views = 8 (divisible by 2)
         rows, cols, _ = model.get_params('recon_shape')
         model.set_params(recon_shape=(rows, cols, 5))        # 5 slices over 2 devices: pads to 6
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         out = model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
         self.assertEqual(out.shape, (rows * cols, 6))
         stale_device_form = np.zeros((rows * cols, 6), dtype=np.float32)

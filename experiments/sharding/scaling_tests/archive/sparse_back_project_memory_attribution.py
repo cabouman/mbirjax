@@ -14,7 +14,7 @@ constant in device count (which is why GPU memory scaled sub-1/n):
 This script does two things at a fixed (size, device count):
 
   PART A — attribution.  Build the sharded model exactly as the scaling harness
-    does, report the batch sizes it actually ends up using (configure_sharding
+    does, report the batch sizes it actually ends up using (configure_devices
     does NOT run set_devices_and_batch_sizes, so they are whatever the full-
     problem-on-one-GPU path left), and compute the exact byte size of each
     buffer.  This decomposes the peak.
@@ -71,7 +71,7 @@ def _build(devs, view_batch=-1, pixel_batch=-1):
     """Sharded ParallelBeamModel at SIZE, optionally overriding the vmap batch
     sizes and recompiling the projector so the override actually takes effect.
 
-    Order: configure_sharding first (sets the mesh; it does not touch batch sizes
+    Order: configure_devices first (sets the mesh; it does not touch batch sizes
     or the projector), then override + create_projectors() last, so the final
     compiled projector carries the requested batch sizes.
     """
@@ -79,7 +79,7 @@ def _build(devs, view_batch=-1, pixel_batch=-1):
     n_views, _, _ = SIZE
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
     model = mbirjax.ParallelBeamModel(SIZE, angles)
-    model.configure_sharding(devs)
+    model.configure_devices(devs)
     if view_batch and view_batch > 0:
         model.view_batch_size_for_vmap = int(view_batch)
     if pixel_batch and pixel_batch > 0:

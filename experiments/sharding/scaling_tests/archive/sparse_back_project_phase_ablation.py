@@ -93,7 +93,7 @@ def build(size, devices):
     n_views, n_rows, n_channels = size
     angles = np.linspace(0, np.pi, n_views, endpoint=False)
     model = mbirjax.ParallelBeamModel((n_views, n_rows, n_channels), angles)
-    model.configure_sharding(devices)
+    model.configure_devices(devices)
     sino_np = np.random.default_rng(SEED).random(size, dtype=np.float32)
     sino_sharded = model._shard_sinogram(sino_np)
     idx = mbirjax.gen_full_indices(model.get_params('recon_shape'),
@@ -168,7 +168,7 @@ def main():
                 print(f"{n:>5} | (not enough devices)")
                 continue
             num_views, num_rows, _ = size
-            # Skip if the sharded axes don't divide n (configure_sharding would raise).
+            # Skip if the sharded axes don't divide n (configure_devices would raise).
             model_probe = mbirjax.ParallelBeamModel(
                 size, np.linspace(0, np.pi, num_views, endpoint=False))
             num_slices = model_probe.get_params('recon_shape')[2]

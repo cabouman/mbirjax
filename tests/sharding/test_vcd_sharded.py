@@ -46,7 +46,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -183,7 +183,7 @@ class TestShardedPrior(unittest.TestCase):
         g_ref, h_ref = mj.qggmrf_gradient_and_hessian_at_indices(flat, recon_shape, idx, params)
 
         model = _make_model()
-        model.configure_sharding(single)
+        model.configure_devices(single)
         sharded_flat = model._shard_recon(flat)
         g, h = model._qggmrf_prior_sharded(sharded_flat, idx, params)
         assert_sharded_allclose(np.asarray(g), np.asarray(g_ref), msg="prior grad diverged beyond float noise")
@@ -208,7 +208,7 @@ class TestShardedPrior(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             sharded_flat = model._shard_recon(flat)
             g, h = model._qggmrf_prior_sharded(sharded_flat, idx, params)
 
@@ -276,7 +276,7 @@ class TestShardedRecon(unittest.TestCase):
         ref = self._recon(_make_model(), sino)
 
         shard_model = _make_model()
-        shard_model.configure_sharding(single)
+        shard_model.configure_devices(single)
         out = self._recon(shard_model, sino)
         assert_sharded_allclose(out, ref, msg="trivial-sharded recon diverged beyond float noise", tol=1e-4)
 
@@ -296,7 +296,7 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True)   # exact path
             # Iterative amplification of float-reduce-order differences -> modest tolerance.
             assert_sharded_allclose(out, ref, msg=f"recon mismatch at n_dev={n}", tol=1e-4)
@@ -320,9 +320,9 @@ class TestShardedRecon(unittest.TestCase):
                 continue
             if not _divisible(_make_model(), n):
                 continue
-            m_once = _make_model(); m_once.configure_sharding(devs)
+            m_once = _make_model(); m_once.configure_devices(devs)
             once = self._recon(m_once, sino, halo_per_subset=False)
-            m_exact = _make_model(); m_exact.configure_sharding(devs)
+            m_exact = _make_model(); m_exact.configure_devices(devs)
             exact = self._recon(m_exact, sino, halo_per_subset=True)
             nrmse = np.linalg.norm(once - exact) / np.linalg.norm(exact)
             self.assertLess(nrmse, 2e-3,
@@ -349,7 +349,7 @@ class TestShardedRecon(unittest.TestCase):
         m = _make_model()
         sino, w = _phantom_sino(m), _phantom_weights(m)
         ref = self._recon(_make_model(), sino, weights=w)
-        sm = _make_model(); sm.configure_sharding(single)
+        sm = _make_model(); sm.configure_devices(single)
         out = self._recon(sm, sino, weights=w)
         assert_sharded_allclose(out, ref, msg="non-const-weights trivial recon diverged beyond float noise", tol=1e-4)
 
@@ -365,7 +365,7 @@ class TestShardedRecon(unittest.TestCase):
             self.skipTest("need >= 1 device")
         sino = _phantom_sino(_make_model())
         ref = self._recon(_make_model(), sino, positivity=True)
-        sm = _make_model(); sm.configure_sharding(single)
+        sm = _make_model(); sm.configure_devices(single)
         out = self._recon(sm, sino, positivity=True)
         assert_sharded_allclose(out, ref, msg="positivity trivial recon diverged beyond float noise", tol=1e-4)
 
@@ -382,7 +382,7 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True, weights=w)
             assert_sharded_allclose(out, ref, msg=f"non-const-weights recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
@@ -401,7 +401,7 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True, positivity=True)
             assert_sharded_allclose(out, ref, msg=f"positivity recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
@@ -427,7 +427,7 @@ class TestShardedReconKeepsSharding(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             sino = _phantom_sino(model)
             np.random.seed(0)
             model.set_params(verbose=0)  # Silence warnings about background
@@ -463,7 +463,7 @@ class TestShardedProx(unittest.TestCase):
     Pinned regression test: this combination first failed on a multi-GPU box
     (auto-sharding default + prox_map mixed a slice-sharded recon with a
     single-device prox_input) because nothing on CPU exercised sharded + prox.
-    Explicit configure_sharding keeps the coverage deterministic regardless of
+    Explicit configure_devices keeps the coverage deterministic regardless of
     auto-sharding policy or device counts."""
 
     MAX_ITERS = 3   # mode-vs-mode comparison; discriminates from iteration 1
@@ -492,7 +492,7 @@ class TestShardedProx(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._prox(model, sino, prox_input)
             # Iterative amplification of float-reduce-order differences -> modest tolerance.
             assert_sharded_allclose(out, ref, msg=f"prox_map mismatch at n_dev={n}", tol=1e-4)

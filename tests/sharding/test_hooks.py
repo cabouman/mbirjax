@@ -47,7 +47,7 @@ def _make_model(num_views=8):
 
     Pins a single device so the bare model is a deterministic single-device REFERENCE regardless of
     how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    exercise multi-device sharding override this with their own configure_sharding(devs).
+    exercise multi-device sharding override this with their own configure_devices(devs).
     """
     model = mbirjax.ParallelBeamModel(
         (num_views, 4, 16), angles=np.linspace(0, np.pi, num_views, endpoint=False)
@@ -75,7 +75,7 @@ class TestShardGatherRoundTrip(unittest.TestCase):
         self.num_slices = self.model.get_params('recon_shape')[2]
         if self.num_slices % 2 != 0:
             self.skipTest(f"num_slices {self.num_slices} not divisible by 2")
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
 
     def test_sinogram_shard_axis_and_roundtrip(self):
         sino = np.arange(8 * 4 * 16, dtype=np.float32).reshape(8, 4, 16)
@@ -125,7 +125,7 @@ class TestExtractHalos(unittest.TestCase):
         self.num_slices = self.model.get_params('recon_shape')[2]
         if self.num_slices % 2 != 0:
             self.skipTest(f"num_slices {self.num_slices} not divisible by 2")
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
 
     def test_halos_match_boundary_slices(self):
         num_pixels = 6
@@ -257,7 +257,7 @@ class TestModelPlacements(unittest.TestCase):
         model = _make_model()
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         self.assertEqual(model.recon_placement.devices, list(devs))
         self.assertEqual(model.sino_placement.devices, list(devs))
         self.assertEqual(model.recon_placement.axis, model.recon_shard_axis())
@@ -274,7 +274,7 @@ class TestModelPlacements(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         if num_slices % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         flat = np.ones((6, num_slices), dtype=np.float32)
         self.assertEqual(model._shard_recon(flat).sharding,
                          model.recon_placement.shard_structure(2))
@@ -304,7 +304,7 @@ class TestOomGuidance(unittest.TestCase):
         if len(cpu_devs) < 2:
             self.skipTest('need >= 2 CPU devices')
         model = _make_model()
-        model.configure_sharding(cpu_devs)
+        model.configure_devices(cpu_devs)
         self.assertTrue(model.is_sharded)
         out = _capture_jax_error_guidance(model, 'RESOURCE_EXHAUSTED')
         self.assertIn('CPU memory', out)

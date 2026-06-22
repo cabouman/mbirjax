@@ -53,7 +53,7 @@ def _make_model():
 
     Pins a single device so the bare model is a deterministic single-device
     REFERENCE regardless of GPU count; sharded tests override with their own
-    configure_sharding(devs).
+    configure_devices(devs).
     """
     angles = jnp.linspace(0, jnp.pi, NUM_VIEWS, endpoint=False)
     model = mbirjax.ParallelBeamModel((NUM_VIEWS, NUM_ROWS, NUM_CHANNELS), angles)
@@ -85,7 +85,7 @@ class TestEntryPadding(unittest.TestCase):
         if self.devs is None:
             self.skipTest("need >= 2 devices")
         self.model = _make_model()
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
         self.v_pad = _padded_views(NUM_VIEWS, 2)
 
     def test_pad_shard_layout_and_zero_tail(self):
@@ -151,7 +151,7 @@ class TestPaddedProjectors(unittest.TestCase):
         if devs is None:
             return None
         model = _make_model()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         return model
 
     def test_forward_masked_and_cropped(self):
@@ -219,7 +219,7 @@ class TestPaddedProjectors(unittest.TestCase):
             if devs is None:
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             ax = np.asarray(m.sparse_forward_project(m._shard_recon(x_cyl), idx))
             aty = np.asarray(m.sparse_back_project(m._shard_sinogram(y_sino), idx))
             # ax's padded views are zero, so summing against the real y over the
@@ -261,7 +261,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
             if devs is None:
                 continue
             model = _make_model()
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino)
             assert_sharded_allclose(out, ref, msg=f"padded recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
@@ -280,7 +280,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
         if devs is None:
             self.skipTest("need >= 2 devices")
         model = _make_model()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         out = self._recon(model, sino, weights=weights)
         assert_sharded_allclose(out, ref, msg="padded non-const-weights recon mismatch", tol=1e-4)
 
@@ -293,11 +293,11 @@ class TestPaddedVcdRecon(unittest.TestCase):
         sino = _random_sino(_make_model())
 
         model_plain = _make_model()
-        model_plain.configure_sharding(devs)
+        model_plain.configure_devices(devs)
         ref = self._recon(model_plain, sino)
 
         model_prep = _make_model()
-        model_prep.configure_sharding(devs)
+        model_prep.configure_devices(devs)
         out = self._recon(model_prep, sino, prepared=True)
         assert_sharded_allclose(out, ref, msg="prepared-input recon diverged from plain-input recon")
 
@@ -357,7 +357,7 @@ class _PaddedReconMixin:
             if devs is None:
                 continue
             model = self._make_model(variant)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             yield n, model
 
     def _recon(self, model, sino, weights=None, seed=0):
@@ -418,7 +418,7 @@ class _PaddedReconMixin:
                                     msg=f"NaN/inf {self._label(variant)} n_dev={n}")
                     assert_sharded_allclose(out, ref_const, msg=f"const recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     model_w = self._make_model(variant)
-                    model_w.configure_sharding(preferred_devices(n))
+                    model_w.configure_devices(preferred_devices(n))
                     out_w = self._recon(model_w, sino, weights=weights)
                     assert_sharded_allclose(out_w, ref_wts, msg=f"weighted recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     ran = True
@@ -585,7 +585,7 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             if devs is None:
                 continue
             model = self._make_model(curved=True)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg=f"curved back mismatch n_dev={n}", tol=self.PROJ_TOL)
             assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg=f"curved forward mismatch n_dev={n}", tol=self.PROJ_TOL)
             ran = True
@@ -618,7 +618,7 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         ref_back = np.asarray(ref_model.back_project(sino))
         ref_fwd = np.asarray(ref_model.forward_project(recon))
         model = tiny()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
         assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))
@@ -705,7 +705,7 @@ class TestPaddedSlicesTranslation(_PaddedReconMixin, unittest.TestCase):
         ref_back = np.asarray(ref_model.back_project(sino))
         ref_fwd = np.asarray(ref_model.forward_project(recon))
         model = tiny()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
         assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))
@@ -781,7 +781,7 @@ class TestPaddedSlicesMultiAxis(_PaddedReconMixin, unittest.TestCase):
         ref_back = np.asarray(ref_model.back_project(sino))
         ref_fwd = np.asarray(ref_model.forward_project(recon))
         model = tiny()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
         assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))

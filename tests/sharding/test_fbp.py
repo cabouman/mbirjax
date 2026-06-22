@@ -152,7 +152,7 @@ class TestFbpFilterSharded(unittest.TestCase):
         # Single-device reference.
         ref = np.asarray(model.fbp_filter(sino))
 
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
 
         # Default: plain (gathered) output.
         out_plain = model.fbp_filter(sino)
@@ -173,7 +173,7 @@ class TestFbpFilterSharded(unittest.TestCase):
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
 
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
         sharded_in = model._shard_sinogram(sino)
         via_fbp = model.fbp_filter(sharded_in, output_sharded=True)
         via_direct = model.direct_filter(sharded_in, output_sharded=True)
@@ -194,7 +194,7 @@ class TestFbpFilterSharded(unittest.TestCase):
             self.skipTest("num_slices not divisible by 2")
         ref = np.asarray(model.fbp_filter(sino))
 
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
         sharded_in = model._shard_sinogram(sino)
         out = model.fbp_filter(sharded_in, output_sharded=True)
         self.assertIsInstance(out.sharding, jax.sharding.NamedSharding)

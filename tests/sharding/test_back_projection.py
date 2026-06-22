@@ -41,7 +41,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -81,7 +81,7 @@ class TestBackProjectSharded(unittest.TestCase):
         """True if the model's sharded sinogram and recon axes both divide n.
 
         Reads the axis-declaration hooks (the single source of truth that
-        configure_sharding itself uses) rather than hardcoding the view/slice
+        configure_devices itself uses) rather than hardcoding the view/slice
         axes, so a geometry that overrides the axes is checked consistently.
         """
         sino_shape = model.get_params('sinogram_shape')
@@ -114,7 +114,7 @@ class TestBackProjectSharded(unittest.TestCase):
         ref = np.asarray(model.back_project(sino))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(single_dev)
+        shard_model.configure_devices(single_dev)
         out = np.asarray(shard_model.back_project(sino))
         assert_sharded_allclose(out, ref, msg="trivial sharding diverged beyond float noise")
 
@@ -127,7 +127,7 @@ class TestBackProjectSharded(unittest.TestCase):
         ref = np.asarray(model.back_project(sino))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.back_project(sino)
         # User-facing, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
@@ -144,7 +144,7 @@ class TestBackProjectSharded(unittest.TestCase):
         ref = np.asarray(model.back_project(sino))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.back_project(sino, output_sharded=True)
 
         # The device form: a slice-sharded 3-D recon volume.
@@ -167,7 +167,7 @@ class TestBackProjectSharded(unittest.TestCase):
         ref = np.asarray(model.back_project(sino))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         sharded_in = shard_model._shard_sinogram(sino)
         out = shard_model.back_project(sharded_in)
         self.assertNotIsInstance(getattr(out, 'sharding', None),
@@ -178,7 +178,7 @@ class TestBackProjectSharded(unittest.TestCase):
         """sparse_back_project keeps the result slice-sharded (no gather inside)."""
         model = _make_model()
         self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
         recon_shape = model.get_params('recon_shape')
         idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=model.get_params('use_ror_mask'))
         sharded_in = model._shard_sinogram(_random_sino(model))
@@ -202,7 +202,7 @@ class TestBackProjectSharded(unittest.TestCase):
         ref = np.asarray(model.compute_hessian_diagonal(weights))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = np.asarray(shard_model.compute_hessian_diagonal(weights))
         assert_sharded_allclose(out, ref)
 
@@ -220,7 +220,7 @@ class TestBackProjectSharded(unittest.TestCase):
             model = _make_model()
             if not self._divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(model.back_project(sino))
             assert_sharded_allclose(out, ref, msg=f"mismatch at n_dev={n}")
             ran_multi = True
@@ -242,7 +242,7 @@ class TestBackProjectSharded(unittest.TestCase):
             model = _make_model()
             if band is not None:
                 model.back_project_slice_band = band
-            model.configure_sharding(self.devs)
+            model.configure_devices(self.devs)
             out = np.asarray(model.back_project(sino))
             assert_sharded_allclose(out, ref, msg=f"mismatch at slice band {band}")
 
@@ -261,7 +261,7 @@ class TestBackProjectSharded(unittest.TestCase):
         for band in [1, 2, max(1, num_slices // 3)]:          # incl. a non-divisor
             model = _make_model()
             model.back_project_slice_band = band
-            model.configure_sharding(single)                  # 1-device mesh
+            model.configure_devices(single)                  # 1-device mesh
             out = np.asarray(model.back_project(sino))
             assert_sharded_allclose(out, ref, msg=f"single-device band {band} mismatch")
 

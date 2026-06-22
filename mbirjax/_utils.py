@@ -35,7 +35,7 @@ def log_oom_guidance(logger, on_gpu):
     """
     if on_gpu:
         logger.error(">>> Insufficient GPU memory: the reconstruction does not fit on the GPU(s).  You may try:")
-        logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_sharding(...)")
+        logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_devices(...)")
         logger.error(">>>   - reducing recon_shape (e.g. via set_params or auto_set_recon_geometry)")
         logger.error(">>>   - reconstructing the volume in slice subsets")
         logger.error(">>>   - running on the cpu with ct_model.set_params(use_gpu='none') before calling recon")

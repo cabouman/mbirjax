@@ -289,7 +289,7 @@ def run_one():
 
     if MESH:
         # Trivial 1-device mesh -> recon takes the sharded VCD path on one device.
-        model.configure_sharding(jax.devices()[:1])
+        model.configure_devices(jax.devices()[:1])
         # Force the slice-band lengths if requested (read by _slice_band_length).
         if BACK_BAND is not None:
             model.back_project_slice_band = BACK_BAND

@@ -67,7 +67,7 @@ BASELINE_OP = "sparse_back_project"   # reuse the existing baseline for the setu
 # ── Run configuration (edit here; no CLI args for the human) ──────────────────
 # Device-count ladder.  None -> automatic powers-of-two ladder.  Set explicitly
 # to skip a known-bad/throttling card (pick_devices takes the first n).  Each
-# size must be divisible by every count used (else configure_sharding raises and
+# size must be divisible by every count used (else configure_devices raises and
 # the point is skipped).  The band question is sharpest at n_dev >= 2 (n_dev=1 is
 # covered by sparse_back_project_single_device_sweep.py); 1 is kept as the anchor.
 DEVICE_COUNTS = [1, 2, 4]   # e.g. [1, 2, 4, 8] on an 8-GPU node
@@ -99,7 +99,7 @@ def make_model(size, devices=None):
     """Build a ParallelBeamModel; configure sharding over ``devices`` if given.
 
     Returns None if the device count does not evenly divide the sharded axes
-    (configure_sharding raises) -- the caller skips that point.
+    (configure_devices raises) -- the caller skips that point.
     """
     import mbirjax
     n_views, n_rows, n_channels = size
@@ -107,7 +107,7 @@ def make_model(size, devices=None):
     model = mbirjax.ParallelBeamModel((n_views, n_rows, n_channels), angles)
     if devices is not None:
         try:
-            model.configure_sharding(devices)
+            model.configure_devices(devices)
         except ValueError as e:
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")

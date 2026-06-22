@@ -241,15 +241,6 @@ class TomographyModel(ParameterHandler):
         pool = self._auto_device_pool() if devices is None else self._resolve_devices(devices)
         self._set_device_layout(pool, pinned=True)
 
-    def configure_sharding(self, devices=None):
-        """Deprecated alias for :meth:`configure_devices`; prefer that name.
-
-        Retained because existing scripts/tests call ``configure_sharding(devices)``.  Note the
-        ``None`` semantics now match :meth:`configure_devices` (automatic selection -- which may
-        shard across CPU devices), not the former always-single-device behavior.
-        """
-        self.configure_devices(devices)
-
     def _resolve_devices(self, devices):
         """Resolve a non-None configure_devices() ``devices`` argument to a concrete device list.
 
@@ -410,8 +401,8 @@ class TomographyModel(ParameterHandler):
     # ------------------------------------------------------------------
     # The uniform scheme shards sinogram-like objects by view and recon-like
     # objects by slice.  The two axis-declaration hooks below are the single
-    # source of truth for *which* axis is sharded; the divisibility check in
-    # configure_sharding and the _shard_*/_gather_* helpers all derive from
+    # source of truth for *which* axis is sharded; the placement build in
+    # _set_device_layout and the _shard_*/_gather_* helpers all derive from
     # them.  Keeping the choice here (rather than hardcoded throughout) means a
     # geometry can declare a different axis by overriding one small method,
     # without hunting down scattered assumptions.
@@ -1700,7 +1691,7 @@ class TomographyModel(ParameterHandler):
             self._sharded_back_project_setup(sinogram, pixel_indices)
 
         # Each device owns a slice-shard, a contiguous range of slices_per_dev slices
-        # (exact, since configure_sharding requires num_slices % n_dev == 0).  That
+        # (exact, since the slice axis is padded to a multiple of n_dev).  That
         # slice-shard is streamed in BANDS -- contiguous sub-ranges -- so the
         # slice-owner never gathers all n_dev partials for the whole slice-shard at once
         # (thereby limiting intermediate memory).  By default, a band is

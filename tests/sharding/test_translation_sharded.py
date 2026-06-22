@@ -44,7 +44,7 @@ def _make_translation_model(anisotropic=False, num_views=8, num_det_rows=32, num
     auto-sizes the recon to 16 slices isotropic / 8 slices anisotropic (aspect 2), so both the
     view axis (8) and the slice axis stay divisible by 2 and 4.  Pinned to a single device so the
     bare model is a deterministic single-device REFERENCE; the multi-device tests override with
-    their own configure_sharding(devs)."""
+    their own configure_devices(devs)."""
     tv = np.zeros((num_views, 3))
     tv[:, 0] = np.linspace(-8.0, 8.0, num_views)
     tv[:, 2] = np.linspace(-4.0, 4.0, num_views)
@@ -101,7 +101,7 @@ class TestTranslationShardedProjectors(unittest.TestCase):
         ref = np.asarray(ref_fn(ref_model))
         for n, devs in counts:
             model = _make_translation_model(anisotropic=anisotropic)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(shard_fn(model))
             assert_sharded_allclose(out, ref, tol=self.TOL,
                                     msg=f"{label} mismatch: anisotropic={anisotropic} n_dev={n}")

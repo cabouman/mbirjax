@@ -17,7 +17,7 @@ TomographyModel.  Two concerns are kept separate so they compose:
                            (sum_band_to_owner / broadcast_band_to_views) lives in
                            transfer.py.
 
-Higher-level code (e.g. TomographyModel.configure_sharding and the projector
+Higher-level code (e.g. TomographyModel.configure_devices and the projector
 phases) imports these via `from mbirjax._sharding import ...`.
 """
 
