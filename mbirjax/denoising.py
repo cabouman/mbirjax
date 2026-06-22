@@ -96,9 +96,9 @@ class QGGMRFDenoiser(TomographyModel):
             image (jax array or ndarray): 3D array containing noisy image with shape (num_views, num_det_rows, num_det_channels).
         """
 
-        max_views_to_use = np.minimum(100, image.shape[0])
-        step_size = image.shape[0] // max_views_to_use
-        small_image = np.array(image[::step_size])
+        num_pts_to_use = np.minimum(5_000_000, image.size)
+        stride = round((image.size / num_pts_to_use) ** (1 / 3))
+        small_image = image[::stride, ::stride, ::stride]
 
         support_indicator = self._get_sino_indicator(small_image, sigma_noise=0.0)
         sigma_noise = self._get_estimate_of_recon_std(small_image, support_indicator)
