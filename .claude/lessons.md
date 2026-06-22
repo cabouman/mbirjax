@@ -530,3 +530,12 @@ contaminates, or NaNs.**
   dev checkout), mislabeled as the ref.  To select code under test you must `pip install -e <worktree>`
   into a DEDICATED env (re-points the finder) — never the user's dev env (deleting the worktree
   afterward would break its install).  Shared now via `mbirjax_metrics/tooling/regression/lib_env.sh`.
+- **Seed any global-RNG partition creation before a cross-config comparison.**  `QGGMRFDenoiser.denoise`
+  builds its VCD pixel partitions with `np.random` (the library's own `test_denoiser.py` calls
+  `np.random.seed(0)` for this).  When the metrics harness first measured `denoise` across device counts,
+  the sharded-vs-n=1 fingerprint reldiff was ~1e-4 — 100× the ~1e-7 float floor and enough to false-trip
+  the gate — purely because each call drew DIFFERENT partitions.  Seeding `np.random` before each call
+  (now in `run_denoise`) collapsed it to ~1e-7: it isolates the dimension under test (device count) from
+  RNG variance, and also makes the fingerprint reproducible across runs/platforms (so vs-main /
+  cross-platform are meaningful).  General rule: if an op's result depends on a global RNG, fix the seed
+  or you are comparing noise.  (The projection `vcd_nonconst` avoids this by passing PRE-BUILT partitions.)

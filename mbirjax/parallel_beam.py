@@ -123,7 +123,7 @@ class ParallelBeamModel(TomographyModel):
         verify_valid_params), so when the recon slice axis is padded for sharding the
         sinogram's row axis must present the SAME padded length: the entry placement
         zero-fills the row tail, keeping it exactly inert.  No padding -> None."""
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             return 1, self.recon_placement.real_size, self.recon_placement.padded_size
         return None
 

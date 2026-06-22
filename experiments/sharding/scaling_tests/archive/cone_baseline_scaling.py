@@ -246,7 +246,7 @@ def path_info(model, op, devs, num_pixels, num_slices):
     and the horizontal-recompute cost), best-effort so a future internal-API change
     records None instead of breaking the measurement.
     """
-    info = {"is_sharded": bool(getattr(model, "is_sharded", False)),
+    info = {"is_sharded": True,   # every model runs the placement/banded path now (is_sharded retired)
             "n_shard_devices": len(getattr(model, "shard_devices", None) or devs),
             "platform": devs[0].platform}
     if op == "back":

@@ -93,8 +93,8 @@ class TomographyModel(ParameterHandler):
         # set_devices() builds them at the end of __init__ (a trivial 1-device layout when there is
         # one device), so the placement path is always on (recon_placement is never None after
         # construction).  configure_devices() pins an explicit device list (_sharding_configured =
-        # True); absent that, set_devices() auto-selects.  mesh / shard_devices / is_sharded are
-        # derived, read-only views of recon_placement (see the properties below); arrays that must
+        # True); absent that, set_devices() auto-selects.  mesh / shard_devices are derived,
+        # read-only views of recon_placement (see the properties below); arrays that must
         # be created on a single device use recon_placement.devices[0] / sino_placement.devices[0].
         self.recon_placement = None
         self.sino_placement = None
@@ -159,24 +159,6 @@ class TomographyModel(ParameterHandler):
 
     def get_params(self, parameter_names):
         return super().get_params(parameter_names)
-
-    @property
-    def is_sharded(self):
-        """True when the device layout is configured (the placement code path is active).
-
-        A property -- read it as an attribute (``model.is_sharded``), not a call.
-
-        Single source of truth for "are we on the placement path?".  Every geometry auto-
-        configures a layout at construction (at least a trivial 1-device placement -- see
-        ``set_devices``), so in practice this is always True; the no-placement path has been
-        retired.  The remaining ``if is_sharded`` checks are vacuously True and are being
-        collapsed incrementally.
-
-        RETIREMENT CANDIDATE: always True now, so a deliberate revisit (see the device-layout
-        plan) will decide whether to delete it (and rewrite the call sites) or keep it as a
-        public predicate.
-        """
-        return self.recon_placement is not None
 
     @property
     def mesh(self):
@@ -306,31 +288,27 @@ class TomographyModel(ParameterHandler):
         return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
 
     def _device_report(self):
-        """A 'N x PLATFORM [(sharded)]' summary of the recon devices, for the recon log.
+        """A 'N x PLATFORM (sharded)' summary of the recon devices, for the recon log.
 
-        ``(sharded)`` marks the placement path (``is_sharded``), regardless of device count, so a
-        single-device PLACEMENT recon (e.g. ParallelBeam) is distinguished from a single-device
-        LEGACY recon (a geometry not yet ported) -- a real difference until every geometry is
-        ported.  When automatic
-        selection left GPUs idle because the device count cannot divide both sharded axes, the
-        reason is appended so idle hardware is never silent.
+        ``(sharded)`` always appears (every recon runs the placement path), regardless of device
+        count.  When automatic selection left GPUs idle because the device count cannot divide both
+        sharded axes, the reason is appended so idle hardware is never silent.
         """
         devices = self.shard_devices
-        suffix = ' (sharded)' if self.is_sharded else ''
         n = len(devices)
         platform = self._platform_label(devices[0])
-        report = '{} x {}{}'.format(n, platform, suffix)
+        report = '{} x {} (sharded)'.format(n, platform)
         # Padding is invisible in the results (exactly inert), so say so in the log rather
         # than leaving the device-form shapes a surprise.
-        if self.is_sharded and self.sino_placement is not None and self.sino_placement.is_padded:
+        if self.sino_placement is not None and self.sino_placement.is_padded:
             report += ' (views padded {}->{})'.format(
                 self.sino_placement.real_size, self.sino_placement.padded_size)
-        if self.is_sharded and self.recon_placement is not None and self.recon_placement.is_padded:
+        if self.recon_placement is not None and self.recon_placement.is_padded:
             report += ' (slices padded {}->{})'.format(
                 self.recon_placement.real_size, self.recon_placement.padded_size)
         # Automatic selection that left devices idle (a count whose last shard would be
         # entirely padding is skipped): explain why hardware is unused.
-        if self.is_sharded and not self._sharding_configured and platform == 'GPU':
+        if not self._sharding_configured and platform == 'GPU':
             n_available = len(gpu_devices()) or n   # () -> 0 only off-GPU, which can't reach here
             if n_available > n:
                 recon_shape = self.get_params('recon_shape')
@@ -360,7 +338,7 @@ class TomographyModel(ParameterHandler):
         Builds recon_placement / sino_placement (each owns a 1-D mesh over ``devices``: recon on
         the slice axis, sino on the view axis; a single device is the trivial 1-shard case) and
         sets the empirical device-to-device safety flag.  These placements ARE the device layout;
-        mesh / shard_devices / is_sharded are derived views of them.
+        mesh / shard_devices are derived views of them.
 
         Each placement receives the problem-owned (REAL) length of its sharded axis from the
         params, so it knows the device-form (padded) length when that size does not divide the
@@ -468,11 +446,8 @@ class TomographyModel(ParameterHandler):
             what (str): human label for ``x`` in the divisibility error message.
 
         Returns:
-            The array in the requested NamedSharding (or ``x`` unchanged when no
-            mesh is configured).
+            The array in the requested NamedSharding.
         """
-        if not self.is_sharded:
-            return x
         axis = axis % x.ndim
         n_dev = len(self.shard_devices)
         if x.shape[axis] % n_dev != 0:
@@ -492,23 +467,18 @@ class TomographyModel(ParameterHandler):
         return mjs.move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
 
     def _gather_to_host(self, x):
-        """Gather a sharded array to a single uncommitted JAX array (no-op if no mesh).
+        """Gather a sharded array to a single uncommitted JAX array.
 
-        When ``self.mesh`` is None, returns ``x`` unchanged.  Otherwise reads all
-        shards to a contiguous host buffer with ``np.asarray`` (the read path is
-        always safe, even on hardware where device-to-device writes are not) and
-        wraps it as an uncommitted JAX array, leaving JAX free to place it for
-        downstream ops.
+        Reads all shards to a contiguous host buffer with ``np.asarray`` (the read path is
+        always safe, even on hardware where device-to-device writes are not) and wraps it as an
+        uncommitted JAX array, leaving JAX free to place it for downstream ops.
 
         Args:
             x: a (possibly sharded) JAX array.
 
         Returns:
-            An uncommitted single-device JAX array with the same values, or ``x``
-            unchanged when no mesh is configured.
+            An uncommitted single-device JAX array with the same values.
         """
-        if not self.is_sharded:
-            return x
         # Single shard (e.g. the trivial 1-device mesh, or any 1-GPU recon): the array
         # already lives on one device, so there is nothing to gather -- return its
         # on-device data directly and skip the device->host->device round trip below.
@@ -536,11 +506,10 @@ class TomographyModel(ParameterHandler):
         """
         axis = self.sinogram_shard_axis()
         row_pad = self._sino_row_padding()
-        if self.is_sharded and (self.sino_placement.is_padded or row_pad is not None):
+        if self.sino_placement.is_padded or row_pad is not None:
             return self._pad_shard_on_axis(sinogram, self.sino_placement, axis,
                                            what='sinogram (view axis)', row_pad=row_pad)
-        if (self.is_sharded
-                and sinogram.shape[axis % sinogram.ndim] != self.sino_placement.real_size):
+        if sinogram.shape[axis % sinogram.ndim] != self.sino_placement.real_size:
             raise ValueError(
                 'Cannot place the sinogram: its view axis has size {}, but the model expects '
                 '{} views.  If this array was prepared with prepare_sino_for_devices under a '
@@ -554,14 +523,14 @@ class TomographyModel(ParameterHandler):
         any zero-filled padded views (and padded detector rows) back to the
         problem's real counts."""
         out = self._gather_to_host(sinogram)
-        if self.is_sharded and self.sino_placement.is_padded:
+        if self.sino_placement.is_padded:
             axis = self.sinogram_shard_axis() % out.ndim
             if out.shape[axis] == self.sino_placement.padded_size:
                 idx = [slice(None)] * out.ndim
                 idx[axis] = slice(0, self.sino_placement.real_size)
                 out = out[tuple(idx)]
         row_pad = self._sino_row_padding()
-        if self.is_sharded and row_pad is not None:
+        if row_pad is not None:
             row_axis, real_rows, padded_rows = row_pad
             row_axis = row_axis % out.ndim
             if out.shape[row_axis] == padded_rows:
@@ -698,11 +667,10 @@ class TomographyModel(ParameterHandler):
         Otherwise this is the plain shard chokepoint, with a shape check that
         catches a stale device-form array from a previous configuration."""
         axis = self.recon_shard_axis()
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             return self._pad_shard_on_axis(recon, self.recon_placement, axis,
                                            what='reconstruction (slice axis)')
-        if (self.is_sharded
-                and recon.shape[axis % recon.ndim] != self.recon_placement.real_size):
+        if recon.shape[axis % recon.ndim] != self.recon_placement.real_size:
             raise ValueError(
                 'Cannot place the reconstruction: its slice axis has size {}, but the model '
                 'expects {} slices.  If this array came from a previous device configuration '
@@ -714,7 +682,7 @@ class TomographyModel(ParameterHandler):
         """Gather a sharded recon back to a single uncommitted array, cropping any
         zero-filled padded slices back to the problem's real slice count."""
         out = self._gather_to_host(recon)
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             axis = self.recon_shard_axis() % out.ndim
             if out.shape[axis] == self.recon_placement.padded_size:
                 idx = [slice(None)] * out.ndim
@@ -726,12 +694,9 @@ class TomographyModel(ParameterHandler):
         """Per-shard boundary slices for the qGGMRF inter-slice prior (thin wrapper).
 
         The substance lives in :func:`mbirjax.qggmrf.extract_halos` (explicit-args,
-        model-free); this wrapper supplies the model's shard axis and the
-        no-mesh early-out.  Returns ``([None], [None])`` when no mesh is
-        configured (single device, reflected BC at both edges).
+        model-free); this wrapper supplies the model's shard axis.  A single shard
+        (trivial 1-device mesh) yields ``([None], [None])`` -- the reflected BC at both edges.
         """
-        if not self.is_sharded:
-            return [None], [None]
         return mj.extract_halos(flat_recon, self.recon_shard_axis())
 
     def _replicate_scalar(self, x, placement):
@@ -751,11 +716,9 @@ class TomographyModel(ParameterHandler):
     def _stage_halos(self, flat_recon):
         """Extract + pre-place the qGGMRF boundary halos, once per partition pass
         (thin wrapper around :func:`mbirjax.qggmrf.stage_halos`; see there for the
-        ordering contract and the per-pass-vs-per-subset rationale).  Returns
-        ``([None], [None])`` when no mesh is configured.
+        ordering contract and the per-pass-vs-per-subset rationale).  A single shard
+        (trivial 1-device mesh) yields ``([None], [None])`` -- the reflected BC at both edges.
         """
-        if not self.is_sharded:
-            return [None], [None]
         return mj.stage_halos(flat_recon, self.recon_shard_axis())
 
     def _qggmrf_prior_sharded(self, flat_recon, pixel_indices, qggmrf_params,
@@ -796,7 +759,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             dict (device -> (local_slices+1,) float32 mask on that device), or None.
         """
-        if not (self.is_sharded and self.recon_placement.is_padded):
+        if not self.recon_placement.is_padded:
             return None
         if self._qggmrf_interface_masks_cache is None:
             real = self.recon_placement.real_size
@@ -1405,16 +1368,14 @@ class TomographyModel(ParameterHandler):
         """The sinogram shape as it exists ON THE DEVICES: the params shape with the
         view axis (and, for geometries that pad rows with slices, the row axis) at
         its device-form (possibly padded) length.  Equals the params shape exactly
-        when nothing pads (or when not sharded).  Use for validating device-form
-        arrays; the params answer "what is the problem?", this answers "what is on
-        the devices?"."""
+        when nothing pads.  Use for validating device-form arrays; the params answer
+        "what is the problem?", this answers "what is on the devices?"."""
         shape = list(self.get_params('sinogram_shape'))
-        if self.is_sharded:
-            shape[self.sinogram_shard_axis() % len(shape)] = self.sino_placement.padded_size
-            row_pad = self._sino_row_padding()
-            if row_pad is not None:
-                row_axis, _real_rows, padded_rows = row_pad
-                shape[row_axis % len(shape)] = padded_rows
+        shape[self.sinogram_shard_axis() % len(shape)] = self.sino_placement.padded_size
+        row_pad = self._sino_row_padding()
+        if row_pad is not None:
+            row_axis, _real_rows, padded_rows = row_pad
+            shape[row_axis % len(shape)] = padded_rows
         return tuple(shape)
 
     def _recon_device_shape(self):
@@ -1422,8 +1383,7 @@ class TomographyModel(ParameterHandler):
         slice axis at its device-form (possibly padded) length.  The padded slices
         are identically zero (forced-zero invariant)."""
         shape = list(self.get_params('recon_shape'))
-        if self.is_sharded:
-            shape[self.recon_shard_axis() % len(shape)] = self.recon_placement.padded_size
+        shape[self.recon_shard_axis() % len(shape)] = self.recon_placement.padded_size
         return tuple(shape)
 
     def _forward_project_all_bands(self, band_bounds, recon_shard_info, view_ranges,
@@ -2435,26 +2395,20 @@ class TomographyModel(ParameterHandler):
         # weight would promote the window and cascade the whole sinogram to f64.
         row_weight_np = None if row_weight is None else np.asarray(row_weight, dtype=np.float32)
 
-        if self.is_sharded:
-            # Multi-device: one thread per device, each filtering its own view shard
-            # locally (no cross-device data movement).  Shard once at entry (no-op when
-            # already view-sharded) so the per-device map sees every mesh device's shard.
-            sinogram = self._shard_sinogram(sinogram)
-            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
+        # One thread per device, each filtering its own view shard locally (no cross-device data
+        # movement).  Shard once at entry (no-op when already view-sharded) so the per-device map
+        # sees every mesh device's shard (a single device is the trivial 1-shard case).
+        sinogram = self._shard_sinogram(sinogram)
+        dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
 
-            def worker_process(i, device):
-                shard = dev_to_shard[device]
-                filter_jax = jnp.array(filter_np)            # tiny upload: 2*channels-1 floats
-                rw = None if row_weight_np is None else jnp.array(row_weight_np)
-                return tomography_utils.apply_row_filter(shard, filter_jax, row_weight=rw)
-
-            results = mjs.run_per_device(self.shard_devices, worker_process)
-            filtered_sinogram = mjs.assemble_sharded(results, sinogram.shape, sinogram.sharding)
-        else:
-            # Single-device path (no mesh configured): filter directly.
-            filter_jax = jnp.array(filter_np)
+        def worker_process(i, device):
+            shard = dev_to_shard[device]
+            filter_jax = jnp.array(filter_np)            # tiny upload: 2*channels-1 floats
             rw = None if row_weight_np is None else jnp.array(row_weight_np)
-            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax, row_weight=rw)
+            return tomography_utils.apply_row_filter(shard, filter_jax, row_weight=rw)
+
+        results = mjs.run_per_device(self.shard_devices, worker_process)
+        filtered_sinogram = mjs.assemble_sharded(results, sinogram.shape, sinogram.sharding)
 
         if output_sharded:
             return filtered_sinogram                     # keep the device form
@@ -2773,8 +2727,8 @@ class TomographyModel(ParameterHandler):
         # detector-row axis is padded for sharding; normalizing by the real count keeps the
         # reported losses independent of the (inert, identically-zero) padding.
         real_sino_size = int(np.prod(self.get_params('sinogram_shape')))
-        pad_active = self.is_sharded and (self.sino_placement.is_padded
-                                          or self._sino_row_padding() is not None)
+        pad_active = (self.sino_placement.is_padded
+                      or self._sino_row_padding() is not None)
         loss_num_real = real_sino_size if pad_active else None
 
         # Initialize the diagonal of the hessian of the forward model
@@ -2914,8 +2868,7 @@ class TomographyModel(ParameterHandler):
         # (Caveat: gen_pixel_partition replicates a few pixels to equalize subset lengths, so
         # this is not strictly bit-exact at those pixels -- quantified by test; negligible.
         # Set self._vcd_halo_per_subset = True to restore per-subset extraction for A/B.)
-        stage_per_pass = (self.is_sharded
-                          and not getattr(self, '_vcd_halo_per_subset', False))
+        stage_per_pass = not getattr(self, '_vcd_halo_per_subset', False)
         staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
@@ -3056,10 +3009,9 @@ class TomographyModel(ParameterHandler):
             # the line search ON-DEVICE: replicate the forward scalars onto the recon mesh (a cheap
             # scalar reshard over the same devices), do the arithmetic there, and replicate the
             # resulting alpha onto the sino mesh below to scale the sino-sharded delta.
-            if self.is_sharded:
-                forward_linear = self._replicate_scalar(forward_linear, self.recon_placement)
-                forward_quadratic = self._replicate_scalar(forward_quadratic, self.recon_placement)
-                # prior_linear / prior_quadratic_approx are already replicated on the recon mesh.
+            forward_linear = self._replicate_scalar(forward_linear, self.recon_placement)
+            forward_quadratic = self._replicate_scalar(forward_quadratic, self.recon_placement)
+            # prior_linear / prior_quadratic_approx are already replicated on the recon mesh.
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
@@ -3086,25 +3038,18 @@ class TomographyModel(ParameterHandler):
 
             flat_recon = update_recon(flat_recon, recon_indices, delta_recon_at_indices)
 
-            # Update sinogram and loss
-            # Update the error sinogram: error_sinogram <- error_sinogram - alpha * delta_sinogram.
-            if self.is_sharded:
-                # Update the error sinogram IN PLACE via a buffer-DONATING fused multiply-add
-                # (alpha replicated onto the sino mesh so the scale stays on-device).  In-place
-                # reuse is required because an out-of-place per-subset update allocates a fresh
-                # view-sharded error sinogram each subset, and the stale ones accumulate in jax's
-                # internal sharded-array reference cycles until gc.  For constant weights
-                # weighted_error_sinogram IS error_sinogram, so release that alias to make
-                # error_sinogram donatable.  (Non-constant weights leave a weighted product
-                # transient that is freed in the cleanup section at the end of the subset.)
-                if const_weights:
-                    weighted_error_sinogram = None
-                error_sinogram = update_error_sinogram(
-                    error_sinogram, self._replicate_scalar(alpha, self.sino_placement), delta_sinogram)
-            else:
-                # Single-device path unchanged (SingleDeviceSharding arrays free on refcount).
-                delta_sinogram = float(alpha) * delta_sinogram
-                error_sinogram = error_sinogram - delta_sinogram
+            # Update sinogram and loss: error_sinogram <- error_sinogram - alpha * delta_sinogram,
+            # IN PLACE via a buffer-DONATING fused multiply-add (alpha replicated onto the sino mesh
+            # so the scale stays on-device).  In-place reuse is required because an out-of-place
+            # per-subset update allocates a fresh view-sharded error sinogram each subset, and the
+            # stale ones accumulate in jax's internal sharded-array reference cycles until gc.  For
+            # constant weights weighted_error_sinogram IS error_sinogram, so release that alias to
+            # make error_sinogram donatable.  (Non-constant weights leave a weighted product
+            # transient that is freed in the cleanup section at the end of the subset.)
+            if const_weights:
+                weighted_error_sinogram = None
+            error_sinogram = update_error_sinogram(
+                error_sinogram, self._replicate_scalar(alpha, self.sino_placement), delta_sinogram)
 
             ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
             alpha_for_subset = alpha
@@ -3118,7 +3063,7 @@ class TomographyModel(ParameterHandler):
             # (The alpha*delta scale is now fused into the donated update_error_sinogram jit, so
             # there is no separate scaled_delta transient; forward-projection outputs come from
             # assemble_sharded and DO free on refcount, so neither is freed here.)
-            if self.is_sharded and not const_weights:
+            if not const_weights:
                 jax.block_until_ready((flat_recon, error_sinogram))
                 weighted_error_sinogram.delete()
 

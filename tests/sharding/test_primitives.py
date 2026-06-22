@@ -150,7 +150,6 @@ class TestConfigureDevices(unittest.TestCase):
         self.assertIsNotNone(model.mesh)
         self.assertEqual(model.mesh.devices.size, 1)
         self.assertTrue(model.dev2dev_safe)
-        self.assertTrue(model.is_sharded)
 
     def test_two_device_mesh(self):
         devs = preferred_devices(2)

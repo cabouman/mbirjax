@@ -154,7 +154,6 @@ class TestModelPlacements(unittest.TestCase):
         model = _make_model()   # _make_model pins a single device
         # ParallelBeam runs the always-on placement path, so even a single device is
         # "sharded" over one device with trivial (1-shard) placements on that device.
-        self.assertTrue(model.is_sharded)
         self.assertEqual(len(model.shard_devices), 1)
         for pl, axis in ((model.recon_placement, model.recon_shard_axis()),
                          (model.sino_placement, model.sinogram_shard_axis())):
@@ -238,7 +237,6 @@ class TestModelPlacements(unittest.TestCase):
         n_cpu = len(jax.devices('cpu'))
         self.assertEqual(len(model.shard_devices), model._auto_device_count(n_cpu))
         self.assertGreater(len(model.shard_devices), 1)
-        self.assertTrue(model.is_sharded)
         self.assertEqual(model._platform_label(model.shard_devices[0]), 'CPU')
 
         out = np.asarray(model.sparse_back_project(sino, idx))
@@ -305,7 +303,6 @@ class TestOomGuidance(unittest.TestCase):
             self.skipTest('need >= 2 CPU devices')
         model = _make_model()
         model.configure_devices(cpu_devs)
-        self.assertTrue(model.is_sharded)
         out = _capture_jax_error_guidance(model, 'RESOURCE_EXHAUSTED')
         self.assertIn('CPU memory', out)
         self.assertNotIn('GPU memory', out)
