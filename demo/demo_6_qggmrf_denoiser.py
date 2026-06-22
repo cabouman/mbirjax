@@ -13,6 +13,7 @@ import mbirjax as mj
 # Set the experiment parameters
 sigma_denoise = [0.05, 0.1, 0.15]
 sigma_noise_added = 0.1
+sharpness = 0
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
@@ -36,8 +37,10 @@ denoiser.print_params()
 phantoms = [phantom_noisy]
 dicts = [None]
 nrmse = np.linalg.norm(phantom_noisy - phantom) / np.linalg.norm(phantom)
-slice_labels = ['Noise sigma={}, NRMSE={:.3f}: slice'.format(sigma_noise_added, nrmse)]
+slice_labels = ['Input image: noise sigma={}, \nNRMSE={:.3f}: slice'.format(sigma_noise_added, nrmse)]
 init_image = phantom_noisy
+
+denoiser.set_params(sharpness=sharpness)
 
 # ##########################
 # Denoise at various levels
@@ -47,10 +50,17 @@ for s in sigma_denoise:
     phantoms.append(phantom_denoised)
     dicts.append(recon_dict)
     nrmse = np.linalg.norm(phantom_denoised - phantom) / np.linalg.norm(phantom)
-    slice_labels.append('sigma_noise={}, NRMSE={:.3f}: slice'.format(s, nrmse))
+    slice_labels.append('Given sigma_noise={}, \nNRMSE={:.3f}: slice'.format(s, nrmse))
+
+phantom_denoised, recon_dict = denoiser.denoise(phantom_noisy, sigma_noise=None)
+phantoms.append(phantom_denoised)
+dicts.append(recon_dict)
+nrmse = np.linalg.norm(phantom_denoised - phantom) / np.linalg.norm(phantom)
+sigma_noise = denoiser.get_params('sigma_noise')
+slice_labels.append('Estimated sigma_noise={:.2f}, \nNRMSE={:.3f}: slice'.format(sigma_noise, nrmse))
 
 # ##########################
 
 # Display results
-title = 'Noisy phantom and denoising with changing sharpness'
+title = 'Noisy phantom and denoising with changing sigma_noise, sharpness = {}'.format(sharpness)
 mj.slice_viewer(*phantoms, data_dicts=dicts, slice_label=slice_labels, title=title, vmin=-0.2, vmax=1.0)

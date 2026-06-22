@@ -2473,10 +2473,7 @@ class TomographyModel(ParameterHandler):
         """
 
         # Initialize logging for this run
-        if first_iteration == 0 or self.logger is None:
-            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
-        self.logger.info('MBIRJAX Version = {}'.format(self.version))
-        self.logger.info('Reconstruction devices: {}'.format(self._device_report()))
+        self._log_run_header(first_iteration, logfile_path, print_logs)
 
         # Generate set of voxel partitions
         recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])

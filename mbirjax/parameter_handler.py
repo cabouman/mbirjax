@@ -120,6 +120,19 @@ class ParameterHandler:
 
         self.logger = logger
 
+    def _log_run_header(self, first_iteration, logfile_path, print_logs):
+        """Set up the run logger (on the first iteration, or whenever none exists) and log the
+        MBIRJAX version and the resolved device layout.
+
+        Lives here with the logger it configures; the version and ``_device_report`` it logs are
+        provided by the TomographyModel subclass.  Shared by recon/prox (``initialize_recon``) and
+        the denoiser so both report the version and whether the run is sharded and on which devices.
+        """
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        self.logger.info('MBIRJAX Version = {}'.format(self.version))
+        self.logger.info('Reconstruction devices: {}'.format(self._device_report()))
+
     def print_params(self):
         """
         Print the current parameter values in the model.
