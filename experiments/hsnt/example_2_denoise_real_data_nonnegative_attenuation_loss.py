@@ -188,7 +188,6 @@ def main():
 
     # Import real hyperspectral data
     hsnt_data, metadata = import_hsnt_data_hdf5(input_path, dataset_name)
-    wavelengths = metadata['wavelengths']
 
     if verbose >= 1:
         print("Hyperspectral data shape: ", hsnt_data.shape)
@@ -220,36 +219,45 @@ def main():
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
-        plot_images(images=[hsnt_data[0, :, :, display_wave_idx],
-                            hsnt_denoised_newt[0, :, :, display_wave_idx],
-                            hsnt_denoised_mu[0, :, :, display_wave_idx]],
-                    titles=['Fig (a): Noisy hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                            'Fig (b): Newton Denoised hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                            'Fig (c): Multiplicative Denoised hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx)],
-                    vmax=vmax, vmin=vmin,
-                    filename="cylinder_nnal.png")
+        num_images=3
+        images=[hsnt_data[0, :, :, display_wave_idx],
+                hsnt_denoised_newt[0, :, :, display_wave_idx],
+                hsnt_denoised_mu[0, :, :, display_wave_idx]]
+        titles=['Original', 'Quasi-Newton', 'Mann-Multiplicative']
+        filename="cylinder_nnal.png"
+        plt.rcParams['figure.constrained_layout.use'] = True
+        plt.rc('font', size=40)
+        fig = plt.figure(figsize=(10, 10 * num_images), dpi=160 / num_images)
+        fig.suptitle(f'Material Projections\nWavelength index: {display_wave_idx}')
+        for idx in range(num_images):
+            ax = fig.add_subplot(num_images, 1, idx + 1)
+            ax.set_title(titles[idx])
+            ax.imshow(images[idx], vmin=vmin, vmax=vmax, cmap='gray')
+            if idx != num_images - 1:
+                ax.set_xticklabels([])
+        plt.savefig(filename, dpi=100)
 
-        plot_spectra(spectra=[hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :],
-                              hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :],
-                              hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :]],
-                     labels=['Noisy', 'Newton', 'Multiplicative'],
-                     title='Single pixel spectra (attenuation) for noisy and denoised data',
-                     x_label='wavelength (Angstrom)',
-                     y_label='attenuation',
-                     y_lim=y_lim_attenuation,
-                     wavelengths=wavelengths,
-                     filename="cylinder_attenuation_nnal.png")
+        plt.figure(figsize=(30, 15))
+        plt.plot(hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :], label='Original')
+        plt.plot(hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :], label='Quasi-Newton Denoised')
+        plt.plot(hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :], label='Mann-Multiplicative Denoised')
+        plt.title('Single pixel spectra')
+        plt.xlabel('wavelength index')
+        plt.ylabel('attenuation')
+        plt.ylim(y_lim_attenuation)
+        plt.legend()
+        plt.savefig("cylinder_attenuation_nnal.png")
 
-        plot_spectra(spectra=[np.exp(-hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :]),
-                              np.exp(-hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :]),
-                              np.exp(-hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :])],
-                     labels=['Noisy', 'Newton', 'Multiplicative'],
-                     title='Single pixel spectra (transmission) for noisy and denoised data',
-                     x_label='wavelength (Angstrom)',
-                     y_label='transmission',
-                     y_lim=y_lim_transmission,
-                     wavelengths=wavelengths,
-                     filename="cylinder_transmission_nnal.png")
+        plt.figure(figsize=(30, 15))
+        plt.plot(np.exp(-hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :]), label='Original')
+        plt.plot(np.exp(-hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :]), label='Quasi-Newton Denoised')
+        plt.plot(np.exp(-hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :]), label='Mann-Multiplicative Denoised')
+        plt.title('Single pixel spectra (transmission)')
+        plt.xlabel('wavelength index')
+        plt.ylabel('transmission')
+        plt.ylim(y_lim_transmission)
+        plt.legend()
+        plt.savefig("cylinder_transmission_nnal.png")
 
     plt.show()
 
