@@ -290,14 +290,14 @@ class TestOomGuidance(unittest.TestCase):
     def test_oom_guidance_matches_recon_platform(self):
         model = _make_model()   # single device pinned; platform = whatever this host runs on
         out = _capture_jax_error_guidance(model, 'XLA: RESOURCE_EXHAUSTED: Out of memory')
-        if model._platform_label(model._recon_devices()[0]) == 'GPU':
+        if model._platform_label(model.shard_devices[0]) == 'GPU':
             self.assertIn('GPU memory', out)
         else:
             self.assertIn('CPU memory', out)
 
     def test_cpu_sharding_oom_gives_cpu_guidance(self):
         # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because the recon
-        # platform is read from the recon placement's devices (_recon_devices), not the use_gpu
+        # platform is read from the recon placement's devices (shard_devices), not the use_gpu
         # request param.  Works on a GPU host too: sharding explicitly onto CPU devices makes the
         # recon placement's devices CPU, so the guidance follows the actual layout.
         cpu_devs = jax.devices('cpu')[:2]

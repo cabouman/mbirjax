@@ -28,6 +28,9 @@ slice axis and so holds less transient memory.)
 
 import numpy as np
 import jax
+import jax.numpy as jnp
+
+from .thread_execution import assemble_sharded
 
 
 class Placement:
@@ -156,3 +159,71 @@ class Placement:
         return jax.sharding.NamedSharding(
             self.mesh, jax.sharding.PartitionSpec(*spec)
         )
+
+
+def sharded_full(placement, base_shape, fill_value, row_pad=None, dtype=jnp.float32):
+    """A ``base_shape`` array filled with ``fill_value`` distributed across ``placement``, built
+    ON each device so the whole array never exists on one device.
+
+    The REAL region holds ``fill_value``; the padded tails are ZERO so they stay inert (a padded
+    view/slice or detector row contributes nothing downstream).  Built per-shard (no host array,
+    no full single-device copy), the device-form analogue of ``jnp.full`` -- e.g. ``fill_value=1``
+    gives sharded ones (the default Hessian weights), ``fill_value=0`` sharded zeros (a stub or
+    empty init), a scalar gives a constant init recon.  ``base_shape`` is the problem's REAL size
+    on the sharded axis (and the real row count when ``row_pad`` is given); the result is the
+    device form (sharded axis padded to ``placement.padded_size``, and -- when
+    ``row_pad=(row_axis, real_rows, padded_rows)`` -- the unsharded row axis padded to
+    ``padded_rows``).  Static: it depends only on ``placement``, so it can be reused outside the
+    model.
+
+    Args:
+        placement (Placement): the target placement (its devices, sharded axis, and pad).
+        base_shape (tuple): the array's real shape (the sharded axis carries the real size).
+        fill_value (scalar): the value for the real region (the padding is always zero).
+        row_pad (tuple or None): ``(row_axis, real_rows, padded_rows)`` to zero-pad an extra
+            unsharded axis (detector rows that track recon slices); None pads only the sharded axis.
+        dtype: element dtype (default float32, the project-wide working precision).
+
+    Returns:
+        The device-form filled array in ``placement``'s NamedSharding.
+    """
+    base_shape = tuple(base_shape)
+    ndim = len(base_shape)
+    axis = placement.axis % ndim
+    if row_pad is not None:
+        row_axis, row_real, row_padded = row_pad
+        row_axis = row_axis % ndim
+
+    def with_row_tail(real_shape, dev):
+        # fill_value over the real region, with the row axis zero-padded on-device when needed.
+        real = jnp.full(tuple(real_shape), fill_value, dtype=dtype, device=dev)
+        if row_pad is None or row_padded == row_real:
+            return real
+        tail_shape = list(real_shape)
+        tail_shape[row_axis] = row_padded - row_real
+        tail = jnp.zeros(tuple(tail_shape), dtype=dtype, device=dev)
+        return jnp.concatenate([real, tail], axis=row_axis)
+
+    pieces = []
+    for dev, (start, end), n_valid in placement.padded_shard_ranges():
+        block = end - start
+        parts = []
+        if n_valid > 0:
+            real_shape = list(base_shape)
+            real_shape[axis] = n_valid
+            if row_pad is not None:
+                real_shape[row_axis] = row_real
+            parts.append(with_row_tail(real_shape, dev))
+        if block - n_valid > 0:
+            # Fully-zero tail block on the sharded axis, at device-form row length.
+            tail_shape = list(base_shape)
+            tail_shape[axis] = block - n_valid
+            if row_pad is not None:
+                tail_shape[row_axis] = row_padded
+            parts.append(jnp.zeros(tuple(tail_shape), dtype=dtype, device=dev))
+        pieces.append(parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis))
+    global_shape = list(base_shape)
+    global_shape[axis] = placement.padded_size
+    if row_pad is not None:
+        global_shape[row_axis] = row_padded
+    return assemble_sharded(pieces, tuple(global_shape), placement.shard_structure(ndim))

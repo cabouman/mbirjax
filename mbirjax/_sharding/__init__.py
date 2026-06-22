@@ -24,7 +24,7 @@ phases) imports these via `from mbirjax._sharding import ...`.
 from .transfer import (is_dev2dev_safe, move_shard, sum_band_to_owner,
                        broadcast_band_to_views)
 from .thread_execution import run_per_device, assemble_sharded, device_pool
-from .placement import Placement
+from .placement import Placement, sharded_full
 
 __all__ = [
     "is_dev2dev_safe",
@@ -35,4 +35,5 @@ __all__ = [
     "assemble_sharded",
     "device_pool",
     "Placement",
+    "sharded_full",
 ]

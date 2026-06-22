@@ -29,7 +29,7 @@ class QGGMRFDenoiser(TomographyModel):
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
         if gpu_devices():
-            self.set_params(use_gpu='full')  # If the denoising problem doesn't fit on the gpu, we should divide it up.
+            self.set_params(use_gpu='automatic')  # Use the gpu when one is available.
         else:
             self.set_params(use_gpu='none')
 

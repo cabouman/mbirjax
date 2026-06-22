@@ -314,15 +314,6 @@ class TomographyModel(ParameterHandler):
         """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
         return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
 
-    def _recon_devices(self):
-        """The devices the reconstruction actually runs on (the recon placement's devices).
-
-        The truth for "where does the recon run": it reflects the current device layout (e.g. CPU
-        devices after sharding explicitly onto CPU on a GPU host), so use it for device-platform
-        decisions rather than assuming a single primary device.
-        """
-        return self.shard_devices
-
     def _device_report(self):
         """A 'N x PLATFORM [(sharded)]' summary of the recon devices, for the recon log.
 
@@ -333,7 +324,7 @@ class TomographyModel(ParameterHandler):
         selection left GPUs idle because the device count cannot divide both sharded axes, the
         reason is appended so idle hardware is never silent.
         """
-        devices = self._recon_devices()
+        devices = self.shard_devices
         suffix = ' (sharded)' if self.is_sharded else ''
         n = len(devices)
         platform = self._platform_label(devices[0])
@@ -830,8 +821,9 @@ class TomographyModel(ParameterHandler):
         Determine whether to run the reconstruction entirely on the GPU (when one is available) or
         entirely on the CPU, and set the corresponding devices.
 
-        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
-        'automatic', 'full', 'none'
+        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is
+        'automatic' (use the gpu when available) or 'none' (cpu only).  ('full' is a deprecated synonym
+        of 'automatic'.)
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
@@ -1403,54 +1395,20 @@ class TomographyModel(ParameterHandler):
     def _sino_ones_device_form(self, sino_like):
         """All-ones sinogram in the device form, with any padded entries ZERO.
 
-        The constant-weights Hessian computation back-projects a ones sinogram;
-        padded views AND padded detector rows must contribute nothing, so their
-        entries are zero (mirroring the entry zero-fill).  Built per-shard
-        directly on each owner device (no host array, no data movement, no
-        sharded-array reference cycle).  Without padding this is just
-        ``ones_like``.
+        The constant-weights Hessian/VCD path back-projects a ones sinogram; padded views AND
+        padded detector rows must contribute nothing, so their entries are zero (mirroring the
+        entry zero-fill).  Thin wrapper over :func:`mbirjax._sharding.sharded_full` (fill 1), which
+        builds it per-shard on each owner device (no host array, no data movement); ``sino_like``
+        supplies only the dtype.
 
         Args:
-            sino_like (jax array): a device-form sinogram supplying shape, dtype,
-                and (when sharded) the target sharding.
+            sino_like (jax array): a device-form sinogram supplying the dtype.
 
         Returns:
             A device-form all-ones (real entries) / zeros (padded entries) array.
         """
-        row_pad = self._sino_row_padding()
-        if not (self.is_sharded and (self.sino_placement.is_padded or row_pad is not None)):
-            return jnp.ones_like(sino_like)
-        axis = self.sinogram_shard_axis() % sino_like.ndim
-        if row_pad is not None:
-            row_axis, real_rows, padded_rows = row_pad
-            row_axis = row_axis % sino_like.ndim
-
-        def real_block_with_row_tail(n_views, dev):
-            # Ones over the real (views x rows), zeros over the padded row tail.
-            shape_valid = list(sino_like.shape)
-            shape_valid[axis] = n_views
-            if row_pad is None:
-                return jnp.ones(tuple(shape_valid), dtype=sino_like.dtype, device=dev)
-            shape_valid[row_axis] = real_rows
-            ones = jnp.ones(tuple(shape_valid), dtype=sino_like.dtype, device=dev)
-            tail_shape = list(shape_valid)
-            tail_shape[row_axis] = padded_rows - real_rows
-            tail = jnp.zeros(tuple(tail_shape), dtype=sino_like.dtype, device=dev)
-            return jnp.concatenate([ones, tail], axis=row_axis)
-
-        pieces = []
-        for dev, (v0, v1), n_valid in self.sino_placement.padded_shard_ranges():
-            block = v1 - v0
-            parts = []
-            if n_valid > 0:
-                parts.append(real_block_with_row_tail(n_valid, dev))
-            if block - n_valid > 0:
-                shape_tail = list(sino_like.shape)
-                shape_tail[axis] = block - n_valid
-                parts.append(jnp.zeros(tuple(shape_tail), dtype=sino_like.dtype, device=dev))
-            pieces.append(parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis))
-        return mjs.assemble_sharded(pieces, sino_like.shape,
-                                    self.sino_placement.shard_structure(sino_like.ndim))
+        return mjs.sharded_full(self.sino_placement, tuple(self.get_params('sinogram_shape')),
+                                1.0, row_pad=self._sino_row_padding(), dtype=sino_like.dtype)
 
     def _sino_device_shape(self):
         """The sinogram shape as it exists ON THE DEVICES: the params shape with the
@@ -2029,10 +1987,11 @@ class TomographyModel(ParameterHandler):
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
         if weights is None:
-            # Plain ones in the REAL shape: the sharded back projection's entry placement
-            # zero-pads any padded views, which is exactly the inert weighting they need.
-            with jax.default_device(self.sino_placement.devices[0]):
-                weights = jnp.ones((num_views,) + sinogram_shape[1:])
+            # Unit weights built directly in the view-sharded device form (ones in the real
+            # views/rows, zero in the inert padding) -- no full sinogram-of-ones is ever
+            # materialized on one device before sharding.
+            weights = mjs.sharded_full(self.sino_placement, (num_views,) + tuple(sinogram_shape[1:]),
+                                       1.0, row_pad=self._sino_row_padding())
         elif tuple(weights.shape) not in (tuple(sinogram_shape), self._sino_device_shape()):
             # Accept the problem shape (plain weights) or the device-form shape (weights
             # already placed, with a possibly padded view axis).
@@ -2126,8 +2085,8 @@ class TomographyModel(ParameterHandler):
         if use_gpu not in ['automatic', 'full', 'none']:
             error_message = "use_gpu must be one of \n"
             error_message += " 'automatic' (use the gpu when one is available, otherwise the cpu),\n"
-            error_message += " 'full' (use gpu for all calculations),\n"
-            error_message += " 'none' (do not use gpu at all)."
+            error_message += " 'none' (do not use gpu at all).\n"
+            error_message += " ('full' is a deprecated synonym of 'automatic'.)"
             raise ValueError(error_message)
 
     def auto_set_regularization_params(self, sinogram, weights=None):
@@ -2400,7 +2359,11 @@ class TomographyModel(ParameterHandler):
         """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
-        return jnp.zeros(recon_shape, device=self.recon_placement.devices[0])
+        # Honor the output_sharded contract: device form (slice-sharded zeros, built per-shard)
+        # vs a plain array.
+        if output_sharded:
+            return mjs.sharded_full(self.recon_placement, tuple(recon_shape), 0.0)
+        return jnp.zeros(recon_shape)
 
     def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
                       output_sharded=False):
@@ -2419,7 +2382,13 @@ class TomographyModel(ParameterHandler):
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
         warnings.warn('direct_filter not implemented for TomographyModel.')
-        return jnp.zeros_like(sinogram, device=self.sino_placement.devices[0])
+        sinogram_shape = self.get_params('sinogram_shape')
+        # Honor the output_sharded contract: device form (view-sharded zeros, built per-shard)
+        # vs a plain array.
+        if output_sharded:
+            return mjs.sharded_full(self.sino_placement, tuple(sinogram_shape), 0.0,
+                                    row_pad=self._sino_row_padding())
+        return jnp.zeros(sinogram_shape)
 
     def _apply_direct_recon_filter(self, sinogram, filter_name, filter_scale, output_sharded,
                                    row_weight=None):
@@ -2598,8 +2567,8 @@ class TomographyModel(ParameterHandler):
         if is_oom(traceback.format_exc()):
             # Derive on-GPU from the actual recon device platform, not the use_gpu REQUEST param:
             # the request does not say where the recon actually ran (e.g. explicit CPU sharding via
-            # configure_sharding under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
-            recon_devices = self._recon_devices()
+            # configure_devices under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
+            recon_devices = self.shard_devices
             on_gpu = bool(recon_devices) and recon_devices[0] is not None \
                 and self._platform_label(recon_devices[0]) == 'GPU'
             log_oom_guidance(self.logger, on_gpu=on_gpu)
@@ -2747,7 +2716,9 @@ class TomographyModel(ParameterHandler):
             self.logger.info('Starting direct recon for initial reconstruction')
             init_recon = self.direct_recon(sinogram, output_sharded=True)
         elif isinstance(init_recon, int):
-            init_recon = init_recon * jnp.ones(recon_shape, device=self.recon_placement.devices[0])
+            # A constant init recon built directly in the slice-sharded device form (no full
+            # volume is materialized on one device before sharding).
+            init_recon = mjs.sharded_full(self.recon_placement, tuple(recon_shape), float(init_recon))
 
         # Make sure that init_recon has the correct shape and type: the problem's REAL
         # shape (a user-supplied init) or the device form (direct_recon output_sharded=True,

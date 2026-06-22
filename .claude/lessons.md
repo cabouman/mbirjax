@@ -518,3 +518,15 @@ contaminates, or NaNs.**
   Bit me in a test (used the wrong model helper to build the recon).  Lesson: build test arrays from
   the SAME model under test (`self._make_model()`, `model.get_params('recon_shape')`), and don't
   hardcode a real slice count (helical ≠ num_det_rows) — read it from params.
+
+## Tooling / harness
+
+- **A modern `pip install -e` overrides `PYTHONPATH` — prepending a checkout to `PYTHONPATH` does NOT
+  select it.**  Editable installs (setuptools ≥64 / PEP 660) register a `sys.meta_path` finder, which
+  Python consults BEFORE the `PYTHONPATH` path-finder, so `import mbirjax` resolves to the
+  editable-installed checkout regardless of `PYTHONPATH` (proven: a decoy `mbirjax` on `PYTHONPATH` was
+  ignored).  This silently bit the metrics harness' `add_run.sh` — it pointed the engine at a ref's
+  worktree via `PYTHONPATH` but measured whatever mbirjax was editable-installed in the active env (the
+  dev checkout), mislabeled as the ref.  To select code under test you must `pip install -e <worktree>`
+  into a DEDICATED env (re-points the finder) — never the user's dev env (deleting the worktree
+  afterward would break its install).  Shared now via `mbirjax_metrics/tooling/regression/lib_env.sh`.
