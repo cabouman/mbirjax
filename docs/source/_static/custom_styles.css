@@ -1,6 +1,6 @@
 
 :root {
-  --block-bg-opacity: 0.8;   /* full JAX-logo color; lower it (e.g. .5) for a translucent tint */
+  --block-bg-opacity: 0.8;   /* nearly full JAX-logo color; lower it (e.g. .5) for a translucent tint */
 }
 
 /* JAX-logo colors for the home-page cards.  pydata-sphinx-theme paints the card BODY opaque
