@@ -162,9 +162,9 @@ class TestModelPlacements(unittest.TestCase):
             self.assertTrue(pl.is_trivial)
             self.assertEqual(pl.n_devices, 1)
             self.assertEqual(pl.axis, axis)
-        # The trivial placements sit on the configured single devices.
-        self.assertEqual(model.recon_placement.devices, [model.main_device])
-        self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
+        # The trivial placements sit on the same single device.
+        self.assertEqual(len(model.recon_placement.devices), 1)
+        self.assertEqual(model.recon_placement.devices, model.sino_placement.devices)
 
     def test_auto_device_count_uses_all_devices(self):
         # Auto selection: _auto_device_count(k) uses ALL k available
@@ -296,11 +296,10 @@ class TestOomGuidance(unittest.TestCase):
             self.assertIn('CPU memory', out)
 
     def test_cpu_sharding_oom_gives_cpu_guidance(self):
-        # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because on_gpu is
-        # derived from the recon device platform (_recon_devices), not the use_gpu request param.
-        # Works on a GPU host too (configure_sharding onto CPU devices makes the recon devices CPU
-        # even though main_device stays a GPU) -- exactly the _recon_devices vs main_device
-        # distinction.
+        # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because the recon
+        # platform is read from the recon placement's devices (_recon_devices), not the use_gpu
+        # request param.  Works on a GPU host too: sharding explicitly onto CPU devices makes the
+        # recon placement's devices CPU, so the guidance follows the actual layout.
         cpu_devs = jax.devices('cpu')[:2]
         if len(cpu_devs) < 2:
             self.skipTest('need >= 2 CPU devices')

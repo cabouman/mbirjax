@@ -1200,7 +1200,7 @@ def generate_demo_data(
     # Generate phantom
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
-    device = ct_model_for_generation.main_device
+    device = ct_model_for_generation.recon_placement.devices[0]
     phantom_shape = recon_shape
     embed_slice_start = 0
     embed_slice_stop = recon_shape[2]

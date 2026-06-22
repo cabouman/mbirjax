@@ -146,7 +146,7 @@ class TestConfigureSharding(unittest.TestCase):
 
     def test_default_single_device_trivial_mesh(self):
         model = self._make_model()
-        model.configure_sharding()  # devices=None -> 1-device trivial mesh
+        model.configure_devices(1)  # pin a single device -> 1-device trivial mesh
         self.assertIsNotNone(model.mesh)
         self.assertEqual(model.mesh.devices.size, 1)
         self.assertTrue(model.dev2dev_safe)

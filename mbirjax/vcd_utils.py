@@ -345,7 +345,7 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
         # assuming three categories: metal, non_metal, and background.
         [bk_thresh_sino, metal_thresh_sino] = mjp.multi_threshold_otsu(sinogram, classes=3)
         print("Distorted sinogram threshold = ", metal_thresh_sino)
-        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.recon_placement.devices[0])
 
     # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
     else:
@@ -356,12 +356,12 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
         print("metal_threshold = ", metal_threshold)
         # Identify metal voxels
-        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32), device=ct_model.recon_placement.devices[0])
         # Forward project metal mask to generate a sinogram mask
         metal_mask_projected = ct_model.forward_project(metal_mask)
 
         # metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
-        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32), device=ct_model.recon_placement.devices[0])
 
     # weights for undistorted sino entries
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
