@@ -2432,7 +2432,6 @@ class TomographyModel(ParameterHandler):
         # Generate set of voxel partitions
         recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])
         partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.recon_placement.devices[0], use_ror_mask=use_ror_mask)
-        partitions = [jax.device_put(partition, self.recon_placement.devices[0]) for partition in partitions]
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
@@ -2441,21 +2440,10 @@ class TomographyModel(ParameterHandler):
         regularization_params = None
 
         try:
-            # Check that sinogram and weights are not taking up GPU space.  Arrays already in a
-            # multi-device NamedSharding (e.g. prepared by prepare_sino_for_devices) are left in
-            # place: a device_put to a single device would silently GATHER them, defeating the
-            # prepared placement; vcd_recon's entry placement handles them directly.
-            def _committed_elsewhere(x, target_device):
-                return (isinstance(x, type(jnp.zeros(1)))
-                        and not isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding)
-                        and list(x.devices())[0] != target_device)
-
-            if _committed_elsewhere(sinogram, self.sino_placement.devices[0]):
-                sinogram = jax.device_put(sinogram, self.sino_placement.devices[0])
-            if weights is not None and _committed_elsewhere(weights, self.sino_placement.devices[0]):
-                weights = jax.device_put(weights, self.sino_placement.devices[0])
-            if init_recon is not None and _committed_elsewhere(init_recon, self.recon_placement.devices[0]):
-                init_recon = jax.device_put(init_recon, self.recon_placement.devices[0])
+            # No input pre-placement here: vcd_recon's entry placement (to_sino / to_recon) shards
+            # sinogram / weights / init_recon from wherever they reside (a prepared NamedSharding
+            # passes through; a plain array is sharded), so a single-device device_put would only
+            # add a redundant hop.
 
             # Test the sinogram contains valid data
             # Sometimes users accidentally create complex sinograms when they take the -log.

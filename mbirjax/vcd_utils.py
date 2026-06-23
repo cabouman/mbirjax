@@ -32,8 +32,8 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
     if use_ror_mask is False:
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is set to False.')
-            
-        return np.ones_like(recon_shape[:2])
+
+        return np.ones(recon_shape[:2], dtype=bool)
 
     elif use_ror_mask is True:
         # Set up a mask to zero out points outside the ROR
