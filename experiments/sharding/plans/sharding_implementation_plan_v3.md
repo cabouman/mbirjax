@@ -440,6 +440,22 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
   de-closuring already touched this core.  *(v1 §Future project.)*
 - **CPU-cluster auto-sharding policy** — `_auto_shard_cpu=True` is the default; remaining = real-
   cluster perf + a virtual-vs-real-CPU topology policy.  *(post-P6)*
+- **Auto device-count basis: recon-slices vs sino-views (OPEN, part of choose-N).**  `_auto_device_count`
+  trims the device count on the **recon-slice** axis (`recon_shape[recon_shard_axis]`): it drops a count
+  whose last *slice*-shard would be entirely padding.  But the projection compute lives on the
+  **view-owners** (each view-owner forward/back-projects its own views), so the slice axis is the wrong
+  proxy for "does this device do real work":
+    - a device with an all-padding **slice**-shard can still own real **views** and do full projection
+      (it projects bands into its views; the result reduces to the slice-owners) — the slice-based trim
+      can drop a device that would still be useful (e.g. 5 slices / 100 views on 4 devices → trims to 3,
+      though all 4 could each project 25 views);
+    - a device with an all-padding **view**-shard does **no** projection even if it owns real slices, and
+      the slice-based check never looks at views (e.g. 100 slices / 5 views on 4 devices → keeps 4, but
+      the 4th device has no views to project).
+  Revisit the basis (likely views, or both axes) as part of the **choose-N-vs-communication policy** (§5).
+  Surfaced 2026-06-23 while writing the dev sharding-overview page; the page (option A) deliberately
+  describes the trim as "a tunable heuristic" rather than enshrining the slice-based rule.  *(post-P6;
+  may be pulled earlier — evaluate before the PR.)*
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
