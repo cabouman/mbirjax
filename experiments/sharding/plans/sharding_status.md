@@ -33,7 +33,9 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
   - **E5** removed the 6 tautological `test_trivial_*_bit_exact` tests (kept+reworded the one meaningful prior cross-check); reworded the stale no-mesh / "runs single-device until the placement port" comments.
   - **Reviewed, no change:** `ConeBeamModel.split_sino_recon` composes with sharding (each half auto-shards via its fresh sub-model).
 
-▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  Two small follow-ups may go before or after the PR: **(#22)** collapse the now-redundant `pixel_indices_worker` (== `pixel_indices` since sino/recon share devices; touches the projector-call interface); **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  `mesh`/`shard_devices` remain as derived **RETIREMENT-CANDIDATE** properties — a deliberate later revisit (delete-and-rewrite-call-sites vs. keep-as-public-predicates).
+▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  **(#22) DONE** — `pixel_indices_worker` collapsed (commit 9f0340d).  Remaining follow-up: **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  `mesh`/`shard_devices` remain as derived **RETIREMENT-CANDIDATE** properties — a deliberate later revisit (delete-and-rewrite-call-sites vs. keep-as-public-predicates).
+
+▶ **Docs (#24) DONE 2026-06-23** — `usr_multi_gpu.rst` + the use_gpu/overview/FAQ refresh + the Tomography-Model "Device Configuration" move/refresh; prose `:meth:` cross-refs qualified to `mbirjax.*`.  **Deferred:** a doc-cleanup pass for the remaining UNRESOLVED Sphinx py-xrefs that render as plain text with no build warning (autosummary-table entries + wrong-target/undocumented docstring refs) — full enumeration + the detect-by-HTML-grep recipe in `sharding_implementation_plan_v3.md` §5.
 
 ---
 

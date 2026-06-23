@@ -73,7 +73,7 @@ Users can set, get, and printout parameters using the following primary methods.
 Saving and Loading
 ------------------
 
-* Saving and loading of the data and the dict of parameters/logs returned from :meth:`TomographyModel.recon` are implemented in :meth:`TomographyModel.save_recon_hdf5` and :meth:`TomographyModel.load_recon_hdf5`.
+* Saving and loading of the data and the dict of parameters/logs returned from :meth:`~mbirjax.TomographyModel.recon` are implemented in :meth:`~mbirjax.TomographyModel.save_recon_hdf5` and :meth:`~mbirjax.TomographyModel.load_recon_hdf5`.
 
 .. autosummary::
 

@@ -195,11 +195,11 @@ class TomographyModel(ParameterHandler):
         Configure which devices the reconstruction runs on (the user-facing control surface).
 
         Resolves ``devices`` to a concrete device list and PINS it: a later ``set_params`` (which
-        re-runs :meth:`set_devices`) keeps these devices rather than re-auto-selecting.
+        re-runs ``set_devices``) keeps these devices rather than re-auto-selecting.
 
           * ``None``  -- automatic: the same choice ``use_gpu='automatic'`` makes by default --
             shard across all available GPUs (or, with no GPU, all available CPU devices), trimmed
-            by :meth:`_auto_device_count` so the last shard is never entirely padding.  A single
+            by ``_auto_device_count`` so the last shard is never entirely padding.  A single
             available device gives a trivial 1-device layout.
           * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs);
             ``configure_devices(1)`` is the way to force single-device operation.
@@ -218,7 +218,7 @@ class TomographyModel(ParameterHandler):
 
         Returns:
             Nothing; builds recon_placement / sino_placement and the empirical device-to-device
-            safety flag (see :meth:`_set_device_layout`).
+            safety flag (see ``_set_device_layout``).
         """
         pool = self._auto_device_pool() if devices is None else self._resolve_devices(devices)
         self._set_device_layout(pool, pinned=True)
@@ -226,7 +226,7 @@ class TomographyModel(ParameterHandler):
     def _resolve_devices(self, devices):
         """Resolve a non-None configure_devices() ``devices`` argument to a concrete device list.
 
-        (``None`` is handled by configure_devices via :meth:`_auto_device_pool`.)
+        (``None`` is handled by configure_devices via ``_auto_device_pool``.)
         """
         if isinstance(devices, (int, np.integer)):
             return default_devices()[:int(devices)]
@@ -239,10 +239,10 @@ class TomographyModel(ParameterHandler):
     def _auto_device_pool(self):
         """The device list for AUTOMATIC selection (no explicit pin).
 
-        Shared by :meth:`set_devices` (the construction-time default) and ``configure_devices(None)``
+        Shared by ``set_devices`` (the construction-time default) and ``configure_devices(None)``
         so "automatic" has a single definition.  Shards across all GPUs when a GPU backend is
         present and ``use_gpu`` is not ``'none'``, otherwise across all (possibly virtual) CPU
-        devices -- the platform-uniform auto policy.  :meth:`_auto_device_count` trims a count whose
+        devices -- the platform-uniform auto policy.  ``_auto_device_count`` trims a count whose
         last shard would be entirely padding, and returns 1 when only one device is available (a
         trivial 1-device layout).  GPU detection is by backend (``gpu_devices()``), not a device's
         ``.platform`` string, so it is robust to ``'cuda'``/``'rocm'`` platform names.
@@ -999,29 +999,37 @@ class TomographyModel(ParameterHandler):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method.  The input may be plain or sharded
-        (a plain recon is sharded at entry); the OUTPUT form is chosen by
-        ``output_sharded``, independent of where the input lives.  By default the
-        sinogram is gathered to a plain array; with ``output_sharded=True`` it is
-        returned view-sharded so callers composing on-device (e.g. the VCD loop)
-        pay no host round-trip.  Internally the work is the same all-gather
-        either way (see :meth:`sparse_forward_project`); only the exit differs.
+        The projection automatically uses whatever devices the model is configured
+        for: on one device it runs there, and on several it is spread across them.
+        ``recon`` may be an ordinary array or one already distributed across the
+        model's devices (e.g. the output of an earlier on-device step) -- either is
+        accepted, and the returned form is set by ``output_sharded`` regardless of
+        which you pass.
 
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
 
         Args:
-            recon (jnp array): The 3D reconstruction array.
-            output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the internal device form (view-sharded
-                across the model's devices; on an unsharded model this is the
-                same single-device array either way).
+            recon (jnp array): The 3D reconstruction array, either ordinary or
+                already distributed across the model's devices.
+            output_sharded (bool, optional): Choose the form of the returned
+                sinogram.  If False (default), return an ordinary single-device
+                array.  If True, leave it distributed (view-sharded) across the
+                model's devices, so a following on-device step can use it without
+                gathering it back; on a single device the two forms are identical.
 
         Returns:
-            jnp array: The resulting 3D sinogram -- plain by default,
-            view-sharded if ``output_sharded=True``.
+            jnp array: The 3D sinogram -- an ordinary single-device JAX array by
+            default, or view-sharded across the devices if ``output_sharded=True``.
         """
+        # Implementation notes (not user-facing):
+        # - The input is sharded at entry (_shard_recon is a no-op when it already
+        #   is), so the output form does not depend on the input's form.
+        # - The compute is the same all-gather forward projection either way
+        #   (sparse_forward_project); only the exit differs -- output_sharded keeps
+        #   the view-sharded device form, otherwise _gather_sinogram brings it back
+        #   to one array and crops any padded views/detector rows.
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
 
@@ -1040,30 +1048,39 @@ class TomographyModel(ParameterHandler):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method.  The input may be plain or sharded
-        (a plain sinogram is sharded at entry); the OUTPUT form is chosen by
-        ``output_sharded``, independent of where the input lives.  By default the
-        recon is gathered to a plain array; with ``output_sharded=True`` it is
-        returned as a slice-sharded 3-D array so callers composing on-device
-        (e.g. a sharded FBP init for the VCD loop) pay no host round-trip.
-        Internally the work is the same reduce-scatter either way (see
-        :meth:`sparse_back_project`); only the exit handling differs.
+        The back projection automatically uses whatever devices the model is
+        configured for: on one device it runs there, and on several it is spread
+        across them.  ``sinogram`` may be an ordinary array or one already
+        distributed across the model's devices (e.g. a sinogram from
+        :meth:`prepare_sino_for_devices`) -- either is accepted, and the returned
+        form is set by ``output_sharded`` regardless of which you pass.
 
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
 
         Args:
-            sinogram (jnp array): 3D jax array containing sinogram.
-            output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the internal device form (slice-sharded
-                across the model's devices; on an unsharded model this is the
-                same single-device array either way).
+            sinogram (jnp array): The 3D sinogram, either ordinary or already
+                distributed across the model's devices.
+            output_sharded (bool, optional): Choose the form of the returned recon.
+                If False (default), return an ordinary single-device array.  If
+                True, leave it distributed (slice-sharded) across the model's
+                devices, so a following on-device step (such as a sharded
+                initialization for :meth:`recon`) can use it without gathering it
+                back; on a single device the two forms are identical.
 
         Returns:
-            jnp array: The reconstructed 3D volume — plain by default,
-            slice-sharded if ``output_sharded=True``.
+            jnp array: The reconstructed 3D volume -- an ordinary single-device JAX
+            array by default, or slice-sharded across the devices if
+            ``output_sharded=True``.
         """
+        # Implementation notes (not user-facing):
+        # - The input is sharded at entry (_shard_sinogram is a no-op when it
+        #   already is), so the output form does not depend on the input's form.
+        # - The compute is the same reduce-scatter back projection either way
+        #   (sparse_back_project); only the exit differs -- output_sharded
+        #   assembles a slice-sharded volume, otherwise the cylinder is gathered
+        #   and scattered into one ordinary volume.
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])

@@ -61,18 +61,18 @@ So you should find a fast GPU with the largest possible memory. These days that 
 The GPU will be hosted on a CPU, and it is best if that CPU also has even a larger amount of memory, ideally greater than 200GB.
 
 Note that a 2K x 2K x 2K reconstruction occupies 32GB of memory, not counting the sinogram or memory needed for processing.
-If your machine has multiple GPUs, MBIRJAX (currently for parallel-beam geometry) automatically divides the
-reconstruction across them: the memory available for the problem grows roughly in proportion to the number of GPUs,
-and large reconstructions typically get faster as well.  The log line at the start of each reconstruction (or
-``model.device_summary``) reports which devices were used.  If you have no GPU, all processing is done on the CPU.
+If your machine has multiple GPUs, MBIRJAX automatically divides the reconstruction across them: the memory
+available for the problem grows roughly in proportion to the number of GPUs, and large reconstructions typically
+get faster as well.  The log line at the start of each reconstruction (or ``model.device_summary``) reports which
+devices were used.  If you have no GPU, all processing is done on the CPU.  See :doc:`usr_multi_gpu` for details.
 
 If your reconstruction is still too large, then for a parallel beam system you can select a subset of rows of your
 sinogram, reconstruct them separately, and then concatenate them at the end.  If you have a cone beam system, you can
-reconstruct a subset of the central slices.  In either case, you can do a center cropped reconstruction as in
-Demo 3: Cropped Center, although as seen in that demo, this can introduce an intensity shift and other artifacts.
+reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  In either case, you can do
+a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can introduce an
+intensity shift and other artifacts.
 
-We continue to improve the time and memory efficiency of MBIRJAX, including extending multi-GPU support to the
-remaining geometries.
+We continue to improve the time and memory efficiency of MBIRJAX.
 
 
 Q: Why does my reconstruction have artifacts?

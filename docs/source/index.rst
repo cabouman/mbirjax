@@ -86,6 +86,7 @@ MBIRJAX: High-performance tomographic reconstruction
    install
    unit_conversion
    usr_api
+   usr_multi_gpu
    demos_and_faqs
 
 .. toctree::

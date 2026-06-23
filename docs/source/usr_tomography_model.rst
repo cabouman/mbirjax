@@ -15,20 +15,6 @@ Constructor
    :show-inheritance:
 
 
-Device Configuration
---------------------
-
-On a machine with multiple GPUs, reconstruction is divided across them automatically
-(currently for parallel-beam geometry) to increase the available memory and reduce
-reconstruction time; these methods give explicit control and report the outcome.
-
-.. automethod:: mbirjax.TomographyModel.configure_devices
-
-.. automethod:: mbirjax.TomographyModel.prepare_sino_for_devices
-
-.. autoproperty:: mbirjax.TomographyModel.device_summary
-
-
 Reconstruction and Projection
 -----------------------------
 
@@ -63,6 +49,21 @@ Recon Shape and Voxel Spacing
 .. automethod:: mbirjax.TomographyModel.scale_recon_shape
 
 .. automethod:: mbirjax.TomographyModel.get_magnification
+
+
+Device Configuration
+--------------------
+
+On a machine with multiple GPUs, MBIRJAX automatically divides a reconstruction across them to
+increase the available memory and reduce reconstruction time -- with no change to your script,
+and for every geometry.  The methods below give explicit control over which devices are used
+and report what was chosen.  See :doc:`usr_multi_gpu` for a full discussion.
+
+.. automethod:: mbirjax.TomographyModel.configure_devices
+
+.. automethod:: mbirjax.TomographyModel.prepare_sino_for_devices
+
+.. autoproperty:: mbirjax.TomographyModel.device_summary
 
 
 .. _SaveLoadDocs:

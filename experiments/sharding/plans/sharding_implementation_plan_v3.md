@@ -325,10 +325,29 @@ no-single-device-regression.
    `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  Open: prerelease PR;
    small follow-ups (`pixel_indices_worker` collapse, `mar`/preprocessing sharding); the
    `mesh`/`shard_devices` derived-property revisit.
-5. **Post-P6** — the multi-GPU **user docs page** (use the word "sharding" sparingly);
-   the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
-   multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
-   PnP-at-scale need appears.
+5. **Post-P6** — the multi-GPU **user docs page** ✅ **DONE 2026-06-23**: `usr_multi_gpu.rst`
+   (zero-effort path, device subsetting via `configure_devices`, efficiency tips, expectations,
+   a gentle "sharding" overview) + `use_gpu`/`overview`/`advanced_features`/FAQ refresh, and the
+   Tomography-Model "Device Configuration" section moved before "Saving and Loading" + refreshed.
+   The prose `:meth:` cross-refs were fixed to **fully-qualified** `mbirjax.*` targets (an
+   unqualified `:meth:`Class.method`` renders as plain text with **NO Sphinx warning**).
+   - **Deferred doc-cleanup pass** (its own follow-up, NOT in the sharding PR): the remaining
+     UNRESOLVED Sphinx py-xrefs that silently render as plain `<code>` (no warning). Detect by
+     building the HTML and grepping for `<code class="xref py …">` **not** wrapped in `<a>`.
+     Buckets: (a) `usr_api_overview` `.. autosummary::` table entries (unqualified) + wrong-target
+     refs — `denoising.median_filter3d`→`mbirjax.median_filter3d`,
+     `ParameterHandler.set_params`→`TomographyModel.set_params`,
+     `generate_3d_shepp_logan_low_dynamic_range`→`mbirjax.utilities.*`; (b) docstring refs
+     autodoc'd into `usr_denoising`/`usr_tomography_model`/`usr_utilities` whose targets aren't
+     documented (`vcd_recon`, `get_recon_dict`; the `ParameterHandler` class has no `autoclass`);
+     (c) external `jnp.median` (no intersphinx).  (The `sparse_forward_project`/`sparse_back_project`
+     refs were removed as a side effect of the forward/back_project docstring rewrite.)
+     Fix per case = qualify / correct-target / document-the-target (add `automethod`/`autoclass`) /
+     downgrade-to-literal. The device-config private-helper docstring refs in `tomography_model.py`
+     were already converted to literals as part of the docs work.
+   - Then: the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
+     multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
+     PnP-at-scale need appears.
 
 **Porting footgun for C/D (the lesson from the B5 cone port):** the place a new geometry breaks
 under sharding is wherever a **per-slice or per-view operation assumes the problem's REAL count but

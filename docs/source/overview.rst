@@ -16,7 +16,8 @@ Here are the reasons to use MBIRJAX:
   MBIRJAX is fast (for MBIR) because:
 
   - **GPU power:**
-    Uses JAX to harness the power of GPUs, CPUs, and clusters.
+    Uses JAX to harness the power of GPUs and CPUs, and automatically spreads a single
+    reconstruction across multiple GPUs for more memory and speed (see :doc:`usr_multi_gpu`).
 
   - **VCD algorithm:**
     The vectorized coordinate descent algorithm has fast convergence to both reduce reconstruction time and improve image quality.

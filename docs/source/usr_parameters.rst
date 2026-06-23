@@ -5,13 +5,13 @@ Base Parameters
 ===============
 
 The following documents the base parameters used by the :ref:`TomographyModelDocs` class.
-Any of these parameters can be modified with :func:`TomographyModel.set_params`.
+Any of these parameters can be modified with :meth:`~mbirjax.TomographyModel.set_params`.
 
 Note that the default detector channel spacing is `delta_det_channel = 1 ALU`, and the voxel spacing is automatically
 set to `delta_voxel = 1/magnifaction ALU` where `magnification` is the magnification of a voxel at iso.
 
-However, if you change geometry parameters with :func:`TomographyModel.set_params`,
-make sure to run :func:`TomographyModel.auto_set_recon_geometry` afterwards since this will update the reconstruction parameters such as the detector channel spacing to reasonable values.
+However, if you change geometry parameters with :meth:`~mbirjax.TomographyModel.set_params`,
+make sure to run :meth:`~mbirjax.TomographyModel.auto_set_recon_geometry` afterwards since this will update the reconstruction parameters such as the detector channel spacing to reasonable values.
 
 
 Reconstruction Parameters
@@ -75,18 +75,18 @@ use_gpu
 """""""
 :Type: string (Defaults to 'automatic')
 
-Possible values are 'automatic', 'full', 'none'.
+Possible values are 'automatic' and 'none' ('full' is accepted as a deprecated synonym of
+'automatic').
 
  * 'automatic' - recommended setting: the reconstruction runs on the GPU when one is available.
-   On a machine with multiple GPUs, MBIRJAX (currently for parallel-beam geometry) automatically
-   divides the work across them, which increases the available memory and typically reduces
-   reconstruction time;
- * 'full' - performs the entire reconstruction on the GPU;
+   On a machine with multiple GPUs, MBIRJAX automatically divides the work across them, which
+   increases the available memory and typically reduces reconstruction time (see
+   :doc:`usr_multi_gpu`);
  * 'none' - disables GPU use and runs everything on the CPU.
 
 This parameter expresses your *request*; the devices actually chosen are reported in the log at
 the start of each reconstruction and by ``model.device_summary``.  For explicit control over
-which (and how many) devices are used, see :meth:`TomographyModel.configure_devices`.
+which (and how many) devices are used, see :meth:`TomographyModel.configure_devices() <mbirjax.TomographyModel.configure_devices>`.
 
 
 Geometry Parameters
@@ -98,8 +98,8 @@ recon_shape
 """""""""""
 :Type: tuple (num_rows, num_cols, num_slices)
 
-Array size of reconstruction. This is set automatically and is available from :meth:`get_params('recon_shape')`.
-It is recommended to use :func:`scale_recon_shape` to increase this by a factor of 10–15% when the object extends beyond the field of view.
+Array size of reconstruction. This is set automatically and is available from ``get_params('recon_shape')``.
+It is recommended to use :meth:`~mbirjax.TomographyModel.scale_recon_shape` to increase this by a factor of 10–15% when the object extends beyond the field of view.
 
 .. _param-delta_det_channel:
 
@@ -141,7 +141,7 @@ delta_voxel
 
 Spacing between voxels in ALU.
 If None, then it is automatically set to `delta_voxel = delta_det_channel / magnification` where `magnification` is the
-magnification of a voxel at iso determined from the function :func:`TomographyModel.get_magnification()`.
+magnification of a voxel at iso determined from the function :meth:`~mbirjax.TomographyModel.get_magnification`.
 
 .. _param-row_aspect:
 
