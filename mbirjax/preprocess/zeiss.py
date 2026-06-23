@@ -71,11 +71,13 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
     Example:
         .. code-block:: python
 
+            # Get sinogram and reconstruction parameters
             from mbirjax.preprocess.zeiss import compute_sino_and_params
             sino, geometry_params, optional_params, zeiss_metadata = compute_sino_and_params(
                 dataset_dir, verbose=1
             )
 
+            # Create the model and set parameters based on different scanner types
             if zeiss_metadata['scanner_type'] == 'ultra':
                 ct_model = mbirjax.ParallelBeamModel(**geometry_params)
                 ct_model.set_params(**optional_params)
@@ -88,6 +90,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                 ct_model = mbirjax.ConeBeamModel(**geometry_params)
                 ct_model.set_params(**optional_params)
 
+            # Run reconstruction
             recon, recon_dict = ct_model.recon(sino)
     """
     if verbose > 0:
