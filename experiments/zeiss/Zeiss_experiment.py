@@ -1,4 +1,4 @@
-### This script is for reconstructing cone beam CT data from ORNL Zeiss scanner
+### This script is for reconstructing parallel beam and cone beam CT data from Zeiss Ultra scanner and Zeiss Versa scanner
 
 import os
 import sys, os
@@ -29,7 +29,10 @@ def main():
         '/depot/bouman/data/Zeiss/purdue/Scan_tomo-A.txrm',                 # 2:
         '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm',    # 3: Solder drops, high-angle
         '/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_No_HART.txrm',          # 4: Solder drops, equiangle
-        '/depot/bouman/data/Zeiss/foam512R1N3000_raw_scan.txrm'                             # 5: Synthetic foam data
+        '/depot/bouman/data/Zeiss/foam512R1N3000_raw_scan.txrm',                             # 5: Synthetic foam data
+        '/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-B_CS-2.txrm',
+        '/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-C_CS0.txrm',
+        '/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-D_CS-3.8.txrm',
     ]
 
     dataset_path = depot_data_sets[dataset_index]
@@ -42,13 +45,17 @@ def main():
 
     # Load the sinogram and metadata
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params = mjp.zeiss_cb.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
+    sinogram, geometry_params, optional_params, zeiss_metadata = mjp.zeiss.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
                                                                                                  subsample_view_factor=subsample_view_factor)
 
-    # Construct cone beam model
-    print("\n********** Construct cone beam model **************")
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
+    # Construct tomography model
+    print("\n********** Construct tomography model **************")
+    if zeiss_metadata['scanner_type'] == 'ultra':
+        ct_model = mj.ParallelBeamModel(**geometry_params)
+        ct_model.set_params(**optional_params)
+    else:
+        ct_model = mj.ConeBeamModel(**geometry_params)
+        ct_model.set_params(**optional_params)
 
     # Rerun auto-parameter functions because we changed the assumed detector pitch
     ct_model.auto_set_recon_geometry() # Reset default recon shape
@@ -62,8 +69,8 @@ def main():
     # Print out model parameters
     ct_model.print_params()
 
-    # Perform FDK reconstruction
-    print("\n********** Perform FDK reconstruction **************")
+    # Perform direct reconstruction
+    print("\n********** Perform direct reconstruction **************")
     direct_recon = ct_model.direct_recon(sinogram)
     mj.slice_viewer(direct_recon, slice_axis=2, title='Direct reconstruction')
 
@@ -85,17 +92,17 @@ def main():
     # Save recon to hdf5
     print("\n*********** save mbir and fdk recon in h5 format *************")
     os.makedirs(output_path, exist_ok=True)  # mkdir if directory does not exist
-    fdk_path = os.path.join(output_path, f"cone_fdk_recon.h5")
-    mj.export_recon_hdf5(fdk_path, direct_recon, recon_dict=None)
-    mbir_path = os.path.join(output_path, f"cone_mbir_recon.h5")
+    direct_path = os.path.join(output_path, f"direct_recon.h5")
+    mj.export_recon_hdf5(direct_path, direct_recon, recon_dict=None)
+    mbir_path = os.path.join(output_path, f"mbir_recon.h5")
     mj.export_recon_hdf5(mbir_path, mbir_recon, recon_dict=None, remove_flash=True)
-    print("FDK recon saved to {}".format(os.path.abspath(fdk_path)))
+    print("Direct recon saved to {}".format(os.path.abspath(direct_path)))
     print("MBIR recon saved to {}".format(os.path.abspath(mbir_path)))
 
     # Display the results
     mj.slice_viewer(direct_recon, mbir_recon, slice_axis=2,
-                    slice_label=['FDK', 'MBIR'],
-                    title='Comparison between FDK and MBIR reconstructions')
+                    slice_label=['Direct', 'MBIR'],
+                    title='Comparison between Direct and MBIR reconstructions')
 
 
 if __name__ == '__main__':
