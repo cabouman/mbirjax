@@ -1096,8 +1096,9 @@ class ConeBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
             default, slice-sharded if ``output_sharded=True``.
         """
-        # Shard once at entry so the filter receives view-sharded data (no-op when no mesh
-        # is configured or already sharded).  The pipeline then stays on-device throughout
+        # Shard once at entry so the filter receives view-sharded data (a no-op when already
+        # view-sharded; a single device is the trivial 1-shard case).  The pipeline then stays
+        # on-device throughout
         # -- fdk_filter then back_project, both output_sharded=True (zero host transfer) --
         # exactly like ParallelBeamModel.fbp_recon.
         sinogram = self._shard_sinogram(sinogram)

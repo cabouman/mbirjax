@@ -420,11 +420,10 @@ class TomographyModel(ParameterHandler):
         return None
 
     def _shard_on_axis(self, x, axis, what='array'):
-        """Distribute array ``x`` across the mesh along ``axis`` (no-op if no mesh).
+        """Distribute array ``x`` across the mesh along ``axis``.
 
-        When ``self.mesh`` is None (single-device, not configured) ``x`` is
-        returned unchanged.  Otherwise ``x`` is placed in a NamedSharding that
-        partitions ``axis`` across the mesh's ``'devices'`` axis.
+        ``x`` is placed in a NamedSharding that partitions ``axis`` across the mesh's
+        ``'devices'`` axis (a single device is the trivial 1-shard case).
 
         If ``x`` already carries exactly that sharding, it is returned as-is with
         no data movement.  Otherwise it is moved via the transfer helper, which
@@ -483,7 +482,7 @@ class TomographyModel(ParameterHandler):
         # already lives on one device, so there is nothing to gather -- return its
         # on-device data directly and skip the device->host->device round trip below.
         # Without this a single-GPU gather-at-exit (the fbp_recon/direct_recon/direct_filter
-        # default) pays a full host round trip the legacy single-device path never did.
+        # default) would pay a full host round trip for an array that is already on one device.
         shards = x.addressable_shards
         if len(shards) == 1:
             return shards[0].data
@@ -1296,7 +1295,7 @@ class TomographyModel(ParameterHandler):
             # and, by issuing many small rigid dispatches, it defeats the XLA rematerialization
             # that the monolithic single-device forward relies on (measured: 1024^3 single-device
             # peak ~16 GB one-shot vs ~32 GB looped).  Project the full cylinder in ONE call,
-            # recovering the legacy single-device memory profile.
+            # recovering the one-shot single-device memory profile.
             if n_dev == 1:
                 full_cyl = recon_shard_info[slice_owners[0]][0]
                 return self.projector_functions.sparse_forward_project(

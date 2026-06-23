@@ -21,6 +21,24 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
+## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU-validated + committed.  NEXT = prerelease PR (+ two small follow-ups)
+
+▶ **Increment E (retire the pre-placement device representations) is DONE end-to-end, CPU-validated, committed** on `greg/sharding_extensions`.  Design/record: `increment_e_retirement_design.md` (§4 stage table — every row ✅).  The placements (`recon_placement` / `sino_placement`) are now the **single source of device layout**; the legacy representations and their dead branches are gone:
+  - **E1** retired user-facing `view_indices` → internal `owned_view_indices`.  **E2** deleted the no-mesh path + the `_supports_sharding` gate.  **E4** retired `output_device` from the public projector surface.
+  - **E3a** merged `_apply_mesh`+`_set_placements` → `_set_device_layout`; added `_auto_device_pool()` (one "automatic" definition; robust GPU detect; CPU auto-shards); `configure_devices` is the sole device-config entry; `mesh`/`shard_devices` became **derived read-only properties** off `recon_placement`.  **E3b** retired `main_device`/`sinogram_device` (uses → `recon_placement.devices[0]`/`sino_placement.devices[0]`; fixes the documented staleness).  **E3-cleanup** (P1/P2/P4/P5/P6): added `mjs.sharded_full` (per-shard device-form `jnp.full`, no full single-device copy; folded in the duplicate `_sino_ones_device_form`); stubs honor `output_sharded`; retired `_recon_devices`; `'full'`→deprecated synonym of `'automatic'`.
+  - **configure_sharding hard-deleted** (own commit): `configure_devices` is the only entry; ~75 test callers + the ungated experiments renamed.
+  - **E3c** sharded `QGGMRFDenoiser` (dual-path: n=1 keeps the whole-sweep JIT; n>1 slice-shards + per-pass halos via the placement path); extracted the shared `ParameterHandler._log_run_header`.
+  - **E3f** collapsed the ~25 vacuous `if is_sharded` branches and then **deleted the `is_sharded` property** (no internal uses; tests' `assertTrue(is_sharded)` removed).
+  - **P3** dropped the redundant single-device device-puts in `initialize_recon` (partitions already placed by `gen_set_of_pixel_partitions`; `to_sino`/`to_recon` subsume the `_committed_elsewhere` guards) + fixed a latent `get_2d_ror_mask(use_ror_mask=False)` shape bug.
+  - **E5** removed the 6 tautological `test_trivial_*_bit_exact` tests (kept+reworded the one meaningful prior cross-check); reworded the stale no-mesh / "runs single-device until the placement port" comments.
+  - **Reviewed, no change:** `ConeBeamModel.split_sino_recon` composes with sharding (each half auto-shards via its fresh sub-model).
+
+▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  Two small follow-ups may go before or after the PR: **(#22)** collapse the now-redundant `pixel_indices_worker` (== `pixel_indices` since sino/recon share devices; touches the projector-call interface); **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  `mesh`/`shard_devices` remain as derived **RETIREMENT-CANDIDATE** properties — a deliberate later revisit (delete-and-rewrite-call-sites vs. keep-as-public-predicates).
+
+▶ **Standing GPU item (flag for Greg):** all of increment E is CPU-validated only; confirm on the multi-GPU cluster (the nightly includes the branch) — especially the device-config flow, the denoiser sharded path, and the `main_device`-staleness fix under explicit CPU-on-GPU-host pinning.
+
+---
+
 ## HANDOFF (2026-06-20b) — MULTIAXIS port DONE (M0–M5), CPU-validated; translation channel-major added.  ALL geometries ported → NEXT = increment E (retirement cascade)
 
 ▶ **The `MultiAxisParallelModel` sharding port is COMPLETE (M0–M5), CPU-validated end to end.**  It now

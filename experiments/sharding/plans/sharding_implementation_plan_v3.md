@@ -48,7 +48,7 @@ name over the number.*
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
 | **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
 | **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
-| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
+| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; `mesh`/`shard_devices` are now derived RETIREMENT-CANDIDATE properties; sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmation + the prerelease PR still open |
 
 ---
 
@@ -314,13 +314,17 @@ no-single-device-regression.
    - **Translation channel-major** — the cone/parallel increment-A transpose was also applied to
      translation's two horizontal fans (it shared the cache-aliasing gap): forward ~1.8× faster on
      CPU at 512 channels (back neutral), value-preserving (forward rel ~7e-8, back bit-identical).
-4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
-   `sinogram_device`; the `is_sharded` else-branches + the legacy single-device *dispatch* —
-   but **keep** the single-device back driver/kernel (`_sparse_back_project_single_device` /
-   `back_project_one_view_to_pixel_batch`), which the GPU n=1 short-circuit calls; the
-   `view_indices` machinery (incl. the test_projectors pin); `initialize_recon`'s early
-   `device_put` block; `compute_hessian_diagonal`'s `output_device`; then a
-   `grep -rn "RETIRE-*"` sweep (e.g., the trivial-mesh comparison tests retire).
+4. **E — retirement cascade** — ✅ **DONE 2026-06-22**, CPU-validated + committed.  Retired
+   `main_device`/`sinogram_device`, the `is_sharded` else-branches *and* the `is_sharded`
+   property, the legacy single-device *dispatch*, `view_indices` (→ `owned_view_indices`),
+   `output_device` (public surface + `compute_hessian_diagonal`), `configure_sharding`
+   (→ `configure_devices` only), and the redundant `initialize_recon` device-puts (P3); the
+   RETIRE-marker sweep removed the trivial-mesh comparison tests.  **Kept** the single-device back
+   driver/kernel (`_sparse_back_project_single_device` / `back_project_one_view_to_pixel_batch`),
+   which the GPU n=1 short-circuit calls.  Also sharded the denoiser (E3c) and added
+   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  Open: prerelease PR;
+   small follow-ups (`pixel_indices_worker` collapse, `mar`/preprocessing sharding); the
+   `mesh`/`shard_devices` derived-property revisit.
 5. **Post-P6** — the multi-GPU **user docs page** (use the word "sharding" sparingly);
    the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
    multi-device back *time* ever matters; revisit the prox-map prior under sharding if a

@@ -653,9 +653,8 @@ class MultiAxisParallelModel(TomographyModel):
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp".
             view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
                 kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): Accepted for API uniformity.  This model runs
-                single-device until it is ported to the sharded placement path, so the output
-                is the same either way; the argument is plumbed through for that future port.
+            output_sharded (bool, optional): If False (default), return a plain array; if True,
+                return the view-sharded device form (on a single device the same either way).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.

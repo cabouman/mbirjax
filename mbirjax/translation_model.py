@@ -798,8 +798,8 @@ class TranslationModel(mj.TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  The translation model
-                runs single-device until the placement port, so the output is the same either way.
+            output_sharded (bool, optional): If False (default), return a plain array; if True,
+                return the view-sharded device form (on a single device the same either way).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FBP filtering.
@@ -818,17 +818,16 @@ class TranslationModel(mj.TomographyModel):
         pre-weight applied per detector row.  The peak stays at the input+output floor (no
         full-sinogram out-of-place ``sinogram * weight`` copy, no concatenate, no f64
         promotion of the sinogram), and the fragile per-view ``lax.map`` (jax-ml/jax#27591)
-        is gone.  The TranslationModel runs single-device until the placement port, so the
-        result is the same with or without ``output_sharded``; the argument is plumbed
-        through for API uniformity and takes effect when the projectors are ported.
+        is gone.  Through the shared sharded row-filter, ``output_sharded=True`` returns the
+        view-sharded device form (on a single device the result is the same either way).
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
                 kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): Accepted for API uniformity.  The translation model
-                runs single-device until the placement port, so the output is the same either way.
+            output_sharded (bool, optional): If False (default), return a plain array; if True,
+                return the view-sharded device form (on a single device the same either way).
 
         Returns:
             filtered_sinogram (jax array): The sinogram after FDK filtering.
@@ -885,8 +884,8 @@ class TranslationModel(mj.TomographyModel):
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): Accepted for API uniformity.  The translation model
-                runs single-device until the placement port, so the output is the same either way.
+            output_sharded (bool, optional): If False (default), return a plain array; if True,
+                return the view-sharded device form (on a single device the same either way).
 
         Returns:
             recon (jax array): The reconstructed volume after FDK reconstruction.

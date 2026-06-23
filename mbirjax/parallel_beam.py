@@ -445,9 +445,8 @@ class ParallelBeamModel(TomographyModel):
         (``fbp_recon`` / ``direct_recon`` followed by back projection) pass
         ``output_sharded=True`` so the data stays on-device with zero host
         transfer.  Under the view-sharding scheme the ramp filter is per-view, so
-        each device filters its own views with no cross-device communication.
-        When no mesh is configured this simply filters the (single-device) array
-        directly.
+        each device filters its own views with no cross-device communication
+        (a single device is the trivial 1-shard case).
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -502,16 +501,16 @@ class ParallelBeamModel(TomographyModel):
         intermediate host transfer).  By default the recon is gathered to a plain
         array at exit; with ``output_sharded=True`` it is returned slice-sharded
         (no host round-trip), so a sharded FBP result can feed a sharded consumer
-        (e.g. the VCD init).  With no mesh configured the shard/gather are no-ops
-        and the array flows through unchanged.
+        (e.g. the VCD init).  On a single device the shard/gather are trivial 1-shard
+        operations.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
             output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the slice-sharded device form (on an
-                unsharded model the output is the same either way).
+                array.  If True, return the slice-sharded device form (on a single
+                device the output is the same either way).
 
         Returns:
             recon (jax array): The reconstructed volume — plain by default,
@@ -519,8 +518,8 @@ class ParallelBeamModel(TomographyModel):
         """
         _warn_view_batch_size_deprecated(view_batch_size)
 
-        # Shard once at entry so the filter receives view-sharded data (no-op
-        # when no mesh is configured or already sharded).
+        # Shard once at entry so the filter receives view-sharded data (a no-op
+        # when already view-sharded; a single device is the trivial 1-shard case).
         sinogram = self._shard_sinogram(sinogram)
 
         # Internal pipeline stage: keep the device form, no host transfer.
