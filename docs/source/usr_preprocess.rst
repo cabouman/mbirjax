@@ -20,7 +20,7 @@ NorthStar Instrument (NSI) reader
 Zeiss Versa cone beam reader
 ----------------------------
 
-.. currentmodule:: mbirjax.preprocess.zeiss_cb
+.. currentmodule:: mbirjax.preprocess.zeiss
 
 .. autofunction:: compute_sino_and_params
 .. autofunction:: load_scans_and_params

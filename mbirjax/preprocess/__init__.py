@@ -5,4 +5,4 @@ from .stripe import *
 from . import nsi
 from . import pymbir
 from . import zeiss_tct
-from . import zeiss_cb
+from . import zeiss
