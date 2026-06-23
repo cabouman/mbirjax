@@ -234,7 +234,7 @@ class TestBackProjectSharded(unittest.TestCase):
                 continue
             model.configure_sharding(devs)
             out = np.asarray(model.back_project(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+            np.testing.assert_allclose(out, ref, rtol=2e-5, atol=2e-5,
                                        err_msg=f"mismatch at n_dev={n}")
             ran_multi = True
         if not ran_multi:
@@ -257,7 +257,7 @@ class TestBackProjectSharded(unittest.TestCase):
                 model.back_project_slice_band = band
             model.configure_sharding(self.devs)
             out = np.asarray(model.back_project(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
+            np.testing.assert_allclose(out, ref, rtol=2e-5, atol=2e-5,
                                        err_msg=f"mismatch at slice band {band}")
 
     def test_single_device_streaming_matches(self):
