@@ -21,9 +21,9 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
-## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU-validated + committed.  NEXT = prerelease PR (+ two small follow-ups)
+## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU + GPU validated + committed.  NEXT = prerelease PR (+ two small follow-ups)
 
-▶ **Increment E (retire the pre-placement device representations) is DONE end-to-end, CPU-validated, committed** on `greg/sharding_extensions`.  Design/record: `increment_e_retirement_design.md` (§4 stage table — every row ✅).  The placements (`recon_placement` / `sino_placement`) are now the **single source of device layout**; the legacy representations and their dead branches are gone:
+▶ **Increment E (retire the pre-placement device representations) is DONE end-to-end, CPU + GPU validated (nightly 2026-06-23), committed** on `greg/sharding_extensions`.  Design/record: `increment_e_retirement_design.md` (§4 stage table — every row ✅).  The placements (`recon_placement` / `sino_placement`) are now the **single source of device layout**; the legacy representations and their dead branches are gone:
   - **E1** retired user-facing `view_indices` → internal `owned_view_indices`.  **E2** deleted the no-mesh path + the `_supports_sharding` gate.  **E4** retired `output_device` from the public projector surface.
   - **E3a** merged `_apply_mesh`+`_set_placements` → `_set_device_layout`; added `_auto_device_pool()` (one "automatic" definition; robust GPU detect; CPU auto-shards); `configure_devices` is the sole device-config entry; `mesh`/`shard_devices` became **derived read-only properties** off `recon_placement`.  **E3b** retired `main_device`/`sinogram_device` (uses → `recon_placement.devices[0]`/`sino_placement.devices[0]`; fixes the documented staleness).  **E3-cleanup** (P1/P2/P4/P5/P6): added `mjs.sharded_full` (per-shard device-form `jnp.full`, no full single-device copy; folded in the duplicate `_sino_ones_device_form`); stubs honor `output_sharded`; retired `_recon_devices`; `'full'`→deprecated synonym of `'automatic'`.
   - **configure_sharding hard-deleted** (own commit): `configure_devices` is the only entry; ~75 test callers + the ungated experiments renamed.
@@ -34,8 +34,6 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
   - **Reviewed, no change:** `ConeBeamModel.split_sino_recon` composes with sharding (each half auto-shards via its fresh sub-model).
 
 ▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  Two small follow-ups may go before or after the PR: **(#22)** collapse the now-redundant `pixel_indices_worker` (== `pixel_indices` since sino/recon share devices; touches the projector-call interface); **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  `mesh`/`shard_devices` remain as derived **RETIREMENT-CANDIDATE** properties — a deliberate later revisit (delete-and-rewrite-call-sites vs. keep-as-public-predicates).
-
-▶ **Standing GPU item (flag for Greg):** all of increment E is CPU-validated only; confirm on the multi-GPU cluster (the nightly includes the branch) — especially the device-config flow, the denoiser sharded path, and the `main_device`-staleness fix under explicit CPU-on-GPU-host pinning.
 
 ---
 

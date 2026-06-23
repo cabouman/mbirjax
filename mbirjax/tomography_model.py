@@ -2845,7 +2845,6 @@ class TomographyModel(ParameterHandler):
 
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
-        partition_worker = jax.device_put(partition, self.sino_placement.devices[0])
         # Stage the qGGMRF boundary halos ONCE for this whole partition pass and reuse them
         # for every subset.  The prior couples a voxel only to its same-pixel cross-shard
         # slice neighbor, and the partition's subsets are (almost) disjoint, so a subset's
@@ -2859,9 +2858,8 @@ class TomographyModel(ParameterHandler):
         staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
-            subset_worker = partition_worker[index]
             flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset = vcd_subset_updater(
-                flat_recon, error_sinogram, subset, subset_worker, staged_halos)
+                flat_recon, error_sinogram, subset, staged_halos)
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
 
@@ -2903,8 +2901,7 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker,
-                               staged_halos=None):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, staged_halos=None):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -2917,7 +2914,6 @@ class TomographyModel(ParameterHandler):
                 flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                 error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                 pixel_indices (jax array): 1D array of pixel indices.
-                pixel_indices_worker (jax array): Same as pixel_indices, but copied onto the worker device.
                 staged_halos (tuple or None): ``(staged_left, staged_right)`` qGGMRF boundary
                     halos staged once per partition pass (see :meth:`_stage_halos`); forwarded
                     to the sharded prior so the halos are not re-read every subset.  ``None``
@@ -2966,7 +2962,7 @@ class TomographyModel(ParameterHandler):
                 weighted_error_sinogram = error_sinogram
 
             # Back project to get the gradient
-            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker)
+            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices)
 
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[recon_indices]
@@ -2983,7 +2979,7 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
-            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker)
+            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             forward_linear, forward_quadratic = self.get_forward_lin_quad(
                 weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights)
