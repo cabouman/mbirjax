@@ -55,6 +55,19 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             - ``optional_params`` (dict): Additional parameters to be set via ``TomographyModel.set_params``.
             - ``zeiss_metadata`` (dict): Some metadata stored in Zeiss txrm file.
 
+    Supported Zeiss scanner types:
+        During preprocessing, the Zeiss scanner type is inferred from metadata in the
+        ``.txrm`` file and returned as ``zeiss_metadata['scanner_type']``.
+
+        The current possible values are:
+        - ``'ultra'``: Xradia Ultra data, treated as parallel-beam nano-CT data.
+          The returned ``geometry_params`` are intended for ``mbirjax.ParallelBeamModel``.
+        - ``'versa'``: Xradia Versa data, treated as cone-beam micro-CT data.
+          The returned ``geometry_params`` are intended for ``mbirjax.ConeBeamModel``.
+        - ``'unknown'``:  The system type cannot be determined
+          The code currently treats this case like Versa and returns cone-beam geometry parameters,
+          but users should verify that this geometry is appropriate for the scan before running the reconstruction.
+
     Example:
         .. code-block:: python
 
@@ -66,7 +79,12 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             if zeiss_metadata['scanner_type'] == 'ultra':
                 ct_model = mbirjax.ParallelBeamModel(**geometry_params)
                 ct_model.set_params(**optional_params)
+            elif zeiss_metadata['scanner_type'] == 'versa':
+                ct_model = mbirjax.ConeBeamModel(**geometry_params)
+                ct_model.set_params(**optional_params)
             else:
+                warnings.warn("Unknown Zeiss scanner type; Assuming the file using cone beam geometry."
+                        "Users should verify that this geometry is appropriate for the scan.")
                 ct_model = mbirjax.ConeBeamModel(**geometry_params)
                 ct_model.set_params(**optional_params)
 
