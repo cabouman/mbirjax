@@ -64,7 +64,7 @@ def main():
             sinogram = sinogram[:, ::-1, :]
     else:
         crop_size = 400
-        sinogram, cone_beam_params, optional_params = mjp.zeiss_cb.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
+        sinogram, cone_beam_params, optional_params, zeiss_metadata = mjp.zeiss.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
                                                                                            subsample_view_factor=subsample_view_factor, crop_pixels_bottom=crop_size, crop_pixels_top=crop_size)
 
     # Construct cone beam model
