@@ -134,6 +134,14 @@ next one touches.
 De-scoped / already done: the `'sinograms'`/`_transfer` hybrid mode (gone); the projector-batching-machinery
 refactor (separate tracked item, v3 §6); B4.5 (band-kernel GPU cost, separate).
 
+**Reviewed — no change needed:** `ConeBeamModel.split_sino_recon` (2026-06-22).  It reconstructs two
+overlapping detector-row halves via fresh `copy_ct_model` sub-models and `.recon()` on each, then
+`device_get` + host-side `stitch_arrays`.  Each sub-model runs `__init__`→`set_devices`, so each
+half-recon auto-shards like any recon; verified n=1 and n=2 give identical split output (sharding is
+transparent).  Nuance (pre-existing, not a bug): the sub-models inherit `use_gpu` (a param) but not an
+explicit `configure_devices(n)` pin — so a pinned parent runs the halves on auto-selected devices.
+Possible small enhancement (propagate the parent's device config to the sub-models); not required.
+
 ---
 
 ## 5. Risks / footguns
