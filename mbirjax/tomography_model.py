@@ -2399,7 +2399,7 @@ class TomographyModel(ParameterHandler):
                 if weights is not None:
                     small_weights = small_weights[:, :num_real_rows]
             # Compute indicator function for sinogram support
-            sino_indicator = self._get_sino_indicator(small_sinogram)
+            sino_indicator = self._get_sino_indicator(small_sinogram, verbose=self.get_params('verbose'))
             self.auto_set_sigma_y(small_sinogram, sino_indicator, small_weights)
 
             recon_std = self._get_estimate_of_recon_std(small_sinogram, sino_indicator)
@@ -2525,7 +2525,8 @@ class TomographyModel(ParameterHandler):
 
         return voxel_values
 
-    def _get_sino_indicator(self, sinogram):
+    @staticmethod
+    def _get_sino_indicator(sinogram, verbose=1):
         """
         Compute a binary mask that indicates the region of sinogram support.
 
@@ -2550,12 +2551,13 @@ class TomographyModel(ParameterHandler):
         # Make sure right_cluster_boundary less than or equal to the maximum sinogram value
         max_sino = np.max(sinogram)
         if max_sino <= 0:
-            warnings.warn("Sinogram contains no positive values. This may lead to a contrast reversed reconstruction.")
+            if verbose > 0:
+                warnings.warn("Sinogram contains no positive values. This may lead to a contrast reversed reconstruction.")
             indicator = np.ones_like(sinogram, dtype=np.int8)
             return indicator
 
         if max_sino < threshold:
-            if self.get_params('verbose') > 0:
+            if verbose > 0:
                 warnings.warn('\nUnable to determine sinogram background. This may affect regularization.\n')
             indicator = np.ones_like(sinogram, dtype=np.int8)
             return indicator
