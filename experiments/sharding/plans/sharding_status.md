@@ -21,7 +21,31 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
-## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU + GPU validated + committed.  NEXT = prerelease PR (+ two small follow-ups)
+## HANDOFF (2026-06-24) — PRERELEASE PR #17 OPEN; post-E refinements landed (docs + utility sharding + Tk/cache fixes)
+
+▶ **The prerelease PR is OPEN** (`greg/sharding_extensions` → `prerelease`): 55 commits, 83 files (+5032/-1933).  Description: `pr_description_draft.md` (refreshed for the full scope).  It carries all four geometries + the QGGMRF denoiser sharded, the retirement cascade (increment E), and the docs/utility-sharding work below.
+
+▶ **Validation:** full CPU suite green (193 passed at the conftest default of 4 virtual CPU devices, which exercises the 3-/4-device padding paths); the A100 run is green for everything runnable — the >2-device tests *skip* on 2 GPUs (`preferred_devices(n)` returns None when GPUs are present but too few) but **pass on the CPU-4 suite** (verified) and get real-hardware coverage from the 4-GPU nightly.
+
+▶ **Post-E refinements landed this session:**
+  - **`mesh` retired / `shard_devices` kept** (the deferred derived-property revisit — done); `recon_shard_axis`/`sinogram_shard_axis` are now **classmethods** (callable without an instance; used by the sharded phantom builder).
+  - **`_pad_shard_on_axis`** readability pass (real_size/padded_size/shard_len/n_real renames + comments; the `row_pad` docstring now concretely describes the ParallelBeam det-row↔slice case).
+  - **`gen_weights`** → direct element-wise pass, **sharding-transparent** (sharded sino → sharded weights, no gather; replaced the batched/device-pinned single-device gather).  Returns weights on the input's device/sharding (behavior note in the PR).
+  - **`gen_weights_mar`** — dropped the explicit `device=devices[0]` pins (the last legacy single-device pins); `init_recon=None` path now sharding-transparent.  `init_recon` path still gathers (forward_project default + Otsu) → part of #18.
+  - **`generate_3d_shepp_logan_low_dynamic_range`** — `devices=` (slice-sharded build), `max_block_gb` (lax.map row-blocked single-device build, bounds memory), `target_max_attenuation` (analytic main-ellipsoid scale + `interior_intensity` calibration so the sinogram lands ~0–8 regardless of array size).
+  - **`generate_demo_data`** — `devices=` (pins the generation model + returns sharded phantom/sino), `target_max_attenuation`; helical embed moved to host; fixed the translation `np.min`→`min` bug; corrected return-type docstrings.
+  - **Docs:** `usr_multi_gpu.rst` (user), `dev_sharding_overview.rst` (dev), `dev_api.rst` rewritten (guidelines + per-view skeleton), use_gpu/overview/FAQ refresh, prose `:meth:` cross-refs qualified.
+  - **Tk noise fix:** `viewer.py` closes the figure by object (no phantom re-create); `demo_7` adds `plt.close('all')` + `gc.collect()` after its raw `plt.show()` (the `Image.__del__` "main thread is not in main loop" was the demo's bare matplotlib, not the viewer).
+  - **JAX cache fix:** disable `jax_persistent_cache_enable_xla_caches` when we set the compilation cache — the GPU per-fusion autotune cache's temp-file write/rename fails (NOT_FOUND) on cluster NFS / a fresh cache dir; the executable cache is kept.  This resolved the A100 suite failures.
+
+▶ **NEXT (open items, none blocking the PR):**
+  - **Cone 2048³/8-GPU deadlock** — still under investigation (see the cone bullet below + `sharding_implementation_plan_v3.md` §6).  Clean through 512³/8; NOT a prerelease regression (cone was single-device there).
+  - **#18** — shard `mar.py`/preprocessing (incl. the `gen_weights_mar` `init_recon` path).
+  - Deferred doc-xref cleanup; the `_auto_device_count` recon-slices-vs-views revisit (§6).
+
+---
+
+## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU + GPU validated + committed.  NEXT (now done) = prerelease PR (+ two small follow-ups)
 
 ▶ **Increment E (retire the pre-placement device representations) is DONE end-to-end, CPU + GPU validated (nightly 2026-06-23), committed** on `greg/sharding_extensions`.  Design/record: `increment_e_retirement_design.md` (§4 stage table — every row ✅).  The placements (`recon_placement` / `sino_placement`) are now the **single source of device layout**; the legacy representations and their dead branches are gone:
   - **E1** retired user-facing `view_indices` → internal `owned_view_indices`.  **E2** deleted the no-mesh path + the `_supports_sharding` gate.  **E4** retired `output_device` from the public projector surface.
@@ -37,7 +61,7 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ▶ **Docs (#24) DONE 2026-06-23** — `usr_multi_gpu.rst` + the use_gpu/overview/FAQ refresh + the Tomography-Model "Device Configuration" move/refresh; prose `:meth:` cross-refs qualified to `mbirjax.*`.  **Deferred:** a doc-cleanup pass for the remaining UNRESOLVED Sphinx py-xrefs that render as plain text with no build warning (autosummary-table entries + wrong-target/undocumented docstring refs) — full enumeration + the detect-by-HTML-grep recipe in `sharding_implementation_plan_v3.md` §5.  Also added the dev **`dev_sharding_overview.rst`** page (sharding architecture: two shardings, placement, banded forward/back, cone whole-cylinders, halos, single-vs-multi paths, thread-pool execution).
 
-▶ **Cone-beam 8-GPU 2048³ recon hang (NCCL clique) — INVESTIGATING.**  Manual cone 2048³/8-GPU recon hung at the first VCD subset update (parallel beam fine).  Repro tooling in `experiments/sharding/cone_deadlock_repro/`.  Sweep (job 12776721, confirmed build) is **clean through 512³/8** (parallel + cone, all device counts) → NOT a structural collective bug; scale-only or original-build artifact.  2048³ rerun on the confirmed build submitted 2026-06-23.  Full analysis + the collective-free-reduction fix candidate: `sharding_implementation_plan_v3.md` §6.
+▶ **Cone-beam 8-GPU 2048³ recon hang (NCCL clique) — INVESTIGATING.**  Manual cone 2048³/8-GPU recon hung at the first VCD subset update (parallel beam fine).  Repro tooling in `experiments/sharding/cone_deadlock_repro/`.  Sweep (job 12776721, confirmed build) is **clean through 512³/8** (parallel + cone, all device counts) → NOT a structural collective bug; scale-only or original-build artifact.  First 2048³ attempt (job 12776973) died in the REPRO's single-device gather (a repro-script bug, since fixed: forward+recon kept device-sharded via `output_sharded`, phantom built via `sharded_full`) — so it has not yet actually reached the VCD loop at 2048³.  **2048³ rerun on the fixed repro still pending** (cluster availability).  Full analysis + the collective-free-reduction fix candidate: `sharding_implementation_plan_v3.md` §6.
 
 ---
 

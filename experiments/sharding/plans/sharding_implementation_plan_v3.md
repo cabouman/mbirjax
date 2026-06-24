@@ -48,7 +48,9 @@ name over the number.*
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
 | **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
 | **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
-| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; `mesh`/`shard_devices` are now derived RETIREMENT-CANDIDATE properties; sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmation + the prerelease PR still open |
+| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; retired `mesh` (kept `shard_devices` as the public accessor); sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmed (nightly) |
+| **Post-E** — docs + utility sharding + Tk/cache fixes | ✅ **DONE 2026-06-24** (in PR #17): user/dev docs (`usr_multi_gpu`, `dev_sharding_overview`, `dev_api` rewrite); `gen_weights` / `gen_weights_mar` / the Shepp-Logan phantom / `generate_demo_data` made sharding-aware (+ phantom `max_block_gb` blocking and `target_max_attenuation`); `_pad_shard_on_axis` readability; `recon_shard_axis`/`sinogram_shard_axis` → classmethods; viewer/demo Tk-GC noise fix; **JAX per-fusion-autotune-cache disabled** (fixed the A100 `NOT_FOUND` cache errors) |
+| **Prerelease PR (#17)** | ✅ **OPEN 2026-06-24** (`greg/sharding_extensions` → `prerelease`, 55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Open follow-ons (non-blocking): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
 
 ---
 
@@ -322,9 +324,10 @@ no-single-device-regression.
    RETIRE-marker sweep removed the trivial-mesh comparison tests.  **Kept** the single-device back
    driver/kernel (`_sparse_back_project_single_device` / `back_project_one_view_to_pixel_batch`),
    which the GPU n=1 short-circuit calls.  Also sharded the denoiser (E3c) and added
-   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  Open: prerelease PR;
-   small follow-ups (`pixel_indices_worker` collapse, `mar`/preprocessing sharding); the
-   `mesh`/`shard_devices` derived-property revisit.
+   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 OPEN
+   (2026-06-24).**  Done since: `pixel_indices_worker` collapse (#22), the `mesh`/`shard_devices`
+   revisit (`mesh` retired, `shard_devices` kept).  Remaining follow-up: `mar`/preprocessing sharding
+   (#18).
 5. **Post-P6** — the multi-GPU **user docs page** ✅ **DONE 2026-06-23**: `usr_multi_gpu.rst`
    (zero-effort path, device subsetting via `configure_devices`, efficiency tips, expectations,
    a gentle "sharding" overview) + `use_gpu`/`overview`/`advanced_features`/FAQ refresh, and the
@@ -484,10 +487,16 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     `gen_modified_3d_sl_phantom` and the 32 GiB host-random) and keep the forward projection AND the
     recon **device-sharded** (`output_sharded=True`) -- no single-device 32 GiB array anywhere.  (Side lesson: at 2048³ a gathered single-device output is itself 32 GiB — real runs must
     stay sharded.)
-  - **Next:** re-run 2048³ (n=4/8) with the fixed repro.  If it reproduces the hang, the prime fix is
-    making the line-search reductions **collective-free** (thread-pool partial sums + a host reduce of
-    the two floats), removing the only NCCL dependency.  If it completes, the original hang was
-    build/env and the branch is fine at scale.
+  - **Next (still PENDING as of 2026-06-24, cluster availability):** re-run 2048³ (n=4/8) with the
+    fixed repro — it has not yet actually reached the VCD loop at 2048³.  If it reproduces the hang,
+    the prime fix is making the line-search reductions **collective-free** (thread-pool partial sums +
+    a host reduce of the two floats), removing the only NCCL dependency.  If it completes, the original
+    hang was build/env and the branch is fine at scale.
+  - **Unrelated cache aside (resolved 2026-06-24):** a *separate* GPU failure mode — `NOT_FOUND` on
+    `<cache>/xla_gpu_per_fusion_autotune_cache_dir/tmp/...textproto` — surfaced when running the full
+    suite on A100s after an env rebuild.  Root cause: jax defaults `jax_persistent_cache_enable_xla_caches`
+    to the per-fusion autotune cache, whose temp-file writes fail on cluster NFS / a fresh cache dir.
+    Fix: disable it when we set the compilation cache (keep the executable cache).  Not the cone hang.
 
 ---
 
