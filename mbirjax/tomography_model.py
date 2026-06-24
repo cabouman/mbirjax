@@ -522,10 +522,19 @@ class TomographyModel(ParameterHandler):
         return out
 
     def _pad_shard_on_axis(self, x, placement, axis, what='array', row_pad=None):
-        """Distribute ``x`` across ``placement``, zero-padding the sharded axis to
-        the device form (``placement.padded_size``) -- and, when ``row_pad`` is
-        given, zero-padding an UNSHARDED second axis as well (detector rows that
-        must track the recon slices; see :meth:`_sino_row_padding`).
+        """Distribute ``x`` across ``placement``, zero-padding its sharded axis to
+        the device form (``placement.padded_size``).
+
+        ``row_pad`` is used in exactly one case -- the **ParallelBeam sinogram**.
+        That sinogram is sharded by view (its sharded axis, padded as usual), but
+        ParallelBeam back/forward-projects detector row ``r`` to/from recon slice
+        ``r`` (a 1-to-1 row<->slice alignment unique to parallel beam), so the
+        detector-row axis must match the recon-slice axis.  The recon slices are
+        themselves sharded -- hence padded to the device form -- so the sinogram's
+        detector rows must be zero-padded to that SAME length, even though rows are
+        NOT the sinogram's sharded axis.  ``row_pad`` carries that second
+        (unsharded) axis; for every other geometry, and for recon arrays, it is
+        None and only the sharded axis is padded.  See :meth:`_sino_row_padding`.
 
         The padding never exists on the host: each device receives its own slice
         of the host array directly (``device_put`` per shard), and all zero tails
@@ -546,28 +555,38 @@ class TomographyModel(ParameterHandler):
                 ``real_size`` (and hence ``padded_size``) for its sharded axis.
             axis (int): the axis of ``x`` to partition (may be negative).
             what (str): human label for error messages.
-            row_pad (tuple or None): ``(row_axis, real_rows, padded_rows)`` to
-                zero-pad an additional, unsharded axis to its device-form length;
-                None pads only the sharded axis.
+            row_pad (tuple or None): the ParallelBeam detector-row case above, as
+                ``(row_axis, real_rows, padded_rows)`` -- zero-pad this additional,
+                unsharded axis up to ``padded_rows`` (the device-form recon-slice
+                count).  None for every other geometry (pad only the sharded axis).
 
         Returns:
             The zero-padded array in the placement's NamedSharding.
         """
         axis = axis % x.ndim
-        real, padded = placement.real_size, placement.padded_size
+        # Sharded-axis lengths: real_size is the problem's true length; padded_size is real_size
+        # rounded up to a multiple of the device count (the device-form length).
+        real_size, padded_size = placement.real_size, placement.padded_size
         if row_pad is not None:
-            row_axis, row_real, row_padded = row_pad
+            # A second, UNSHARDED axis (detector rows) that must also be zero-padded to track the
+            # recon slices -- (axis, real length, padded length); see :meth:`_sino_row_padding`.
+            row_axis, real_rows, padded_rows = row_pad
             row_axis = row_axis % x.ndim
-        rows_are_padded = row_pad is None or x.shape[row_axis] == row_padded
-        rows_are_real = row_pad is None or x.shape[row_axis] == row_real
-        if x.shape[axis] == padded and rows_are_padded:
-            # Already in the device form (e.g. prepare_sino_for_devices output).
+        # Classify the incoming shape on each padded axis: already at its device-form (padded)
+        # length, or at its real (problem) length?  (With no row_pad both are trivially True.)
+        rows_are_padded = row_pad is None or x.shape[row_axis] == padded_rows
+        rows_are_real = row_pad is None or x.shape[row_axis] == real_rows
+
+        if x.shape[axis] == padded_size and rows_are_padded:
+            # Already in the device form (e.g. a prepare_sino_for_devices output): nothing to pad,
+            # just place it (``_shard_on_axis`` is a no-op when the sharding already matches).
             return self._shard_on_axis(x, axis, what=what)
-        if x.shape[axis] != real or not rows_are_real:
-            expected_real = 'problem size {}'.format(real) if row_pad is None else \
-                'problem sizes {}/{} (sharded axis / padded row axis)'.format(real, row_real)
-            expected_dev = '{}'.format(padded) if row_pad is None else \
-                '{}/{}'.format(padded, row_padded)
+        if x.shape[axis] != real_size or not rows_are_real:
+            # Neither fully-real nor fully-device-form (e.g. a stale prepared array): refuse it.
+            expected_real = 'problem size {}'.format(real_size) if row_pad is None else \
+                'problem sizes {}/{} (sharded axis / padded row axis)'.format(real_size, real_rows)
+            expected_dev = '{}'.format(padded_size) if row_pad is None else \
+                '{}/{}'.format(padded_size, padded_rows)
             raise ValueError(
                 'Cannot place the {}: got shape {}, but the model expects the {} '
                 '(or the prepared device-form size {}).  If the device '
@@ -576,34 +595,46 @@ class TomographyModel(ParameterHandler):
         zeros_dtype = jax.dtypes.canonicalize_dtype(x.dtype)
 
         def with_row_tail(piece, dev):
-            # Zero-fill the unsharded row axis to its device-form length, on-device.
+            # Append the unsharded row axis's zero tail (real_rows -> padded_rows), built ON ``dev``,
+            # so a placed shard reaches the device-form row length without a host-side padded copy.
             if row_pad is None:
                 return piece
             tail_shape = list(piece.shape)
-            tail_shape[row_axis] = row_padded - row_real
+            tail_shape[row_axis] = padded_rows - real_rows
             tail = jnp.zeros(tuple(tail_shape), dtype=zeros_dtype, device=dev)
             return jnp.concatenate([piece, tail], axis=row_axis)
 
+        # Build one shard per device.  ``padded_shard_ranges()`` walks the PADDED sharded axis and
+        # yields, per device: the device, its ``[start, end)`` span on that axis, and ``n_real`` =
+        # how many of those positions hold real data (any remainder is padding).  Each shard is
+        # assembled directly on its own device, so the host never holds a padded copy.
         pieces = []
-        for dev, (start, end), n_valid in placement.padded_shard_ranges():
-            block = end - start
+        for dev, (start, end), n_real in placement.padded_shard_ranges():
+            shard_len = end - start          # this shard's span on the (padded) sharded axis
             parts = []
-            if n_valid > 0:
+            if n_real > 0:
+                # The real slice ``[start, start + n_real)`` of x, placed on ``dev`` (+ its row tail).
                 idx = [slice(None)] * x.ndim
-                idx[axis] = slice(start, start + n_valid)
+                idx[axis] = slice(start, start + n_real)
                 parts.append(with_row_tail(jax.device_put(x[tuple(idx)], dev), dev))
-            if block - n_valid > 0:
-                # Fully-zero tail block on the sharded axis, built at device-form row length.
+            if shard_len - n_real > 0:
+                # The remaining ``shard_len - n_real`` positions on the sharded axis are pure
+                # padding: a zero block built directly on ``dev`` at the device-form row length.
                 tail_shape = list(x.shape)
-                tail_shape[axis] = block - n_valid
+                tail_shape[axis] = shard_len - n_real
                 if row_pad is not None:
-                    tail_shape[row_axis] = row_padded
+                    tail_shape[row_axis] = padded_rows
                 parts.append(jnp.zeros(tuple(tail_shape), dtype=zeros_dtype, device=dev))
+            # A shard is the real block, the zero block, or -- at the one boundary device that
+            # straddles real/padding -- both joined along the sharded axis.
             pieces.append(parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis))
+
+        # Wrap the per-device shards as one logical array in the placement's NamedSharding; the
+        # global shape is x's shape with the padded length(s) substituted on the padded axis/axes.
         global_shape = list(x.shape)
-        global_shape[axis] = padded
+        global_shape[axis] = padded_size
         if row_pad is not None:
-            global_shape[row_axis] = row_padded
+            global_shape[row_axis] = padded_rows
         return mjs.assemble_sharded(pieces, tuple(global_shape),
                                     placement.shard_structure(x.ndim))
 
