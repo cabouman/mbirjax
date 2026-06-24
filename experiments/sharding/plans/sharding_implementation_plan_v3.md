@@ -459,6 +459,35 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
+- **Cone-beam 8-GPU 2048³ recon hang (NCCL "Acquire clique" timeout) — INVESTIGATING (2026-06-23).**
+  A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
+  Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
+  config worked.  Repro tooling: `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
+  size × device-count sweep, each config `timeout`-isolated, HLO dumped, build-ID printed).
+  - **Mechanism:** no explicit collectives in mbirjax — projection is collective-free (thread pool
+    + `make_array_from_single_device_arrays`).  The only multi-device collectives are XLA-GSPMD
+    auto-inserted for the **VCD line-search scalar reductions** over the view-sharded sinogram
+    (`get_forward_lin_quad`'s `jnp.sum`, the `alpha` sums) — an all-reduce on the sino mesh + a
+    sino→recon cross-mesh reconcile.  Those are **shared with parallel beam**, so a cone-only hang
+    points to cone-specific divergence or scale/resource (cone's whole-cylinder kernels are far
+    heavier), NOT a structural bug.  (2048/8 divides evenly → not a padding-shape issue.)
+  - **Sweep result (job 12776721, confirmed build, h015):** **ALL configs OK through 512³ on 8 GPUs**
+    (parallel + cone, n=1/2/4/8).  So the sharded path is **structurally correct through 512³/8** —
+    rules out a collective-participation bug.  The failure is either scale-only (the 2048³ regime:
+    memory pressure / slow uneven per-device compile desyncing the all-reduce rendezvous) or a
+    build/env artifact of the original run (which had build uncertainty — `__version__`/unsure build).
+  - **2048³ attempt #1 (2026-06-23, job 12776973):** ALL configs `ERR` — but in the **repro script**,
+    not the recon: `forward_project` defaulted to `output_sharded=False`, gathering the full 2048³
+    sinogram (32 GiB) onto one GPU (on top of the 32 GiB phantom) → OOM in `_gather_to_host`, before
+    recon started.  Geometry-independent (parallel + cone identical).  Fixed the repro to build the
+    phantom **already-sharded** (`sharded_full`, per-shard -- avoids the slow/transient-heavy
+    `gen_modified_3d_sl_phantom` and the 32 GiB host-random) and keep the forward projection AND the
+    recon **device-sharded** (`output_sharded=True`) -- no single-device 32 GiB array anywhere.  (Side lesson: at 2048³ a gathered single-device output is itself 32 GiB — real runs must
+    stay sharded.)
+  - **Next:** re-run 2048³ (n=4/8) with the fixed repro.  If it reproduces the hang, the prime fix is
+    making the line-search reductions **collective-free** (thread-pool partial sums + a host reduce of
+    the two floats), removing the only NCCL dependency.  If it completes, the original hang was
+    build/env and the branch is fine at scale.
 
 ---
 

@@ -64,23 +64,34 @@ def main():
     model.set_params(verbose=1)
     log("model built; device_summary = {}".format(model.device_summary))
 
-    # A valid sinogram: forward-project a phantom (fall back to a random volume if needed).
+    # Build the input WITHOUT ever materializing a full single-device array.  At 2048^3 a phantom is
+    # 32 GiB; both gen_modified_3d_sl_phantom (analytic ellipsoids) and host np.random are slow there
+    # and spike memory.  sharded_full builds a constant volume PER SHARD directly on each device
+    # (~4 GiB/device at 2048^3/8, no 32 GiB transient).  The content is irrelevant here -- memory and
+    # the collective structure are shape-driven, and a uniform block still forward-projects to a
+    # non-trivial sinogram that drives the full VCD loop.
+    import mbirjax._sharding as mjs
+    recon_shape = model.get_params("recon_shape")
+    log("building a sharded constant phantom (per-shard, no single-device transient)")
     try:
-        log("generating phantom")
+        phantom = mjs.sharded_full(model.recon_placement, recon_shape, 1.0)
+    except Exception as e:  # noqa: BLE001 - fall back to a single-device phantom (fine at small sizes)
+        log("sharded_full failed ({}); falling back to a single-device phantom".format(e))
         phantom = model.gen_modified_3d_sl_phantom()
-    except Exception as e:  # noqa: BLE001 - any phantom issue, just use random data
-        log("phantom generation failed ({}); using a random recon-shaped volume".format(e))
-        recon_shape = model.get_params("recon_shape")
-        phantom = np.asarray(np.random.RandomState(0).rand(*recon_shape), dtype=np.float32)
-    log("forward-projecting phantom -> sinogram")
-    sinogram = model.forward_project(phantom)
+    # Keep everything DEVICE-SHARDED: output_sharded=True avoids gathering the full sinogram (and
+    # later the recon) onto a single device.  At large sizes a gathered array is huge (a 2048^3
+    # float32 sinogram is 32 GiB) and would OOM one GPU -- which is a property of the gather, not of
+    # the sharded recon we are trying to exercise.
+    log("forward-projecting phantom -> sinogram (device-sharded, no host gather)")
+    sinogram = model.forward_project(phantom, output_sharded=True)
     jax.block_until_ready(sinogram)
+    del phantom   # free the single-device phantom (~32 GiB at 2048^3) before recon
     log("sinogram ready, shape {}".format(tuple(sinogram.shape)))
 
-    log("=== starting recon (max_iterations={}) -- the hang occurred at the first VCD subset update ==="
-        .format(args.iterations))
+    log("=== starting recon (max_iterations={}, output_sharded) -- the hang occurred at the first "
+        "VCD subset update ===".format(args.iterations))
     t_recon = time.time()
-    out = model.recon(sinogram, max_iterations=args.iterations)
+    out = model.recon(sinogram, max_iterations=args.iterations, output_sharded=True)
     recon = out[0] if isinstance(out, (tuple, list)) else out
     jax.block_until_ready(recon)
     log("recon COMPLETED in {:.1f}s; recon shape {}".format(time.time() - t_recon, tuple(recon.shape)))

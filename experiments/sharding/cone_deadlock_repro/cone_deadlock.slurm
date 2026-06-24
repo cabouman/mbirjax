@@ -5,7 +5,7 @@
 #SBATCH -N 1
 #SBATCH --gpus-per-node=8
 #SBATCH -n 112
-#SBATCH -t 04:00:00
+#SBATCH -t 02:00:00
 #SBATCH -J cone-deadlock
 #SBATCH --mail-user=buzzard@purdue.edu
 #SBATCH --mail-type=END,FAIL
