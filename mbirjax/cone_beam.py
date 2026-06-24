@@ -189,13 +189,6 @@ class ConeBeamModel(TomographyModel):
 
         return geometry_params
 
-    def _supports_sharding(self):
-        """Cone beam has the banded back projector (reduce-scatter) and the gather-and-monolithic
-        forward on the placement/movement path, plus the shared qGGMRF prior path,
-        so it runs on the always-on placement path: the single-device case auto-defaults to a
-        trivial 1-device mesh and multi-device shards (recon by slice, sinogram by view)."""
-        return True
-
     def get_psf_radius(self):
         """
         Compute the integer radius of the PSF kernel for cone beam projection.
@@ -1083,6 +1076,13 @@ class ConeBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
+        Note:
+            FDK assumes the view angles are EQUALLY SPACED over the full angular range (the
+            ``pi / num_views`` angular weight in the ramp filter), and does not apply short-scan
+            (Parker-style) redundancy weighting; on nonuniformly-spaced, limited-angle, or short
+            scans it is only approximate.  For helical scans it is approximate regardless.  FDK is
+            best used as an initializer for the iterative ``recon()``.
+
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
@@ -1096,8 +1096,9 @@ class ConeBeamModel(TomographyModel):
             recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
             default, slice-sharded if ``output_sharded=True``.
         """
-        # Shard once at entry so the filter receives view-sharded data (no-op when no mesh
-        # is configured or already sharded).  The pipeline then stays on-device throughout
+        # Shard once at entry so the filter receives view-sharded data (a no-op when already
+        # view-sharded; a single device is the trivial 1-shard case).  The pipeline then stays
+        # on-device throughout
         # -- fdk_filter then back_project, both output_sharded=True (zero host transfer) --
         # exactly like ParallelBeamModel.fbp_recon.
         sinogram = self._shard_sinogram(sinogram)

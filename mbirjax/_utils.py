@@ -35,7 +35,7 @@ def log_oom_guidance(logger, on_gpu):
     """
     if on_gpu:
         logger.error(">>> Insufficient GPU memory: the reconstruction does not fit on the GPU(s).  You may try:")
-        logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_sharding(...)")
+        logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_devices(...)")
         logger.error(">>>   - reducing recon_shape (e.g. via set_params or auto_set_recon_geometry)")
         logger.error(">>>   - reconstructing the volume in slice subsets")
         logger.error(">>>   - running on the cpu with ct_model.set_params(use_gpu='none') before calling recon")
@@ -114,7 +114,7 @@ _reconstruction_defaults_dict = {
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
-    'use_gpu': Param('automatic', True),  # Possible values are 'automatic', 'full', 'none'
+    'use_gpu': Param('automatic', True),  # 'automatic' or 'none' ('full' is a deprecated synonym of 'automatic')
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
     'use_ror_mask': Param(True, False),
 }

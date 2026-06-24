@@ -19,7 +19,7 @@ import numpy as np
 import jax
 from jax.errors import JaxRuntimeError
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _capture_jax_error_guidance(model, message):
@@ -47,7 +47,7 @@ def _make_model(num_views=8):
 
     Pins a single device so the bare model is a deterministic single-device REFERENCE regardless of
     how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    exercise multi-device sharding override this with their own configure_sharding(devs).
+    exercise multi-device sharding override this with their own configure_devices(devs).
     """
     model = mbirjax.ParallelBeamModel(
         (num_views, 4, 16), angles=np.linspace(0, np.pi, num_views, endpoint=False)
@@ -64,36 +64,6 @@ class TestAxisHooks(unittest.TestCase):
         self.assertEqual(model.recon_shard_axis(), -1)     # last axis = slices
 
 
-class TestNoMeshNoOp(unittest.TestCase):
-    """Without a mesh, the base-class hooks are no-ops (mesh is None).
-
-    RETIRE-AFTER-SHARDING: ParallelBeam now auto-defaults to a trivial 1-device mesh, so it
-    no longer exercises the no-mesh branch.  That branch survives only for the not-yet-ported
-    geometries (cone / translation / multiaxis) and retires once they are ported.
-    These tests used ParallelBeam as a convenient concrete model, so they are skipped until
-    the no-mesh path either gets a non-ParallelBeam home or is removed once those geometries
-    are ported.
-    """
-
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
-    def test_shard_and_gather_are_noops(self):
-        model = _make_model()
-        self.assertIsNone(model.mesh)
-        sino = np.ones((8, 4, 16), dtype=np.float32)
-        # _shard_* returns the input unchanged (same object) when no mesh.
-        self.assertIs(model._shard_sinogram(sino), sino)
-        self.assertIs(model._gather_sinogram(sino), sino)
-        self.assertIs(model._shard_recon(sino), sino)
-        self.assertIs(model._gather_recon(sino), sino)
-
-    @unittest.skip("RETIRE-AFTER-SHARDING: ParallelBeam auto-meshes; no-mesh path is non-PB only.")
-    def test_extract_halos_no_mesh(self):
-        model = _make_model()
-        left, right = model._extract_halos(np.ones((6, 16), dtype=np.float32))
-        self.assertEqual(left, [None])
-        self.assertEqual(right, [None])
-
-
 class TestShardGatherRoundTrip(unittest.TestCase):
 
     def setUp(self):
@@ -105,7 +75,7 @@ class TestShardGatherRoundTrip(unittest.TestCase):
         self.num_slices = self.model.get_params('recon_shape')[2]
         if self.num_slices % 2 != 0:
             self.skipTest(f"num_slices {self.num_slices} not divisible by 2")
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
 
     def test_sinogram_shard_axis_and_roundtrip(self):
         sino = np.arange(8 * 4 * 16, dtype=np.float32).reshape(8, 4, 16)
@@ -155,7 +125,7 @@ class TestExtractHalos(unittest.TestCase):
         self.num_slices = self.model.get_params('recon_shape')[2]
         if self.num_slices % 2 != 0:
             self.skipTest(f"num_slices {self.num_slices} not divisible by 2")
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
 
     def test_halos_match_boundary_slices(self):
         num_pixels = 6
@@ -184,7 +154,6 @@ class TestModelPlacements(unittest.TestCase):
         model = _make_model()   # _make_model pins a single device
         # ParallelBeam runs the always-on placement path, so even a single device is
         # "sharded" over one device with trivial (1-shard) placements on that device.
-        self.assertTrue(model.is_sharded)
         self.assertEqual(len(model.shard_devices), 1)
         for pl, axis in ((model.recon_placement, model.recon_shard_axis()),
                          (model.sino_placement, model.sinogram_shard_axis())):
@@ -192,9 +161,9 @@ class TestModelPlacements(unittest.TestCase):
             self.assertTrue(pl.is_trivial)
             self.assertEqual(pl.n_devices, 1)
             self.assertEqual(pl.axis, axis)
-        # The trivial placements sit on the configured single devices.
-        self.assertEqual(model.recon_placement.devices, [model.main_device])
-        self.assertEqual(model.sino_placement.devices, [model.sinogram_device])
+        # The trivial placements sit on the same single device.
+        self.assertEqual(len(model.recon_placement.devices), 1)
+        self.assertEqual(model.recon_placement.devices, model.sino_placement.devices)
 
     def test_auto_device_count_uses_all_devices(self):
         # Auto selection: _auto_device_count(k) uses ALL k available
@@ -240,12 +209,11 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(model5._auto_device_count(4), 3)
 
     def test_auto_shards_cpu_by_default(self):
-        # AUTOMATIC selection shards across CPU devices BY DEFAULT (_auto_shard_cpu=True,
-        # 2026-06-11): a bare model on a multi-CPU-device host auto-shards exactly like a
-        # multi-GPU box (platform-uniform auto policy -- a platform-dependent policy is how
-        # "sharded + X" gaps stayed invisible to the CPU suite).  Setting the flag False and
-        # re-selecting opts back out to single-device.  Note: this builds bare models directly
-        # (not _make_model, which pins a single device).
+        # AUTOMATIC selection shards across CPU devices BY DEFAULT: a bare model on a
+        # multi-CPU-device host auto-shards exactly like a multi-GPU box (the platform-uniform auto
+        # policy -- a platform-dependent policy is how "sharded + X" gaps stayed invisible to the
+        # CPU suite).  configure_devices(1) is the way to opt back out to single-device.  Note: this
+        # builds bare models directly (not _make_model, which pins a single device).
         if preferred_devices(2) is None:
             self.skipTest("need >= 2 devices")
         try:
@@ -269,20 +237,16 @@ class TestModelPlacements(unittest.TestCase):
         n_cpu = len(jax.devices('cpu'))
         self.assertEqual(len(model.shard_devices), model._auto_device_count(n_cpu))
         self.assertGreater(len(model.shard_devices), 1)
-        self.assertTrue(model.is_sharded)
         self.assertEqual(model._platform_label(model.shard_devices[0]), 'CPU')
 
         out = np.asarray(model.sparse_back_project(sino, idx))
-        np.testing.assert_allclose(
-            out, ref, rtol=1e-5, atol=1e-5,
-            err_msg="auto CPU-sharded back projection diverged from single device")
+        assert_sharded_allclose(out, ref, msg="auto CPU-sharded back projection diverged from single device")
 
-        # Opt-out: flag False + re-select -> back to a trivial single-device layout.
+        # Opt-out: configure_devices(1) pins a trivial single-device layout (the explicit way to
+        # opt out of CPU auto-sharding).
         model_out = mbirjax.ParallelBeamModel(idx_shape, angles)
-        model_out._auto_shard_cpu = False
-        model_out.set_devices()
+        model_out.configure_devices(1)
         self.assertEqual(len(model_out.shard_devices), 1)
-        self.assertFalse(len(model_out.shard_devices) > 1)
 
     def test_sharded_placements_over_mesh(self):
         devs = preferred_devices(2)
@@ -291,7 +255,7 @@ class TestModelPlacements(unittest.TestCase):
         model = _make_model()
         if model.get_params('recon_shape')[2] % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         self.assertEqual(model.recon_placement.devices, list(devs))
         self.assertEqual(model.sino_placement.devices, list(devs))
         self.assertEqual(model.recon_placement.axis, model.recon_shard_axis())
@@ -308,7 +272,7 @@ class TestModelPlacements(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         if num_slices % 2 != 0:
             self.skipTest("num_slices not divisible by 2")
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         flat = np.ones((6, num_slices), dtype=np.float32)
         self.assertEqual(model._shard_recon(flat).sharding,
                          model.recon_placement.shard_structure(2))
@@ -324,23 +288,21 @@ class TestOomGuidance(unittest.TestCase):
     def test_oom_guidance_matches_recon_platform(self):
         model = _make_model()   # single device pinned; platform = whatever this host runs on
         out = _capture_jax_error_guidance(model, 'XLA: RESOURCE_EXHAUSTED: Out of memory')
-        if model._platform_label(model._recon_devices()[0]) == 'GPU':
+        if model._platform_label(model.shard_devices[0]) == 'GPU':
             self.assertIn('GPU memory', out)
         else:
             self.assertIn('CPU memory', out)
 
     def test_cpu_sharding_oom_gives_cpu_guidance(self):
-        # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because on_gpu is
-        # derived from the recon device platform (_recon_devices), not the use_gpu request param.
-        # Works on a GPU host too (configure_sharding onto CPU devices makes the recon devices CPU
-        # even though main_device stays a GPU) -- exactly the _recon_devices vs main_device
-        # distinction.
+        # Bug-lock: an OOM under explicit CPU sharding must give CPU guidance, because the recon
+        # platform is read from the recon placement's devices (shard_devices), not the use_gpu
+        # request param.  Works on a GPU host too: sharding explicitly onto CPU devices makes the
+        # recon placement's devices CPU, so the guidance follows the actual layout.
         cpu_devs = jax.devices('cpu')[:2]
         if len(cpu_devs) < 2:
             self.skipTest('need >= 2 CPU devices')
         model = _make_model()
-        model.configure_sharding(cpu_devs)
-        self.assertTrue(model.is_sharded)
+        model.configure_devices(cpu_devs)
         out = _capture_jax_error_guidance(model, 'RESOURCE_EXHAUSTED')
         self.assertIn('CPU memory', out)
         self.assertNotIn('GPU memory', out)

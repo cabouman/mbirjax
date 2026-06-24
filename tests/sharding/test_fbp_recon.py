@@ -38,7 +38,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_model(num_views=8, num_rows=8, num_channels=32):
@@ -46,7 +46,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -91,7 +91,7 @@ class TestFbpReconSingleDevice(unittest.TestCase):
         sino = _random_sino(model)
         a = np.asarray(model.fbp_recon(sino))
         b = np.asarray(model.direct_recon(sino))
-        np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(a, b)
 
 
 class TestFbpReconSharded(unittest.TestCase):
@@ -105,30 +105,6 @@ class TestFbpReconSharded(unittest.TestCase):
         if not _divisible(model, n):
             self.skipTest(f"sharded axes not divisible by {n}")
 
-    def test_trivial_sharding_bit_exact(self):
-        """1-device mesh matches the unconfigured single-device path to tight float
-        tolerance.  (Name kept for history; was an exact-equality check.)
-
-        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
-        while both paths coexist; once every geometry runs on placements there is
-        one path and nothing to compare.  Relaxed from exact equality because the
-        banded sharded path reorders non-associative FP sums -> ~1 ULP GPU
-        difference (CPU compiles both identically and stays exact).  A tight
-        tolerance still trips on any real algorithmic drift.
-        """
-        single_dev = preferred_devices(1)
-        if single_dev is None:
-            self.skipTest("need >= 1 device")
-        model = _make_model()
-        sino = _random_sino(model)
-        ref = np.asarray(model.fbp_recon(sino))
-
-        shard_model = _make_model()
-        shard_model.configure_sharding(single_dev)
-        out = np.asarray(shard_model.fbp_recon(sino))
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                   err_msg="trivial sharding diverged beyond float noise")
-
     def test_sharded_matches_single_device(self):
         """2-device fbp_recon matches single-device to float noise and returns a
         plain (gathered) recon."""
@@ -138,12 +114,12 @@ class TestFbpReconSharded(unittest.TestCase):
         ref = np.asarray(model.fbp_recon(sino))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.fbp_recon(sino)
         # Match-input, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_output_sharded_returns_sharded_recon(self):
         """output_sharded=True on fbp_recon / direct_recon returns a slice-sharded
@@ -155,7 +131,7 @@ class TestFbpReconSharded(unittest.TestCase):
         ref = np.asarray(model.fbp_recon(sino))        # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         recon_axis = shard_model.recon_shard_axis()
         for fn_name in ('fbp_recon', 'direct_recon'):
             out = getattr(shard_model, fn_name)(sino, output_sharded=True)
@@ -164,14 +140,13 @@ class TestFbpReconSharded(unittest.TestCase):
                 msg=f"{fn_name} should return a sharded recon for output_sharded=True")
             ax = recon_axis % out.ndim
             self.assertEqual(out.sharding.spec[ax], 'devices')
-            np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"{fn_name} output_sharded mismatch")
+            assert_sharded_allclose(np.asarray(out), ref, msg=f"{fn_name} output_sharded mismatch")
         # And the inverse: a SHARDED input with the default still returns plain.
         sharded_in = shard_model._shard_sinogram(sino)
         out = shard_model.fbp_recon(sharded_in)
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_no_intermediate_gather(self):
         """The sinogram fbp_recon hands to back_project must still be view-sharded
@@ -179,7 +154,7 @@ class TestFbpReconSharded(unittest.TestCase):
         and back projection)."""
         model = _make_model()
         self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
 
         captured = {}
         original_back_project = model.back_project
@@ -210,10 +185,9 @@ class TestFbpReconSharded(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(model.fbp_recon(sino))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"mismatch at n_dev={n}")
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")

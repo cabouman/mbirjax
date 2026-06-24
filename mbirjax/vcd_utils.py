@@ -4,7 +4,6 @@ import jax.numpy as jnp
 import jax
 import mbirjax.bn256 as bn
 import mbirjax.preprocess as mjp
-from mbirjax._device_setup import gpu_devices, cpu_devices
 
 
 def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, crop_radius_fraction=0.0):
@@ -32,8 +31,8 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
     if use_ror_mask is False:
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is set to False.')
-            
-        return np.ones_like(recon_shape[:2])
+
+        return np.ones(recon_shape[:2], dtype=bool)
 
     elif use_ror_mask is True:
         # Set up a mask to zero out points outside the ROR
@@ -339,13 +338,21 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     Returns:
         (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
     """
+    # The masks below are element-wise comparisons, so they inherit the sharding of their source
+    # (the sinogram or init_recon) rather than being pinned to a single device -- that keeps the
+    # init_recon=None path sharding-transparent (delta_metal follows the sinogram, so the final
+    # element-wise weights are sharded with no gather).  NOTE: the init_recon path still materializes
+    # single-device intermediates -- forward_project here uses the default gathered output, and
+    # multi_threshold_otsu may gather -- so it is not yet memory-bounded for very large sharded
+    # problems; sharding that path is the mar/preprocessing follow-on.
+
     # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method.
     if init_recon is None:
         print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
         # assuming three categories: metal, non_metal, and background.
         [bk_thresh_sino, metal_thresh_sino] = mjp.multi_threshold_otsu(sinogram, classes=3)
         print("Distorted sinogram threshold = ", metal_thresh_sino)
-        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = (sinogram > metal_thresh_sino).astype(jnp.float32)
 
     # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
     else:
@@ -356,12 +363,12 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
         print("metal_threshold = ", metal_threshold)
         # Identify metal voxels
-        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        metal_mask = (init_recon > metal_threshold).astype(jnp.float32)
         # Forward project metal mask to generate a sinogram mask
         metal_mask_projected = ct_model.forward_project(metal_mask)
 
         # metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
-        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = (metal_mask_projected > 0.0).astype(jnp.float32)
 
     # weights for undistorted sino entries
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
@@ -401,27 +408,19 @@ def gen_weights(sinogram, weight_type):
         >>> weights.shape
         (180, 64, 128)
     """
-    weight_list = []
-    num_views = sinogram.shape[0]
-    batch_size = 128
-    main_device = cpu_devices()[0]
-    gpus = gpu_devices()
-    worker_device = gpus[0] if gpus else main_device
-
-    for i in range(0, num_views, batch_size):
-        sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], worker_device)
-
-        if weight_type == 'unweighted':
-            weights = jnp.ones(sino_batch.shape)
-        elif weight_type == 'transmission':
-            weights = jnp.exp(-sino_batch)
-        elif weight_type == 'transmission_root':
-            weights = jnp.exp(-sino_batch / 2)
-        elif weight_type == 'emission':
-            weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
-        else:
-            raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
-        weight_list.append(jax.device_put(weights, main_device))
-
-    weights = jnp.concatenate(weight_list, axis=0)
+    # The weights are an element-wise function of the sinogram, so they are computed in one pass.
+    # On a view-sharded sinogram each shard is processed in place -- element-wise ops need no
+    # cross-device communication and the result inherits the input's sharding -- so the weights land
+    # exactly where the sinogram lives and feed recon with no gather or re-shard.  On a single device
+    # the peak is ~2x the sinogram (input + output); shard a sinogram too large for one device.
+    if weight_type == 'unweighted':
+        weights = jnp.ones_like(sinogram)       # ones_like (not jnp.ones) preserves the sharding
+    elif weight_type == 'transmission':
+        weights = jnp.exp(-sinogram)
+    elif weight_type == 'transmission_root':
+        weights = jnp.exp(-sinogram / 2)
+    elif weight_type == 'emission':
+        weights = 1.0 / (jnp.absolute(sinogram) + 0.1)
+    else:
+        raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
     return weights

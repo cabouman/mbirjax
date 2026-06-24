@@ -75,7 +75,7 @@ def worker_measure(size_label, slice_band, out_file):
     try:
         angles = np.linspace(0, np.pi, n_views, endpoint=False)
         model = mbirjax.ParallelBeamModel(size, angles)
-        model.configure_sharding(devs)                  # 1-device mesh
+        model.configure_devices(devs)                  # 1-device mesh
         if slice_band and slice_band > 0:
             model.back_project_slice_band = int(slice_band)
         recon_shape = model.get_params('recon_shape')

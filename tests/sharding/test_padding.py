@@ -40,7 +40,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 NUM_VIEWS = 7          # prime: never divides a device count > 1
@@ -53,7 +53,7 @@ def _make_model():
 
     Pins a single device so the bare model is a deterministic single-device
     REFERENCE regardless of GPU count; sharded tests override with their own
-    configure_sharding(devs).
+    configure_devices(devs).
     """
     angles = jnp.linspace(0, jnp.pi, NUM_VIEWS, endpoint=False)
     model = mbirjax.ParallelBeamModel((NUM_VIEWS, NUM_ROWS, NUM_CHANNELS), angles)
@@ -85,7 +85,7 @@ class TestEntryPadding(unittest.TestCase):
         if self.devs is None:
             self.skipTest("need >= 2 devices")
         self.model = _make_model()
-        self.model.configure_sharding(self.devs)
+        self.model.configure_devices(self.devs)
         self.v_pad = _padded_views(NUM_VIEWS, 2)
 
     def test_pad_shard_layout_and_zero_tail(self):
@@ -151,7 +151,7 @@ class TestPaddedProjectors(unittest.TestCase):
         if devs is None:
             return None
         model = _make_model()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         return model
 
     def test_forward_masked_and_cropped(self):
@@ -165,11 +165,11 @@ class TestPaddedProjectors(unittest.TestCase):
         self.assertEqual(out_dev.shape[0], _padded_views(NUM_VIEWS, 2))
         out_np = np.asarray(out_dev)
         np.testing.assert_array_equal(out_np[NUM_VIEWS:], 0.0)
-        np.testing.assert_allclose(out_np[:NUM_VIEWS], ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out_np[:NUM_VIEWS], ref)
         # Default: plain output cropped to the real view count.
         out_plain = model.forward_project(recon)
         self.assertEqual(tuple(out_plain.shape), tuple(ref.shape))
-        np.testing.assert_allclose(np.asarray(out_plain), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out_plain), ref)
 
     def test_back_project_matches(self):
         ref_model = _make_model()
@@ -180,8 +180,7 @@ class TestPaddedProjectors(unittest.TestCase):
             if model is None:
                 continue
             out = model.back_project(sino)
-            np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                       err_msg=f"padded back_project mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(out), ref, msg=f"padded back_project mismatch at n_dev={n}")
 
     def test_fbp_recon_matches(self):
         """Covers the filter (pi over the REAL view count) + back projection chain."""
@@ -194,8 +193,7 @@ class TestPaddedProjectors(unittest.TestCase):
                 continue
             for fn_name in ('fbp_recon', 'direct_recon'):
                 out = getattr(model, fn_name)(sino)
-                np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5,
-                                           err_msg=f"padded {fn_name} mismatch at n_dev={n}")
+                assert_sharded_allclose(np.asarray(out), ref, msg=f"padded {fn_name} mismatch at n_dev={n}")
 
     def test_hessian_diagonal_matches(self):
         """Constant-weights Hessian: the device-form ones must have ZERO padded views
@@ -204,7 +202,7 @@ class TestPaddedProjectors(unittest.TestCase):
         ref = np.asarray(ref_model.compute_hessian_diagonal())
         model = self._sharded_model()
         out = np.asarray(model.compute_hessian_diagonal())
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(out, ref)
 
     def test_adjoint_round_trip_padded(self):
         """<A x, y> == <x, A^T y> with padding: the mask keeps the forward/back pair
@@ -221,7 +219,7 @@ class TestPaddedProjectors(unittest.TestCase):
             if devs is None:
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             ax = np.asarray(m.sparse_forward_project(m._shard_recon(x_cyl), idx))
             aty = np.asarray(m.sparse_back_project(m._shard_sinogram(y_sino), idx))
             # ax's padded views are zero, so summing against the real y over the
@@ -242,7 +240,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
 
     def _recon(self, model, sino, weights=None, prepared=False):
         np.random.seed(0)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             model._vcd_halo_per_subset = True   # exact prior path (the tight gate)
         if prepared:
             if weights is not None:
@@ -263,10 +261,9 @@ class TestPaddedVcdRecon(unittest.TestCase):
             if devs is None:
                 continue
             model = _make_model()
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino)
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"padded recon mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"padded recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -283,10 +280,9 @@ class TestPaddedVcdRecon(unittest.TestCase):
         if devs is None:
             self.skipTest("need >= 2 devices")
         model = _make_model()
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         out = self._recon(model, sino, weights=weights)
-        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                   err_msg="padded non-const-weights recon mismatch")
+        assert_sharded_allclose(out, ref, msg="padded non-const-weights recon mismatch", tol=1e-4)
 
     def test_prepared_input_recon_matches(self):
         """recon() accepts a prepare_sino_for_devices result (no silent gather, no
@@ -297,14 +293,13 @@ class TestPaddedVcdRecon(unittest.TestCase):
         sino = _random_sino(_make_model())
 
         model_plain = _make_model()
-        model_plain.configure_sharding(devs)
+        model_plain.configure_devices(devs)
         ref = self._recon(model_plain, sino)
 
         model_prep = _make_model()
-        model_prep.configure_sharding(devs)
+        model_prep.configure_devices(devs)
         out = self._recon(model_prep, sino, prepared=True)
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                   err_msg="prepared-input recon diverged from plain-input recon")
+        assert_sharded_allclose(out, ref, msg="prepared-input recon diverged from plain-input recon")
 
 
 class _PaddedReconMixin:
@@ -324,6 +319,12 @@ class _PaddedReconMixin:
     VARIANTS = ()          # model descriptors handed to _make_model (e.g. a helical flag)
     PADS_ROWS = False      # True when detector rows pad with the slices (parallel: row r <-> slice r)
     NUM_CHANNELS = 32
+    # Run the sharded VCD-recon checks (the iterated-loop paths).  The sharded VCD LOOP is
+    # geometry-independent, so it is gated once per beam family (parallel + cone); a geometry that
+    # only adds projectors/filters (translation, multiaxis) sets this False -- its projector-level
+    # padding is still gated by the single-shot checks below.  See the NOTE in the translation
+    # subclass / test_translation_sharded.py.
+    RUN_SHARDED_VCD = True
     # Mode-vs-mode comparison: discriminates from iteration 1, and fewer iterations
     # accumulate less FP-reorder divergence (gate-safening as well as faster).
     MAX_ITERS = 3
@@ -356,12 +357,12 @@ class _PaddedReconMixin:
             if devs is None:
                 continue
             model = self._make_model(variant)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             yield n, model
 
     def _recon(self, model, sino, weights=None, seed=0):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # Force the EXACT per-subset halo path: the default stages halos once per
             # partition pass, which is exact except at gen_pixel_partition's few replicated
             # pixels (a documented ~2e-3 approximation, tested separately in
@@ -387,18 +388,9 @@ class _PaddedReconMixin:
                 ref_hess = np.asarray(ref_model.compute_hessian_diagonal())
                 ran = False
                 for n, model in self._sharded_models(variant):
-                    np.testing.assert_allclose(
-                        np.asarray(model.back_project(sino)), ref_back,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"back mismatch {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        np.asarray(model.forward_project(recon)), ref_fwd,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"forward mismatch {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        np.asarray(model.compute_hessian_diagonal()), ref_hess,
-                        rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                        err_msg=f"hessian mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg=f"back mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
+                    assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg=f"forward mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
+                    assert_sharded_allclose(np.asarray(model.compute_hessian_diagonal()), ref_hess, msg=f"hessian mismatch {self._label(variant)} n_dev={n}", tol=self.PROJ_TOL)
                     ran = True
                 if not ran:
                     self.skipTest("no usable device count > 1")
@@ -407,6 +399,8 @@ class _PaddedReconMixin:
         """A short VCD recon (const and non-const weights) at a padded slice count matches
         the single-device recon: projectors + the qGGMRF interface mask are all
         padding-correct, so the result is independent of the padding."""
+        if not self.RUN_SHARDED_VCD:
+            self.skipTest("sharded VCD loop is geometry-independent (gated on parallel + cone)")
         for variant in self.VARIANTS:
             with self.subTest(self._label(variant)):
                 ref_model = self._make_model(variant)
@@ -422,15 +416,11 @@ class _PaddedReconMixin:
                     out = self._recon(model, sino)
                     self.assertTrue(np.all(np.isfinite(out)),
                                     msg=f"NaN/inf {self._label(variant)} n_dev={n}")
-                    np.testing.assert_allclose(
-                        out, ref_const, rtol=self.RECON_TOL, atol=self.RECON_TOL,
-                        err_msg=f"const recon mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(out, ref_const, msg=f"const recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     model_w = self._make_model(variant)
-                    model_w.configure_sharding(preferred_devices(n))
+                    model_w.configure_devices(preferred_devices(n))
                     out_w = self._recon(model_w, sino, weights=weights)
-                    np.testing.assert_allclose(
-                        out_w, ref_wts, rtol=self.RECON_TOL, atol=self.RECON_TOL,
-                        err_msg=f"weighted recon mismatch {self._label(variant)} n_dev={n}")
+                    assert_sharded_allclose(out_w, ref_wts, msg=f"weighted recon mismatch {self._label(variant)} n_dev={n}", tol=self.RECON_TOL)
                     ran = True
                 if not ran:
                     self.skipTest("no usable device count > 1")
@@ -465,16 +455,20 @@ class _PaddedReconMixin:
                 else:
                     self.assertEqual(fwd.shape[1], real_rows,
                                      msg=f"{self._label(variant)}: forward must keep real detector rows")
-                # RECON device form: padded slices stay exactly zero through the VCD loop.
-                np.random.seed(0)
-                model.set_params(verbose=0)  # Silence warnings about background
-                rec = np.asarray(model.recon(sino, max_iterations=self.MAX_ITERS,
-                                             stop_threshold_change_pct=0.0, print_logs=False,
-                                             output_sharded=True)[0])
-                if rec.shape[-1] != real_slices:
-                    self.assertTrue(np.all(rec[..., real_slices:] == 0.0),
-                                    msg=f"recon padded slices not zero {self._label(variant)} n_dev={n}")
-                self.assertTrue(np.all(np.isfinite(rec)))
+                # RECON device form: padded slices stay exactly zero through the VCD loop.  The
+                # iterated-loop padding inertness is geometry-independent (gated on parallel +
+                # cone); skip it where RUN_SHARDED_VCD is off -- the back/forward forced-zero above
+                # is the geometry-specific part and always runs.
+                if self.RUN_SHARDED_VCD:
+                    np.random.seed(0)
+                    model.set_params(verbose=0)  # Silence warnings about background
+                    rec = np.asarray(model.recon(sino, max_iterations=self.MAX_ITERS,
+                                                 stop_threshold_change_pct=0.0, print_logs=False,
+                                                 output_sharded=True)[0])
+                    if rec.shape[-1] != real_slices:
+                        self.assertTrue(np.all(rec[..., real_slices:] == 0.0),
+                                        msg=f"recon padded slices not zero {self._label(variant)} n_dev={n}")
+                    self.assertTrue(np.all(np.isfinite(rec)))
                 ran = True
         if not ran:
             self.skipTest("no padded device count available")
@@ -541,9 +535,7 @@ class TestPaddedSlicesParallel(_PaddedReconMixin, unittest.TestCase):
         ref = np.asarray(self._make_model().fbp_recon(sino))
         ran = False
         for n, model in self._sharded_models('parallel'):
-            np.testing.assert_allclose(np.asarray(model.fbp_recon(sino)), ref,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"fbp_recon mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(model.fbp_recon(sino)), ref, msg=f"fbp_recon mismatch at n_dev={n}", tol=self.PROJ_TOL)
             ran = True
         if not ran:
             self.skipTest("no usable device count > 1")
@@ -593,13 +585,9 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             if devs is None:
                 continue
             model = self._make_model(curved=True)
-            model.configure_sharding(devs)
-            np.testing.assert_allclose(np.asarray(model.back_project(sino)), ref_back,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"curved back mismatch n_dev={n}")
-            np.testing.assert_allclose(np.asarray(model.forward_project(recon)), ref_fwd,
-                                       rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                       err_msg=f"curved forward mismatch n_dev={n}")
+            model.configure_devices(devs)
+            assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg=f"curved back mismatch n_dev={n}", tol=self.PROJ_TOL)
+            assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg=f"curved forward mismatch n_dev={n}", tol=self.PROJ_TOL)
             ran = True
         if not ran:
             self.skipTest("no usable device count > 1")
@@ -630,13 +618,172 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         ref_back = np.asarray(ref_model.back_project(sino))
         ref_fwd = np.asarray(ref_model.forward_project(recon))
         model = tiny()
-        model.configure_sharding(devs)
-        np.testing.assert_allclose(np.asarray(model.back_project(sino)), ref_back,
-                                   rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                   err_msg="fully-padded-shard back mismatch")
-        np.testing.assert_allclose(np.asarray(model.forward_project(recon)), ref_fwd,
-                                   rtol=self.PROJ_TOL, atol=self.PROJ_TOL,
-                                   err_msg="fully-padded-shard forward mismatch")
+        model.configure_devices(devs)
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
+        back_dev = np.asarray(model.back_project(sino, output_sharded=True))
+        self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
+                        msg="fully-padded trailing shard not exactly zero")
+
+
+class TestPaddedSlicesTranslation(_PaddedReconMixin, unittest.TestCase):
+    """Translation: like cone, the recon slice count is independent of the detector rows (it is
+    auto-sized from the z-translation extent), so the sharded forward GATHERS + CROPS the
+    device-form cylinder before the monolithic kernel and the detector rows do NOT pad with the
+    slices (PADS_ROWS=False).  Variants: isotropic and anisotropic (voxel_slice_aspect=2.9, the
+    suite's anisotropic_translation aspect -> a slice count that is NOT num_det_rows).  Both
+    z-ranges are tuned to a prime slice count (7), so every device count > 1 pads.
+
+    RUN_SHARDED_VCD=False: the sharded VCD loop is geometry-independent (gated on parallel + cone);
+    translation's projector-level padding is gated by the single-shot checks (projectors/Hessian,
+    forward/back device-form exact-zero, forward-inert).  This also keeps the tiny translation
+    recon out of the suite, so no partition-granularity warning."""
+
+    VARIANTS = ('isotropic', 'anisotropic')
+    RUN_SHARDED_VCD = False
+    PADS_ROWS = False
+    NUM_VIEWS = 8
+    NUM_DET_ROWS = 32
+    # z-translation half-range per variant, tuned so auto_set_recon_geometry lands on 7 slices
+    # (prime).  recon_shape is computed deterministically from params (no GPU reordering), so
+    # these are platform-stable; the surrounding plateau is wide enough that the exact value is
+    # not knife-edge.
+    _ZRANGE = {'isotropic': 1.65, 'anisotropic': 4.6}
+
+    def _make_model(self, variant='isotropic'):
+        nv, ndr, ndc = self.NUM_VIEWS, self.NUM_DET_ROWS, self.NUM_CHANNELS
+        zr = self._ZRANGE[variant]
+        tv = np.zeros((nv, 3))
+        tv[:, 0] = np.linspace(-8.0, 8.0, nv)        # x translations (set the recon row extent)
+        tv[:, 2] = np.linspace(-zr, zr, nv)          # z translations (set the slice extent)
+        sdd = 4.0 * ndc
+        model = mbirjax.TranslationModel((nv, ndr, ndc), jnp.asarray(tv),
+                                         source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
+        if variant == 'anisotropic':
+            model.set_params(voxel_row_aspect=1.9)
+            model.set_params(voxel_slice_aspect=2.9)
+            model.auto_set_recon_geometry()
+        model.configure_devices(1)   # deterministic single-device reference; sharded tests override
+        return model
+
+    def _label(self, variant):
+        return variant
+
+    def test_prime_slice_count(self):
+        """Guard the tuned geometry: both variants must auto-size to the prime slice count the
+        padding coverage relies on (a drift in auto_set_recon_geometry would silently stop
+        exercising the padded path)."""
+        for variant in self.VARIANTS:
+            with self.subTest(variant=variant):
+                self.assertEqual(int(self._make_model(variant).get_params('recon_shape')[2]), 7)
+
+    def test_fully_padded_trailing_shard(self):
+        """A tiny 3-slice translation on 4 devices makes the LAST shard entirely padding
+        (n_valid == 0): exercises the _mask_padded_* n_valid<=0 branch + a gather that
+        concatenates a fully-zero shard (which auto-config avoids by skipping such a count, so
+        only an explicit configure reaches it).  Projector-level, so it stays fast."""
+        devs = preferred_devices(4)
+        if devs is None:
+            self.skipTest("need 4 devices")
+        nv, ndr, ndc = self.NUM_VIEWS, self.NUM_DET_ROWS, self.NUM_CHANNELS
+        sdd = 4.0 * ndc
+
+        def tiny():
+            tv = np.zeros((nv, 3))
+            tv[:, 0] = np.linspace(-8.0, 8.0, nv)
+            tv[:, 2] = np.linspace(-0.65, 0.65, nv)   # short z-range -> 3 slices
+            m = mbirjax.TranslationModel((nv, ndr, ndc), jnp.asarray(tv),
+                                         source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
+            m.configure_devices(1)
+            return m
+
+        ref_model = tiny()
+        # 3 slices over 4 devices -> shards of 1, so the last shard is entirely padding.
+        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 3)
+        sino = self._sino(ref_model)
+        recon = self._recon_array(ref_model)
+        ref_back = np.asarray(ref_model.back_project(sino))
+        ref_fwd = np.asarray(ref_model.forward_project(recon))
+        model = tiny()
+        model.configure_devices(devs)
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
+        back_dev = np.asarray(model.back_project(sino, output_sharded=True))
+        self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
+                        msg="fully-padded trailing shard not exactly zero")
+
+
+class TestPaddedSlicesMultiAxis(_PaddedReconMixin, unittest.TestCase):
+    """Multiaxis parallel beam: with a nonzero elevation a slice maps to a RANGE of detector
+    rows, so detector rows do NOT pad with slices (PADS_ROWS=False, like cone/translation).  The
+    geometry is tuned (per-variant num_det_rows) so auto_set_recon_geometry lands on a prime
+    7-slice recon, which pads at every device count > 1.  RUN_SHARDED_VCD=False: the sharded VCD
+    loop is geometry-independent and gated by parallel + cone (see test_multiaxis_sharded.py); the
+    single-shot projector/forward-inertness checks are the geometry-specific padding gates."""
+
+    VARIANTS = ('isotropic', 'anisotropic')
+    RUN_SHARDED_VCD = False
+    PADS_ROWS = False
+    NUM_VIEWS = 8
+    # Per-variant num_det_rows tuned so auto_set_recon_geometry lands on 7 (prime) slices: the
+    # isotropic slice count tracks the detector rows, while the anisotropic slice pitch (2.9)
+    # needs a proportionally taller detector.  recon_shape is computed deterministically from
+    # params, so these are platform-stable; guarded by test_prime_slice_count.
+    _NDR = {'isotropic': 7, 'anisotropic': 22}
+
+    @staticmethod
+    def _angles(nv):
+        az = np.linspace(0.0, np.pi, nv, endpoint=False)
+        el = np.deg2rad(np.linspace(-5.0, 5.0, nv))   # modest tilt: slices spread across rows
+        return jnp.asarray(np.stack([az, el], axis=1))
+
+    def _make_model(self, variant='isotropic'):
+        nv, ndr, ndc = self.NUM_VIEWS, self._NDR[variant], self.NUM_CHANNELS
+        model = mbirjax.MultiAxisParallelModel((nv, ndr, ndc), self._angles(nv))
+        if variant == 'anisotropic':
+            model.set_params(voxel_row_aspect=1.9, voxel_slice_aspect=2.9)
+        model.auto_set_recon_geometry()
+        model.configure_devices(1)   # deterministic single-device reference; sharded tests override
+        return model
+
+    def _label(self, variant):
+        return variant
+
+    def test_prime_slice_count(self):
+        """Guard the tuned geometry: both variants must auto-size to the prime 7-slice count the
+        padding coverage relies on (a drift in auto_set_recon_geometry would silently stop
+        exercising the padded path)."""
+        for variant in self.VARIANTS:
+            with self.subTest(variant=variant):
+                self.assertEqual(int(self._make_model(variant).get_params('recon_shape')[2]), 7)
+
+    def test_fully_padded_trailing_shard(self):
+        """A tiny 3-slice multiaxis on 4 devices makes the LAST shard entirely padding
+        (n_valid == 0): exercises the _mask_padded_* n_valid<=0 branch + a gather that
+        concatenates a fully-zero shard (which auto-config avoids by skipping such a count, so
+        only an explicit configure reaches it).  Projector-level, so it stays fast."""
+        devs = preferred_devices(4)
+        if devs is None:
+            self.skipTest("need 4 devices")
+        nv, ndc = self.NUM_VIEWS, self.NUM_CHANNELS
+
+        def tiny():
+            m = mbirjax.MultiAxisParallelModel((nv, 3, ndc), self._angles(nv))  # 3 det rows -> 3 slices
+            m.auto_set_recon_geometry()
+            m.configure_devices(1)
+            return m
+
+        ref_model = tiny()
+        # 3 slices over 4 devices -> shards of 1, so the last shard is entirely padding.
+        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 3)
+        sino = self._sino(ref_model)
+        recon = self._recon_array(ref_model)
+        ref_back = np.asarray(ref_model.back_project(sino))
+        ref_fwd = np.asarray(ref_model.forward_project(recon))
+        model = tiny()
+        model.configure_devices(devs)
+        assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
+        assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))
         self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
                         msg="fully-padded trailing shard not exactly zero")

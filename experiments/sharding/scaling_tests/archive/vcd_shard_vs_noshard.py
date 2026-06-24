@@ -5,7 +5,7 @@ A demo-style head-to-head of the user-facing ``recon`` (full multi-granular VCD)
 run two ways on the SAME Shepp-Logan data:
 
   - **no-shard**: the single-device path (no mesh configured) — what users get today.
-  - **shard**   : the placement path (``configure_sharding``) — 4 virtual CPU
+  - **shard**   : the placement path (``configure_devices``) — 4 virtual CPU
                   devices on a CPU box, or all usable GPUs on a GPU box.
 
 It reports wall-clock time, peak memory, and reconstruction accuracy (NRMSE vs the
@@ -95,7 +95,7 @@ def build_data():
 def largest_usable_count(n_request, num_views, num_slices):
     """Largest device count <= n_request that evenly divides BOTH sharded axes.
 
-    configure_sharding requires the view axis (num_views) and the slice axis
+    configure_devices requires the view axis (num_views) and the slice axis
     (num_slices) to be divisible by the device count, so this picks the most
     devices we can actually use for the given problem.
     """
@@ -109,7 +109,7 @@ def run_one(mode):
     """Build data + model, run the full recon once (timed), measure memory + NRMSE.
 
     Args:
-        mode (str): 'noshard' (single device, no mesh) or 'shard' (configure_sharding
+        mode (str): 'noshard' (single device, no mesh) or 'shard' (configure_devices
             over the usable devices).
 
     Returns:
@@ -128,7 +128,7 @@ def run_one(mode):
         recon_shape = model.get_params('recon_shape')
         n = largest_usable_count(min(target, max_dev), sinogram.shape[0], recon_shape[2])
         devs = sc.pick_devices(n)
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         used_devices = devs
         n_devices = n
     else:

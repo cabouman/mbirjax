@@ -82,7 +82,7 @@ MEM_FRACTION = 0.9         # pool fraction (hard cap when preallocating); LOWER 
                            # capacity floor / OOM threshold, e.g. 0.25 for a ~20 GB cap on an 80 GB GPU
 
 # Problem sizes (n_views, n_rows, n_channels).  n_views and the slice axis (≈ n_rows
-# for parallel beam) must both divide every device count used, else configure_sharding
+# for parallel beam) must both divide every device count used, else configure_devices
 # raises and the point is skipped.  All sizes below divide 1/2/3/4.  GPU uses the
 # non-power-of-2 validation sizes used throughout the sharded-VCD work: 504³ is where
 # the per-subset memory leak was found and fixed; 1008³ is where the 2→4-device 2.20×
@@ -112,7 +112,7 @@ def make_model(size, devices=None):
     """Build a ParallelBeamModel for (views, rows, channels), verbose off.
 
     Returns None if the requested device count does not evenly divide the sharded
-    axes (configure_sharding raises) — the caller skips that point.
+    axes (configure_devices raises) — the caller skips that point.
     """
     import mbirjax
     n_views, n_rows, n_channels = size
@@ -121,7 +121,7 @@ def make_model(size, devices=None):
     model.set_params(verbose=0)
     if devices is not None:
         try:
-            model.configure_sharding(devices)
+            model.configure_devices(devices)
         except ValueError as e:
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")

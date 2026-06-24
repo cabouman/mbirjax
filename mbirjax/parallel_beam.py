@@ -89,13 +89,8 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
-    def _supports_sharding(self):
-        """Parallel beam has the placement/movement projector + prior path, so it runs on the
-        always-on placement path (single-device auto-defaults to a trivial 1-device mesh)."""
-        return True
-
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
-                                         view_indices, coeff_power):
+                                         owned_view_indices, coeff_power):
         """Parallel-beam specialization of the sharded slice-band back projection (overrides the
         base banded path): detector row r back-projects to slice r alone, so the slice band [g0, g1)
         IS detector rows [g0:g1).  Crop the detector-row axis and run the standard back projector
@@ -104,7 +99,7 @@ class ParallelBeamModel(TomographyModel):
         ``(num_pixels, g1 - g0)``."""
         return self.projector_functions.sparse_back_project(
             view_data[:, g0:g1, :], pixel_indices,
-            view_indices=view_indices, coeff_power=coeff_power)
+            owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
     def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
                                      recon_shard_info, view_ranges, local_pixels):
@@ -128,7 +123,7 @@ class ParallelBeamModel(TomographyModel):
         verify_valid_params), so when the recon slice axis is padded for sharding the
         sinogram's row axis must present the SAME padded length: the entry placement
         zero-fills the row tail, keeping it exactly inert.  No padding -> None."""
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             return 1, self.recon_placement.real_size, self.recon_placement.padded_size
         return None
 
@@ -450,9 +445,8 @@ class ParallelBeamModel(TomographyModel):
         (``fbp_recon`` / ``direct_recon`` followed by back projection) pass
         ``output_sharded=True`` so the data stays on-device with zero host
         transfer.  Under the view-sharding scheme the ramp filter is per-view, so
-        each device filters its own views with no cross-device communication.
-        When no mesh is configured this simply filters the (single-device) array
-        directly.
+        each device filters its own views with no cross-device communication
+        (a single device is the trivial 1-shard case).
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
@@ -493,6 +487,12 @@ class ParallelBeamModel(TomographyModel):
         exactly the adjoint of the forward projection.  For a detailed theoretical derivation of this implementation,
         see the zip file linked at this page: https://mbirjax.readthedocs.io/en/latest/theory.html
 
+        Note:
+            FBP assumes the view angles are EQUALLY SPACED over the full angular range (the
+            ``pi / num_views`` angular weight in the ramp filter).  On nonuniformly-spaced or
+            limited-angle data it is only approximate and is best used as an initializer for the
+            iterative ``recon()``, which corrects the angular weighting.
+
         This is a **user-facing** method.  The input may be plain or sharded
         (a plain sinogram is sharded on the view axis once at entry when sharding
         is on); the OUTPUT form is chosen by ``output_sharded``.  Internally the
@@ -501,16 +501,16 @@ class ParallelBeamModel(TomographyModel):
         intermediate host transfer).  By default the recon is gathered to a plain
         array at exit; with ``output_sharded=True`` it is returned slice-sharded
         (no host round-trip), so a sharded FBP result can feed a sharded consumer
-        (e.g. the VCD init).  With no mesh configured the shard/gather are no-ops
-        and the array flows through unchanged.
+        (e.g. the VCD init).  On a single device the shard/gather are trivial 1-shard
+        operations.
 
         Args:
             sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
             output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the slice-sharded device form (on an
-                unsharded model the output is the same either way).
+                array.  If True, return the slice-sharded device form (on a single
+                device the output is the same either way).
 
         Returns:
             recon (jax array): The reconstructed volume — plain by default,
@@ -518,8 +518,8 @@ class ParallelBeamModel(TomographyModel):
         """
         _warn_view_batch_size_deprecated(view_batch_size)
 
-        # Shard once at entry so the filter receives view-sharded data (no-op
-        # when no mesh is configured or already sharded).
+        # Shard once at entry so the filter receives view-sharded data (a no-op
+        # when already view-sharded; a single device is the trivial 1-shard case).
         sinogram = self._shard_sinogram(sinogram)
 
         # Internal pipeline stage: keep the device form, no host transfer.

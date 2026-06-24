@@ -520,7 +520,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     beam hardening model to the sinogram and removing the metal contributions.
 
     Args:
-        ct_model: CT model object with a `forward_project` method and a `main_device` attribute.
+        ct_model: CT model object with a `forward_project` method and recon_placement / sino_placement.
         measured_sino (jnp.ndarray): Raw measured sinogram.
         recon (jnp.ndarray): Reconstructed 3D volume used for segmentation of plastic and metal regions.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
@@ -551,7 +551,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
             [(1, *t) for t in cross_exponent_list] +
             [(0, *t) for t in metal_exponent_list])
 
-    device = ct_model.main_device
+    device = ct_model.recon_placement.devices[0]
     sino_shape = measured_sino.shape
     measured_sino = measured_sino.reshape(-1)
 

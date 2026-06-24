@@ -46,6 +46,14 @@ from importlib.metadata import version, PackageNotFoundError
 if jax.config.jax_compilation_cache_dir is None:
     jax.config.update("jax_compilation_cache_dir",
                       os.path.expanduser(os.path.join('~', '.mbirjax', 'jax_cache')))
+    # Persist only the compiled executables, NOT XLA's GPU per-fusion autotune cache.  jax defaults
+    # `jax_persistent_cache_enable_xla_caches` to 'xla_gpu_per_fusion_autotune_cache_dir', which
+    # writes temp files under <cache>/xla_gpu_per_fusion_autotune_cache_dir/tmp and renames them --
+    # that fails with NOT_FOUND on cluster filesystems (NFS) and on a fresh cache dir.  Disabling it
+    # leaves the executable cache (the real recompile-avoidance win) untouched.  Only set here, where
+    # WE configured the cache -- never override a user's explicit cache configuration.
+    if hasattr(jax.config, "jax_persistent_cache_enable_xla_caches"):
+        jax.config.update("jax_persistent_cache_enable_xla_caches", "none")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
@@ -84,58 +92,33 @@ class TomographyModel(ParameterHandler):
 
         self.set_params(geometry_type=str(type(self)))
 
-        self.main_device, self.sinogram_device= None, None
         self.projector_functions = None
         self.prox_data = None
 
-        # Multi-device sharding.  An explicit configure_sharding() builds a mesh over the
-        # chosen devices and sets _sharding_configured = True.  Absent that, geometries whose
-        # _supports_sharding() is True (ParallelBeam) auto-default the homogeneous single-device
-        # case to a trivial 1-device mesh at the end of set_devices(), so the
-        # placement path is always on; other geometries keep mesh = None (legacy single-device).
-        self.mesh = None
-        self.shard_devices = None
-        self.dev2dev_safe = True   # set empirically in configure_sharding
-        self._sharding_configured = False  # True only after an explicit configure_sharding()
-        # Let AUTOMATIC selection shard across CPU devices too (ON by default, 2026-06-11).
-        # mbirjax._device_setup exposes a conservative number of virtual CPU devices (capped at
-        # 2) on CPU-only hosts.  Measured (M3 Max, 2 devices, 8-iter VCD): 1.30x at 256^3 and
-        # better at larger sizes, vs 0.83x at 128^3 and 0.64x at 64^3 -- i.e. a real win where
-        # time matters and a few absolute seconds where it does not (small recons also use LESS
-        # peak RSS sharded).  The deciding benefit is platform-UNIFORM auto resolution: every
-        # CPU user (and the whole CPU test suite, which gets 8 virtual devices from
-        # tests/conftest.py) runs the same auto-sharded path as a multi-GPU machine -- a
-        # platform-dependent policy is how "sharded + X" gaps stay invisible to the CPU suite.
-        # Set False to keep automatic selection single-device on CPU; explicit CPU sharding via
-        # configure_devices(n)/configure_sharding(cpu_devices) never consults this flag.
-        # CPU-CLUSTER tuning (real multi-socket hosts, more than 2 devices) is still an open
-        # adjacent task (see the plan); the library's device-count cap is the conservative knob.
-        self._auto_shard_cpu = True
-        # Cached per-device qGGMRF interface masks for a padded slice axis (built lazily
-        # by _qggmrf_interface_masks; invalidated by _set_placements on every recompile).
-        self._qggmrf_interface_masks_cache = None
-        # recon_placement / sino_placement describe how recon-like and sino-like
-        # arrays are distributed across devices.  Each is a Placement, which owns
-        # a device list, a sharded axis, AND its own 1-D mesh; _set_placements()
-        # builds them from the current device config (a single device gives a
-        # trivial 1-shard placement).
-        #
-        # These are intended to be the single source of truth for device layout,
-        # but for now they coexist with the two older representations they will
-        # replace: the scalar main_device / sinogram_device, and mesh /
-        # shard_devices (where `mesh is None` also serves as the single-vs-multi
-        # flag).  In sharded mode each placement's mesh is currently an
-        # equal-but-distinct copy of self.mesh.
-        #
-        # TODO (retire the pre-placement device representations): once the
-        # projector and VCD paths consume recon_placement / sino_placement,
-        # remove main_device / sinogram_device and mesh / shard_devices; the
-        # placements (each owning its mesh) become the single source of device
-        # layout and the `mesh is None` branching is unified away.  (self.mesh
-        # does not generalize to the hybrid case anyway, where recon and sino
-        # live on different meshes.)  Also remove the previous paragraph.
+        # Device layout.  recon_placement / sino_placement are the single source of truth for how
+        # recon-like (slice-sharded) and sino-like (view-sharded) arrays are distributed across
+        # devices.  Each is a Placement owning a device list, a sharded axis, AND its own 1-D mesh.
+        # set_devices() builds them at the end of __init__ (a trivial 1-device layout when there is
+        # one device), so the placement path is always on (recon_placement is never None after
+        # construction).  configure_devices() pins an explicit device list (_sharding_configured =
+        # True); absent that, set_devices() auto-selects.  mesh / shard_devices are derived,
+        # read-only views of recon_placement (see the properties below); arrays that must
+        # be created on a single device use recon_placement.devices[0] / sino_placement.devices[0].
         self.recon_placement = None
         self.sino_placement = None
+        self.dev2dev_safe = True   # set empirically in _set_device_layout
+        self._sharding_configured = False  # True only after an explicit configure_devices()
+        # AUTOMATIC selection shards across CPU devices too, the same path as multi-GPU (the
+        # platform-UNIFORM auto policy -- a platform-dependent policy is how "sharded + X" gaps
+        # stayed invisible to the CPU suite).  mbirjax._device_setup exposes a conservative number
+        # of virtual CPU devices on CPU-only hosts.  Measured (M3 Max, 2 devices, 8-iter VCD): 1.30x
+        # at 256^3 and better at larger sizes, vs 0.83x at 128^3 and 0.64x at 64^3 -- a real win
+        # where time matters and a few absolute seconds where it does not (small recons also use
+        # LESS peak RSS sharded).  To force single-device, pin it with configure_devices(1).
+        # CPU-CLUSTER tuning (real multi-socket hosts) remains an open adjacent task (see the plan).
+        # Cached per-device qGGMRF interface masks for a padded slice axis (built lazily
+        # by _qggmrf_interface_masks; invalidated by _set_device_layout on every recompile).
+        self._qggmrf_interface_masks_cache = None
 
         # The following may be adjusted based on memory in set_devices()
         self.view_batch_size_for_vmap = 512
@@ -186,67 +169,56 @@ class TomographyModel(ParameterHandler):
         return super().get_params(parameter_names)
 
     @property
-    def is_sharded(self):
-        """True when multi-device sharding is configured (the sharded code path is active).
+    def shard_devices(self):
+        """The devices the recon and sinogram are sharded over (a list), or ``None`` before the
+        device layout is configured.
 
-        Single source of truth for "are we sharded?", so call sites read intent rather
-        than the current implementation detail (``self.mesh is not None``).  When the
-        device representation migrates from ``mesh`` to placements this property's body
-        changes in one place; and once every geometry uses the sharded/placement path,
-        this (and the branches that test it) is what gets retired.
+        A property -- read it as an attribute (``model.shard_devices``), not a call.
+
+        This is the public, read-only view of the device layout: ``len(model.shard_devices)`` is
+        the device count and ``model.shard_devices[0].platform`` its platform.  Derived from
+        ``recon_placement`` (the recon and sino placements share the same devices).
         """
-        return self.mesh is not None
-
-    def _supports_sharding(self):
-        """Whether this geometry has the placement/movement projector path implemented.
-
-        Only such geometries auto-default the single-device case to a trivial 1-device mesh
-        (the always-on placement path); the rest stay on the legacy single-device path until
-        their projectors are ported.  Base default is False; ParallelBeamModel overrides
-        to True.  Also gates configure_sharding()/configure_devices(): a multi-device request
-        on an unported geometry raises immediately (the sharded band pipeline would fail with
-        an opaque shape error deep in the projectors), and a single-device request is a no-op
-        (the legacy path is already single-device).
-        """
-        return False
+        return self.recon_placement.devices if self.recon_placement is not None else None
 
     def configure_devices(self, devices=None):
         """
         Configure which devices the reconstruction runs on (the user-facing control surface).
 
-        Resolves ``devices`` to a concrete device list and PINS that configuration (set_devices()
-        will not override it on a later set_params):
+        Resolves ``devices`` to a concrete device list and PINS it: a later ``set_params`` (which
+        re-runs ``set_devices``) keeps these devices rather than re-auto-selecting.
 
-          * ``None``  -- automatic: shard across all available GPUs whose count divides the sharded
-            recon axis (see :meth:`_auto_device_count`); if no GPU is available, use a single CPU
-            device.  This is the explicit, pinned form of the choice ``use_gpu='automatic'`` makes
-            by default.
-          * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs).
+          * ``None``  -- automatic: the same choice ``use_gpu='automatic'`` makes by default --
+            shard across all available GPUs (or, with no GPU, all available CPU devices), trimmed
+            by ``_auto_device_count`` so the last shard is never entirely padding.  A single
+            available device gives a trivial 1-device layout.
+          * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs);
+            ``configure_devices(1)`` is the way to force single-device operation.
           * ``sequence of ints`` -- use those indices into the default device list (``jax.devices()``).
           * ``sequence of jax devices`` -- use exactly those devices.
 
-        Sharding requires the device count to evenly divide the sharded recon axis (slices).  The
-        sinogram view axis does NOT constrain the count: a non-dividing view axis is zero-padded to
-        the next multiple of the device count, and the padding is kept exactly inert (it cannot
-        affect the results).  A count incompatible with the CURRENT slice count only warns (the
-        shapes may still change before the recon); the reconstruction raises if it is still
-        incompatible.
+        Sharding scheme (uniform across geometries): sinogram-like arrays are sharded by **view**
+        (axis 0), recon-like arrays by **slice**.  NEITHER axis constrains the device count: a
+        non-dividing view or slice axis is zero-padded to the next multiple of the count and the
+        padding is kept exactly inert (it cannot affect the results), so the result is independent
+        of the device count.  The pad metadata is re-derived from the current shapes on every
+        recompile, so device selection is order-independent with respect to shape changes.
 
         Args:
             devices (None, int, or sequence of ints / jax devices): see above.
 
         Returns:
-            Nothing; sets the device mesh and placements (see :meth:`configure_sharding`).
+            Nothing; builds recon_placement / sino_placement and the empirical device-to-device
+            safety flag (see ``_set_device_layout``).
         """
-        self.configure_sharding(self._resolve_devices(devices))
+        pool = self._auto_device_pool() if devices is None else self._resolve_devices(devices)
+        self._set_device_layout(pool, pinned=True)
 
     def _resolve_devices(self, devices):
-        """Resolve the configure_devices() ``devices`` argument to a concrete device list."""
-        if devices is None:
-            pool = default_devices()   # GPUs if present, else CPUs
-            on_gpu = bool(pool) and pool[0].platform == 'gpu'
-            n = self._auto_device_count(len(pool)) if on_gpu else 1
-            return pool[:n]
+        """Resolve a non-None configure_devices() ``devices`` argument to a concrete device list.
+
+        (``None`` is handled by configure_devices via ``_auto_device_pool``.)
+        """
         if isinstance(devices, (int, np.integer)):
             return default_devices()[:int(devices)]
         devices = list(devices)
@@ -255,85 +227,21 @@ class TomographyModel(ParameterHandler):
             return [all_devices[int(i)] for i in devices]
         return devices
 
-    def configure_sharding(self, devices=None):
+    def _auto_device_pool(self):
+        """The device list for AUTOMATIC selection (no explicit pin).
+
+        Shared by ``set_devices`` (the construction-time default) and ``configure_devices(None)``
+        so "automatic" has a single definition.  Shards across all GPUs when a GPU backend is
+        present and ``use_gpu`` is not ``'none'``, otherwise across all (possibly virtual) CPU
+        devices -- the platform-uniform auto policy.  ``_auto_device_count`` trims a count whose
+        last shard would be entirely padding, and returns 1 when only one device is available (a
+        trivial 1-device layout).  GPU detection is by backend (``gpu_devices()``), not a device's
+        ``.platform`` string, so it is robust to ``'cuda'``/``'rocm'`` platform names.
         """
-        Configure multi-device sharding over the given devices (opt-in).
-
-        This is additive: it sets up a device mesh and an empirical
-        device-to-device safety flag, but does NOT modify ``main_device`` /
-        ``sinogram_device`` or the existing single-device code paths.  The
-        projector phases consume this configuration as they are ported to
-        sharding; until then a configured mesh has no effect on existing flows.
-
-        Sharding scheme (uniform across geometries): sinogram-like objects are
-        sharded by **view** (axis 0) and recon-like objects by **slice**.  The
-        device count must evenly divide ``num_slices``; ``num_views`` does NOT
-        constrain it (a non-dividing view axis is zero-padded to the next
-        multiple of the device count, and the padding is kept exactly inert).  A
-        count incompatible with the CURRENT slice count only **warns** here (the
-        shapes may still change before the recon); the hard error is raised when
-        an array is actually sharded (so selection is order-independent).
-
-        Passing ``devices=None`` (or a single device) sets up a trivial 1-device
-        mesh, so single-device operation is just the degenerate sharded case and
-        the same code path can be used throughout.
-
-        Args:
-            devices (sequence of jax devices, or None): devices to shard across.
-                None uses a single device (trivial sharding).
-
-        Returns:
-            Nothing; sets ``self.mesh``, ``self.shard_devices``,
-            ``self.dev2dev_safe``, and the placements (pinned: a later
-            ``set_params`` will not override this configuration).
-        """
-        if devices is None:
-            devices = default_devices()[:1]
-        devices = list(devices)
-        n_devices = len(devices)
-        if n_devices < 1:
-            raise ValueError("configure_sharding requires at least one device.")
-
-        # Geometries without the placement/movement projector path (everything but
-        # ParallelBeam until its projectors are ported) cannot run the sharded band pipeline -- entering it
-        # fails deep in the projectors with an opaque shape error.  Fail fast on a
-        # multi-device request; a single-device request is simply the legacy behavior these
-        # geometries already have, so honor it as a no-op (they stay on the legacy
-        # single-device path, whose device choice follows the use_gpu parameter).
-        if not self._supports_sharding():
-            if n_devices > 1:
-                raise NotImplementedError(
-                    f"Multi-device sharding is not yet supported for {type(self).__name__} "
-                    f"(currently ParallelBeamModel only); requested {n_devices} devices. "
-                    f"Single-device reconstruction works as always.")
-            return
-
-        # No divisibility constraint: a non-dividing view or slice axis is zero-padded to
-        # the next multiple of the device count, and the padding is exactly inert (the
-        # result is independent of the device count).  The device report notes any padding.
-        self._apply_mesh(devices, user_selected=True)
-
-    def _apply_mesh(self, devices, user_selected):
-        """Build the device mesh and placements from ``devices`` (a 1-D mesh over them).
-
-        Shared by the explicit configure_sharding() (user_selected=True) and the automatic default
-        in set_devices() (user_selected=False).
-
-        Args:
-            devices (sequence of jax devices): devices to shard across (length 1 = trivial mesh).
-            user_selected (bool): if True, mark the configuration as user-selected so set_devices
-                will not override it; if False, leave it overridable so a later set_params (which
-                re-runs set_devices) can re-evaluate the device layout.
-        """
-        from jax.sharding import Mesh
-        devices = list(devices)
-        # 1-D mesh; the axis name 'devices' is referenced by the PartitionSpecs used when sharding
-        # the sinogram (view axis) and recon (slice axis).
-        self.mesh = Mesh(np.array(devices), ('devices',))
-        self.shard_devices = devices
-        self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
-        self._sharding_configured = user_selected
-        self._set_placements()
+        gpus = gpu_devices()   # () when there is no GPU backend
+        on_gpu = bool(gpus) and self.get_params('use_gpu') != 'none'
+        pool = list(gpus) if on_gpu else list(cpu_devices())
+        return pool[:self._auto_device_count(len(pool))]
 
     def _auto_device_count(self, n_available):
         """Device count for automatic selection: ALL available devices, except any count
@@ -351,9 +259,9 @@ class TomographyModel(ParameterHandler):
         band/scale sweeps): sharding's value is capacity + near-linear speedup at the sizes
         that matter, and over-sharding a small problem is only a mild overhead.
 
-        Returns 1 for unsupported geometries or n_available <= 1.
+        Returns 1 for n_available <= 1.
         """
-        if n_available <= 1 or not self._supports_sharding():
+        if n_available <= 1:
             return 1
         recon_shape = self.get_params('recon_shape')
         num_recon = int(recon_shape[self.recon_shard_axis() % len(recon_shape)])
@@ -370,42 +278,28 @@ class TomographyModel(ParameterHandler):
         """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
         return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
 
-    def _recon_devices(self):
-        """The devices the reconstruction actually runs on.
-
-        The shard devices when sharded (the placement path), else the single main device (legacy
-        path).  This is the truth for "where does the recon run" -- use it rather than
-        ``main_device``, which is not updated by ``configure_sharding`` and so can be stale (e.g. it
-        stays a GPU after sharding explicitly onto CPU devices).
-        """
-        return self.shard_devices if self.is_sharded else [self.main_device]
-
     def _device_report(self):
-        """A 'N x PLATFORM [(sharded)]' summary of the recon devices, for the recon log.
+        """A 'N x PLATFORM (sharded)' summary of the recon devices, for the recon log.
 
-        ``(sharded)`` marks the placement path (``is_sharded``), regardless of device count, so a
-        single-device PLACEMENT recon (e.g. ParallelBeam) is distinguished from a single-device
-        LEGACY recon (a geometry not yet ported) -- a real difference until every geometry is
-        ported.  When automatic
-        selection left GPUs idle because the device count cannot divide both sharded axes, the
-        reason is appended so idle hardware is never silent.
+        ``(sharded)`` always appears (every recon runs the placement path), regardless of device
+        count.  When automatic selection left GPUs idle because the device count cannot divide both
+        sharded axes, the reason is appended so idle hardware is never silent.
         """
-        devices = self._recon_devices()
-        suffix = ' (sharded)' if self.is_sharded else ''
+        devices = self.shard_devices
         n = len(devices)
         platform = self._platform_label(devices[0])
-        report = '{} x {}{}'.format(n, platform, suffix)
+        report = '{} x {} (sharded)'.format(n, platform)
         # Padding is invisible in the results (exactly inert), so say so in the log rather
         # than leaving the device-form shapes a surprise.
-        if self.is_sharded and self.sino_placement is not None and self.sino_placement.is_padded:
+        if self.sino_placement is not None and self.sino_placement.is_padded:
             report += ' (views padded {}->{})'.format(
                 self.sino_placement.real_size, self.sino_placement.padded_size)
-        if self.is_sharded and self.recon_placement is not None and self.recon_placement.is_padded:
+        if self.recon_placement is not None and self.recon_placement.is_padded:
             report += ' (slices padded {}->{})'.format(
                 self.recon_placement.real_size, self.recon_placement.padded_size)
         # Automatic selection that left devices idle (a count whose last shard would be
         # entirely padding is skipped): explain why hardware is unused.
-        if self.is_sharded and not self._sharding_configured and platform == 'GPU':
+        if not self._sharding_configured and platform == 'GPU':
             n_available = len(gpu_devices()) or n   # () -> 0 only off-GPU, which can't reach here
             if n_available > n:
                 recon_shape = self.get_params('recon_shape')
@@ -419,6 +313,8 @@ class TomographyModel(ParameterHandler):
     def device_summary(self):
         """str: A read-only summary of the devices the reconstruction will actually use.
 
+        A property -- read it as an attribute (``model.device_summary``), not a call.
+
         This is the resolved OUTCOME of the device configuration -- the ``use_gpu``
         parameter and ``configure_devices`` are the request; this reports what was
         chosen.  E.g. ``'4 x GPU (sharded)'``, with notes appended when the view
@@ -427,24 +323,35 @@ class TomographyModel(ParameterHandler):
         """
         return self._device_report()
 
-    def _set_placements(self):
-        """Build recon_placement / sino_placement from the current device config.
+    def _set_device_layout(self, devices, pinned):
+        """Set the device layout from a concrete device list -- the single place that does so.
 
-        A configured mesh gives placements over its devices (recon on the slice
-        axis, sino on the view axis); otherwise each is a trivial 1-device
-        placement on the configured single device -- which may differ for recon
-        and sino (e.g. recon on CPU and sino on GPU for a large recon).
+        Builds recon_placement / sino_placement (each owns a 1-D mesh over ``devices``: recon on
+        the slice axis, sino on the view axis; a single device is the trivial 1-shard case) and
+        sets the empirical device-to-device safety flag.  These placements ARE the device layout;
+        mesh / shard_devices are derived views of them.
 
-        Each placement also receives the problem-owned (REAL) length of its
-        sharded axis from the params, so it knows the device-form (padded)
-        length when that size does not divide the device count.  The params
-        always keep the real shapes ("what is the problem?"); the placements own
-        the padded device shapes ("what is on the devices?").  This runs on
-        every recompile (set_devices), so the pad metadata tracks shape changes.
-        Both sharded axes pad: views and recon slices (for
-        parallel beam the detector rows pad with the slices -- see
-        :meth:`_sino_row_padding`).
+        Each placement receives the problem-owned (REAL) length of its sharded axis from the
+        params, so it knows the device-form (padded) length when that size does not divide the
+        device count.  The params always keep the real shapes ("what is the problem?"); the
+        placements own the padded device shapes ("what is on the devices?").  This runs on every
+        recompile (via set_devices), so the pad metadata tracks shape changes.  Both sharded axes
+        pad: views and recon slices (for parallel beam the detector rows pad with the slices --
+        see :meth:`_sino_row_padding`).  No divisibility constraint: a non-dividing axis is
+        zero-padded (inert), so the result is independent of the device count.
+
+        Args:
+            devices (sequence of jax devices): the devices to lay arrays out over (length 1 =
+                trivial single-device layout).
+            pinned (bool): if True, mark the configuration as user-selected (configure_devices) so
+                set_devices will not re-auto-select it; if False, leave it overridable so a later
+                set_params (which re-runs set_devices) can re-evaluate the layout.
         """
+        devices = list(devices)
+        if len(devices) < 1:
+            raise ValueError("_set_device_layout requires at least one device.")
+        self.dev2dev_safe = mjs.is_dev2dev_safe(devices)
+        self._sharding_configured = pinned
         # Layout changed: drop any cached per-device qGGMRF interface masks (they
         # encode the previous padded shard ranges; rebuilt lazily on first use).
         self._qggmrf_interface_masks_cache = None
@@ -454,18 +361,8 @@ class TomographyModel(ParameterHandler):
         recon_shape = self.get_params('recon_shape')
         num_views = sinogram_shape[sino_axis % len(sinogram_shape)]
         num_slices = recon_shape[recon_axis % len(recon_shape)]
-        if self.is_sharded:
-            devices = self.shard_devices
-            self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
-            self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        else:
-            # Single-device.  This runs at the end of set_devices
-            # (which has just set both devices) or configure_sharding (mesh path
-            # above), so the devices are always concrete here.
-            assert self.main_device is not None and self.sinogram_device is not None, \
-                "main_device/sinogram_device must be set before _set_placements"
-            self.recon_placement = mjs.Placement([self.main_device], axis=recon_axis, real_size=num_slices)
-            self.sino_placement = mjs.Placement([self.sinogram_device], axis=sino_axis, real_size=num_views)
+        self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
+        self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -473,27 +370,33 @@ class TomographyModel(ParameterHandler):
     # ------------------------------------------------------------------
     # The uniform scheme shards sinogram-like objects by view and recon-like
     # objects by slice.  The two axis-declaration hooks below are the single
-    # source of truth for *which* axis is sharded; the divisibility check in
-    # configure_sharding and the _shard_*/_gather_* helpers all derive from
+    # source of truth for *which* axis is sharded; the placement build in
+    # _set_device_layout and the _shard_*/_gather_* helpers all derive from
     # them.  Keeping the choice here (rather than hardcoded throughout) means a
     # geometry can declare a different axis by overriding one small method,
     # without hunting down scattered assumptions.
 
-    def sinogram_shard_axis(self):
+    @classmethod
+    def sinogram_shard_axis(cls):
         """Axis of a sinogram-like array (views, det_rows, channels) to shard.
 
         Default 0 (views).  Sinogram, weights, and error-sinogram all share
-        this layout, so they shard on the same axis.
+        this layout, so they shard on the same axis.  A classmethod so it is
+        available without an instance (e.g. to size a placement for generated
+        data) and stays overridable per geometry.
         """
         return 0
 
-    def recon_shard_axis(self):
+    @classmethod
+    def recon_shard_axis(cls):
         """Axis of a recon-like array to shard.
 
         Default -1 (the last axis = slices).  This is correct for both the 3-D
         recon ``(rows, cols, slices)`` and the flat recon
         ``(rows*cols, slices)`` because slices are the last axis in both, so a
-        single value works regardless of rank.
+        single value works regardless of rank.  A classmethod so it is available
+        without an instance (e.g. to size a placement for generated data) and
+        stays overridable per geometry.
         """
         return -1
 
@@ -514,11 +417,10 @@ class TomographyModel(ParameterHandler):
         return None
 
     def _shard_on_axis(self, x, axis, what='array'):
-        """Distribute array ``x`` across the mesh along ``axis`` (no-op if no mesh).
+        """Distribute array ``x`` across the mesh along ``axis``.
 
-        When ``self.mesh`` is None (single-device, not configured) ``x`` is
-        returned unchanged.  Otherwise ``x`` is placed in a NamedSharding that
-        partitions ``axis`` across the mesh's ``'devices'`` axis.
+        ``x`` is placed in a NamedSharding that partitions ``axis`` across the mesh's
+        ``'devices'`` axis (a single device is the trivial 1-shard case).
 
         If ``x`` already carries exactly that sharding, it is returned as-is with
         no data movement.  Otherwise it is moved via the transfer helper, which
@@ -540,11 +442,8 @@ class TomographyModel(ParameterHandler):
             what (str): human label for ``x`` in the divisibility error message.
 
         Returns:
-            The array in the requested NamedSharding (or ``x`` unchanged when no
-            mesh is configured).
+            The array in the requested NamedSharding.
         """
-        if not self.is_sharded:
-            return x
         axis = axis % x.ndim
         n_dev = len(self.shard_devices)
         if x.shape[axis] % n_dev != 0:
@@ -556,7 +455,7 @@ class TomographyModel(ParameterHandler):
         spec = [None] * x.ndim
         spec[axis] = 'devices'
         sharding = jax.sharding.NamedSharding(
-            self.mesh, jax.sharding.PartitionSpec(*spec))
+            self.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
         # Skip any movement if x is already in exactly this sharding.
         if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
             if x.sharding == sharding:
@@ -564,28 +463,23 @@ class TomographyModel(ParameterHandler):
         return mjs.move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
 
     def _gather_to_host(self, x):
-        """Gather a sharded array to a single uncommitted JAX array (no-op if no mesh).
+        """Gather a sharded array to a single uncommitted JAX array.
 
-        When ``self.mesh`` is None, returns ``x`` unchanged.  Otherwise reads all
-        shards to a contiguous host buffer with ``np.asarray`` (the read path is
-        always safe, even on hardware where device-to-device writes are not) and
-        wraps it as an uncommitted JAX array, leaving JAX free to place it for
-        downstream ops.
+        Reads all shards to a contiguous host buffer with ``np.asarray`` (the read path is
+        always safe, even on hardware where device-to-device writes are not) and wraps it as an
+        uncommitted JAX array, leaving JAX free to place it for downstream ops.
 
         Args:
             x: a (possibly sharded) JAX array.
 
         Returns:
-            An uncommitted single-device JAX array with the same values, or ``x``
-            unchanged when no mesh is configured.
+            An uncommitted single-device JAX array with the same values.
         """
-        if not self.is_sharded:
-            return x
         # Single shard (e.g. the trivial 1-device mesh, or any 1-GPU recon): the array
         # already lives on one device, so there is nothing to gather -- return its
         # on-device data directly and skip the device->host->device round trip below.
         # Without this a single-GPU gather-at-exit (the fbp_recon/direct_recon/direct_filter
-        # default) pays a full host round trip the legacy single-device path never did.
+        # default) would pay a full host round trip for an array that is already on one device.
         shards = x.addressable_shards
         if len(shards) == 1:
             return shards[0].data
@@ -608,11 +502,10 @@ class TomographyModel(ParameterHandler):
         """
         axis = self.sinogram_shard_axis()
         row_pad = self._sino_row_padding()
-        if self.is_sharded and (self.sino_placement.is_padded or row_pad is not None):
+        if self.sino_placement.is_padded or row_pad is not None:
             return self._pad_shard_on_axis(sinogram, self.sino_placement, axis,
                                            what='sinogram (view axis)', row_pad=row_pad)
-        if (self.is_sharded
-                and sinogram.shape[axis % sinogram.ndim] != self.sino_placement.real_size):
+        if sinogram.shape[axis % sinogram.ndim] != self.sino_placement.real_size:
             raise ValueError(
                 'Cannot place the sinogram: its view axis has size {}, but the model expects '
                 '{} views.  If this array was prepared with prepare_sino_for_devices under a '
@@ -626,14 +519,14 @@ class TomographyModel(ParameterHandler):
         any zero-filled padded views (and padded detector rows) back to the
         problem's real counts."""
         out = self._gather_to_host(sinogram)
-        if self.is_sharded and self.sino_placement.is_padded:
+        if self.sino_placement.is_padded:
             axis = self.sinogram_shard_axis() % out.ndim
             if out.shape[axis] == self.sino_placement.padded_size:
                 idx = [slice(None)] * out.ndim
                 idx[axis] = slice(0, self.sino_placement.real_size)
                 out = out[tuple(idx)]
         row_pad = self._sino_row_padding()
-        if self.is_sharded and row_pad is not None:
+        if row_pad is not None:
             row_axis, real_rows, padded_rows = row_pad
             row_axis = row_axis % out.ndim
             if out.shape[row_axis] == padded_rows:
@@ -643,10 +536,19 @@ class TomographyModel(ParameterHandler):
         return out
 
     def _pad_shard_on_axis(self, x, placement, axis, what='array', row_pad=None):
-        """Distribute ``x`` across ``placement``, zero-padding the sharded axis to
-        the device form (``placement.padded_size``) -- and, when ``row_pad`` is
-        given, zero-padding an UNSHARDED second axis as well (detector rows that
-        must track the recon slices; see :meth:`_sino_row_padding`).
+        """Distribute ``x`` across ``placement``, zero-padding its sharded axis to
+        the device form (``placement.padded_size``).
+
+        ``row_pad`` is used in exactly one case -- the **ParallelBeam sinogram**.
+        That sinogram is sharded by view (its sharded axis, padded as usual), but
+        ParallelBeam back/forward-projects detector row ``r`` to/from recon slice
+        ``r`` (a 1-to-1 row<->slice alignment unique to parallel beam), so the
+        detector-row axis must match the recon-slice axis.  The recon slices are
+        themselves sharded -- hence padded to the device form -- so the sinogram's
+        detector rows must be zero-padded to that SAME length, even though rows are
+        NOT the sinogram's sharded axis.  ``row_pad`` carries that second
+        (unsharded) axis; for every other geometry, and for recon arrays, it is
+        None and only the sharded axis is padded.  See :meth:`_sino_row_padding`.
 
         The padding never exists on the host: each device receives its own slice
         of the host array directly (``device_put`` per shard), and all zero tails
@@ -667,28 +569,38 @@ class TomographyModel(ParameterHandler):
                 ``real_size`` (and hence ``padded_size``) for its sharded axis.
             axis (int): the axis of ``x`` to partition (may be negative).
             what (str): human label for error messages.
-            row_pad (tuple or None): ``(row_axis, real_rows, padded_rows)`` to
-                zero-pad an additional, unsharded axis to its device-form length;
-                None pads only the sharded axis.
+            row_pad (tuple or None): the ParallelBeam detector-row case above, as
+                ``(row_axis, real_rows, padded_rows)`` -- zero-pad this additional,
+                unsharded axis up to ``padded_rows`` (the device-form recon-slice
+                count).  None for every other geometry (pad only the sharded axis).
 
         Returns:
             The zero-padded array in the placement's NamedSharding.
         """
         axis = axis % x.ndim
-        real, padded = placement.real_size, placement.padded_size
+        # Sharded-axis lengths: real_size is the problem's true length; padded_size is real_size
+        # rounded up to a multiple of the device count (the device-form length).
+        real_size, padded_size = placement.real_size, placement.padded_size
         if row_pad is not None:
-            row_axis, row_real, row_padded = row_pad
+            # A second, UNSHARDED axis (detector rows) that must also be zero-padded to track the
+            # recon slices -- (axis, real length, padded length); see :meth:`_sino_row_padding`.
+            row_axis, real_rows, padded_rows = row_pad
             row_axis = row_axis % x.ndim
-        rows_are_padded = row_pad is None or x.shape[row_axis] == row_padded
-        rows_are_real = row_pad is None or x.shape[row_axis] == row_real
-        if x.shape[axis] == padded and rows_are_padded:
-            # Already in the device form (e.g. prepare_sino_for_devices output).
+        # Classify the incoming shape on each padded axis: already at its device-form (padded)
+        # length, or at its real (problem) length?  (With no row_pad both are trivially True.)
+        rows_are_padded = row_pad is None or x.shape[row_axis] == padded_rows
+        rows_are_real = row_pad is None or x.shape[row_axis] == real_rows
+
+        if x.shape[axis] == padded_size and rows_are_padded:
+            # Already in the device form (e.g. a prepare_sino_for_devices output): nothing to pad,
+            # just place it (``_shard_on_axis`` is a no-op when the sharding already matches).
             return self._shard_on_axis(x, axis, what=what)
-        if x.shape[axis] != real or not rows_are_real:
-            expected_real = 'problem size {}'.format(real) if row_pad is None else \
-                'problem sizes {}/{} (sharded axis / padded row axis)'.format(real, row_real)
-            expected_dev = '{}'.format(padded) if row_pad is None else \
-                '{}/{}'.format(padded, row_padded)
+        if x.shape[axis] != real_size or not rows_are_real:
+            # Neither fully-real nor fully-device-form (e.g. a stale prepared array): refuse it.
+            expected_real = 'problem size {}'.format(real_size) if row_pad is None else \
+                'problem sizes {}/{} (sharded axis / padded row axis)'.format(real_size, real_rows)
+            expected_dev = '{}'.format(padded_size) if row_pad is None else \
+                '{}/{}'.format(padded_size, padded_rows)
             raise ValueError(
                 'Cannot place the {}: got shape {}, but the model expects the {} '
                 '(or the prepared device-form size {}).  If the device '
@@ -697,34 +609,46 @@ class TomographyModel(ParameterHandler):
         zeros_dtype = jax.dtypes.canonicalize_dtype(x.dtype)
 
         def with_row_tail(piece, dev):
-            # Zero-fill the unsharded row axis to its device-form length, on-device.
+            # Append the unsharded row axis's zero tail (real_rows -> padded_rows), built ON ``dev``,
+            # so a placed shard reaches the device-form row length without a host-side padded copy.
             if row_pad is None:
                 return piece
             tail_shape = list(piece.shape)
-            tail_shape[row_axis] = row_padded - row_real
+            tail_shape[row_axis] = padded_rows - real_rows
             tail = jnp.zeros(tuple(tail_shape), dtype=zeros_dtype, device=dev)
             return jnp.concatenate([piece, tail], axis=row_axis)
 
+        # Build one shard per device.  ``padded_shard_ranges()`` walks the PADDED sharded axis and
+        # yields, per device: the device, its ``[start, end)`` span on that axis, and ``n_real`` =
+        # how many of those positions hold real data (any remainder is padding).  Each shard is
+        # assembled directly on its own device, so the host never holds a padded copy.
         pieces = []
-        for dev, (start, end), n_valid in placement.padded_shard_ranges():
-            block = end - start
+        for dev, (start, end), n_real in placement.padded_shard_ranges():
+            shard_len = end - start          # this shard's span on the (padded) sharded axis
             parts = []
-            if n_valid > 0:
+            if n_real > 0:
+                # The real slice ``[start, start + n_real)`` of x, placed on ``dev`` (+ its row tail).
                 idx = [slice(None)] * x.ndim
-                idx[axis] = slice(start, start + n_valid)
+                idx[axis] = slice(start, start + n_real)
                 parts.append(with_row_tail(jax.device_put(x[tuple(idx)], dev), dev))
-            if block - n_valid > 0:
-                # Fully-zero tail block on the sharded axis, built at device-form row length.
+            if shard_len - n_real > 0:
+                # The remaining ``shard_len - n_real`` positions on the sharded axis are pure
+                # padding: a zero block built directly on ``dev`` at the device-form row length.
                 tail_shape = list(x.shape)
-                tail_shape[axis] = block - n_valid
+                tail_shape[axis] = shard_len - n_real
                 if row_pad is not None:
-                    tail_shape[row_axis] = row_padded
+                    tail_shape[row_axis] = padded_rows
                 parts.append(jnp.zeros(tuple(tail_shape), dtype=zeros_dtype, device=dev))
+            # A shard is the real block, the zero block, or -- at the one boundary device that
+            # straddles real/padding -- both joined along the sharded axis.
             pieces.append(parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis))
+
+        # Wrap the per-device shards as one logical array in the placement's NamedSharding; the
+        # global shape is x's shape with the padded length(s) substituted on the padded axis/axes.
         global_shape = list(x.shape)
-        global_shape[axis] = padded
+        global_shape[axis] = padded_size
         if row_pad is not None:
-            global_shape[row_axis] = row_padded
+            global_shape[row_axis] = padded_rows
         return mjs.assemble_sharded(pieces, tuple(global_shape),
                                     placement.shard_structure(x.ndim))
 
@@ -770,11 +694,10 @@ class TomographyModel(ParameterHandler):
         Otherwise this is the plain shard chokepoint, with a shape check that
         catches a stale device-form array from a previous configuration."""
         axis = self.recon_shard_axis()
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             return self._pad_shard_on_axis(recon, self.recon_placement, axis,
                                            what='reconstruction (slice axis)')
-        if (self.is_sharded
-                and recon.shape[axis % recon.ndim] != self.recon_placement.real_size):
+        if recon.shape[axis % recon.ndim] != self.recon_placement.real_size:
             raise ValueError(
                 'Cannot place the reconstruction: its slice axis has size {}, but the model '
                 'expects {} slices.  If this array came from a previous device configuration '
@@ -786,7 +709,7 @@ class TomographyModel(ParameterHandler):
         """Gather a sharded recon back to a single uncommitted array, cropping any
         zero-filled padded slices back to the problem's real slice count."""
         out = self._gather_to_host(recon)
-        if self.is_sharded and self.recon_placement.is_padded:
+        if self.recon_placement.is_padded:
             axis = self.recon_shard_axis() % out.ndim
             if out.shape[axis] == self.recon_placement.padded_size:
                 idx = [slice(None)] * out.ndim
@@ -798,12 +721,9 @@ class TomographyModel(ParameterHandler):
         """Per-shard boundary slices for the qGGMRF inter-slice prior (thin wrapper).
 
         The substance lives in :func:`mbirjax.qggmrf.extract_halos` (explicit-args,
-        model-free); this wrapper supplies the model's shard axis and the
-        no-mesh early-out.  Returns ``([None], [None])`` when no mesh is
-        configured (single device, reflected BC at both edges).
+        model-free); this wrapper supplies the model's shard axis.  A single shard
+        (trivial 1-device mesh) yields ``([None], [None])`` -- the reflected BC at both edges.
         """
-        if not self.is_sharded:
-            return [None], [None]
         return mj.extract_halos(flat_recon, self.recon_shard_axis())
 
     def _replicate_scalar(self, x, placement):
@@ -823,11 +743,9 @@ class TomographyModel(ParameterHandler):
     def _stage_halos(self, flat_recon):
         """Extract + pre-place the qGGMRF boundary halos, once per partition pass
         (thin wrapper around :func:`mbirjax.qggmrf.stage_halos`; see there for the
-        ordering contract and the per-pass-vs-per-subset rationale).  Returns
-        ``([None], [None])`` when no mesh is configured.
+        ordering contract and the per-pass-vs-per-subset rationale).  A single shard
+        (trivial 1-device mesh) yields ``([None], [None])`` -- the reflected BC at both edges.
         """
-        if not self.is_sharded:
-            return [None], [None]
         return mj.stage_halos(flat_recon, self.recon_shard_axis())
 
     def _qggmrf_prior_sharded(self, flat_recon, pixel_indices, qggmrf_params,
@@ -860,7 +778,7 @@ class TomographyModel(ParameterHandler):
         padded this returns None and the kernel call carries zero new work.
 
         The masks depend only on the device layout, not on the recon values, so
-        they are built once per layout and cached (``_set_placements`` invalidates
+        they are built once per layout and cached (``_set_device_layout`` invalidates
         the cache on every recompile).  Building them per VCD subset would re-pay a
         host->device transfer thousands of times -- the per-subset host round-trips
         are exactly what capped multi-GPU VCD scaling (see the staged-halos lesson).
@@ -868,7 +786,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             dict (device -> (local_slices+1,) float32 mask on that device), or None.
         """
-        if not (self.is_sharded and self.recon_placement.is_padded):
+        if not self.recon_placement.is_padded:
             return None
         if self._qggmrf_interface_masks_cache is None:
             real = self.recon_placement.real_size
@@ -884,75 +802,30 @@ class TomographyModel(ParameterHandler):
         Determine whether to run the reconstruction entirely on the GPU (when one is available) or
         entirely on the CPU, and set the corresponding devices.
 
-        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is one of
-        'automatic', 'full', 'none'
+        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is
+        'automatic' (use the gpu when available) or 'none' (cpu only).  ('full' is a deprecated synonym
+        of 'automatic'.)
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
         """
-        # This does two things:
-        #   (1) Choose the physical device(s): the whole reconstruction runs on the GPU when one is
-        #       available and the user has not forced CPU, otherwise on the CPU.  We deliberately do
-        #       NOT estimate whether the problem fits -- an over-large recon surfaces as an OOM at
-        #       recon time, where _handle_jax_error guides the user (add GPUs, shrink, split, or CPU).
-        #   (2) Establish how arrays are laid out on those device(s) -- the placement block below +
-        #       _set_placements (which always runs and builds recon_placement / sino_placement).
-        cpus = cpu_devices()
+        # Establish the device layout (the placements own it; there is no stored mode string or
+        # primary-device scalar to go stale).  We deliberately do NOT estimate whether the problem
+        # fits -- an over-large recon surfaces as an OOM at recon time, where _handle_jax_error
+        # guides the user.
         use_gpu = self.get_params('use_gpu')
         gpus = gpu_devices()   # () when there is no GPU backend
-        gpu_available = len(gpus) > 0
-        if not gpu_available and use_gpu not in ['automatic', 'none']:
+        if not gpus and use_gpu not in ['automatic', 'none']:
             warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
                           "Use set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
 
-        # 'projections' (GPU-only projections, CPU-resident data) is no longer supported.
-        if use_gpu == 'projections':
-            raise ValueError("use_gpu == 'projections' is no longer supported.")
-
-        # (1) Choose the device: everything on the GPU when one is available and the user has not
-        # forced CPU, otherwise everything on the CPU.  on_gpu is the RESOLUTION of the use_gpu
-        # REQUEST for this call; it is deliberately a local -- the request stays in the params
-        # (re-evaluated on every recompile) and the resolved layout lives in the placements
-        # (is_sharded / shard_devices / _recon_devices), so there is no stored mode string to go
-        # stale.  (The former hybrid 'sinograms' mode -- recon on CPU, sinograms on GPU -- has been
-        # removed.)
-        on_gpu = gpu_available and use_gpu != 'none'
-        if on_gpu:
-            self.main_device, self.sinogram_device = gpus[0], gpus[0]
-        else:
-            self.main_device, self.sinogram_device = cpus[0], cpus[0]
-
-        # (2) Establish the device layout.  Geometries that implement the placement/movement
-        # projector path (_supports_sharding -> ParallelBeam) run an ALWAYS-ON placement path; unless
-        # the caller has already pinned a configuration with configure_sharding()/configure_devices(),
-        # auto-select here.  Auto SHARDS across ALL GPUs (non-dividing view/slice counts are
-        # zero-padded, exactly inert; _auto_device_count only skips a count whose last shard
-        # would be entirely padding) -- and across CPU devices too unless the _auto_shard_cpu
-        # default is disabled (on by default; see __init__).  One GPU / one CPU / opt-out -> a
-        # trivial 1-device mesh.  user_selected=False keeps it overridable, so a later
-        # set_params re-evaluates the layout (e.g. a 'full' <-> 'none' mode flip, or a
-        # sinogram_shape change that changes the divisible count).  Geometries not yet ported leave
-        # self.mesh = None and fall back to trivial single-device placements in _set_placements (the
-        # legacy path, retiring once all geometries are ported).  _set_placements() runs in all branches (via _apply_mesh or
-        # directly).
-        if not self._sharding_configured and self._supports_sharding():
-            if on_gpu and len(gpus) > 1:
-                auto_pool = list(gpus)
-            elif not on_gpu and self._auto_shard_cpu and len(cpus) > 1:
-                auto_pool = list(cpus)
-            else:
-                auto_pool = None
-            if auto_pool is not None:
-                n = self._auto_device_count(len(auto_pool))   # largest count dividing num_slices
-                self._apply_mesh(auto_pool[:n], user_selected=False)
-            else:
-                self._apply_mesh([self.main_device], user_selected=False)
-        else:
-            # User-selected config (or an unported geometry).  A geometry change under a
-            # user-selected multi-device config needs no divisibility warning anymore: a
-            # non-dividing axis is zero-padded (inert), and _set_placements re-derives the
-            # pad metadata from the new shapes.
-            self._set_placements()
+        # A pinned configuration (configure_devices) keeps its devices across recompiles; otherwise
+        # auto-select (_auto_device_pool: shard across all GPUs or all CPU devices, a single device
+        # giving a trivial 1-device layout).  Either way _set_device_layout rebuilds the placements
+        # and re-derives the pad metadata from the current shapes, so the layout tracks a
+        # 'full' <-> 'none' flip or a sinogram_shape change.
+        cur_devices = self.recon_placement.devices if self._sharding_configured else self._auto_device_pool()
+        self._set_device_layout(cur_devices, pinned=self._sharding_configured)
         return
 
     def get_recon_dict(self, recon_params=None, notes=None, save_log=True, save_model=True, str_format=False):
@@ -1154,98 +1027,102 @@ class TomographyModel(ParameterHandler):
         """
         Perform a full forward projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method.  The input may be plain or sharded
-        (a plain recon is sharded at entry); the OUTPUT form is chosen by
-        ``output_sharded``, independent of where the input lives.  By default the
-        sinogram is gathered to a plain array; with ``output_sharded=True`` it is
-        returned view-sharded so callers composing on-device (e.g. the VCD loop)
-        pay no host round-trip.  Internally the work is the same all-gather
-        either way (see :meth:`sparse_forward_project`); only the exit differs.
+        The projection automatically uses whatever devices the model is configured
+        for: on one device it runs there, and on several it is spread across them.
+        ``recon`` may be an ordinary array or one already distributed across the
+        model's devices (e.g. the output of an earlier on-device step) -- either is
+        accepted, and the returned form is set by ``output_sharded`` regardless of
+        which you pass.
 
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
 
         Args:
-            recon (jnp array): The 3D reconstruction array.
-            output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the internal device form (view-sharded
-                across the model's devices; on an unsharded model this is the
-                same single-device array either way).
+            recon (jnp array): The 3D reconstruction array, either ordinary or
+                already distributed across the model's devices.
+            output_sharded (bool, optional): Choose the form of the returned
+                sinogram.  If False (default), return an ordinary single-device
+                array.  If True, leave it distributed (view-sharded) across the
+                model's devices, so a following on-device step can use it without
+                gathering it back; on a single device the two forms are identical.
 
         Returns:
-            jnp array: The resulting 3D sinogram -- plain by default,
-            view-sharded if ``output_sharded=True``.
+            jnp array: The 3D sinogram -- an ordinary single-device JAX array by
+            default, or view-sharded across the devices if ``output_sharded=True``.
         """
+        # Implementation notes (not user-facing):
+        # - The input is sharded at entry (_shard_recon is a no-op when it already
+        #   is), so the output form does not depend on the input's form.
+        # - The compute is the same all-gather forward projection either way
+        #   (sparse_forward_project); only the exit differs -- output_sharded keeps
+        #   the view-sharded device form, otherwise _gather_sinogram brings it back
+        #   to one array and crops any padded views/detector rows.
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
 
-        if self.is_sharded:
-            recon = self._shard_recon(recon)            # no-op if already sharded
-            # Extracting cylinders from a slice-sharded volume keeps the slice
-            # sharding (the index is on the unsharded row/col axes), so this yields
-            # slice-sharded cylinders with no movement.
-            voxel_values = self.get_voxels_at_indices(recon, full_indices)
-            # All-gather forward projection -> view-sharded sinogram.
-            sinogram = self.sparse_forward_project(voxel_values, full_indices)
-            if output_sharded:
-                return sinogram                          # keep the device form
-            return self._gather_sinogram(sinogram)       # default: plain output
-
+        recon = self._shard_recon(recon)            # no-op if already sharded
+        # Extracting cylinders from a slice-sharded volume keeps the slice
+        # sharding (the index is on the unsharded row/col axes), so this yields
+        # slice-sharded cylinders with no movement.
         voxel_values = self.get_voxels_at_indices(recon, full_indices)
-        return self.sparse_forward_project(voxel_values, full_indices,
-                                           output_device=self.sinogram_device)
+        # All-gather forward projection -> view-sharded sinogram.
+        sinogram = self.sparse_forward_project(voxel_values, full_indices)
+        if output_sharded:
+            return sinogram                          # keep the device form
+        return self._gather_sinogram(sinogram)       # default: plain output
 
     def back_project(self, sinogram, output_sharded=False):
         """
         Perform a full back projection at all voxels in the field-of-view.
 
-        This is a **user-facing** method.  The input may be plain or sharded
-        (a plain sinogram is sharded at entry); the OUTPUT form is chosen by
-        ``output_sharded``, independent of where the input lives.  By default the
-        recon is gathered to a plain array; with ``output_sharded=True`` it is
-        returned as a slice-sharded 3-D array so callers composing on-device
-        (e.g. a sharded FBP init for the VCD loop) pay no host round-trip.
-        Internally the work is the same reduce-scatter either way (see
-        :meth:`sparse_back_project`); only the exit handling differs.
+        The back projection automatically uses whatever devices the model is
+        configured for: on one device it runs there, and on several it is spread
+        across them.  ``sinogram`` may be an ordinary array or one already
+        distributed across the model's devices (e.g. a sinogram from
+        :meth:`prepare_sino_for_devices`) -- either is accepted, and the returned
+        form is set by ``output_sharded`` regardless of which you pass.
 
         Note:
             This method should generally not be used directly for iterative reconstruction.  For iterative
             reconstruction, use :meth:`recon`.
 
         Args:
-            sinogram (jnp array): 3D jax array containing sinogram.
-            output_sharded (bool, optional): If False (default), return a plain
-                array.  If True, return the internal device form (slice-sharded
-                across the model's devices; on an unsharded model this is the
-                same single-device array either way).
+            sinogram (jnp array): The 3D sinogram, either ordinary or already
+                distributed across the model's devices.
+            output_sharded (bool, optional): Choose the form of the returned recon.
+                If False (default), return an ordinary single-device array.  If
+                True, leave it distributed (slice-sharded) across the model's
+                devices, so a following on-device step (such as a sharded
+                initialization for :meth:`recon`) can use it without gathering it
+                back; on a single device the two forms are identical.
 
         Returns:
-            jnp array: The reconstructed 3D volume — plain by default,
-            slice-sharded if ``output_sharded=True``.
+            jnp array: The reconstructed 3D volume -- an ordinary single-device JAX
+            array by default, or slice-sharded across the devices if
+            ``output_sharded=True``.
         """
+        # Implementation notes (not user-facing):
+        # - The input is sharded at entry (_shard_sinogram is a no-op when it
+        #   already is), so the output form does not depend on the input's form.
+        # - The compute is the same reduce-scatter back projection either way
+        #   (sparse_back_project); only the exit differs -- output_sharded
+        #   assembles a slice-sharded volume, otherwise the cylinder is gathered
+        #   and scattered into one ordinary volume.
         recon_shape, use_ror_mask = self.get_params(['recon_shape', 'use_ror_mask'])
         full_indices = mj.gen_full_indices(recon_shape, use_ror_mask=use_ror_mask)
         row_index, col_index = jnp.unravel_index(full_indices, recon_shape[:2])
 
-        if self.is_sharded:
-            sinogram = self._shard_sinogram(sinogram)   # no-op if already sharded
-            # Reduce-scatter back projection -> slice-sharded cylinder.
-            recon_cylinder = self.sparse_back_project(sinogram, full_indices)
-            if output_sharded:
-                # Keep the recon sharded (no host round-trip).
-                return self._assemble_recon_volume_sharded(
-                    recon_cylinder, recon_shape, row_index, col_index)
-            # Default: gather the cylinder and scatter into a plain volume.
-            recon_cylinder = self._gather_recon(recon_cylinder)
-            recon = jnp.zeros(recon_shape)
-            recon = recon.at[row_index, col_index].set(recon_cylinder)
-            return recon
-
-        output_device = self.main_device
-        recon_cylinder = self.sparse_back_project(sinogram, full_indices, output_device=output_device)
-        with jax.default_device(output_device):
-            recon = jnp.zeros(recon_shape, device=output_device)
+        sinogram = self._shard_sinogram(sinogram)   # no-op if already sharded
+        # Reduce-scatter back projection -> slice-sharded cylinder.
+        recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+        if output_sharded:
+            # Keep the recon sharded (no host round-trip).
+            return self._assemble_recon_volume_sharded(
+                recon_cylinder, recon_shape, row_index, col_index)
+        # Default: gather the cylinder and scatter into a plain volume.
+        recon_cylinder = self._gather_recon(recon_cylinder)
+        recon = jnp.zeros(recon_shape)
         recon = recon.at[row_index, col_index].set(recon_cylinder)
         return recon
 
@@ -1287,13 +1164,13 @@ class TomographyModel(ParameterHandler):
         spec = [None] * len(recon_shape)
         spec[axis] = 'devices'
         recon_sharding = jax.sharding.NamedSharding(
-            self.mesh, jax.sharding.PartitionSpec(*spec))
+            self.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
         # Global slice count from the cylinder (the DEVICE form -- padded when the
         # slice axis pads); rows/cols from the params (never padded).
         return mjs.assemble_sharded(
             results, (rows, cols, recon_cylinder.shape[-1]), recon_sharding)
 
-    def sparse_forward_project(self, voxel_values, pixel_indices, view_indices=None, output_device=None):
+    def sparse_forward_project(self, voxel_values, pixel_indices):
         """
         Forward project the given voxel values to a sinogram.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
@@ -1302,83 +1179,20 @@ class TomographyModel(ParameterHandler):
         Args:
             voxel_values (jax.numpy.DeviceArray): 2D array of voxel values to project, size (len(pixel_indices), num_recon_slices).
             pixel_indices (jax array): Array of indices specifying which voxels to project.
-            view_indices (jax array): Array of indices of views to project
-            output_device (jax device): Device on which to put the output
 
         Returns:
-            jnp array: The resulting 3D sinogram after projection.
+            jnp array: The resulting 3D sinogram after projection, view-sharded across the mesh.
         """
-        # When a mesh is configured, take the sharded path: the recon cylinders are
-        # expected slice-sharded and the result is returned view-sharded (no gather
-        # here; the user-facing forward_project gathers).  Otherwise the
-        # single-device path runs unchanged.
-        #
-        # Partial-view projection (view_indices) is single-device-only: a subset of views
-        # breaks the equal view-shard, so the sharded path does not implement it.  On a trivial
-        # 1-device mesh (the auto-default placement path) there is nothing to shard, so fall
-        # through to the single-device implementation; only a real multi-device mesh rejects
-        # view_indices.  (The view-batching callers, e.g. vcls, run single-device.)
-        # RETIRE-AFTER-SHARDING: view_indices retires once every geometry is sharded -- see the
-        # fuller note in sparse_back_project.
-        if self.is_sharded and view_indices is None:
-            return self._sparse_forward_project_sharded(
-                voxel_values, pixel_indices, view_indices=None)
-        if self.is_sharded and len(self.shard_devices) > 1:
-            raise NotImplementedError(
-                "Sharded forward projection with view_indices is not supported on a "
-                "multi-device mesh (a subset of views breaks the equal view-shard).")
-        return self._sparse_forward_project_single_device(
-            voxel_values, pixel_indices, view_indices=view_indices,
-            output_device=output_device)
+        # Every geometry runs the placement path (a trivial 1-device mesh when single-device), so
+        # the sharded projector handles all cases: the recon cylinders are slice-sharded in and the
+        # result is returned view-sharded (no gather here; the user-facing forward_project gathers).
+        return self._sparse_forward_project_sharded(voxel_values, pixel_indices)
 
-    def _sparse_forward_project_single_device(self, voxel_values, pixel_indices,
-                                              view_indices=None, output_device=None):
-        """
-        Single-device forward projection (the original prerelease implementation).
-
-        See :meth:`sparse_forward_project` for the full argument description.  This
-        method carries the unchanged single-device body so the sharded path can be
-        added alongside it without disturbing single-device behavior.
-        """
-        # Batch the views and pixels for possible transfer to the gpu
-        transfer_view_batch_size = self.view_batch_size_for_vmap
-        transfer_pixel_batch_size = self.transfer_pixel_batch_size
-        sinogram_shape = self.get_params('sinogram_shape')
-        if view_indices is None:
-            view_indices = jnp.arange(sinogram_shape[0])
-        num_view_batches = jnp.ceil(sinogram_shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
-        sinogram_shape = self.get_params('sinogram_shape')
-
-        num_pixels = len(pixel_indices)
-        pixel_batch_boundaries = np.arange(start=0, stop=num_pixels, step=transfer_pixel_batch_size)
-        pixel_batch_boundaries = np.append(pixel_batch_boundaries, num_pixels)
-
-        sinogram = []
-        for view_indices_batch in view_indices_batched:
-            sinogram_views = jnp.zeros((len(view_indices_batch), *sinogram_shape[1:]), device=self.sinogram_device)
-            # Loop over pixel batches
-            for k, pixel_index_start in enumerate(pixel_batch_boundaries[:-1]):
-                # Send a batch of pixels to sinogram_device
-                pixel_index_end = pixel_batch_boundaries[k + 1]
-                voxel_batch, pixel_index_batch = jax.device_put([voxel_values[pixel_index_start:pixel_index_end],
-                                                                 pixel_indices[pixel_index_start:pixel_index_end]],
-                                                                self.sinogram_device)
-                sinogram_views = sinogram_views.block_until_ready()
-                sinogram_views = sinogram_views + self.projector_functions.sparse_forward_project(voxel_batch, pixel_index_batch, view_indices=view_indices_batch)
-
-            # Include these views in the sinogram
-            sinogram.append(jax.device_put(sinogram_views, output_device))
-
-        sinogram = jnp.concatenate(sinogram)
-        return sinogram
-
-    def _sharded_forward_project_setup(self, voxel_values, pixel_indices, view_indices):
+    def _sharded_forward_project_setup(self, voxel_values, pixel_indices):
         """Shared setup for sharded forward projection (adjoint of the back setup).
 
-        Validates the contract (no view subset), defensively slice-shards the
-        recon cylinders (a no-op when already slice-sharded), and builds the
-        per-device data the band streaming needs.
+        Defensively slice-shards the recon cylinders (a no-op when already
+        slice-sharded), and builds the per-device data the band streaming needs.
 
         Returns:
             (devices, n_dev, num_padded_views, num_slices, num_pixels, recon_shard_info,
@@ -1390,10 +1204,6 @@ class TomographyModel(ParameterHandler):
             it produces (its sinogram view-shard); ``local_pixels`` is
             ``pixel_indices`` placed on each device once.
         """
-        if view_indices is not None:
-            raise NotImplementedError(
-                "Sharded forward projection currently requires view_indices=None "
-                "(the full view-sharded sinogram).")
         # Defensively slice-shard the cylinders (idempotent, no-op when already
         # slice-sharded) so internal callers that pass a plain array still work.
         voxel_values = self._shard_recon(voxel_values)
@@ -1431,7 +1241,7 @@ class TomographyModel(ParameterHandler):
         return (devices, n_dev, num_padded_views, num_slices, num_pixels,
                 recon_shard_info, view_ranges, local_pixels)
 
-    def _sparse_forward_project_sharded(self, voxel_values, pixel_indices, view_indices=None):
+    def _sparse_forward_project_sharded(self, voxel_values, pixel_indices):
         """
         Sharded forward projection: slice-sharded recon -> view-sharded sinogram.
 
@@ -1462,14 +1272,13 @@ class TomographyModel(ParameterHandler):
             voxel_values (jax array): slice-sharded recon cylinders
                 ``(num_pixels, num_slices)``.
             pixel_indices (jax array): 1D indices into the flattened (rows, cols).
-            view_indices: must be None in sharded mode.
 
         Returns:
             jax array of shape sinogram_shape, view-sharded across the mesh.
         """
         (devices, n_dev, num_padded_views, num_slices, num_pixels,
          recon_shard_info, view_ranges, local_pixels) = \
-            self._sharded_forward_project_setup(voxel_values, pixel_indices, view_indices)
+            self._sharded_forward_project_setup(voxel_values, pixel_indices)
 
         # Produce each view-owner's forward-projected view-shard.  The default (geometry-neutral)
         # path gathers the full slice cylinder per view-owner and runs the monolithic forward;
@@ -1531,11 +1340,11 @@ class TomographyModel(ParameterHandler):
             # and, by issuing many small rigid dispatches, it defeats the XLA rematerialization
             # that the monolithic single-device forward relies on (measured: 1024^3 single-device
             # peak ~16 GB one-shot vs ~32 GB looped).  Project the full cylinder in ONE call,
-            # recovering the legacy single-device memory profile.
+            # recovering the one-shot single-device memory profile.
             if n_dev == 1:
                 full_cyl = recon_shard_info[slice_owners[0]][0]
                 return self.projector_functions.sparse_forward_project(
-                    full_cyl, idx, view_indices=view_ranges[view_owner])
+                    full_cyl, idx, owned_view_indices=view_ranges[view_owner])
             owned = None
             for p0 in range(0, n_local, pixel_batch):
                 p1 = min(p0 + pixel_batch, n_local)
@@ -1548,7 +1357,7 @@ class TomographyModel(ParameterHandler):
                      for so in slice_owners], axis=1)
                 full_cyl = full_cyl[:, :real_slices]
                 part = self.projector_functions.sparse_forward_project(
-                    full_cyl, idx[p0:p1], view_indices=view_ranges[view_owner])
+                    full_cyl, idx[p0:p1], owned_view_indices=view_ranges[view_owner])
                 owned = part if owned is None else owned + part
             return owned
 
@@ -1584,69 +1393,33 @@ class TomographyModel(ParameterHandler):
     def _sino_ones_device_form(self, sino_like):
         """All-ones sinogram in the device form, with any padded entries ZERO.
 
-        The constant-weights Hessian computation back-projects a ones sinogram;
-        padded views AND padded detector rows must contribute nothing, so their
-        entries are zero (mirroring the entry zero-fill).  Built per-shard
-        directly on each owner device (no host array, no data movement, no
-        sharded-array reference cycle).  Without padding this is just
-        ``ones_like``.
+        The constant-weights Hessian/VCD path back-projects a ones sinogram; padded views AND
+        padded detector rows must contribute nothing, so their entries are zero (mirroring the
+        entry zero-fill).  Thin wrapper over :func:`mbirjax._sharding.sharded_full` (fill 1), which
+        builds it per-shard on each owner device (no host array, no data movement); ``sino_like``
+        supplies only the dtype.
 
         Args:
-            sino_like (jax array): a device-form sinogram supplying shape, dtype,
-                and (when sharded) the target sharding.
+            sino_like (jax array): a device-form sinogram supplying the dtype.
 
         Returns:
             A device-form all-ones (real entries) / zeros (padded entries) array.
         """
-        row_pad = self._sino_row_padding()
-        if not (self.is_sharded and (self.sino_placement.is_padded or row_pad is not None)):
-            return jnp.ones_like(sino_like)
-        axis = self.sinogram_shard_axis() % sino_like.ndim
-        if row_pad is not None:
-            row_axis, real_rows, padded_rows = row_pad
-            row_axis = row_axis % sino_like.ndim
-
-        def real_block_with_row_tail(n_views, dev):
-            # Ones over the real (views x rows), zeros over the padded row tail.
-            shape_valid = list(sino_like.shape)
-            shape_valid[axis] = n_views
-            if row_pad is None:
-                return jnp.ones(tuple(shape_valid), dtype=sino_like.dtype, device=dev)
-            shape_valid[row_axis] = real_rows
-            ones = jnp.ones(tuple(shape_valid), dtype=sino_like.dtype, device=dev)
-            tail_shape = list(shape_valid)
-            tail_shape[row_axis] = padded_rows - real_rows
-            tail = jnp.zeros(tuple(tail_shape), dtype=sino_like.dtype, device=dev)
-            return jnp.concatenate([ones, tail], axis=row_axis)
-
-        pieces = []
-        for dev, (v0, v1), n_valid in self.sino_placement.padded_shard_ranges():
-            block = v1 - v0
-            parts = []
-            if n_valid > 0:
-                parts.append(real_block_with_row_tail(n_valid, dev))
-            if block - n_valid > 0:
-                shape_tail = list(sino_like.shape)
-                shape_tail[axis] = block - n_valid
-                parts.append(jnp.zeros(tuple(shape_tail), dtype=sino_like.dtype, device=dev))
-            pieces.append(parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis))
-        return mjs.assemble_sharded(pieces, sino_like.shape,
-                                    self.sino_placement.shard_structure(sino_like.ndim))
+        return mjs.sharded_full(self.sino_placement, tuple(self.get_params('sinogram_shape')),
+                                1.0, row_pad=self._sino_row_padding(), dtype=sino_like.dtype)
 
     def _sino_device_shape(self):
         """The sinogram shape as it exists ON THE DEVICES: the params shape with the
         view axis (and, for geometries that pad rows with slices, the row axis) at
         its device-form (possibly padded) length.  Equals the params shape exactly
-        when nothing pads (or when not sharded).  Use for validating device-form
-        arrays; the params answer "what is the problem?", this answers "what is on
-        the devices?"."""
+        when nothing pads.  Use for validating device-form arrays; the params answer
+        "what is the problem?", this answers "what is on the devices?"."""
         shape = list(self.get_params('sinogram_shape'))
-        if self.is_sharded:
-            shape[self.sinogram_shard_axis() % len(shape)] = self.sino_placement.padded_size
-            row_pad = self._sino_row_padding()
-            if row_pad is not None:
-                row_axis, _real_rows, padded_rows = row_pad
-                shape[row_axis % len(shape)] = padded_rows
+        shape[self.sinogram_shard_axis() % len(shape)] = self.sino_placement.padded_size
+        row_pad = self._sino_row_padding()
+        if row_pad is not None:
+            row_axis, _real_rows, padded_rows = row_pad
+            shape[row_axis % len(shape)] = padded_rows
         return tuple(shape)
 
     def _recon_device_shape(self):
@@ -1654,8 +1427,7 @@ class TomographyModel(ParameterHandler):
         slice axis at its device-form (possibly padded) length.  The padded slices
         are identically zero (forced-zero invariant)."""
         shape = list(self.get_params('recon_shape'))
-        if self.is_sharded:
-            shape[self.recon_shard_axis() % len(shape)] = self.recon_placement.padded_size
+        shape[self.recon_shard_axis() % len(shape)] = self.recon_placement.padded_size
         return tuple(shape)
 
     def _forward_project_all_bands(self, band_bounds, recon_shard_info, view_ranges,
@@ -1711,23 +1483,20 @@ class TomographyModel(ParameterHandler):
         def worker(i, device):
             band = band_on_views[device]                       # (num_pixels, L)
             return self.projector_functions.sparse_forward_project(
-                band, local_pixels[i], view_indices=view_ranges[device])
+                band, local_pixels[i], owned_view_indices=view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
 
-    def sparse_back_project(self, sinogram, pixel_indices, view_indices=None, coeff_power=1, output_device=None):
+    def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1):
         """
         Back project the given sinogram to the voxels given by the indices.  The sinogram should be the full sinogram
-        associated with all of the angles used to define the ct model, even if a set of view_indices is provided.
+        associated with all of the angles used to define the ct model.
         The indices are into a flattened 2D array of shape (recon_rows, recon_cols), and the projection is done using
-        all voxels with those indices across all the slices.  If view_indices is a jax array of ints, then they should
-        be the indices into the sinogram that is passed in here.
+        all voxels with those indices across all the slices.
 
         Args:
             sinogram (jnp array): 3D jax array containing the full sinogram.
             pixel_indices (jnp array): Array of indices specifying which voxels to back project.
-            view_indices (jax array): Array of indices of views to project.  These are indices into the first axis of sinogram.
             coeff_power (int, optional): Normally 1, but set to 2 for Hessian diagonal
-            output_device (jax device, optional): Device on which to put the output
 
         Returns:
             A jax array of shape (len(indices), num_slices).  On a sharded model this is the
@@ -1737,54 +1506,32 @@ class TomographyModel(ParameterHandler):
             of this internal method that need the real shape must crop ``[:, :num_real_slices]``
             themselves (the padded slices are inert zeros, so the crop is exact).
         """
-        # When a mesh is configured, take the sharded path: the
-        # sinogram is expected view-sharded and the result is returned
-        # slice-sharded (no gather here; the user-facing back_project gathers).
-        # Otherwise the single-device path runs unchanged.
-        #
-        # Partial-view back projection (view_indices) is single-device-only (a subset of views
-        # breaks the equal view-shard).  On a trivial 1-device mesh (the auto-default placement
-        # path) there is nothing to shard, so fall through to the single-device implementation;
-        # only a real multi-device mesh rejects view_indices.  (e.g. vcls runs single-device.)
-        #
-        # RETIRE-AFTER-SHARDING: ``view_indices`` is the legacy view-table index -- both the
-        # user-facing view-SUBSET selector (superseded by the single-view sibling in vcls.py) and
-        # the single-device view-batching's per-batch angle selector (the per-view kernels in
-        # projectors.py do ``view_params_array[view_indices]``).  Once every geometry is sharded
-        # it can be removed: the batching slices the traced ``view_params_array`` directly, and
-        # this parameter, the multi-device guard just below, and the forward's mirror all retire
-        # together.  (This is the home of the "mechanism" referenced in vcls.py.)
-        if self.is_sharded and view_indices is None:
-            return self._sparse_back_project_sharded(
-                sinogram, pixel_indices, view_indices=None,
-                coeff_power=coeff_power)
-        if self.is_sharded and len(self.shard_devices) > 1:
-            raise NotImplementedError(
-                "Sharded back projection with view_indices is not supported on a "
-                "multi-device mesh (a subset of views breaks the equal view-shard).")
-        return self._sparse_back_project_single_device(
-            sinogram, pixel_indices, view_indices=view_indices,
-            coeff_power=coeff_power, output_device=output_device)
+        # Every geometry runs the placement path, so the sharded projector handles all cases: the
+        # sinogram is view-sharded in and the result is slice-sharded out (no gather here; the
+        # user-facing back_project gathers).  The single-device back DRIVER below stays live -- the
+        # GPU n=1 short-circuit in _sparse_back_project_sharded routes a single-GPU recon to it (the
+        # pixel kernel is ~2.25x faster than the band kernel on GPU).
+        return self._sparse_back_project_sharded(sinogram, pixel_indices, coeff_power=coeff_power)
 
-    def _sparse_back_project_single_device(self, sinogram, pixel_indices, view_indices=None,
+    def _sparse_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """
-        Single-device back projection (the original prerelease implementation).
+        Single-device back projection: project ALL views (transfer-batched) to voxel cylinders.
 
-        See :meth:`sparse_back_project` for the full argument description.  This
-        method carries the unchanged single-device body so the sharded
-        path can be added alongside it without disturbing single-device behavior.
+        No longer a dispatch target of :meth:`sparse_back_project` (which always takes the
+        placement path); it is kept LIVE because the GPU n=1 back short-circuit in
+        :meth:`_sparse_back_project_sharded` routes a single-GPU recon here -- the monolithic
+        pixel kernel is ~2.25x faster than the band kernel on a single GPU.
         """
         # Batch the views and pixels for possible transfer to the gpu
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
-        if view_indices is None:
-            view_indices = jnp.arange(num_views)
+        all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
-        view_indices_batched = jnp.array_split(view_indices, num_view_batches)
+        view_indices_batched = jnp.array_split(all_view_indices, num_view_batches)
 
-        pixel_indices = jax.device_put(pixel_indices, self.sinogram_device)
+        pixel_indices = jax.device_put(pixel_indices, self.sino_placement.devices[0])
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
 
@@ -1796,14 +1543,14 @@ class TomographyModel(ParameterHandler):
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
         for view_indices_batch in view_indices_batched:
             view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.sinogram_device)
+            view_batch = jax.device_put(view_batch, self.sino_placement.devices[0])
 
             # Loop over pixel batches
             voxel_batch_list = []
             for pixel_index_batch in pixel_indices_batched:
                 # Back project a batch
                 voxel_batch = self.projector_functions.sparse_back_project(view_batch, pixel_index_batch,
-                                                                           view_indices=view_indices_batch,
+                                                                           owned_view_indices=view_indices_batch,
                                                                            coeff_power=coeff_power)
                 voxel_batch = voxel_batch.block_until_ready()
                 voxel_batch_list.append(jax.device_put(voxel_batch, output_device))
@@ -1812,13 +1559,12 @@ class TomographyModel(ParameterHandler):
 
         return recon_at_indices
 
-    def _sharded_back_project_setup(self, sinogram, pixel_indices, view_indices):
+    def _sharded_back_project_setup(self, sinogram, pixel_indices):
         """Shared setup for the sharded back-projection paths.
 
-        Validates the view-sharded contract (no view subset), defensively shards
-        the sinogram (a no-op when already view-sharded, so internal callers that
-        pass a plain array -- e.g. compute_hessian_diagonal with plain weights --
-        still work), and builds the data needed for each view-owner.
+        Defensively shards the sinogram (a no-op when already view-sharded, so internal
+        callers that pass a plain array -- e.g. compute_hessian_diagonal with plain
+        weights -- still work), and builds the data needed for each view-owner.
 
         Returns:
             (devices, n_dev, num_slices, num_pixels, shard_info, local_pixels):
@@ -1827,13 +1573,6 @@ class TomographyModel(ParameterHandler):
             angles; ``local_pixels`` is ``pixel_indices`` placed on each view-owner
             once.
         """
-        if view_indices is not None:
-            # A view subset would mean filtering each view-owner's view-shard to the
-            # requested views and adjusting the angle lookup per shard; not needed
-            # by the consumers (back_project / direct_recon pass all views).
-            raise NotImplementedError(
-                "Sharded back projection currently requires view_indices=None "
-                "(the full view-sharded sinogram).")
         # Defensively run the (idempotent, no-op-when-already-sharded) shard so
         # internal callers that pass a plain array still work correctly.
         sinogram = self._shard_sinogram(sinogram)
@@ -1876,8 +1615,7 @@ class TomographyModel(ParameterHandler):
         local_pixels = [jax.device_put(pixel_indices, dev) for dev in devices]
         return devices, n_dev, num_slices, num_pixels, shard_info, local_pixels
 
-    def _sparse_back_project_sharded(self, sinogram, pixel_indices, view_indices=None,
-                                     coeff_power=1):
+    def _sparse_back_project_sharded(self, sinogram, pixel_indices, coeff_power=1):
         """
         Sharded back projection: view-sharded sinogram -> slice-sharded recon.
 
@@ -1928,9 +1666,6 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (jax array): view-sharded sinogram (NamedSharding on axis 0).
             pixel_indices (jax array): 1D indices into the flattened (rows, cols).
-            view_indices: must be None in sharded mode (the full view-sharded
-                sinogram is expected).  A view subset would require per-shard
-                filtering or masking and is deferred.
             coeff_power (int): 1 normally, 2 for the Hessian diagonal.
 
         Returns:
@@ -1947,9 +1682,7 @@ class TomographyModel(ParameterHandler):
         # GPU ONLY: on CPU the SAME band kernel is ~8x FASTER -- it avoids the single-device
         # back-vertical cache cliff -- so CPU keeps the sharded path.  (The two kernels have
         # OPPOSITE platform rankings; see the platform-divergent back-kernel lesson in lessons.md.)
-        # Guarded on view_indices is None so a (future) view-subset request still falls through to
-        # the setup below, which rejects it -- the single-device path would silently ignore it.
-        if (view_indices is None and len(self.recon_placement.devices) == 1
+        if (len(self.recon_placement.devices) == 1
                 and self.recon_placement.devices[0].platform == 'gpu'):
             owner = self.recon_placement.devices[0]
             out = self._sparse_back_project_single_device(
@@ -1959,10 +1692,10 @@ class TomographyModel(ParameterHandler):
                 self.recon_placement.shard_structure(2))
 
         devices, n_dev, num_slices, num_pixels, shard_info, local_pixels = \
-            self._sharded_back_project_setup(sinogram, pixel_indices, view_indices)
+            self._sharded_back_project_setup(sinogram, pixel_indices)
 
         # Each device owns a slice-shard, a contiguous range of slices_per_dev slices
-        # (exact, since configure_sharding requires num_slices % n_dev == 0).  That
+        # (exact, since the slice axis is padded to a multiple of n_dev).  That
         # slice-shard is streamed in BANDS -- contiguous sub-ranges -- so the
         # slice-owner never gathers all n_dev partials for the whole slice-shard at once
         # (thereby limiting intermediate memory).  By default, a band is
@@ -2132,7 +1865,7 @@ class TomographyModel(ParameterHandler):
         return mjs.run_per_device(devices, worker, executor=pool)
 
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
-                                         view_indices, coeff_power):
+                                         owned_view_indices, coeff_power):
         """Back-project one view-owner's full view-shard onto the GLOBAL slice band [g0, g1).
 
         Default (geometry-neutral) behavior: run the geometry's BANDED back kernel on the FULL
@@ -2148,7 +1881,7 @@ class TomographyModel(ParameterHandler):
         """
         return self.projector_functions.sparse_back_project_band(
             view_data, pixel_indices, g0, g1 - g0,
-            view_indices=view_indices, coeff_power=coeff_power)
+            owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):
@@ -2229,7 +1962,7 @@ class TomographyModel(ParameterHandler):
             start += length
         return bounds
 
-    def compute_hessian_diagonal(self, weights=None, output_device=None, output_sharded=False):
+    def compute_hessian_diagonal(self, weights=None, output_sharded=False):
         """
         Computes the diagonal of the Hessian matrix, which is computed by doing a backprojection of the weight
         matrix except using the square of the coefficients in the backprojection to a given voxel.
@@ -2238,13 +1971,10 @@ class TomographyModel(ParameterHandler):
 
         Args:
             weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
-            output_device (jax device): Device on which to put the output (single-device /
-                gathered output only; ignored when ``output_sharded=True`` on a sharded model).
             output_sharded (bool, optional): If False (default), return a plain array in the
                 problem's REAL shape (any padded slices are cropped).  If True, return the
                 internal device form (slice-sharded, slice axis possibly padded with
-                exactly-zero entries).  (The legacy ``output_device`` kwarg is reconciled
-                with this when the remaining geometries are ported.)
+                exactly-zero entries).
 
         Returns:
             jnp array: Diagonal of the Hessian matrix with same shape as recon.
@@ -2252,10 +1982,11 @@ class TomographyModel(ParameterHandler):
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
         if weights is None:
-            # Plain ones in the REAL shape: the sharded back projection's entry placement
-            # zero-pads any padded views, which is exactly the inert weighting they need.
-            with jax.default_device(self.main_device):
-                weights = jnp.ones((num_views,) + sinogram_shape[1:])
+            # Unit weights built directly in the view-sharded device form (ones in the real
+            # views/rows, zero in the inert padding) -- no full sinogram-of-ones is ever
+            # materialized on one device before sharding.
+            weights = mjs.sharded_full(self.sino_placement, (num_views,) + tuple(sinogram_shape[1:]),
+                                       1.0, row_pad=self._sino_row_padding())
         elif tuple(weights.shape) not in (tuple(sinogram_shape), self._sino_device_shape()):
             # Accept the problem shape (plain weights) or the device-form shape (weights
             # already placed, with a possibly padded view axis).
@@ -2266,17 +1997,16 @@ class TomographyModel(ParameterHandler):
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]
         max_index = num_recon_rows * num_recon_cols
         indices = jnp.arange(max_index)
-        hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2, output_device=output_device)
+        hessian_diagonal = self.sparse_back_project(weights, indices, coeff_power=2)
 
         # Slice count from the result: the sharded path returns the device form
         # (padded slice axis, masked to zero), the single-device path the real shape.
         hessian_diagonal = hessian_diagonal.reshape((num_recon_rows, num_recon_cols,
                                                      hessian_diagonal.shape[-1]))
-        if output_sharded or not self.is_sharded:
+        if output_sharded:
             return hessian_diagonal
-        # Default exit on a sharded model: plain array in the problem's REAL shape.
-        out = self._gather_recon(hessian_diagonal)
-        return jax.device_put(out, output_device) if output_device is not None else out
+        # Default exit: plain array in the problem's REAL shape.
+        return self._gather_recon(hessian_diagonal)
 
     def set_view_parameters(self, view_params):
         """
@@ -2350,8 +2080,8 @@ class TomographyModel(ParameterHandler):
         if use_gpu not in ['automatic', 'full', 'none']:
             error_message = "use_gpu must be one of \n"
             error_message += " 'automatic' (use the gpu when one is available, otherwise the cpu),\n"
-            error_message += " 'full' (use gpu for all calculations),\n"
-            error_message += " 'none' (do not use gpu at all)."
+            error_message += " 'none' (do not use gpu at all).\n"
+            error_message += " ('full' is a deprecated synonym of 'automatic'.)"
             raise ValueError(error_message)
 
     def auto_set_regularization_params(self, sinogram, weights=None):
@@ -2627,7 +2357,11 @@ class TomographyModel(ParameterHandler):
         """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
-        return jnp.zeros(recon_shape, device=self.main_device)
+        # Honor the output_sharded contract: device form (slice-sharded zeros, built per-shard)
+        # vs a plain array.
+        if output_sharded:
+            return mjs.sharded_full(self.recon_placement, tuple(recon_shape), 0.0)
+        return jnp.zeros(recon_shape)
 
     def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
                       output_sharded=False):
@@ -2646,7 +2380,13 @@ class TomographyModel(ParameterHandler):
             filtered_sinogram (jax array): The sinogram after FBP filtering.
         """
         warnings.warn('direct_filter not implemented for TomographyModel.')
-        return jnp.zeros_like(sinogram, device=self.sinogram_device)
+        sinogram_shape = self.get_params('sinogram_shape')
+        # Honor the output_sharded contract: device form (view-sharded zeros, built per-shard)
+        # vs a plain array.
+        if output_sharded:
+            return mjs.sharded_full(self.sino_placement, tuple(sinogram_shape), 0.0,
+                                    row_pad=self._sino_row_padding())
+        return jnp.zeros(sinogram_shape)
 
     def _apply_direct_recon_filter(self, sinogram, filter_name, filter_scale, output_sharded,
                                    row_weight=None):
@@ -2661,6 +2401,21 @@ class TomographyModel(ParameterHandler):
         (tomography_utils.apply_row_filter) keeps the peak at the input+output floor;
         when a mesh is configured each device filters its own view-shard locally (no
         cross-device movement), exactly like ParallelBeamModel.fbp_filter.
+
+        Equally-spaced-angle assumption: the ``pi / num_views`` factor is the angular
+        quadrature weight ``d(theta)`` of the backprojection sum that approximates the
+        FBP/FDK angular integral, so it assumes the views are EQUALLY SPACED over the
+        conventional full angular range (the [0, pi) period for parallel beam, via the
+        conjugate-ray symmetry).  For NONUNIFORMLY-spaced angles, LIMITED-ANGLE scans, or
+        short scans this scalar is only approximate -- the quadrature-correct weight would be
+        a PER-VIEW local angular spacing, and short scans additionally need redundancy
+        (Parker-style) weighting.  That is acceptable for the intended use of direct recon as
+        a quick analytic image or an MBIR initializer (iterative ``recon()`` absorbs a global
+        angular mis-weighting in a few iterations); a STANDALONE direct recon on such data is
+        not quantitatively accurate -- prefer ``recon()`` there.  Generalizing this to a
+        per-view weight is deliberately not done: the correct weight depends on assumptions
+        the model cannot safely infer (full vs partial angular coverage; geometry redundancy),
+        so changing it risks regressing the common equispaced case.
 
         Args:
             sinogram (jax array): (num_views, num_rows, num_channels); plain or view-sharded.
@@ -2687,26 +2442,20 @@ class TomographyModel(ParameterHandler):
         # weight would promote the window and cascade the whole sinogram to f64.
         row_weight_np = None if row_weight is None else np.asarray(row_weight, dtype=np.float32)
 
-        if self.is_sharded:
-            # Multi-device: one thread per device, each filtering its own view shard
-            # locally (no cross-device data movement).  Shard once at entry (no-op when
-            # already view-sharded) so the per-device map sees every mesh device's shard.
-            sinogram = self._shard_sinogram(sinogram)
-            dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
+        # One thread per device, each filtering its own view shard locally (no cross-device data
+        # movement).  Shard once at entry (no-op when already view-sharded) so the per-device map
+        # sees every mesh device's shard (a single device is the trivial 1-shard case).
+        sinogram = self._shard_sinogram(sinogram)
+        dev_to_shard = {s.device: s.data for s in sinogram.addressable_shards}
 
-            def worker_process(i, device):
-                shard = dev_to_shard[device]
-                filter_jax = jnp.array(filter_np)            # tiny upload: 2*channels-1 floats
-                rw = None if row_weight_np is None else jnp.array(row_weight_np)
-                return tomography_utils.apply_row_filter(shard, filter_jax, row_weight=rw)
-
-            results = mjs.run_per_device(self.shard_devices, worker_process)
-            filtered_sinogram = mjs.assemble_sharded(results, sinogram.shape, sinogram.sharding)
-        else:
-            # Single-device path (no mesh configured): filter directly.
-            filter_jax = jnp.array(filter_np)
+        def worker_process(i, device):
+            shard = dev_to_shard[device]
+            filter_jax = jnp.array(filter_np)            # tiny upload: 2*channels-1 floats
             rw = None if row_weight_np is None else jnp.array(row_weight_np)
-            filtered_sinogram = tomography_utils.apply_row_filter(sinogram, filter_jax, row_weight=rw)
+            return tomography_utils.apply_row_filter(shard, filter_jax, row_weight=rw)
+
+        results = mjs.run_per_device(self.shard_devices, worker_process)
+        filtered_sinogram = mjs.assemble_sharded(results, sinogram.shape, sinogram.sharding)
 
         if output_sharded:
             return filtered_sinogram                     # keep the device form
@@ -2725,15 +2474,11 @@ class TomographyModel(ParameterHandler):
         """
 
         # Initialize logging for this run
-        if first_iteration == 0 or self.logger is None:
-            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
-        self.logger.info('MBIRJAX Version = {}'.format(self.version))
-        self.logger.info('Reconstruction devices: {}'.format(self._device_report()))
+        self._log_run_header(first_iteration, logfile_path, print_logs)
 
         # Generate set of voxel partitions
         recon_shape, granularity, use_ror_mask = self.get_params(['recon_shape', 'granularity', 'use_ror_mask'])
-        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.main_device, use_ror_mask=use_ror_mask)
-        partitions = [jax.device_put(partition, self.main_device) for partition in partitions]
+        partitions = mj.gen_set_of_pixel_partitions(recon_shape, granularity, output_device=self.recon_placement.devices[0], use_ror_mask=use_ror_mask)
 
         # Generate sequence of partitions to use
         partition_sequence = self.get_params('partition_sequence')
@@ -2742,21 +2487,10 @@ class TomographyModel(ParameterHandler):
         regularization_params = None
 
         try:
-            # Check that sinogram and weights are not taking up GPU space.  Arrays already in a
-            # multi-device NamedSharding (e.g. prepared by prepare_sino_for_devices) are left in
-            # place: a device_put to a single device would silently GATHER them, defeating the
-            # prepared placement; vcd_recon's entry placement handles them directly.
-            def _committed_elsewhere(x, target_device):
-                return (isinstance(x, type(jnp.zeros(1)))
-                        and not isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding)
-                        and list(x.devices())[0] != target_device)
-
-            if _committed_elsewhere(sinogram, self.sinogram_device):
-                sinogram = jax.device_put(sinogram, self.sinogram_device)
-            if weights is not None and _committed_elsewhere(weights, self.sinogram_device):
-                weights = jax.device_put(weights, self.sinogram_device)
-            if init_recon is not None and _committed_elsewhere(init_recon, self.main_device):
-                init_recon = jax.device_put(init_recon, self.main_device)
+            # No input pre-placement here: vcd_recon's entry placement (to_sino / to_recon) shards
+            # sinogram / weights / init_recon from wherever they reside (a prepared NamedSharding
+            # passes through; a plain array is sharded), so a single-device device_put would only
+            # add a redundant hop.
 
             # Test the sinogram contains valid data
             # Sometimes users accidentally create complex sinograms when they take the -log.
@@ -2810,8 +2544,8 @@ class TomographyModel(ParameterHandler):
         if is_oom(traceback.format_exc()):
             # Derive on-GPU from the actual recon device platform, not the use_gpu REQUEST param:
             # the request does not say where the recon actually ran (e.g. explicit CPU sharding via
-            # configure_sharding under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
-            recon_devices = self._recon_devices()
+            # configure_devices under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
+            recon_devices = self.shard_devices
             on_gpu = bool(recon_devices) and recon_devices[0] is not None \
                 and self._platform_label(recon_devices[0]) == 'GPU'
             log_oom_guidance(self.logger, on_gpu=on_gpu)
@@ -2898,7 +2632,7 @@ class TomographyModel(ParameterHandler):
             # Default exit: gather to a plain single-device array in the problem's REAL
             # shape (_gather_recon crops any padded slices; both are no-ops on an
             # unsharded model).
-            recon = jax.device_put(self._gather_recon(recon), device=self.main_device)
+            recon = jax.device_put(self._gather_recon(recon), device=self.recon_placement.devices[0])
         return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
@@ -2928,15 +2662,15 @@ class TomographyModel(ParameterHandler):
         # Ensure that everything has the right shape and is on the main device
         self.verify_valid_params()
 
-        # Placement helpers.  When sharding is on, recon-like arrays are slice-sharded and sino-like
-        # arrays are view-sharded; otherwise each is committed to main/sinogram_device.  Routing every
-        # placement through these keeps the rest of the loop placement-agnostic and (crucially) avoids
+        # Placement helpers: recon-like arrays are slice-sharded and sino-like arrays are
+        # view-sharded (a single device is the trivial 1-shard case).  Routing every placement
+        # through these keeps the rest of the loop placement-agnostic and (crucially) avoids
         # committing a sharded array to a single device, which would silently gather it.
         def to_sino(x):
-            return self._shard_sinogram(x) if self.is_sharded else jax.device_put(x, self.sinogram_device)
+            return self._shard_sinogram(x)
 
         def to_recon(x):
-            return self._shard_recon(x) if self.is_sharded else jax.device_put(x, self.main_device)
+            return self._shard_recon(x)
 
         if weights is None:
             weights = 1
@@ -2959,7 +2693,9 @@ class TomographyModel(ParameterHandler):
             self.logger.info('Starting direct recon for initial reconstruction')
             init_recon = self.direct_recon(sinogram, output_sharded=True)
         elif isinstance(init_recon, int):
-            init_recon = init_recon * jnp.ones(recon_shape, device=self.main_device)
+            # A constant init recon built directly in the slice-sharded device form (no full
+            # volume is materialized on one device before sharding).
+            init_recon = mjs.sharded_full(self.recon_placement, tuple(recon_shape), float(init_recon))
 
         # Make sure that init_recon has the correct shape and type: the problem's REAL
         # shape (a user-supplied init) or the device form (direct_recon output_sharded=True,
@@ -2996,7 +2732,7 @@ class TomographyModel(ParameterHandler):
         init_recon = alpha * init_recon
 
         recon = init_recon
-        recon = to_recon(recon)  # commit to main_device (single device) or keep slice-sharded (sharded path)
+        recon = to_recon(recon)  # slice-shard (a single device is the trivial 1-shard case)
         error_sinogram = to_sino(error_sinogram)
 
         # Test to make sure the prox_input input is correct
@@ -3011,8 +2747,8 @@ class TomographyModel(ParameterHandler):
                 raise ValueError(error_message)
 
             # Flatten (keeping the array's own slice count -- real or device form), then
-            # place like every other recon-domain array (slice-sharded when sharding is on,
-            # main_device otherwise; the entry placement zero-pads a real-shape input).
+            # place like every other recon-domain array (slice-sharded; the entry placement
+            # zero-pads a real-shape input).
             # flat_recon is slice-sharded in the sharded path and the prox gradient is an
             # elementwise difference of the two, so committing prox_input to a single
             # device would hand the jitted prox gradient arrays on incompatible devices.
@@ -3026,8 +2762,8 @@ class TomographyModel(ParameterHandler):
         # detector-row axis is padded for sharding; normalizing by the real count keeps the
         # reported losses independent of the (inert, identically-zero) padding.
         real_sino_size = int(np.prod(self.get_params('sinogram_shape')))
-        pad_active = self.is_sharded and (self.sino_placement.is_padded
-                                          or self._sino_row_padding() is not None)
+        pad_active = (self.sino_placement.is_padded
+                      or self._sino_row_padding() is not None)
         loss_num_real = real_sino_size if pad_active else None
 
         # Initialize the diagonal of the hessian of the forward model
@@ -3038,10 +2774,8 @@ class TomographyModel(ParameterHandler):
 
         self.logger.info('Computing Hessian diagonal')
         # output_sharded=True keeps the Hessian in the device form (slice-sharded, slice
-        # axis possibly padded -- the padded entries are zero, masked by the back
-        # projection); output_device applies only on the unsharded/legacy path.
-        fm_hessian = self.compute_hessian_diagonal(weights=weights, output_device=self.main_device,
-                                                   output_sharded=True)
+        # axis possibly padded -- the padded entries are zero, masked by the back projection).
+        fm_hessian = self.compute_hessian_diagonal(weights=weights, output_sharded=True)
         # Flatten keeping each array's OWN slice count (the device form may carry a
         # padded slice axis; num_recon_slices is the problem's real count).
         fm_hessian = fm_hessian.reshape((-1, fm_hessian.shape[-1]))
@@ -3159,7 +2893,6 @@ class TomographyModel(ParameterHandler):
 
         times = np.zeros(13)
         # np.set_printoptions(precision=1, floatmode='fixed', suppress=True)
-        partition_worker = jax.device_put(partition, self.sinogram_device)
         # Stage the qGGMRF boundary halos ONCE for this whole partition pass and reuse them
         # for every subset.  The prior couples a voxel only to its same-pixel cross-shard
         # slice neighbor, and the partition's subsets are (almost) disjoint, so a subset's
@@ -3169,14 +2902,12 @@ class TomographyModel(ParameterHandler):
         # (Caveat: gen_pixel_partition replicates a few pixels to equalize subset lengths, so
         # this is not strictly bit-exact at those pixels -- quantified by test; negligible.
         # Set self._vcd_halo_per_subset = True to restore per-subset extraction for A/B.)
-        stage_per_pass = (self.is_sharded
-                          and not getattr(self, '_vcd_halo_per_subset', False))
+        stage_per_pass = not getattr(self, '_vcd_halo_per_subset', False)
         staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
-            subset_worker = partition_worker[index]
             flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset = vcd_subset_updater(
-                flat_recon, error_sinogram, subset, subset_worker, staged_halos)
+                flat_recon, error_sinogram, subset, staged_halos)
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
 
@@ -3218,8 +2949,7 @@ class TomographyModel(ParameterHandler):
                 raise ValueError('Constant weights must have value 1.')
             const_weights = True
 
-        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, pixel_indices_worker,
-                               staged_halos=None):
+        def vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, staged_halos=None):
             """
             Calculate an iteration of the VCD algorithm on a single subset of the partition
             Each iteration of the algorithm should return a better reconstructed recon.
@@ -3232,7 +2962,6 @@ class TomographyModel(ParameterHandler):
                 flat_recon (jax array): 2D array reconstruction with shape (num_recon_rows x num_recon_cols, num_recon_slices).
                 error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
                 pixel_indices (jax array): 1D array of pixel indices.
-                pixel_indices_worker (jax array): Same as pixel_indices, but copied onto the worker device.
                 staged_halos (tuple or None): ``(staged_left, staged_right)`` qGGMRF boundary
                     halos staged once per partition pass (see :meth:`_stage_halos`); forwarded
                     to the sharded prior so the halos are not re-read every subset.  ``None``
@@ -3250,32 +2979,23 @@ class TomographyModel(ParameterHandler):
 
             # Recon-domain gathers/scatters below (fm_hessian[...], flat_recon[...], update_recon)
             # index the *unsharded* pixel axis of a slice-sharded array.  For the gather to be valid
-            # the index array must live on the same devices as the array, so in the sharded path
-            # replicate the indices across the recon mesh (PartitionSpec() == fully replicated); the
-            # single-device path leaves them on main_device unchanged.
-            if self.is_sharded:
-                recon_indices = jax.device_put(
-                    pixel_indices,
-                    jax.sharding.NamedSharding(self.recon_placement.mesh,
-                                               jax.sharding.PartitionSpec()))
-            else:
-                recon_indices = pixel_indices
+            # the index array must live on the same devices as the array, so replicate the indices
+            # across the recon mesh (PartitionSpec() == fully replicated; a single device is the
+            # trivial 1-shard case).
+            recon_indices = jax.device_put(
+                pixel_indices,
+                jax.sharding.NamedSharding(self.recon_placement.mesh,
+                                           jax.sharding.PartitionSpec()))
 
             # Compute the prior model gradient and hessian (i.e., second derivative) terms
             if prox_input is None:
 
                 # qGGMRF prior - compute the qggmrf gradient and hessian at each pixel in the index set.
-                if self.is_sharded:
-                    # Sharded path: flat_recon is slice-sharded, so compute the prior per slice-owner
-                    # with halo exchange for the inter-slice term, keeping the result slice-sharded.
-                    # staged_halos (staged once per partition pass) avoids re-reading the halos here.
-                    prior_grad, prior_hess = self._qggmrf_prior_sharded(
-                        flat_recon, pixel_indices, qggmrf_params, staged_halos=staged_halos)
-                else:
-                    with jax.default_device(self.main_device):
-                        prior_grad, prior_hess = (
-                            mj.qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indices,
-                                                                      qggmrf_params))
+                # flat_recon is slice-sharded, so compute the prior per slice-owner with halo
+                # exchange for the inter-slice term, keeping the result slice-sharded.  staged_halos
+                # (staged once per partition pass) avoids re-reading the halos here.
+                prior_grad, prior_hess = self._qggmrf_prior_sharded(
+                    flat_recon, pixel_indices, qggmrf_params, staged_halos=staged_halos)
             else:
                 # Proximal map prior - compute the prior model gradient at each pixel in the index set.
                 # The prox prior is pointwise (no inter-slice coupling, so no halos); recon_indices
@@ -3290,8 +3010,7 @@ class TomographyModel(ParameterHandler):
                 weighted_error_sinogram = error_sinogram
 
             # Back project to get the gradient
-            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices_worker,
-                                                               output_device=self.main_device)
+            forward_grad = - fm_constant * sparse_back_project(weighted_error_sinogram, pixel_indices)
 
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[recon_indices]
@@ -3308,14 +3027,10 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Compute update direction in sinogram domain
-            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices_worker,
-                                                    output_device=self.sinogram_device)
+            delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
             forward_linear, forward_quadratic = self.get_forward_lin_quad(
-                weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
-                # Sharded: leave the forward scalars where the reduction produced them (the sino
-                # mesh) and reconcile meshes on-device below; single-device: commit to main_device.
-                output_device=(None if self.is_sharded else self.main_device))
+                weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights)
 
             # Compute optimal update step.
             # The forward-model line-search scalars are reduced over the view-sharded sinogram (the
@@ -3325,10 +3040,9 @@ class TomographyModel(ParameterHandler):
             # the line search ON-DEVICE: replicate the forward scalars onto the recon mesh (a cheap
             # scalar reshard over the same devices), do the arithmetic there, and replicate the
             # resulting alpha onto the sino mesh below to scale the sino-sharded delta.
-            if self.is_sharded:
-                forward_linear = self._replicate_scalar(forward_linear, self.recon_placement)
-                forward_quadratic = self._replicate_scalar(forward_quadratic, self.recon_placement)
-                # prior_linear / prior_quadratic_approx are already replicated on the recon mesh.
+            forward_linear = self._replicate_scalar(forward_linear, self.recon_placement)
+            forward_quadratic = self._replicate_scalar(forward_quadratic, self.recon_placement)
+            # prior_linear / prior_quadratic_approx are already replicated on the recon mesh.
             alpha_numerator = forward_linear - prior_linear
             alpha_denominator = forward_quadratic + prior_quadratic_approx + jnp.finfo(jnp.float32).eps
             alpha = alpha_numerator / alpha_denominator
@@ -3342,44 +3056,31 @@ class TomographyModel(ParameterHandler):
 
                 # Clip updates to ensure non-negativity
                 pos_constant = 1.0 / (alpha + jnp.finfo(jnp.float32).eps)
-                # In the sharded path delta_recon_at_indices is already slice-sharded to match
-                # flat_recon; committing it to a single device here would gather it, so only place
-                # it on main_device in the single-device path.
-                if not self.is_sharded:
-                    delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+                # delta_recon_at_indices is already slice-sharded to match flat_recon, so this
+                # stays a local elementwise op (no gather).
                 delta_recon_at_indices = jnp.maximum(-pos_constant * recon_at_indices, delta_recon_at_indices)
 
                 # Recompute sinogram projection
-                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices, output_device=self.sinogram_device)
+                delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
-            # Perform sparse updates at index locations.  In the sharded path delta_recon_at_indices
-            # is already slice-sharded to match flat_recon (so update_recon stays a local scatter);
-            # committing it to a single device would gather it, so only do that single-device.
-            if not self.is_sharded:
-                delta_recon_at_indices = jax.device_put(delta_recon_at_indices, self.main_device)
+            # Perform sparse updates at index locations.  delta_recon_at_indices is already
+            # slice-sharded to match flat_recon, so update_recon stays a local scatter.
             delta_recon_at_indices = alpha * delta_recon_at_indices
 
             flat_recon = update_recon(flat_recon, recon_indices, delta_recon_at_indices)
 
-            # Update sinogram and loss
-            # Update the error sinogram: error_sinogram <- error_sinogram - alpha * delta_sinogram.
-            if self.is_sharded:
-                # Update the error sinogram IN PLACE via a buffer-DONATING fused multiply-add
-                # (alpha replicated onto the sino mesh so the scale stays on-device).  In-place
-                # reuse is required because an out-of-place per-subset update allocates a fresh
-                # view-sharded error sinogram each subset, and the stale ones accumulate in jax's
-                # internal sharded-array reference cycles until gc.  For constant weights
-                # weighted_error_sinogram IS error_sinogram, so release that alias to make
-                # error_sinogram donatable.  (Non-constant weights leave a weighted product
-                # transient that is freed in the cleanup section at the end of the subset.)
-                if const_weights:
-                    weighted_error_sinogram = None
-                error_sinogram = update_error_sinogram(
-                    error_sinogram, self._replicate_scalar(alpha, self.sino_placement), delta_sinogram)
-            else:
-                # Single-device path unchanged (SingleDeviceSharding arrays free on refcount).
-                delta_sinogram = float(alpha) * delta_sinogram
-                error_sinogram = error_sinogram - delta_sinogram
+            # Update sinogram and loss: error_sinogram <- error_sinogram - alpha * delta_sinogram,
+            # IN PLACE via a buffer-DONATING fused multiply-add (alpha replicated onto the sino mesh
+            # so the scale stays on-device).  In-place reuse is required because an out-of-place
+            # per-subset update allocates a fresh view-sharded error sinogram each subset, and the
+            # stale ones accumulate in jax's internal sharded-array reference cycles until gc.  For
+            # constant weights weighted_error_sinogram IS error_sinogram, so release that alias to
+            # make error_sinogram donatable.  (Non-constant weights leave a weighted product
+            # transient that is freed in the cleanup section at the end of the subset.)
+            if const_weights:
+                weighted_error_sinogram = None
+            error_sinogram = update_error_sinogram(
+                error_sinogram, self._replicate_scalar(alpha, self.sino_placement), delta_sinogram)
 
             ell1_for_subset = jnp.sum(jnp.abs(delta_recon_at_indices))
             alpha_for_subset = alpha
@@ -3393,7 +3094,7 @@ class TomographyModel(ParameterHandler):
             # (The alpha*delta scale is now fused into the donated update_error_sinogram jit, so
             # there is no separate scaled_delta transient; forward-projection outputs come from
             # assemble_sharded and DO free on refcount, so neither is freed here.)
-            if self.is_sharded and not const_weights:
+            if not const_weights:
                 jax.block_until_ready((flat_recon, error_sinogram))
                 weighted_error_sinogram.delete()
 
@@ -3401,13 +3102,15 @@ class TomographyModel(ParameterHandler):
 
         return vcd_subset_updater
 
-    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights,
-                             output_device=None):
+    def get_forward_lin_quad(self, weighted_error_sinogram, delta_sinogram, weights, fm_constant, const_weights):
         """
         Compute forward model terms used in line-search updates:
         ``forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)`` and
         ``forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)``.
         This supports batching to a worker, with only two floats returned per batch.
+
+        The two scalars are left wherever the reductions produced them (the sino mesh in the
+        sharded path); the caller reconciles them onto the recon mesh.
 
         Args:
             weighted_error_sinogram (jax array):
@@ -3415,16 +3118,12 @@ class TomographyModel(ParameterHandler):
             weights (jax array or constant):
             fm_constant (constant):
             const_weights (bool): True if the weights are constant 1
-            output_device (jax device): device on which the output will be placed
 
         Returns:
             tuple: ``(forward_linear, forward_quadratic)``
         """
         forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)
         forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)
-
-        forward_linear = jax.device_put(forward_linear, output_device)
-        forward_quadratic = jax.device_put(forward_quadratic, output_device)
         return forward_linear, forward_quadratic
 
     @staticmethod
@@ -3508,8 +3207,8 @@ class TomographyModel(ParameterHandler):
         prior_loss = [0]
         if do_initialization or self.prox_data is None:
             # (prox_input is NOT pre-placed here: vcd_recon routes it through to_recon, which
-            # slice-shards it in the sharded path; an early device_put to main_device would just
-            # commit it to one device and force an immediate reshard.)
+            # slice-shards it; an early device_put to a single device would just commit it to one
+            # device and force an immediate reshard.)
             sinogram, weights, init_recon, partitions, partition_sequence, granularity, regularization_params = (
                 self.initialize_recon(sinogram, weights, init_recon, max_iterations, first_iteration,
                                       compute_prior_loss, logfile_path, print_logs))
@@ -3557,9 +3256,8 @@ class TomographyModel(ParameterHandler):
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         if not output_sharded:
             # Default exit: gather to a plain single-device array in the problem's REAL
-            # shape (_gather_recon crops any padded slices; both are no-ops on an
-            # unsharded model, where vcd_recon already left it on main_device).
-            recon = jax.device_put(self._gather_recon(recon), device=self.main_device)
+            # shape (_gather_recon crops any padded slices; a no-op on a trivial 1-device layout).
+            recon = jax.device_put(self._gather_recon(recon), device=self.recon_placement.devices[0])
         return recon, recon_dict
 
     @staticmethod
@@ -3598,7 +3296,7 @@ class TomographyModel(ParameterHandler):
         """
         warnings.warn('This method has been deprecated and will be removed in a future release.  Instead, use mbirjax.generate_3d_shepp_logan_low_dynamic_range()')
         recon_shape = self.get_params('recon_shape')
-        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.main_device)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.recon_placement.devices[0])
         return phantom
 
     def reshape_recon(self, recon):

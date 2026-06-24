@@ -1029,12 +1029,17 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
     def show(self):
-        """Display the viewer window and block execution until the window is closed."""
-        fignum = self.fig.number
+        """Display the viewer window and block execution until the window is closed.
+
+        Close this figure BY OBJECT after the window closes, so its TkAgg widgets are torn down
+        deterministically.  (Closing by number re-created a blank phantom figure when the window-close
+        event had already removed the real one from matplotlib's registry, leaving the real figure's
+        toolbar widgets un-closed.)  slice_viewer then drops the viewer and runs gc on the main thread,
+        so the toolbar PhotoImages are finalized here rather than later by a background-thread GC --
+        the source of "main thread is not in main loop".
+        """
         plt.show()
-        # Open and close the figure to make sure it closes properly.
-        plt.figure(fignum)
-        plt.close(fignum)
+        plt.close(self.fig)
 
 
 def _choose_array_name(array_names, shapes, file_path):

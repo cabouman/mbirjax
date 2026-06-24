@@ -1,4 +1,4 @@
-# Sharding status (beta branch `greg/conebeam_sharding`)
+# Sharding status (working branch `greg/sharding_extensions`, rebased onto prerelease; cone sharding MERGED into prerelease via PR #208)
 
 *Short living status. **Forward plan + current-state overview: `sharding_implementation_plan_v3.md`
 (primary — read first).**  Detailed-design archive: `sharding_implementation_plan_v2.md`.
@@ -18,6 +18,263 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
 6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+
+---
+
+## HANDOFF (2026-06-24) — PRERELEASE PR #17 OPEN; post-E refinements landed (docs + utility sharding + Tk/cache fixes)
+
+▶ **The prerelease PR is OPEN** (`greg/sharding_extensions` → `prerelease`): 55 commits, 83 files (+5032/-1933).  Description: `pr_description_draft.md` (refreshed for the full scope).  It carries all four geometries + the QGGMRF denoiser sharded, the retirement cascade (increment E), and the docs/utility-sharding work below.
+
+▶ **Validation:** full CPU suite green (193 passed at the conftest default of 4 virtual CPU devices, which exercises the 3-/4-device padding paths); the A100 run is green for everything runnable — the >2-device tests *skip* on 2 GPUs (`preferred_devices(n)` returns None when GPUs are present but too few) but **pass on the CPU-4 suite** (verified) and get real-hardware coverage from the 4-GPU nightly.
+
+▶ **Post-E refinements landed this session:**
+  - **`mesh` retired / `shard_devices` kept** (the deferred derived-property revisit — done); `recon_shard_axis`/`sinogram_shard_axis` are now **classmethods** (callable without an instance; used by the sharded phantom builder).
+  - **`_pad_shard_on_axis`** readability pass (real_size/padded_size/shard_len/n_real renames + comments; the `row_pad` docstring now concretely describes the ParallelBeam det-row↔slice case).
+  - **`gen_weights`** → direct element-wise pass, **sharding-transparent** (sharded sino → sharded weights, no gather; replaced the batched/device-pinned single-device gather).  Returns weights on the input's device/sharding (behavior note in the PR).
+  - **`gen_weights_mar`** — dropped the explicit `device=devices[0]` pins (the last legacy single-device pins); `init_recon=None` path now sharding-transparent.  `init_recon` path still gathers (forward_project default + Otsu) → part of #18.
+  - **`generate_3d_shepp_logan_low_dynamic_range`** — `devices=` (slice-sharded build), `max_block_gb` (lax.map row-blocked single-device build, bounds memory), `target_max_attenuation` (analytic main-ellipsoid scale + `interior_intensity` calibration so the sinogram lands ~0–8 regardless of array size).
+  - **`generate_demo_data`** — `devices=` (pins the generation model + returns sharded phantom/sino), `target_max_attenuation`; helical embed moved to host; fixed the translation `np.min`→`min` bug; corrected return-type docstrings.
+  - **Docs:** `usr_multi_gpu.rst` (user), `dev_sharding_overview.rst` (dev), `dev_api.rst` rewritten (guidelines + per-view skeleton), use_gpu/overview/FAQ refresh, prose `:meth:` cross-refs qualified.
+  - **Tk noise fix:** `viewer.py` closes the figure by object (no phantom re-create); `demo_7` adds `plt.close('all')` + `gc.collect()` after its raw `plt.show()` (the `Image.__del__` "main thread is not in main loop" was the demo's bare matplotlib, not the viewer).
+  - **JAX cache fix:** disable `jax_persistent_cache_enable_xla_caches` when we set the compilation cache — the GPU per-fusion autotune cache's temp-file write/rename fails (NOT_FOUND) on cluster NFS / a fresh cache dir; the executable cache is kept.  This resolved the A100 suite failures.
+
+▶ **NEXT (open items, none blocking the PR):**
+  - **Cone 2048³/8-GPU deadlock** — still under investigation (see the cone bullet below + `sharding_implementation_plan_v3.md` §6).  Clean through 512³/8; NOT a prerelease regression (cone was single-device there).
+  - **#18** — shard `mar.py`/preprocessing (incl. the `gen_weights_mar` `init_recon` path).
+  - Deferred doc-xref cleanup; the `_auto_device_count` recon-slices-vs-views revisit (§6).
+
+---
+
+## HANDOFF (2026-06-22) — INCREMENT E COMPLETE (the retirement cascade), CPU + GPU validated + committed.  NEXT (now done) = prerelease PR (+ two small follow-ups)
+
+▶ **Increment E (retire the pre-placement device representations) is DONE end-to-end, CPU + GPU validated (nightly 2026-06-23), committed** on `greg/sharding_extensions`.  Design/record: `increment_e_retirement_design.md` (§4 stage table — every row ✅).  The placements (`recon_placement` / `sino_placement`) are now the **single source of device layout**; the legacy representations and their dead branches are gone:
+  - **E1** retired user-facing `view_indices` → internal `owned_view_indices`.  **E2** deleted the no-mesh path + the `_supports_sharding` gate.  **E4** retired `output_device` from the public projector surface.
+  - **E3a** merged `_apply_mesh`+`_set_placements` → `_set_device_layout`; added `_auto_device_pool()` (one "automatic" definition; robust GPU detect; CPU auto-shards); `configure_devices` is the sole device-config entry; `mesh`/`shard_devices` became **derived read-only properties** off `recon_placement`.  **E3b** retired `main_device`/`sinogram_device` (uses → `recon_placement.devices[0]`/`sino_placement.devices[0]`; fixes the documented staleness).  **E3-cleanup** (P1/P2/P4/P5/P6): added `mjs.sharded_full` (per-shard device-form `jnp.full`, no full single-device copy; folded in the duplicate `_sino_ones_device_form`); stubs honor `output_sharded`; retired `_recon_devices`; `'full'`→deprecated synonym of `'automatic'`.
+  - **configure_sharding hard-deleted** (own commit): `configure_devices` is the only entry; ~75 test callers + the ungated experiments renamed.
+  - **E3c** sharded `QGGMRFDenoiser` (dual-path: n=1 keeps the whole-sweep JIT; n>1 slice-shards + per-pass halos via the placement path); extracted the shared `ParameterHandler._log_run_header`.
+  - **E3f** collapsed the ~25 vacuous `if is_sharded` branches and then **deleted the `is_sharded` property** (no internal uses; tests' `assertTrue(is_sharded)` removed).
+  - **P3** dropped the redundant single-device device-puts in `initialize_recon` (partitions already placed by `gen_set_of_pixel_partitions`; `to_sino`/`to_recon` subsume the `_committed_elsewhere` guards) + fixed a latent `get_2d_ror_mask(use_ror_mask=False)` shape bug.
+  - **E5** removed the 6 tautological `test_trivial_*_bit_exact` tests (kept+reworded the one meaningful prior cross-check); reworded the stale no-mesh / "runs single-device until the placement port" comments.
+  - **Reviewed, no change:** `ConeBeamModel.split_sino_recon` composes with sharding (each half auto-shards via its fresh sub-model).
+
+▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  **(#22) DONE** — `pixel_indices_worker` collapsed (commit 9f0340d).  Remaining follow-up: **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  **mesh/shard_devices revisit DONE 2026-06-23:** `mesh` **retired** (inlined to `recon_placement.mesh` at the 2 NamedSharding sites; tests/experiments migrated to `shard_devices` / `recon_placement.mesh`); `shard_devices` **kept** as the public device-list accessor (docstring re-blessed).
+
+▶ **Docs (#24) DONE 2026-06-23** — `usr_multi_gpu.rst` + the use_gpu/overview/FAQ refresh + the Tomography-Model "Device Configuration" move/refresh; prose `:meth:` cross-refs qualified to `mbirjax.*`.  **Deferred:** a doc-cleanup pass for the remaining UNRESOLVED Sphinx py-xrefs that render as plain text with no build warning (autosummary-table entries + wrong-target/undocumented docstring refs) — full enumeration + the detect-by-HTML-grep recipe in `sharding_implementation_plan_v3.md` §5.  Also added the dev **`dev_sharding_overview.rst`** page (sharding architecture: two shardings, placement, banded forward/back, cone whole-cylinders, halos, single-vs-multi paths, thread-pool execution).
+
+▶ **Cone-beam 8-GPU 2048³ recon hang (NCCL clique) — INVESTIGATING.**  Manual cone 2048³/8-GPU recon hung at the first VCD subset update (parallel beam fine).  Repro tooling in `experiments/sharding/cone_deadlock_repro/`.  Sweep (job 12776721, confirmed build) is **clean through 512³/8** (parallel + cone, all device counts) → NOT a structural collective bug; scale-only or original-build artifact.  First 2048³ attempt (job 12776973) died in the REPRO's single-device gather (a repro-script bug, since fixed: forward+recon kept device-sharded via `output_sharded`, phantom built via `sharded_full`) — so it has not yet actually reached the VCD loop at 2048³.  **2048³ rerun on the fixed repro still pending** (cluster availability).  Full analysis + the collective-free-reduction fix candidate: `sharding_implementation_plan_v3.md` §6.
+
+---
+
+## HANDOFF (2026-06-20b) — MULTIAXIS port DONE (M0–M5), CPU-validated; translation channel-major added.  ALL geometries ported → NEXT = increment E (retirement cascade)
+
+▶ **The `MultiAxisParallelModel` sharding port is COMPLETE (M0–M5), CPU-validated end to end.**  It now
+runs the always-on placement path (trivial 1-device mesh single-device; multi-device shards recon-by-
+slice / sino-by-view), correct at all device counts incl. padding, no single-device regression.  Forward
+record in `sharding_implementation_plan_v3.md` §5 (item 3, multiaxis bullet) + §6.  Per stage:
+  - **M0** — single-device adjoint/Hessian gated via a new `anisotropic_multiaxis` entry in a
+    **projector-local** list in `test_projectors.py` (NOT added to `_utils._geometry_types_for_tests`, so
+    multiaxis gets no VCD-convergence / recon-NRMSE gating — same "no VCD on multiaxis" stance as
+    translation).
+  - **M1** — **FBP angular-weighting fix (the §6 option-1 decision, now implemented).**  The directional
+    2-D ramp (orientation/magnitude from `jnp.gradient(angles)` → order-DEPENDENT, ill-defined for these
+    order-arbitrary simultaneous measurements) → the shared `_apply_direct_recon_filter` channel ramp +
+    uniform `pi/num_views`, scale `1/(delta_voxel·delta_voxel_row)`.  Order-invariant (reorder rel-max
+    8.5→<1e-6) and reduces exactly to `ParallelBeamModel.fbp_filter`.  Gates in `test_fbp.py::TestMultiAxisFbpFilter`.
+  - **M-aniso** — **anisotropic voxels** (`voxel_row_aspect` + `voxel_slice_aspect`) plumbed through all
+    four fans + `auto_set_recon_geometry` + `get_psf_radius` + the geometry-params namedtuple; horizontal
+    fan adopts ParallelBeam's `footprint_xy` density.  **Bit-identical to the prior kernels at unit
+    aspects** (verified by an old-vs-new ablation).  Greg's call: gate aniso only (it subsumes iso).
+  - **M2** — **banded back kernel** (`back_vertical_fan_band_*` + `back_project_one_view_to_band`; global
+    `k = g0+arange(L)`, z anchored on `recon_shape[2]`, global clip `k < S_real`) + rolled-`lax.map`
+    rewire (`MULTIAXIS_SLICE_BAND_SIZE`); deleted the monolithic back vertical fan; **channel-major**
+    transpose on the two horizontal fans (forward bit-identical, back ~1e-7 reduction noise; CPU forward
+    1.15×@256ch → 1.29×@512ch, back neutral — MEASURED); removed `entries_per_cylinder_batch` →
+    `MULTIAXIS_FORWARD_SLICE_BATCH`.  New `tests/geometries/test_multiaxis_banded.py`.
+  - **M3** — forward anchor on `recon_shape[2]` (was the input cylinder length); validity test becomes a
+    global `k < S_real` (the inert-padding anchor).  Bit-identical (static-value); batch entry asserts the
+    cylinder length.
+  - **M4** — **`_supports_sharding()=True` (one line, NO driver/projector overrides** — geometry-neutral
+    base hooks: banded reduce-scatter back, gather+monolithic+crop forward).  New
+    `tests/sharding/test_multiaxis_sharded.py` (back/forward/Hessian sharded==single, n=2,4, iso+aniso,
+    scale-invariant gate).  The flip makes the existing `test_projectors` auto-shard multiaxis WITH
+    PADDING (14 slices → 4 dev, 14→16) and it passes → padding already inert.
+  - **M5** — inert slice padding: **ZERO production changes** (the M2/M3 global clips + the
+    geometry-agnostic padding infra already make it inert).  `TestPaddedSlicesMultiAxis(_PaddedReconMixin)`
+    with `RUN_SHARDED_VCD=False`, iso+aniso, prime 7-slice + fully-padded-trailing-shard.
+
+▶ **Calibration anchored to a real reference** (the adjoint can't catch a consistent scaling error): a new
+permanent `test_multiaxis_forward_reduces_to_parallel` shows the el=0 forward is **bit-exact** to
+`ParallelBeamModel` (isotropic) and `anisotropic_parallel` (row aspect).  The composed pipeline
+(`direct_recon` + `recon`) was also smoke-checked (finite, sane, data-fit converges) but NOT made a
+permanent test (VCD machinery is geometry-independent, already gated — Greg's call).
+
+▶ **OPEN modeling item — `1/cos(elevation)` vertical path-length** (v3 §6, new tracked bullet): the
+vertical fan uses `scaling=1.0`, so for elevation≠0 / `voxel_slice_aspect`≠1 the absolute magnitude is
+adjoint-consistent but UNREFERENCED.  Deferred (it can't ride the reduce-to-isotropic gate); take it up
+separately with a forward-vs-analytic-line-integral fidelity gate.  Detector is ⟂ to the ray here (no
+detector-incidence obliquity, unlike cone's `1/cos(phi)`), so the factor must be derived, not copied.
+
+▶ **Translation channel-major (task done this session):** the cone/parallel increment-A transpose was
+also applied to translation's two horizontal fans (it shared the same cache-aliasing gap): forward
+**~1.8× faster** on CPU at 512 channels (back neutral), value-preserving (forward rel ~7e-8, back
+bit-identical).  All translation gates green.
+
+▶ **ALL geometries now ported** (ParallelBeam, cone, translation, multiaxis).  **NEXT = increment E**
+(the retirement cascade — `main_device`/`sinogram_device`, `view_indices`, the legacy single-device
+*dispatch* but KEEP the single-device back driver/kernel the GPU n=1 short-circuit calls, the
+`RETIRE-*` sweep).  Still standing: GPU-cluster confirmation of multiaxis (channel-major, band kernel,
+sharding; the n=1 back band-vs-pixel split is geometry-agnostic + active but UNMEASURED for multiaxis)
+and translation (decision 2b); `translation`/`multiaxis` baselines in mbirjax_metrics.
+
+▶ **Test state:** multiaxis blast-radius + shared files green — `test_padding` / `test_multiaxis_sharded`
+/ `test_fbp` / `test_projectors` / `test_multiaxis_banded` = **75 passed, 2 skipped** (the 2 skips are the
+geometry-independent VCD-recon padding checks for translation + multiaxis).
+
+▶ **Commits (staged; Greg commits from PyCharm).**  Suggested boundaries: (1) M1 FBP fix
+(`multiaxis_parallel.py` fbp_filter/fbp_recon + `test_fbp.py` TestMultiAxisFbpFilter) — independently
+reviewable; (2) M-aniso (kernels + auto_set + psf_radius + geometry_params + the `anisotropic_multiaxis`
+test entry + `bp_psf_radius` removal); (3) M2 (banded back + channel-major + `test_multiaxis_banded` +
+the forward-reduce-to-parallel test); (4) M3 (forward anchor); (5) M4 (`_supports_sharding` +
+`test_multiaxis_sharded`); (6) M5 (`TestPaddedSlicesMultiAxis`, test-only); (7) translation channel-major.
+
+---
+
+## HANDOFF (2026-06-20) — Translation port DONE + GPU-validated; cone PR merged to prerelease; sharding_extensions rebased onto prerelease (PR-ready).  NEXT = MULTIAXIS
+
+▶ **Translation port (increment D, T1–T5) is COMPLETE and GPU-validated.**  Full record:
+`plans/increment_d_translation_design.md` (now the completed-work doc; STATUS banner at top).  T1–T5
+landed as planned; T5 needed **zero production changes** (the cone-B5 padding infra + the T2/T3 global
+clips already made translation padding inert).  See the 2026-06-19 handoff below for the per-stage
+detail.
+
+▶ **Two post-port refinements this session (both general, not translation-specific):**
+- **Scale-invariant sharded-test gate** — `conftest.assert_sharded_allclose` = `max|out-ref|/max|ref| ≤ TOL`,
+  replacing fixed `atol` for every sharded-vs-single comparison in `tests/sharding`.  Surfaced by the
+  translation Hessian (coeff_power=2 → peak ~5e3): the sharded-vs-single diff is XLA reduction-ORDER
+  noise that scales with the PEAK and is **process-nondeterministic even on CPU** (usually 0,
+  occasionally ~1e-7 of peak), so a fixed atol was scale-fragile AND flaky.  Lesson in `.claude/lessons.md`.
+- **Dropped the redundant sharded VCD-recon test** for translation (and the pattern for multiaxis):
+  the sharded VCD LOOP is geometry-independent (gated on parallel + cone), so a per-geometry sharded
+  recon only re-runs shared machinery.  Mechanism: `_PaddedReconMixin.RUN_SHARDED_VCD` (default True;
+  False in the translation subclass) + removed `TestTranslationShardedRecon`.  Bonus: removes the
+  tiny-recon partition-granularity warning at the root.
+
+▶ **GPU forward-inert test fix (landed on the cone branch, now in prerelease):**
+`test_forward_inert_to_nonzero_recon_padding` asserted bit-exact equality between two `forward_project`
+calls — fails on GPU (scatter-add atomics are run-to-run nondeterministic; the poison is cropped before
+the kernel, so the padding IS inert — confirmed CPU bit-exact even for a 1e6 poison).  Replaced with an
+inline scale-invariant gate (`< 1e-3`), kept dependency-free + byte-identical across branches so the
+rebase didn't conflict.  Committed on `greg/conebeam_sharding` (`a5b249e`), merged into prerelease via the
+cone PR (#208).
+
+▶ **BRANCH STATE — clean and PR-ready:**
+- The **cone PR (#208) is ACCEPTED into prerelease** (`origin/prerelease` tip = merge `987a2ad`; its tree
+  == conebeam tip `a5b249e`).
+- **`greg/sharding_extensions`** (renamed this session from `sharding_extensions`; old remote ref deleted)
+  **was rebased onto `origin/prerelease`** (CLI, not PyCharm — PyCharm produced a
+  rebase+merge tangle earlier that we cleaned up).  Now tip `e8a12a4`, a **linear descendant of
+  prerelease** → its eventual PR is a fast-forward.  Content is byte-identical to the verified green
+  state (the rebase added no content — prerelease had nothing conebeam didn't).  Local + origin in sync;
+  force-pushed with `--force-with-lease`.
+
+▶ **NEXT substantive code = MULTIAXIS** (the remaining increment-D sub-effort).  `MultiAxisParallelModel`
+extends `TomographyModel` directly → its own `_supports_sharding` flip; **land the FBP angular-weighting
+fix with it** (`sharding_implementation_plan_v3.md` §6 option 1: uniform `π/num_views` + channel ramp,
+order-invariant — the gradient-based weighting is wrong for simultaneous fixed measurements).  Apply the
+same lean test pattern as translation (no per-geometry sharded VCD recon).  Then **increment E** (the
+retirement cascade — only after ALL geometries are ported; keep the single-device back driver the GPU
+n=1 short-circuit calls).
+
+▶ **Open GPU items (Greg's cluster — not blocking):** the GPU n=1 back short-circuit band-vs-pixel
+platform split for **translation** (decision 2b — active but UNMEASURED); per-device memory/time scaling.
+**Prereq for tracking:** add `translation` to the mbirjax_metrics harness + capture baselines
+(dividing/non-dividing pair + an anisotropic size).
+
+---
+
+## HANDOFF (2026-06-19) — TRANSLATION PORT COMPLETE (increment D, T1–T5), CPU-validated; sharded-test tolerances made scale-invariant
+
+▶ **The `TranslationModel` sharding port is DONE (T1–T5), CPU-validated end to end.**  Per-stage record:
+`plans/increment_d_translation_design.md` (T1–T5 rows all ✅).  Translation now runs the always-on
+placement path (single-device = trivial 1-device mesh; multi-device shards recon-by-slice /
+sino-by-view), correct at ALL device counts incl. padding.  Key framing held: `TranslationModel` was
+`ConeBeamModel` *pre-port*, so the cone increments mapped ~1:1 and the infra was already
+geometry-agnostic.  Per stage:
+  - **T1** — `fdk_filter` → shared `_apply_direct_recon_filter` (drops the out-of-place weight/π
+    multiplies + the `fftconvolve`/`lax.map` fragility); value-identical (ablation 2.9e-7).
+  - **T2** — banded back kernel (`back_project_one_view_to_band` + global validity clip) + a rolled
+    `lax.map` single-device rewire; deleted `entries_per_cylinder_batch`; **bit-identical** back.
+  - **T3** — forward vertical fan anchors the slice count on params (fixed a latent params-vs-input-
+    length inconsistency); **bit-identical** (the batch method asserts the real slice count).
+  - **T4** — flipped `_supports_sharding()=True` (**one line**; translation adds NO projector/driver
+    overrides — uses the geometry-neutral base hooks + the GPU n=1 short-circuit).  New
+    `tests/sharding/test_translation_sharded.py`.
+  - **T5** — inert slice padding: **ZERO production changes** (the cone-B5 infra + the T2/T3 clips
+    already made it inert); test-only `TestPaddedSlicesTranslation` (prime 7-slice, isotropic +
+    anisotropic, incl. the poison-the-padding inertness check + the fully-padded-shard branch).
+Full suite **185p/2s @4 CPU dev**.
+
+▶ **Cross-cutting: the sharded-test tolerances are now SCALE-INVARIANT** (`conftest.assert_sharded_allclose`
+= `max|out-ref|/max|ref| ≤ TOL`).  Surfaced by the translation Hessian (coeff_power=2 → peak ~5e3): the
+sharded-vs-single diff is reduction-ORDER float noise that scales with the PEAK and is
+**process-nondeterministic on CPU** (usually 0, occasionally ~1e-7 of peak — a per-process XLA
+autotuning choice), so a fixed `atol` was both scale-fragile AND flaky.  Migrated EVERY sharded-vs-single
+comparison in `tests/sharding`; kept exact/tight gates for data-movement, constructed-zero, and the 1e-6
+elementwise qGGMRF kernel band tests.  New lesson in `.claude/lessons.md`; corrected the stale
+"CPU compiles both identically and stays exact" comments.
+
+▶ **⚠ GPU CONFIRMATIONS (Greg's cluster) — correctness is CPU-validated; these are GPU-only:**
+(1) the **GPU n=1 back short-circuit** band-vs-pixel platform split for translation (decision 2b —
+geometry-agnostic and active, but UNMEASURED for translation); (2) per-device **memory/time scaling**
+(the capacity win) at dividing counts; (3) GPU confirmation at a **non-dividing slice count** (the
+4-CPU-device run is the proxy, as for cone B5).
+
+▶ **NEXT substantive code = MULTIAXIS** (the remaining increment-D sub-effort): `MultiAxisParallelModel`
+extends `TomographyModel` directly → its own `_supports_sharding` flip, and the **FBP angular-weighting
+fix** should land with it (v3 §6 option 1: uniform `π/num_views` + channel ramp, order-invariant; the
+gradient-based weighting is wrong for simultaneous fixed measurements with no trajectory/ordering).
+Then **increment E** (the retirement cascade — `main_device`/`view_indices`/legacy dispatch — only after
+ALL geometries are ported; keep the single-device back driver the GPU n=1 short-circuit calls).
+
+▶ **Still a prereq:** add `translation` to the mbirjax_metrics harness + capture correctness/memory/time
+baselines (dividing/non-dividing size pair + an anisotropic-translation size) — Greg + a separate session.
+
+**Committed (Greg, from PyCharm):** T1 `d1ab7ca`, direct_filter wrapper `c051c3b`, T2 `c7dcc2c`, T3
+`673ae06`, param-name `cf0c8ec`, T4 `c49109c`, tolerance hardening `090290e`.  **Staged (Greg commits):**
+T5 = `tests/sharding/test_padding.py` (`TestPaddedSlicesTranslation`) + the
+`increment_d_translation_design.md` T-row updates.
+
+---
+
+## HANDOFF (2026-06-18b) — Cone done & in a PR; increment D (translation) is next, staged plan written
+
+▶ **Cone sharding is complete and in a PR to prerelease**, and work has moved to branch
+**`greg/sharding_extensions`**.  (Cone B5 + the increment-C reconciliation; B5 GPU-confirmed in the
+nightly; C's substance landed interspersed with B4/B5; ParallelBeam's overrides KEPT; both cone back
+kernels KEPT.  Details in the B5 handoff below.)
+
+▶ **Next substantive code = increment D, starting with TRANSLATION.**  Staged plan:
+**`plans/increment_d_translation_design.md`** (T1 FDK filter → T2 banded back kernel → T3 forward
+anchor fix → T4 flip `_supports_sharding` → T5 inert padding).  **Key finding:** `TranslationModel`
+is `ConeBeamModel` *pre-port* — copied FDK filter (same `weight_map`/`alpha`/`π·num_views⁻¹`), still
+has `entries_per_cylinder_batch`, same fan architecture — so the cone increments map ~1:1 and the
+sharding infra is already geometry-agnostic; the port is mostly kernel + filter work.  **Decisions
+(2026-06-18):** mirror cone & **defer the kernel consolidation** (keeps row-sharding per-geometry
+open); **keep both back kernels + the GPU n=1 short-circuit** (need expected, but MEASURE the platform
+split).  **T1** (convert `fdk_filter` to the shared `_apply_direct_recon_filter`, no sharding flip) is
+the clean first move.
+
+▶ **Multiaxis** is the sibling D sub-effort — its FBP angular-weighting fix is decided-in-principle in
+`sharding_implementation_plan_v3.md` §6 (option 1: uniform `π/num_views` + channel ramp, order-invariant;
+the gradient-based weighting is wrong because these are simultaneous fixed measurements with no
+trajectory/ordering).  Settle it with the multiaxis port.
+
+▶ **Prereq for tracking the port:** add `translation` to the mbirjax_metrics harness + capture
+correctness/memory/time baselines, with a dividing/non-dividing size pair (mirror cone's 128/129) and
+an anisotropic-translation size (Greg + a separate session; may need dashboard redesign).
+
+**Uncommitted (Greg commits):** the new `plans/increment_d_translation_design.md` + the v3 / this-file
+doc edits.
 
 ---
 
@@ -66,9 +323,9 @@ lesson in `.claude/lessons.md` ("Exactly-inert cone slice padding").
 `(g0,L)` template, the cone FDK filter on the shared per-view-shard path, both cone back kernels
 kept, and ParallelBeam's row-crop/banded-forward overrides KEPT by decision 2026-06-18 — cheaper
 for parallel).  So **NEXT substantive code = D** (translation + multiaxis; the porting footgun in
-`sharding_implementation_plan_v3.md` §5 now applies).
+`sharding_implementation_plan_v3.md` §5 now applies; the translation port plan is the newer handoff above).
 **Committed:** B5 = `7d82493`; the plan-notation sweep + the `view_indices` RETIRE markers + the
-vcls.py comment durability fix = `b1237d4`.  (Working tree clean.)
+vcls.py comment durability fix = `b1237d4`.
 
 ---
 

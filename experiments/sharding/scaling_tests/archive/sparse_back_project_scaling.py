@@ -76,7 +76,7 @@ DEVICE_COUNTS = [1, 2, 3, 4]  # [1, 2, 3]
 # slices), so the sizes here are smaller than the fbp ones — tune freely.
 # Divisibility: the view axis (n_views) and the slice axis (≈ n_rows for parallel
 # beam) must both be divisible by every device count in the ladder, else
-# configure_sharding raises and the point is skipped.  The GPU sizes are
+# configure_devices raises and the point is skipped.  The GPU sizes are
 # divisible by 1/2/3/4 (multiples of 12, ~the old 256/512/1024) so the ladder can
 # include 3 devices — useful for skipping a throttling 4th card on a node by
 # running on the cooler first three GPUs (see DEVICE_COUNTS).
@@ -121,7 +121,7 @@ def make_model(size, devices=None, path="band", pixel_batch=None):
     (back_project_pixel_batch) for the B_p sweep; None uses the auto default.
 
     Returns None if the requested device count does not evenly divide the
-    sharded axes (configure_sharding raises) — the caller skips that point.
+    sharded axes (configure_devices raises) — the caller skips that point.
     """
     import mbirjax
     n_views, n_rows, n_channels = size
@@ -129,7 +129,7 @@ def make_model(size, devices=None, path="band", pixel_batch=None):
     model = mbirjax.ParallelBeamModel((n_views, n_rows, n_channels), angles)
     if devices is not None:
         try:
-            model.configure_sharding(devices)
+            model.configure_devices(devices)
         except ValueError as e:
             print(f"    (skip: {len(devices)} devices incompatible with size "
                   f"{sc.size_label(size)}: {e})")

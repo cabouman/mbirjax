@@ -24,6 +24,8 @@ nightly harness + the metrics-visualization surface are a **separate track** —
 | `sharding_implementation_plan_v2.md` | **archive**: placement architecture + `(g0,L)`/anchor/forward-accumulation design rationale |
 | `sharding_implementation_plan.md` (v1) | completed Phases 0/A/B/F1/D/F2/C/E; **cross-cutting principles**; verified **hardware facts**; O1–O4 |
 | `p6_increment_b_design.md` | **authoritative for the cone port** — increment-B staged plan + progress (B1–B5) |
+| `increment_d_translation_design.md` | **authoritative for the translation port** — increment-D staged plan (T1–T5) |
+| `increment_e_retirement_design.md` | **authoritative for increment E** — the retirement-cascade staged plan (E1–E5), verified architecture facts + open design decisions (DRAFT) |
 | `p6_projector_rework_proposal.md` | projector-rework design; **§8a-design is canonical** (rest partly superseded) |
 | `performance_tracking_plan.md` | nightly perf-regression harness + metrics — **separate track**, out of scope here |
 | `.claude/lessons.md` | jax/GPU/placement/measurement playbook |
@@ -44,8 +46,11 @@ name over the number.*
 | **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU-confirmed in the nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok on H100) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
-| **D** — translation + multiaxis ports | ⬜ pending implementation, tests, and tuning |
-| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ⬜ pending implementation, tests, and tuning (last — needs all geometries ported) |
+| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
+| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
+| **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; retired `mesh` (kept `shard_devices` as the public accessor); sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmed (nightly) |
+| **Post-E** — docs + utility sharding + Tk/cache fixes | ✅ **DONE 2026-06-24** (in PR #17): user/dev docs (`usr_multi_gpu`, `dev_sharding_overview`, `dev_api` rewrite); `gen_weights` / `gen_weights_mar` / the Shepp-Logan phantom / `generate_demo_data` made sharding-aware (+ phantom `max_block_gb` blocking and `target_max_attenuation`); `_pad_shard_on_axis` readability; `recon_shard_axis`/`sinogram_shard_axis` → classmethods; viewer/demo Tk-GC noise fix; **JAX per-fusion-autotune-cache disabled** (fixed the A100 `NOT_FOUND` cache errors) |
+| **Prerelease PR (#17)** | ✅ **OPEN 2026-06-24** (`greg/sharding_extensions` → `prerelease`, 55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Open follow-ons (non-blocking): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
 
 ---
 
@@ -273,19 +278,79 @@ no-single-device-regression.
      the band kernel; B4.5).  band = CPU + multi-device reduce-scatter, pixel = single-GPU —
      platform-complementary, so F1's "delete the loser" does **not** apply to cone back.  (E must
      likewise keep the single-device back driver/kernel.)
-3. **D** — translation + multiaxis ports (same template; note `MultiAxisParallelModel` extends
-   `TomographyModel` directly → it gets its own `_supports_sharding` flip).
-4. **E — retirement cascade** (only after *all* geometries are ported): `main_device` /
-   `sinogram_device`; the `is_sharded` else-branches + the legacy single-device *dispatch* —
-   but **keep** the single-device back driver/kernel (`_sparse_back_project_single_device` /
-   `back_project_one_view_to_pixel_batch`), which the GPU n=1 short-circuit calls; the
-   `view_indices` machinery (incl. the test_projectors pin); `initialize_recon`'s early
-   `device_put` block; `compute_hessian_diagonal`'s `output_device`; then a
-   `grep -rn "RETIRE-*"` sweep (e.g., the trivial-mesh comparison tests retire).
-5. **Post-P6** — the multi-GPU **user docs page** (use the word "sharding" sparingly);
-   the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
-   multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
-   PnP-at-scale need appears.
+3. **D** — translation + multiaxis ports (same template).
+   - **Translation — ✅ DONE 2026-06-19/20** (CPU + GPU validated; full record in
+     `increment_d_translation_design.md`).  T1–T5 landed exactly as planned (`TranslationModel` was
+     `ConeBeamModel` *pre-port*, so the increments mapped ~1:1 and T5 needed zero production changes).
+     Post-port refinements this session: a **scale-invariant sharded-test gate**
+     (`conftest.assert_sharded_allclose`, surfaced by the translation Hessian + CPU reduction-order
+     nondeterminism), and **dropping the redundant sharded VCD-recon test** for translation
+     (`_PaddedReconMixin.RUN_SHARDED_VCD`; the sharded VCD loop is geometry-independent, gated on
+     parallel + cone).  In `greg/sharding_extensions`, rebased onto prerelease (PR-ready).
+     **GPU follow-ups (Greg's cluster, not blocking):** the GPU n=1 back short-circuit band-vs-pixel
+     platform split for translation (decision 2b — active but UNMEASURED), and per-device memory/time
+     scaling.  **Prereq:** `translation` baselines in mbirjax_metrics (separate session).
+   - **Multiaxis — ✅ DONE 2026-06-20** (CPU-validated).  `MultiAxisParallelModel` extends
+     `TomographyModel` directly and now runs the always-on placement path, correct at all device
+     counts incl. padding.  Staged M0–M5 (gates folded into the existing `test_projectors` /
+     `test_fbp` / `test_padding` harnesses, no new VCD gating — multiaxis is NOT in
+     `_geometry_types_for_tests`):
+       - **M0** adjoint/Hessian (via `anisotropic_multiaxis` in `test_projectors`).
+       - **M1** FBP angular-weighting fix (§6 option 1): the directional 2-D ramp (order-DEPENDENT,
+         from `jnp.gradient(angles)`) → the shared `_apply_direct_recon_filter` channel ramp +
+         uniform `pi/num_views`.  Order-invariant; reduces exactly to `ParallelBeamModel.fbp_filter`.
+       - **M-aniso** anisotropic voxels (`voxel_row_aspect` + `voxel_slice_aspect` through all four
+         fans + `auto_set_recon_geometry` + `get_psf_radius`); horizontal fan adopts ParallelBeam's
+         `footprint_xy` density.  Bit-identical to the prior kernels at unit aspects.
+       - **M2** banded back kernel (`back_project_one_view_to_band`, global anchor + `k < S_real`
+         clip) + rolled-`lax.map` rewire + **channel-major** horizontal fans; `entries_per_cylinder_batch`
+         → module band/batch consts.
+       - **M3** forward anchor on `recon_shape[2]` (global validity test; the inert-padding anchor).
+       - **M4** `_supports_sharding=True` — ONE line, no driver overrides (geometry-neutral base
+         hooks); `test_multiaxis_sharded`.
+       - **M5** inert slice padding — **zero production changes** (`TestPaddedSlicesMultiAxis`).
+     Calibration anchored to ParallelBeam/anisotropic_parallel at el=0 (forward **bit-exact**,
+     `test_multiaxis_forward_reduces_to_parallel`).  **Open (not blocking):** GPU-cluster confirmation
+     (channel-major, band kernel, sharding — the n=1 back band-vs-pixel split is geometry-agnostic and
+     active but UNMEASURED for multiaxis); the `1/cos(elevation)` vertical path-length factor (§6).
+   - **Translation channel-major** — the cone/parallel increment-A transpose was also applied to
+     translation's two horizontal fans (it shared the cache-aliasing gap): forward ~1.8× faster on
+     CPU at 512 channels (back neutral), value-preserving (forward rel ~7e-8, back bit-identical).
+4. **E — retirement cascade** — ✅ **DONE 2026-06-22**, CPU-validated + committed.  Retired
+   `main_device`/`sinogram_device`, the `is_sharded` else-branches *and* the `is_sharded`
+   property, the legacy single-device *dispatch*, `view_indices` (→ `owned_view_indices`),
+   `output_device` (public surface + `compute_hessian_diagonal`), `configure_sharding`
+   (→ `configure_devices` only), and the redundant `initialize_recon` device-puts (P3); the
+   RETIRE-marker sweep removed the trivial-mesh comparison tests.  **Kept** the single-device back
+   driver/kernel (`_sparse_back_project_single_device` / `back_project_one_view_to_pixel_batch`),
+   which the GPU n=1 short-circuit calls.  Also sharded the denoiser (E3c) and added
+   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 OPEN
+   (2026-06-24).**  Done since: `pixel_indices_worker` collapse (#22), the `mesh`/`shard_devices`
+   revisit (`mesh` retired, `shard_devices` kept).  Remaining follow-up: `mar`/preprocessing sharding
+   (#18).
+5. **Post-P6** — the multi-GPU **user docs page** ✅ **DONE 2026-06-23**: `usr_multi_gpu.rst`
+   (zero-effort path, device subsetting via `configure_devices`, efficiency tips, expectations,
+   a gentle "sharding" overview) + `use_gpu`/`overview`/`advanced_features`/FAQ refresh, and the
+   Tomography-Model "Device Configuration" section moved before "Saving and Loading" + refreshed.
+   The prose `:meth:` cross-refs were fixed to **fully-qualified** `mbirjax.*` targets (an
+   unqualified `:meth:`Class.method`` renders as plain text with **NO Sphinx warning**).
+   - **Deferred doc-cleanup pass** (its own follow-up, NOT in the sharding PR): the remaining
+     UNRESOLVED Sphinx py-xrefs that silently render as plain `<code>` (no warning). Detect by
+     building the HTML and grepping for `<code class="xref py …">` **not** wrapped in `<a>`.
+     Buckets: (a) `usr_api_overview` `.. autosummary::` table entries (unqualified) + wrong-target
+     refs — `denoising.median_filter3d`→`mbirjax.median_filter3d`,
+     `ParameterHandler.set_params`→`TomographyModel.set_params`,
+     `generate_3d_shepp_logan_low_dynamic_range`→`mbirjax.utilities.*`; (b) docstring refs
+     autodoc'd into `usr_denoising`/`usr_tomography_model`/`usr_utilities` whose targets aren't
+     documented (`vcd_recon`, `get_recon_dict`; the `ParameterHandler` class has no `autoclass`);
+     (c) external `jnp.median` (no intersphinx).  (The `sparse_forward_project`/`sparse_back_project`
+     refs were removed as a side effect of the forward/back_project docstring rewrite.)
+     Fix per case = qualify / correct-target / document-the-target (add `automethod`/`autoclass`) /
+     downgrade-to-literal. The device-config private-helper docstring refs in `tomography_model.py`
+     were already converted to literals as part of the docs work.
+   - Then: the choose-N-vs-communication policy (+ the CPU-cluster auto policy); **B4.5** if
+     multi-device back *time* ever matters; revisit the prox-map prior under sharding if a
+     PnP-at-scale need appears.
 
 **Porting footgun for C/D (the lesson from the B5 cone port):** the place a new geometry breaks
 under sharding is wherever a **per-slice or per-view operation assumes the problem's REAL count but
@@ -312,6 +377,61 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 
 ## 6. Adjacent / tracked items (off the critical path)
 
+- **Multiaxis FBP angular weighting — ✅ DONE (option 1), 2026-06-20** (multiaxis port M1).
+  - *Problem.*  `MultiAxisParallelModel.fbp_filter` builds a per-view directional 2-D ramp
+    `|U·d_az + V·d_el|` whose orientation and magnitude come from `jnp.gradient(angles)` — the step
+    between *list-neighbor* views.  But this geometry is **simultaneous fixed measurements** (multiple
+    lasers/detectors), so there is **no acquisition trajectory and the `angles` list order is
+    arbitrary** (laser-enumeration order).  An analytic inverse must depend only on the *set* of view
+    directions, so any order-dependent weighting is wrong: here it makes the ramp's orientation and
+    weight effectively arbitrary, and permuting the (arbitrary) list changes the recon.  The
+    directions are a sparse, limited-range **2-D point set** on the sphere (azimuth × elevation), so
+    the natural measure is a 2-D solid-angle element, not the 1-D arc-step `jnp.gradient` computes.
+  - *Decision — option 1: uniform per-view weight + standard channel ramp* (treat it as stacked 2-D
+    FBP; elevation approximated in the filter and corrected by MBIR).  Order-invariant, robust, and it
+    reduces **exactly** to `ParallelBeamModel.fbp_filter` in the azimuth-only equally-spaced limit.
+    The uniform weight is **`pi / num_views`** — the azimuthal angular measure, the *same* constant as
+    parallel beam (no special 2-D/solid-angle constant enters, precisely because option 1 is
+    2-D-FBP-per-slice; a solid-angle `dΩ` constant would appear only in the rejected option C).  Also
+    fix the filter scaling to `1/(delta_voxel·delta_voxel_row)` (the student's `1/delta_voxel²`
+    silently assumed `voxel_row_aspect == 1`).  Carries the same equispaced/limited-angle caveat as the
+    other FBP/FDK paths (it is an MBIR initializer).
+  - *Rejected — option C: order-invariant solid-angle density.*  The rigorous `dθ dφ` (weight each view
+    by its local solid-angle area) is both over-engineered and numerically ill-conditioned for **few**
+    directions (spherical Voronoi areas of a handful of points are boundary-dominated and meaningless),
+    and the missing-data null space dominates the initializer error anyway.  Revisit only if standalone
+    multiaxis FBP becomes a real deliverable.
+  - *Gates (added with M1):* a **reorder-invariance** test (permute the view list, same set → filter
+    unchanged) — it went from rel-max ~8.5 (old directional ramp) to <1e-6 — plus a
+    reduce-to-`ParallelBeamModel` check in the azimuth-only equally-spaced limit; both in
+    `tests/sharding/test_fbp.py::TestMultiAxisFbpFilter`.  (Multiaxis is still NOT in
+    `_geometry_types_for_tests` — no VCD-convergence/recon-NRMSE gating — but the projectors are now
+    gated via `anisotropic_multiaxis` in `test_projectors`.)
+  - *Done:* `fbp_filter` now delegates to the shared `_apply_direct_recon_filter` (per-view-shard
+    `run_per_device` path, sharded once `_supports_sharding` is on — which it now is), so it is no
+    longer single-device.
+- **Multiaxis vertical-fan absolute magnitude (the `1/cos(elevation)` question) — OPEN, deferred.**
+  - *What is verified.*  At elevation 0 the multiaxis forward projector reduces **bit-exactly** to
+    `ParallelBeamModel` (isotropic) and to `anisotropic_parallel` (with `voxel_row_aspect ≠ 1`) — a
+    permanent gate (`test_projectors.test_multiaxis_forward_reduces_to_parallel`).  So the in-plane
+    density (incl. the channel-major fans and the M-aniso row-aspect) is calibrated against validated
+    reference models, not merely adjoint-consistent.
+  - *What is NOT pinned.*  The vertical (elevation) fan uses `scaling = 1.0` — no path-length
+    normalization — so for **elevation ≠ 0** or **`voxel_slice_aspect ≠ 1`** the absolute magnitude is
+    only *self-consistent* (forward/back adjoint holds, Hessian holds), not anchored to a reference; the
+    adjoint is blind to a consistent scaling error, and parallel beam is not a valid reference once
+    slices spread across rows.  Cone/translation carry a `1/cos(phi)` (cone-angle) path-length factor on
+    their vertical fans; multiaxis has no analog.  But the geometry differs: the multiaxis detector is
+    held **perpendicular to the (tilted) ray** (verified from the coordinate maps — the ray direction is
+    `(−sinθ·cosφ, cosθ·cosφ, sinφ)` and the detector axes are both ⟂ to it), so there is **no
+    detector-incidence obliquity** (unlike cone's fixed detector); the only tilt effect is the ray
+    cutting obliquely through the axis-aligned voxel grid.  So the right factor must be **derived from
+    that path length**, not copied from cone — it may not be a clean `1/cos(elevation)`.
+  - *Decision.*  Left as `scaling = 1.0` through the M-aniso work (a path-length factor changes values
+    even at unit aspects, so it cannot ride the reduce-to-isotropic gate).  Take it up as a **separate
+    change** with its own **physical-fidelity gate** — forward-project a known object at elevation ≠ 0
+    and compare to an analytic line integral (the adjoint cannot gate it).  Acceptable as-is for the
+    intended use (an MBIR initializer; the iterative recon absorbs a global mis-scaling).
 - **Settable view parameters — ✅ done.**  `view_params_array` is a traced projector arg;
   `set_view_parameters()` updates it with no recompile; `vcls` runs as a 1-view sibling.
   Deleting the old `view_indices` plumbing is the E task above.
@@ -323,9 +443,60 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
   de-closuring already touched this core.  *(v1 §Future project.)*
 - **CPU-cluster auto-sharding policy** — `_auto_shard_cpu=True` is the default; remaining = real-
   cluster perf + a virtual-vs-real-CPU topology policy.  *(post-P6)*
+- **Auto device-count basis: recon-slices vs sino-views (OPEN, part of choose-N).**  `_auto_device_count`
+  trims the device count on the **recon-slice** axis (`recon_shape[recon_shard_axis]`): it drops a count
+  whose last *slice*-shard would be entirely padding.  But the projection compute lives on the
+  **view-owners** (each view-owner forward/back-projects its own views), so the slice axis is the wrong
+  proxy for "does this device do real work":
+    - a device with an all-padding **slice**-shard can still own real **views** and do full projection
+      (it projects bands into its views; the result reduces to the slice-owners) — the slice-based trim
+      can drop a device that would still be useful (e.g. 5 slices / 100 views on 4 devices → trims to 3,
+      though all 4 could each project 25 views);
+    - a device with an all-padding **view**-shard does **no** projection even if it owns real slices, and
+      the slice-based check never looks at views (e.g. 100 slices / 5 views on 4 devices → keeps 4, but
+      the 4th device has no views to project).
+  Revisit the basis (likely views, or both axes) as part of the **choose-N-vs-communication policy** (§5).
+  Surfaced 2026-06-23 while writing the dev sharding-overview page; the page (option A) deliberately
+  describes the trim as "a tunable heuristic" rather than enshrining the slice-based rule.  *(post-P6;
+  may be pulled earlier — evaluate before the PR.)*
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
+- **Cone-beam 8-GPU 2048³ recon hang (NCCL "Acquire clique" timeout) — INVESTIGATING (2026-06-23).**
+  A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
+  Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
+  config worked.  Repro tooling: `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
+  size × device-count sweep, each config `timeout`-isolated, HLO dumped, build-ID printed).
+  - **Mechanism:** no explicit collectives in mbirjax — projection is collective-free (thread pool
+    + `make_array_from_single_device_arrays`).  The only multi-device collectives are XLA-GSPMD
+    auto-inserted for the **VCD line-search scalar reductions** over the view-sharded sinogram
+    (`get_forward_lin_quad`'s `jnp.sum`, the `alpha` sums) — an all-reduce on the sino mesh + a
+    sino→recon cross-mesh reconcile.  Those are **shared with parallel beam**, so a cone-only hang
+    points to cone-specific divergence or scale/resource (cone's whole-cylinder kernels are far
+    heavier), NOT a structural bug.  (2048/8 divides evenly → not a padding-shape issue.)
+  - **Sweep result (job 12776721, confirmed build, h015):** **ALL configs OK through 512³ on 8 GPUs**
+    (parallel + cone, n=1/2/4/8).  So the sharded path is **structurally correct through 512³/8** —
+    rules out a collective-participation bug.  The failure is either scale-only (the 2048³ regime:
+    memory pressure / slow uneven per-device compile desyncing the all-reduce rendezvous) or a
+    build/env artifact of the original run (which had build uncertainty — `__version__`/unsure build).
+  - **2048³ attempt #1 (2026-06-23, job 12776973):** ALL configs `ERR` — but in the **repro script**,
+    not the recon: `forward_project` defaulted to `output_sharded=False`, gathering the full 2048³
+    sinogram (32 GiB) onto one GPU (on top of the 32 GiB phantom) → OOM in `_gather_to_host`, before
+    recon started.  Geometry-independent (parallel + cone identical).  Fixed the repro to build the
+    phantom **already-sharded** (`sharded_full`, per-shard -- avoids the slow/transient-heavy
+    `gen_modified_3d_sl_phantom` and the 32 GiB host-random) and keep the forward projection AND the
+    recon **device-sharded** (`output_sharded=True`) -- no single-device 32 GiB array anywhere.  (Side lesson: at 2048³ a gathered single-device output is itself 32 GiB — real runs must
+    stay sharded.)
+  - **Next (still PENDING as of 2026-06-24, cluster availability):** re-run 2048³ (n=4/8) with the
+    fixed repro — it has not yet actually reached the VCD loop at 2048³.  If it reproduces the hang,
+    the prime fix is making the line-search reductions **collective-free** (thread-pool partial sums +
+    a host reduce of the two floats), removing the only NCCL dependency.  If it completes, the original
+    hang was build/env and the branch is fine at scale.
+  - **Unrelated cache aside (resolved 2026-06-24):** a *separate* GPU failure mode — `NOT_FOUND` on
+    `<cache>/xla_gpu_per_fusion_autotune_cache_dir/tmp/...textproto` — surfaced when running the full
+    suite on A100s after an env rebuild.  Root cause: jax defaults `jax_persistent_cache_enable_xla_caches`
+    to the per-fusion autotune cache, whose temp-file writes fail on cluster NFS / a fresh cache dir.
+    Fix: disable it when we set the compilation cache (keep the executable cache).  Not the cone hang.
 
 ---
 

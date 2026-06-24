@@ -93,16 +93,16 @@ class Projectors:
         # Public entry points keep the original signatures; they read the CURRENT
         # view-parameter array off this object at call time (late binding), so
         # set_view_parameters takes effect on the next call with no recompile.
-        def sparse_forward_project_public(voxel_values, pixel_indices, view_indices=()):
+        def sparse_forward_project_public(voxel_values, pixel_indices, owned_view_indices=()):
             return _jit_sparse_forward_project(
                 self.view_params_array, voxel_values, pixel_indices,
                 fwd_kernel=forward_project_pixel_batch_to_one_view,
                 projector_params=projector_params,
                 pixel_batch_size=pixel_batch_size,
                 view_batch_size=view_batch_size,
-                view_indices=view_indices)
+                owned_view_indices=owned_view_indices)
 
-        def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, view_indices=()):
+        def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
             return _jit_sparse_back_project(
                 self.view_params_array, sinogram, pixel_indices,
                 back_kernel=back_project_one_view_to_pixel_batch,
@@ -110,7 +110,7 @@ class Projectors:
                 pixel_batch_size=pixel_batch_size,
                 view_batch_size=view_batch_size,
                 coeff_power=coeff_power,
-                view_indices=view_indices)
+                owned_view_indices=owned_view_indices)
 
         self.sparse_forward_project = sparse_forward_project_public
         self.sparse_back_project = sparse_back_project_public
@@ -123,7 +123,7 @@ class Projectors:
         # num_band_slices is static.
         if back_project_one_view_to_band is not None:
             def sparse_back_project_band_public(sinogram, pixel_indices, g0, num_band_slices,
-                                                view_indices=(), coeff_power=1):
+                                                owned_view_indices=(), coeff_power=1):
                 return _jit_sparse_back_project_band(
                     self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                     back_band_kernel=back_project_one_view_to_band,
@@ -131,7 +131,7 @@ class Projectors:
                     pixel_batch_size=pixel_batch_size,
                     view_batch_size=view_batch_size,
                     coeff_power=coeff_power,
-                    view_indices=view_indices)
+                    owned_view_indices=owned_view_indices)
 
             self.sparse_back_project_band = sparse_back_project_band_public
             self._jit_sparse_back_project_band = _jit_sparse_back_project_band
@@ -331,7 +331,7 @@ def ensure_tuple(var_args):
 # ──────────────────────────────────────────────────────────────────────────────
 def _sparse_forward_project(view_params_array, voxel_values, pixel_indices,
                             fwd_kernel, projector_params, pixel_batch_size, view_batch_size,
-                            view_indices=()):
+                            owned_view_indices=()):
     """Forward project voxels to a sinogram, batching over pixels then views.
 
     Batches over pixels (sum_function_in_batches); within each pixel batch, maps the
@@ -340,8 +340,8 @@ def _sparse_forward_project(view_params_array, voxel_values, pixel_indices,
     view_batch_size are static; view_params_array / voxel_values / pixel_indices are traced.
     """
     cur_view_params_array = view_params_array
-    if len(view_indices) > 0:
-        cur_view_params_array = view_params_array[view_indices]
+    if len(owned_view_indices) > 0:
+        cur_view_params_array = view_params_array[owned_view_indices]
 
     def forward_project_pixel_batch(local_values, local_pix_indices):
         def forward_project_single_view(single_view_params):
@@ -366,7 +366,7 @@ _jit_sparse_forward_project = jax.jit(
 
 def _sparse_back_project(view_params_array, sinogram, pixel_indices,
                          back_kernel, projector_params, pixel_batch_size, view_batch_size,
-                         coeff_power=1, view_indices=()):
+                         coeff_power=1, owned_view_indices=()):
     """Back project a sinogram to voxels, batching over views (summing) then pixels.
 
     Batches over views (sum_function_in_batches); within each view batch, maps the geometry's
@@ -376,8 +376,8 @@ def _sparse_back_project(view_params_array, sinogram, pixel_indices,
     are traced.
     """
     cur_view_params_array = view_params_array
-    if len(view_indices) > 0:
-        cur_view_params_array = view_params_array[view_indices]
+    if len(owned_view_indices) > 0:
+        cur_view_params_array = view_params_array[owned_view_indices]
 
     def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
         def back_project_pixel_batch(pixel_indices_batch):
@@ -402,7 +402,7 @@ _jit_sparse_back_project = jax.jit(
 
 def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                               back_band_kernel, projector_params, pixel_batch_size, view_batch_size,
-                              coeff_power=1, view_indices=()):
+                              coeff_power=1, owned_view_indices=()):
     """Back project a sinogram onto the GLOBAL recon slice band [g0, g0 + num_band_slices).
 
     The banded analogue of _sparse_back_project: it batches over views (summing) then pixels in
@@ -415,8 +415,8 @@ def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, nu
     projector_params / batch sizes / coeff_power are static.
     """
     cur_view_params_array = view_params_array
-    if len(view_indices) > 0:
-        cur_view_params_array = view_params_array[view_indices]
+    if len(owned_view_indices) > 0:
+        cur_view_params_array = view_params_array[owned_view_indices]
 
     def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
         def back_project_pixel_batch(pixel_indices_batch):

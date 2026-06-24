@@ -37,7 +37,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_model(num_views=8, num_rows=8, num_channels=32):
@@ -46,7 +46,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -160,14 +160,16 @@ class TestShardedPrior(unittest.TestCase):
     """The _qggmrf_prior_sharded orchestrator vs the single-device prior."""
 
     def test_trivial_bit_exact(self):
-        """1-device mesh matches the single-device prior to tight float tolerance.
-        (Name kept for history; was an exact-equality check.)
+        """The sharded prior orchestrator at 1 device matches the standalone single-device prior
+        to tight float tolerance.  (Name kept for history; was an exact-equality check.)
 
-        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
-        while both paths coexist; once every geometry runs on placements there is
-        one path and nothing to compare.  Relaxed from exact equality because the
-        sharded prior reorders non-associative FP sums -> ~1 ULP GPU difference
-        (CPU stays exact).  A tight tolerance still trips on any real drift.
+        This is the only coverage of the orchestrator's n=1 branch (a single shard, no halos,
+        reflected BC -- the path every single-device recon takes) against the canonical
+        ``qggmrf_gradient_and_hessian_at_indices`` (a distinct, still-live implementation, also
+        used by the denoiser's single-device path); the multi-device sweep below covers n>=2 with
+        halos.  Tight tolerance, not exact equality: the sharded prior reorders non-associative FP
+        sums (~1 ULP on GPU; and even on CPU the reduction order is a per-process XLA choice, not
+        guaranteed bit-stable across runs).  A tight tolerance still trips on any real drift.
         """
         single = preferred_devices(1)
         if single is None:
@@ -181,13 +183,11 @@ class TestShardedPrior(unittest.TestCase):
         g_ref, h_ref = mj.qggmrf_gradient_and_hessian_at_indices(flat, recon_shape, idx, params)
 
         model = _make_model()
-        model.configure_sharding(single)
+        model.configure_devices(single)
         sharded_flat = model._shard_recon(flat)
         g, h = model._qggmrf_prior_sharded(sharded_flat, idx, params)
-        np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref), rtol=1e-5, atol=1e-5,
-                                   err_msg="prior grad diverged beyond float noise")
-        np.testing.assert_allclose(np.asarray(h), np.asarray(h_ref), rtol=1e-5, atol=1e-5,
-                                   err_msg="prior hess diverged beyond float noise")
+        assert_sharded_allclose(np.asarray(g), np.asarray(g_ref), msg="prior grad diverged beyond float noise")
+        assert_sharded_allclose(np.asarray(h), np.asarray(h_ref), msg="prior hess diverged beyond float noise")
 
     def test_sharded_matches_single_device_sweep(self):
         """2/4/8-device sharded prior matches the single-device prior to float noise
@@ -208,7 +208,7 @@ class TestShardedPrior(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             sharded_flat = model._shard_recon(flat)
             g, h = model._qggmrf_prior_sharded(sharded_flat, idx, params)
 
@@ -221,10 +221,8 @@ class TestShardedPrior(unittest.TestCase):
                 if ax != slice_axis:
                     self.assertIsNone(g.sharding.spec[ax])
 
-            np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref), rtol=1e-5, atol=1e-5,
-                                       err_msg=f"prior grad mismatch at n_dev={n}")
-            np.testing.assert_allclose(np.asarray(h), np.asarray(h_ref), rtol=1e-5, atol=1e-5,
-                                       err_msg=f"prior hess mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(g), np.asarray(g_ref), msg=f"prior grad mismatch at n_dev={n}")
+            assert_sharded_allclose(np.asarray(h), np.asarray(h_ref), msg=f"prior hess mismatch at n_dev={n}")
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -247,7 +245,7 @@ class TestShardedRecon(unittest.TestCase):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
         if positivity:
             model.set_params(positivity_flag=True)
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # halo_per_subset=True forces the exact (re-extract-every-subset) prior path,
             # which reproduces single-device exactly; the default (False) stages halos once
             # per partition instead of per subset and is exact except at gen_pixel_partition's few
@@ -258,29 +256,6 @@ class TestShardedRecon(unittest.TestCase):
                                stop_threshold_change_pct=0.0,  # run all iters, no early stop
                                print_logs=False)
         return np.asarray(recon)
-
-    def test_trivial_recon_bit_exact(self):
-        """1-device mesh recon matches the single-device recon to modest float
-        tolerance.  (Name kept for history; was an exact-equality check.)
-
-        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
-        while both paths coexist.  Relaxed from exact equality, and to a looser
-        tolerance than the single-shot tests, because VCD is iterative: per-step
-        ~1 ULP FP-reorder differences in the banded sharded path amplify across
-        subsets/passes on GPU (CPU stays exact).  Matches the multi-device sweep
-        sibling's GPU-proven rtol/atol; still trips on any real algorithmic drift.
-        """
-        single = preferred_devices(1)
-        if single is None:
-            self.skipTest("need >= 1 device")
-        sino = _phantom_sino(_make_model())
-        ref = self._recon(_make_model(), sino)
-
-        shard_model = _make_model()
-        shard_model.configure_sharding(single)
-        out = self._recon(shard_model, sino)
-        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                   err_msg="trivial-sharded recon diverged beyond float noise")
 
     def test_sharded_recon_matches_single_device_sweep(self):
         """2/4/8-device recon matches single-device to float noise on the EXACT prior
@@ -298,11 +273,10 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True)   # exact path
             # Iterative amplification of float-reduce-order differences -> modest tolerance.
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"recon mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -323,9 +297,9 @@ class TestShardedRecon(unittest.TestCase):
                 continue
             if not _divisible(_make_model(), n):
                 continue
-            m_once = _make_model(); m_once.configure_sharding(devs)
+            m_once = _make_model(); m_once.configure_devices(devs)
             once = self._recon(m_once, sino, halo_per_subset=False)
-            m_exact = _make_model(); m_exact.configure_sharding(devs)
+            m_exact = _make_model(); m_exact.configure_devices(devs)
             exact = self._recon(m_exact, sino, halo_per_subset=True)
             nrmse = np.linalg.norm(once - exact) / np.linalg.norm(exact)
             self.assertLess(nrmse, 2e-3,
@@ -338,41 +312,6 @@ class TestShardedRecon(unittest.TestCase):
     # weights*error_sinogram (non-const) and the positivity-branch delta_sinogram recompute
     # both make extra view-sharded sinos per subset; these gate their correctness (the memory
     # side is checked separately by the memjump diagnostic on GPU).
-
-    def test_trivial_recon_bit_exact_nonconst_weights(self):
-        """1-device mesh recon with non-constant weights matches single-device to
-        modest float tolerance.  (Name kept for history; was exact-equality.)
-
-        RETIRE-AFTER-SHARDING: see test_trivial_recon_bit_exact -- same iterative
-        FP-reorder amplification; relaxed to the GPU-proven sweep tolerance.
-        """
-        single = preferred_devices(1)
-        if single is None:
-            self.skipTest("need >= 1 device")
-        m = _make_model()
-        sino, w = _phantom_sino(m), _phantom_weights(m)
-        ref = self._recon(_make_model(), sino, weights=w)
-        sm = _make_model(); sm.configure_sharding(single)
-        out = self._recon(sm, sino, weights=w)
-        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                   err_msg="non-const-weights trivial recon diverged beyond float noise")
-
-    def test_trivial_recon_bit_exact_positivity(self):
-        """1-device mesh recon with positivity_flag matches single-device to modest
-        float tolerance.  (Name kept for history; was exact-equality.)
-
-        RETIRE-AFTER-SHARDING: see test_trivial_recon_bit_exact -- same iterative
-        FP-reorder amplification; relaxed to the GPU-proven sweep tolerance.
-        """
-        single = preferred_devices(1)
-        if single is None:
-            self.skipTest("need >= 1 device")
-        sino = _phantom_sino(_make_model())
-        ref = self._recon(_make_model(), sino, positivity=True)
-        sm = _make_model(); sm.configure_sharding(single)
-        out = self._recon(sm, sino, positivity=True)
-        np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                   err_msg="positivity trivial recon diverged beyond float noise")
 
     def test_sharded_recon_matches_single_device_nonconst_weights(self):
         """2/4/8-device recon with non-constant weights matches single-device to float noise."""
@@ -387,10 +326,9 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True, weights=w)
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"non-const-weights recon mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"non-const-weights recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -407,10 +345,9 @@ class TestShardedRecon(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._recon(model, sino, halo_per_subset=True, positivity=True)
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"positivity recon mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"positivity recon mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")
@@ -434,7 +371,7 @@ class TestShardedReconKeepsSharding(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             sino = _phantom_sino(model)
             np.random.seed(0)
             model.set_params(verbose=0)  # Silence warnings about background
@@ -470,7 +407,7 @@ class TestShardedProx(unittest.TestCase):
     Pinned regression test: this combination first failed on a multi-GPU box
     (auto-sharding default + prox_map mixed a slice-sharded recon with a
     single-device prox_input) because nothing on CPU exercised sharded + prox.
-    Explicit configure_sharding keeps the coverage deterministic regardless of
+    Explicit configure_devices keeps the coverage deterministic regardless of
     auto-sharding policy or device counts."""
 
     MAX_ITERS = 3   # mode-vs-mode comparison; discriminates from iteration 1
@@ -499,11 +436,10 @@ class TestShardedProx(unittest.TestCase):
             model = _make_model()
             if not _divisible(model, n):
                 continue
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = self._prox(model, sino, prox_input)
             # Iterative amplification of float-reduce-order differences -> modest tolerance.
-            np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4,
-                                       err_msg=f"prox_map mismatch at n_dev={n}")
+            assert_sharded_allclose(out, ref, msg=f"prox_map mismatch at n_dev={n}", tol=1e-4)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable device count > 1")

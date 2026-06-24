@@ -2,7 +2,6 @@ import tempfile
 import unittest
 import warnings
 import numpy as np
-import jax
 import jax.numpy as jnp
 import scipy
 import mbirjax as mj
@@ -191,7 +190,6 @@ class TestVCD(unittest.TestCase):
 
         # ##########################
         # Perform VCD reconstruction
-        sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting recon')
         np.random.seed(0)  # the partition sequence is drawn from the global RNG
         if sanity_only:
@@ -267,7 +265,6 @@ class TestVCD(unittest.TestCase):
         # Mode-vs-mode: the stitched half-sino recon against the unsplit recon at the
         # same iteration count (each seeded: the partition sequence is drawn from the
         # global RNG).
-        sinogram = jax.device_put(sinogram, ct_model.main_device)
         print('  Starting unsplit recon')
         np.random.seed(0)
         recon_full, _ = ct_model.recon(sinogram, max_iterations=self.SPLIT_SINO_ITERATIONS,

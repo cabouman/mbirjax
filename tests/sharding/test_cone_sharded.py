@@ -30,14 +30,14 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_cone_model(helical=False, num_views=8, num_det_rows=24, num_det_channels=32):
     """Small cone model.  At magnification 2 the auto-sized recon has num_det_rows slices, so
     num_views=8 and num_det_rows=24 keep both sharded axes divisible by 2 and 4.  Pinned to a
     single device so the bare model is a deterministic single-device REFERENCE; the multi-device
-    tests override with their own configure_sharding(devs)."""
+    tests override with their own configure_devices(devs)."""
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     sdd = 4.0 * num_det_channels
     kwargs = dict(source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
@@ -90,11 +90,10 @@ class TestConeShardedProjectors(unittest.TestCase):
         ref = np.asarray(ref_fn(ref_model))
         for n, devs in counts:
             model = _make_cone_model(helical=helical)
-            model.configure_sharding(devs)
+            model.configure_devices(devs)
             out = np.asarray(shard_fn(model))
-            np.testing.assert_allclose(
-                out, ref, rtol=self.TOL, atol=self.TOL,
-                err_msg=f"{label} mismatch: helical={helical} n_dev={n}")
+            assert_sharded_allclose(out, ref, tol=self.TOL,
+                                    msg=f"{label} mismatch: helical={helical} n_dev={n}")
 
     def test_back_matches_single_device(self):
         for helical in self.GEOMETRIES:
@@ -126,7 +125,7 @@ class TestConeShardedRecon(unittest.TestCase):
 
     def _recon(self, model, sino):
         np.random.seed(0)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # Re-extract halos every subset -> the exact prior path (reproduces single-device).
             model._vcd_halo_per_subset = True
         model.set_params(verbose=0)  # Silence warnings about background
@@ -145,11 +144,10 @@ class TestConeShardedRecon(unittest.TestCase):
                 ref = self._recon(_make_cone_model(helical=helical), sino)
                 for n, devs in counts:
                     model = _make_cone_model(helical=helical)
-                    model.configure_sharding(devs)
+                    model.configure_devices(devs)
                     out = self._recon(model, sino)
-                    np.testing.assert_allclose(
-                        out, ref, rtol=self.TOL, atol=self.TOL,
-                        err_msg=f"VCD recon mismatch: helical={helical} n_dev={n}")
+                    assert_sharded_allclose(out, ref, tol=self.TOL,
+                                            msg=f"VCD recon mismatch: helical={helical} n_dev={n}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,18 @@ import jax.numpy as jnp
 import mbirjax as mj
 
 
+# Geometries gated by the adjoint/Hessian projector tests.  Multiaxis is gated HERE but
+# intentionally kept OUT of mj._utils._geometry_types_for_tests, so it is NOT pulled into the
+# VCD-convergence net (test_vcd) or the recon-NRMSE net (test_fbp_fdk): multiaxis is a
+# limited-angle geometry whose direct recon is only an MBIR initializer, and (as with
+# translation) its iterated VCD loop is geometry-independent and already gated by parallel +
+# cone.  Only the anisotropic variant is listed: it subsumes the isotropic case (aspects ==
+# 1), so a separate isotropic entry would be redundant.  (Anisotropic voxels are not yet wired
+# into the multiaxis kernels, so this currently behaves isotropically; once they are wired,
+# this same entry exercises the anisotropic path with no test change.)
+_PROJECTOR_GEOMETRY_TYPES = list(mj._utils._geometry_types_for_tests) + ['anisotropic_multiaxis']
+
+
 class TestProjectors(unittest.TestCase):
     """
     Test the adjoint property of the forward and back projectors, both the full versions and the sparse voxel version.
@@ -18,8 +30,9 @@ class TestProjectors(unittest.TestCase):
 
     def setUp(self):
         """Set up before each test method."""
-        # Choose the geometry type
-        self.geometry_types = mj._utils._geometry_types_for_tests
+        # Choose the geometry type (adds multiaxis to the shared list; see
+        # _PROJECTOR_GEOMETRY_TYPES at module top for why it is not in the shared list).
+        self.geometry_types = _PROJECTOR_GEOMETRY_TYPES
 
         # Set parameters
         self.num_views = 64
@@ -73,6 +86,12 @@ class TestProjectors(unittest.TestCase):
         # See experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md
         self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False) + 1e-4
 
+        # Multiaxis takes (num_views, 2) = [azimuth, elevation]: reuse the azimuth sweep above
+        # and add a deterministic spread of elevations (~ +/-17 deg) so the vertical (tilt) fan
+        # is exercised, not just the azimuth-only (parallel-equivalent) limit.
+        self.multiaxis_angles = jnp.stack(
+            [self.angles, jnp.linspace(-0.30, 0.30, self.num_views)], axis=1)
+
     def set_translation_vectors(self, geometry_type):
         if geometry_type in ('translation', 'anisotropic_translation'):
             self.translation_vectors = np.zeros((self.num_views, 3))
@@ -116,6 +135,11 @@ class TestProjectors(unittest.TestCase):
             ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
             ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
             ct_model.auto_set_recon_geometry()
+        elif geometry_type == 'anisotropic_multiaxis':
+            ct_model = mj.MultiAxisParallelModel(self.sinogram_shape, self.multiaxis_angles)
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
         else:
             raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
 
@@ -125,81 +149,6 @@ class TestProjectors(unittest.TestCase):
     # file (test_adjoint_parallel, test_hessian_cone, ...) instead of three tests looping
     # subTests: pytest can then report, select (-k cone), and distribute (pytest-xdist)
     # them individually.
-
-    def verify_view_batching(self, geometry_type):
-        self.set_view_params(geometry_type)
-        self.set_translation_vectors(geometry_type)
-        ct_model = self.get_model(geometry_type)
-        # View batching (view_indices) is a single-device feature: a view SUBSET breaks the
-        # equal view-shard, so the sharded projectors deliberately raise on a multi-device
-        # mesh (its only nontrivial user, vcls, runs single-device; the settable-view-params
-        # task retires view_indices entirely).  Auto-sharding is now the default on any
-        # multi-device host, so pin one device to keep testing the feature where it lives.
-        # RETIRE-AFTER: settable view parameters (then this pin is moot).
-        ct_model.configure_devices(1)
-
-        # Generate phantom
-        recon_shape = ct_model.get_params('recon_shape')
-        phantom_shape = recon_shape
-        embed_slice_start = 0
-        embed_slice_stop = recon_shape[2]
-        if geometry_type == 'helical_cone':
-            embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
-                ct_model,
-                self.helical_pitch,
-                self.helical_z_shifts
-            )
-            phantom_shape = (
-                recon_shape[0],
-                recon_shape[1],
-                embed_slice_stop - embed_slice_start,
-            )
-        phantom_core = mj.gen_cube_phantom(phantom_shape)
-        if geometry_type == 'helical_cone':
-            phantom = jnp.zeros(recon_shape)
-            phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
-        else:
-            phantom = phantom_core
-
-        # Generate indices of pixels and get the voxel cylinders
-        use_ror_mask = ct_model.get_params('use_ror_mask')
-        full_indices = mj.gen_pixel_partition(recon_shape, num_subsets=1, use_ror_mask=use_ror_mask)[0]
-        voxel_values = phantom.reshape((-1,) + recon_shape[2:])[full_indices]
-
-        # Compute forward projection with all the views at once
-        sinogram = ct_model.sparse_forward_project(voxel_values, full_indices)
-
-        # Then compute the sinogram over multiple batches and reassemble them
-        num_views = sinogram.shape[0]
-        num_subsets = np.random.randint(2, 8)
-        view_subsets = [jnp.arange(j, num_views, num_subsets) for j in range(num_subsets)]  # We don't use array_split because we want the entries to be interleaved for testing.
-        sinogram_batched = [ct_model.sparse_forward_project(voxel_values, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
-        sinogram_stitched = np.zeros_like(sinogram)
-        for j in range(sinogram.shape[0]):
-            sinogram_stitched[j] = sinogram_batched[j % num_subsets][j // num_subsets]
-
-        forward_view_batch_test_result = np.allclose(sinogram, sinogram_stitched, atol=1e-5)
-        self.assertTrue(forward_view_batch_test_result)
-
-        # Then repeat for back projection
-        back_projection = ct_model.sparse_back_project(sinogram, full_indices)
-        back_projection_batched = [ct_model.sparse_back_project(sinogram, full_indices, view_indices=view_subsets[j]) for j in range(num_subsets)]
-        back_projection_batched = np.stack(back_projection_batched, axis=0)
-        back_projection_stitched = np.sum(back_projection_batched, axis=0)
-        proj_diff = np.abs(back_projection_stitched - back_projection)
-        # # The following is designed to highlight the bug associated with rounding in jax.
-        # if np.sum(proj_diff > 1e-4) > 10:
-        #     print('Num above threshold = {}, max diff = {}'.format(np.sum(proj_diff > 1e-4), np.amax(proj_diff)))
-        #     row_index0, col_index0 = jnp.unravel_index(full_indices, recon_shape[:2])
-        #     recon0 = jnp.zeros(recon_shape)
-        #     recon0 = recon0.at[row_index0, col_index0].set(back_projection)
-        #     recon1 = jnp.zeros(recon_shape)
-        #     recon1 = recon1.at[row_index0, col_index0].set(back_projection_stitched)
-        #     title = 'Standard backprojection (left) and \nabs diff with back projection via multiple view subsets (right)'
-        #     title += '\nDifferences are due to inconsistent choices of rounding in jax.  See experiments/bugs_and_artifacts'
-        #     mj.slice_viewer(recon0, recon1-recon0, slice_axis=2, vmax=0.2, title=title)
-        back_view_batch_test_result = np.sum(proj_diff > 1e-4) < 1000 and np.amax(proj_diff) < 0.2
-        self.assertTrue(back_view_batch_test_result)
 
     def verify_adjoint(self, geometry_type):
         """
@@ -302,6 +251,40 @@ class TestProjectors(unittest.TestCase):
         print("relative difference =", rel_diff)
         self.assertTrue(adjoint_test_result)
 
+    def test_multiaxis_forward_reduces_to_parallel(self):
+        """At zero elevation the multiaxis forward projector must reduce EXACTLY to
+        ParallelBeamModel (isotropic) and to anisotropic_parallel (with a row aspect).
+
+        This is a strong ABSOLUTE-magnitude anchor that the adjoint identity cannot provide:
+        the adjoint passes for any consistent-but-mis-scaled forward/back pair, whereas
+        matching a validated reference model pins the scaling.  voxel_slice_aspect is left at 1
+        here because once slices spread across detector rows (any aspect or elevation) parallel
+        beam is no longer a valid reference (it is slice-independent).
+        """
+        nv, ndr, ndc = 16, 32, 32
+        az = jnp.linspace(0.0, jnp.pi, nv, endpoint=False) + 1e-4
+        ma_angles = jnp.stack([az, jnp.zeros(nv)], axis=1)     # zero elevation
+        rng = np.random.default_rng(0)
+        for row_aspect in (1.0, 1.9):
+            with self.subTest(voxel_row_aspect=row_aspect):
+                ma = mj.MultiAxisParallelModel((nv, ndr, ndc), ma_angles)
+                ma.set_params(verbose=0, voxel_row_aspect=row_aspect)
+                ma.auto_set_recon_geometry()
+                recon_shape = tuple(int(v) for v in ma.get_params('recon_shape'))
+                # ParallelBeam reference with the SAME recon geometry + row aspect.
+                pb = mj.ParallelBeamModel((nv, ndr, ndc), az)
+                pb.set_params(verbose=0, voxel_row_aspect=row_aspect, recon_shape=recon_shape,
+                              delta_voxel=float(ma.get_params('delta_voxel')))
+                phantom = jnp.asarray(rng.random(recon_shape, dtype=np.float32))
+                s_ma = np.asarray(ma.forward_project(phantom))
+                s_pb = np.asarray(pb.forward_project(phantom))
+                # Scale-invariant gate (project rule: never exact equality for computed floats);
+                # the value is ~0 on CPU, the 1e-6 margin absorbs any GPU reduction reordering.
+                rel = float(np.max(np.abs(s_ma - s_pb)) / np.max(np.abs(s_pb)))
+                self.assertLess(rel, 1e-6,
+                                f"multiaxis(el=0) forward != parallel: rel-max {rel:.3e} "
+                                f"(voxel_row_aspect={row_aspect})")
+
     def verify_hessian(self, geometry_type):
         """
         Verify the hessian property of the back projector:
@@ -351,8 +334,8 @@ class TestProjectors(unittest.TestCase):
 
 def _add_per_geometry_projector_tests():
     """Generate one test_<operation>_<geometry> method per pair (see note in TestProjectors)."""
-    operations = ('adjoint', 'hessian', 'view_batching')
-    for geometry_type in mj._utils._geometry_types_for_tests:
+    operations = ('adjoint', 'hessian')
+    for geometry_type in _PROJECTOR_GEOMETRY_TYPES:
         for operation in operations:
             def test(self, geometry_type=geometry_type, operation=operation):
                 print('Testing {} with {}'.format(operation, geometry_type))

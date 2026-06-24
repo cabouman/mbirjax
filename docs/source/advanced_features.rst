@@ -57,5 +57,11 @@ Below are tips on important and useful features:
   - ``verbose`` - default = 1 to print out basic information. Set ``verbose=0`` for quiet or 2 or 3 for more feedback.
   - ``model.print_params()`` - This method will print out all the parameters in the model so you can monitor what's happening.
 
+- **Use Multiple GPUs:**
+
+  On a machine with more than one GPU, MBIRJAX automatically spreads a reconstruction across them to
+  increase the available memory and reduce reconstruction time -- no change to your script.  See
+  :doc:`usr_multi_gpu` for how this works and how to control which devices are used.
+
 
 

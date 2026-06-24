@@ -2,7 +2,7 @@
 Tests for the sharding primitives.
 
 Covers the model-agnostic helpers in mbirjax._sharding (transfer +
-thread_execution) and TomographyModel.configure_sharding.  Runs on whatever
+thread_execution) and TomographyModel.configure_devices.  Runs on whatever
 devices are present: real GPUs on a cluster, virtual CPU devices on a laptop/CI
 (set up by conftest).
 """
@@ -130,7 +130,7 @@ class TestExecution(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(assembled), global_arr)
 
 
-class TestConfigureSharding(unittest.TestCase):
+class TestConfigureDevices(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -146,11 +146,10 @@ class TestConfigureSharding(unittest.TestCase):
 
     def test_default_single_device_trivial_mesh(self):
         model = self._make_model()
-        model.configure_sharding()  # devices=None -> 1-device trivial mesh
-        self.assertIsNotNone(model.mesh)
-        self.assertEqual(model.mesh.devices.size, 1)
+        model.configure_devices(1)  # pin a single device -> 1-device trivial mesh
+        self.assertIsNotNone(model.shard_devices)
+        self.assertEqual(len(model.shard_devices), 1)
         self.assertTrue(model.dev2dev_safe)
-        self.assertTrue(model.is_sharded)
 
     def test_two_device_mesh(self):
         devs = preferred_devices(2)
@@ -160,8 +159,8 @@ class TestConfigureSharding(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         if num_slices % 2 != 0:
             self.skipTest(f"num_slices {num_slices} not divisible by 2")
-        model.configure_sharding(devs)
-        self.assertEqual(model.mesh.devices.size, 2)
+        model.configure_devices(devs)
+        self.assertEqual(len(model.shard_devices), 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
     def test_non_dividing_axes_pad_instead_of_raising(self):
@@ -180,7 +179,7 @@ class TestConfigureSharding(unittest.TestCase):
         num_slices = model.get_params('recon_shape')[2]
         num_rows = model.get_params('sinogram_shape')[1]
         self.assertNotEqual(num_slices % 3, 0)
-        model.configure_sharding(devs)   # no warning, no raise: padding handles both axes
+        model.configure_devices(devs)   # no warning, no raise: padding handles both axes
         # Views pad 8 -> 9 and rows pad with the slices; all padded entries exactly zero.
         sino = np.ones(model.get_params('sinogram_shape'), dtype=np.float32)
         sharded = model._shard_sinogram(sino)
@@ -212,7 +211,7 @@ class TestConfigureSharding(unittest.TestCase):
         model = self._make_model()                          # num_views = 8 (divisible by 2)
         rows, cols, _ = model.get_params('recon_shape')
         model.set_params(recon_shape=(rows, cols, 5))        # 5 slices over 2 devices: pads to 6
-        model.configure_sharding(devs)
+        model.configure_devices(devs)
         out = model._shard_recon(np.zeros((rows * cols, 5), dtype=np.float32))
         self.assertEqual(out.shape, (rows * cols, 6))
         stale_device_form = np.zeros((rows * cols, 6), dtype=np.float32)

@@ -1,12 +1,10 @@
-We're returning to the multi-GPU/CPU sharding work on `mbirjax` (branch `greg/conebeam_sharding`), with the performance dashboard essentially complete. The next step is the **cone-beam port, increment B5 — exactly-inert slice padding**, which unblocks the 4 deferred cone tests that fail at non-dividing slice counts.
+We're continuing the multi-GPU/CPU sharding port of `mbirjax` (working branch `greg/sharding_extensions`, rebased onto prerelease and PR-ready). **ParallelBeam, cone, and translation are done**; the cone PR is merged into prerelease. **Next substantive code = the MULTIAXIS port** — the last increment-D sub-effort: flip `MultiAxisParallelModel._supports_sharding` (mirroring the translation port), and land the FBP angular-weighting fix with it. Then increment E (the retirement cascade).
 
-First read, in order:
+Read for orientation (these are the source of truth — verify any code claim against the actual files; docs/memory may lag):
 1. `.claude/claude_prompt.md` — collaboration style + workflow.
-2. `experiments/sharding/plans/sharding_implementation_plan_v3.md` — the primary current-state + forward plan (read first); §4 (cone state) and §5 (B5 = next).
-3. `experiments/sharding/plans/p6_increment_b_design.md` — the authoritative cone-port staged plan + progress; see the B5 bullet for scope.
-4. `experiments/sharding/plans/sharding_status.md` — TOP HANDOFF for the latest session state.
-5. `.claude/back_projection_overview.md` and `.claude/lessons.md` — projector internals + the jax/GPU playbook (skim; consult when a problem rhymes with a past one).
+2. `experiments/sharding/plans/sharding_status.md` — **TOP handoff = current state + next step (read first).**
+3. `experiments/sharding/plans/sharding_implementation_plan_v3.md` — primary forward plan; §5 (execution order), §6 (the multiaxis FBP angular-weighting fix, decided in principle).
+4. `experiments/sharding/plans/increment_d_translation_design.md` — the completed translation port; the template multiaxis mirrors (banded kernels, anchor rule, the `_supports_sharding` flip, inert padding, the lean test pattern).
+5. `.claude/lessons.md` + `.claude/back_projection_overview.md` — jax/GPU playbook + projector internals (skim; consult when a problem rhymes with a past one).
 
-B5 scope (per v3 §4 / `p6_increment_b_design.md`): crop the cone forward gather to the real slice count (padded slices are zero → exact); reconcile the device-form-vs-real shape in the geometry tests and the internal `sparse_back_project` contract; consider a `_supports_slice_padding()` hook so "B4 = dividing counts only" is explicit (cone False until B5). The padding masks and the B1 global validity clip are already geometry-agnostic. Reproduce the failures on CPU with `MBIRJAX_NUM_CPU_DEVICES=4`.
-
-In general, verify all code claims against the current files (docs/memory may lag). Reminders: stage only / draft commit messages — I commit from PyCharm; flag GPU items (I run those on the cluster); exact equality is never the gate for computed floats (tight allclose).
+Working reminders: stage only / draft commit messages — Greg commits from PyCharm; flag GPU items — Greg runs those on the cluster; do git surgery via CLI, not PyCharm; exact equality is never the gate for computed floats — use the scale-invariant `conftest.assert_sharded_allclose` for sharded-vs-single comparisons; and the sharded VCD loop is geometry-independent, so a new geometry needs no per-geometry sharded VCD-recon test.

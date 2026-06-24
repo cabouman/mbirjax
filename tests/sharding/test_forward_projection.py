@@ -16,8 +16,7 @@ These tests check:
   - output_sharded=True returns a view-sharded sinogram (no gather), and the
     default returns a plain array regardless of input placement;
   - sparse_forward_project keeps the result view-sharded (no gather inside);
-  - the forward/back adjoint identity holds across device counts;
-  - a view subset (view_indices != None) is rejected in sharded mode.
+  - the forward/back adjoint identity holds across device counts.
 
 Runs on whatever devices conftest provides (real GPUs on a cluster, virtual CPU
 devices otherwise).
@@ -31,7 +30,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from conftest import preferred_devices
+from conftest import preferred_devices, assert_sharded_allclose
 
 
 def _make_model(num_views=8, num_rows=8, num_channels=32):
@@ -39,7 +38,7 @@ def _make_model(num_views=8, num_rows=8, num_channels=32):
     angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
     # Pin a single device so the bare model is a deterministic single-device REFERENCE regardless of
     # how many GPUs are present (auto-sharding now uses all available GPUs by default); tests that
-    # exercise multi-device sharding override this with their own configure_sharding(devs).
+    # exercise multi-device sharding override this with their own configure_devices(devs).
     model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
     model.configure_devices(1)
     return model
@@ -105,30 +104,6 @@ class TestForwardProjectSharded(unittest.TestCase):
         if not self._divisible(model, n):
             self.skipTest(f"sharded axes not divisible by {n}")
 
-    def test_trivial_sharding_bit_exact(self):
-        """1-device mesh matches the unconfigured single-device path to tight float
-        tolerance.  (Name kept for history; was an exact-equality check.)
-
-        RETIRE-AFTER-SHARDING: trivial-mesh-vs-legacy comparison, meaningful only
-        while both paths coexist; once every geometry runs on placements there is
-        one path and nothing to compare.  Relaxed from exact equality because the
-        banded sharded path reorders non-associative FP sums -> ~1 ULP GPU
-        difference (CPU compiles both identically and stays exact).  A tight
-        tolerance still trips on any real algorithmic drift.
-        """
-        single_dev = preferred_devices(1)
-        if single_dev is None:
-            self.skipTest("need >= 1 device")
-        model = _make_model()
-        recon = _random_recon(model)
-        ref = np.asarray(model.forward_project(recon))
-
-        shard_model = _make_model()
-        shard_model.configure_sharding(single_dev)
-        out = np.asarray(shard_model.forward_project(recon))
-        np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5,
-                                   err_msg="trivial sharding diverged beyond float noise")
-
     def test_sharded_matches_single_device(self):
         """2-device public forward_project matches single-device to float noise and
         returns a plain (gathered) array."""
@@ -138,12 +113,12 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.forward_project(recon)
         # User-facing, PLAIN input: gathered (plain) output.
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_output_sharded_returns_sharded_sino(self):
         """output_sharded=True returns a view-sharded sinogram (no gather) even for
@@ -155,7 +130,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         out = shard_model.forward_project(recon, output_sharded=True)
 
         # The device form: a view-sharded sinogram.
@@ -167,7 +142,7 @@ class TestForwardProjectSharded(unittest.TestCase):
         for ax in range(out.ndim):
             if ax != view_axis:
                 self.assertIsNone(out.sharding.spec[ax])
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_sharded_input_default_returns_plain(self):
         """The default (output_sharded=False) gathers to a plain array even when
@@ -178,18 +153,18 @@ class TestForwardProjectSharded(unittest.TestCase):
         ref = np.asarray(model.forward_project(recon))     # single-device plain
 
         shard_model = _make_model()
-        shard_model.configure_sharding(self.devs)
+        shard_model.configure_devices(self.devs)
         sharded_recon = shard_model._shard_recon(recon)
         out = shard_model.forward_project(sharded_recon)
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
-        np.testing.assert_allclose(np.asarray(out), ref, rtol=1e-5, atol=1e-5)
+        assert_sharded_allclose(np.asarray(out), ref)
 
     def test_internal_returns_view_sharded(self):
         """sparse_forward_project keeps the result view-sharded (no gather inside)."""
         model = _make_model()
         self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
+        model.configure_devices(self.devs)
         idx = _indices(model)
         cyl = model._shard_recon(_random_cylinders(model))
         out = model.sparse_forward_project(cyl, idx)
@@ -199,17 +174,6 @@ class TestForwardProjectSharded(unittest.TestCase):
         for ax in range(out.ndim):
             if ax != view_axis:
                 self.assertIsNone(out.sharding.spec[ax])
-
-    def test_view_indices_not_supported(self):
-        """A view subset is rejected in sharded mode (full view-sharded output only)."""
-        model = _make_model()
-        self._check_divisible(model, 2)
-        model.configure_sharding(self.devs)
-        idx = _indices(model)
-        cyl = model._shard_recon(_random_cylinders(model))
-        num_views = model.get_params('sinogram_shape')[0]
-        with self.assertRaises(NotImplementedError):
-            model.sparse_forward_project(cyl, idx, view_indices=jnp.arange(num_views))
 
     def test_device_count_sweep(self):
         """The all-gather is correct across device counts, not just two."""
@@ -222,9 +186,9 @@ class TestForwardProjectSharded(unittest.TestCase):
             if devs is None or not self._divisible(ref_model, n):
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             out = np.asarray(m.forward_project(recon))
-            np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+            assert_sharded_allclose(out, ref)
             ran_multi = True
         if not ran_multi:
             self.skipTest("no usable multi-device configuration")
@@ -246,7 +210,7 @@ class TestForwardProjectSharded(unittest.TestCase):
             if devs is None or (n > 1 and not self._divisible(ref_model, n)):
                 continue
             m = _make_model()
-            m.configure_sharding(devs)
+            m.configure_devices(devs)
             ax = np.asarray(m.sparse_forward_project(m._shard_recon(x_cyl), idx))
             aty = np.asarray(m.sparse_back_project(m._shard_sinogram(y_sino), idx))
             lhs = float(np.sum(ax * np.asarray(y_sino)))

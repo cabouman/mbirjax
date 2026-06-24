@@ -1,64 +1,101 @@
-# Multi-GPU reconstruction (parallel beam) + usability updates
+# Multi-GPU/CPU reconstruction (all geometries) + retirement cleanup + docs
 
-This PR adds automatic multi-GPU reconstruction for `ParallelBeamModel`, with supporting
-controls and several usability changes.  Existing scripts run unchanged.
+This PR adds **automatic multi-device reconstruction for every geometry** — `ParallelBeamModel`,
+`ConeBeamModel`, `TranslationModel`, `MultiAxisParallelModel` — and the `QGGMRFDenoiser`.  On a
+machine with multiple GPUs (or, with no GPU, multiple CPU devices) a single reconstruction is spread
+across them with **no change to existing scripts**.  It also retires the pre-sharding device
+plumbing (placements are now the single source of device layout) and adds user + developer docs.
 
-## Multi-GPU reconstruction
+## Multi-device reconstruction
 
-On a machine with multiple GPUs, `recon()` (and `fbp_recon`, `prox_map`, and the
-projectors) now divides the work across all GPUs automatically — nothing in the script
-changes.  The primary benefit is **capacity**: per-GPU memory drops by roughly 1/N, so
-larger volumes fit; time improves too (≈2.2× on 2 GPUs at 1024×1023×1024, matching the
-single-GPU result to float precision; validated up to 8 GPUs at 2048³).  Any number of
-views and slices works with any GPU count.
+`recon()` (and `fbp_recon`/`fdk_recon`/`direct_recon`, `prox_map`, the projectors, and the QGGMRF
+denoiser) divides the work across the available devices automatically.  Primary benefit is
+**capacity** — peak memory per device drops ~1/N, so larger volumes fit; **speed** improves too
+(near-linear at large sizes).  The result is **independent of the device count**: a non-dividing view
+or slice axis is zero-padded to equal shares and the padding is kept exactly inert.
 
-With `model = ParallelBeamModel(sinogram_shape, angles)`, the following features are available:
+Sharding scheme (uniform across geometries): the **sinogram is sharded by view**, the **recon by
+slice**, combined with a small amount of banded communication.  Execution uses a per-device thread
+pool that keeps shards on-device (no host round-trips, no NCCL collectives in the projectors).
 
-- `model.device_summary` — reports what was chosen, e.g. `'2 x GPU (sharded) (slices padded 1023->1024)'`
-- `model.configure_devices(n)` — explicit control when you don't want the automatic choice
-- `model.prepare_sino_for_devices(sino)` — optional: pay the host→GPU transfer once when
-  running several reconstructions on the same large sinogram
-- `output_sharded=True` in `model.recon()` and other reconstruction/projection methods keeps results on the GPUs
-  for on-device pipelines (e.g. PnP); the default returns plain arrays exactly as before
+## Public surface
 
-## Other features
+Controls (see the new `usr_multi_gpu` page):
+- `model.configure_devices(...)` — explicit device choice (`n`, indices, or device objects); pinned
+  across later parameter changes.  (Replaces `configure_sharding`.)
+- `use_gpu` — `'automatic'` (default) / `'none'`; `'full'` is accepted as a deprecated synonym.
+- `model.device_summary` — reports what was chosen, e.g. `'4 x GPU (sharded)'`.
+- `model.prepare_sino_for_devices(sino[, weights])` — distribute a sinogram once for repeated recons.
+- `output_sharded=True` on `recon`/`fbp_recon`/`fdk_recon`/`direct_recon`/`back_project`/
+  `forward_project`/`denoise` — return the result device-sharded for on-device pipelines (default
+  returns an ordinary single-device array, as before).
 
-- **`set_view_parameters(...)`**: change the view angles (or other per-view parameters)
-  without rebuilding the projectors — milliseconds instead of a recompile.  Enables
-  view-sweeping algorithms and motion-correction experiments; `vcls` now uses it (and now
-  works with `ParallelBeamModel`, fixing a crash).
-- **Bounded multi-GPU memory**: peak memory no longer grows with iteration count.
-- **Clear errors instead of silent failures**: incompatible device configurations, stale
-  prepared arrays, and multi-GPU requests on unsupported geometries all fail fast with
-  instructions.
+Data utilities (now sharding-aware):
+- `generate_3d_shepp_logan_low_dynamic_range(shape, devices=..., max_block_gb=..., target_max_attenuation=...)`
+  — optional **slice-sharded** build across `devices`; single-device build is `lax.map` row-blocked to
+  bound memory; `target_max_attenuation` scales the phantom so its forward projection is realistic
+  (≈0–8) regardless of array size.
+- `generate_demo_data(..., devices=..., target_max_attenuation=...)` — returns device-sharded phantom
+  + sinogram when `devices` is given.
+- `gen_weights` — now an element-wise pass that **preserves the input's device/sharding** (a sharded
+  sinogram yields sharded weights with no gather; see behavior note below).
+
+## Architecture cleanup (the retirement cascade)
+
+Placements (`recon_placement` / `sino_placement`) are the single source of device layout; the
+pre-sharding representations and their dead branches are gone:
+- Retired `main_device`/`sinogram_device`, the `is_sharded` property, the legacy no-mesh code path,
+  the `_supports_sharding` gate, `output_device` (public projector surface), and the `mesh` property
+  (kept `shard_devices` as the public device-list accessor).
+- `view_indices` → internal `owned_view_indices`; `configure_sharding` → `configure_devices`.
+- `recon_shard_axis` / `sinogram_shard_axis` are classmethods (overridable per geometry).
+
+## Documentation
+
+- New user page **`usr_multi_gpu`** (zero-effort path, device subsetting, efficiency tips, what to
+  expect, a gentle "sharding" overview) + refreshed `use_gpu`, overview, advanced-features, and FAQ.
+- New developer page **`dev_sharding_overview`** (the two shardings, placement, banded forward/back,
+  why cone projects whole cylinders, the qGGMRF halos, single- vs multi-device paths, thread-pool
+  execution) with the slide diagrams.
+- `dev_api` rewritten as guidelines + a per-view-kernel skeleton (the existing geometry classes are
+  the canonical reference); Tomography-Model "Device Configuration" section refreshed; prose
+  `:meth:` cross-refs qualified so they resolve.
 
 ## Behavior changes relative to prerelease
 
-- **Multi-GPU machines: reconstruction parallelizes by default.**  Results agree with the
-  single-GPU result within the usual float tolerance (~1e-4 for iterative recon).
-- **CPU: 2-way parallel by default** — faster above ~200³, a few seconds slower for very
-  small reconstructions; results shift within the same float tolerance.
-- `use_gpu='sinograms'` (the hybrid CPU/GPU mode) is removed; remaining values are
-  `'automatic'`/`'full'`/`'none'`.  For oversized single-GPU problems, use
-  `split_sino_recon` or more GPUs.
-- Log files move from `./logs/` (scattered into whatever directory a script ran from) to
-  `~/.mbirjax/logs/`.
-- The JIT compilation cache moves from `/tmp/jax_cache` to `~/.mbirjax/jax_cache`, and is
-  only set if you haven't configured your own.
+- **Multi-device machines parallelize by default**, for every geometry.  Results agree with the
+  single-device result within the usual float tolerance (~1e-4 for iterative recon).
+- **CPU** shards across the available CPU devices by default.
+- **`gen_weights`** now returns the weights on the **input's device/sharding** (it previously gathered
+  to CPU).  Values are unchanged; only the device/sharding of the result differs.
+- `use_gpu='sinograms'` (the old hybrid mode) is gone; `'full'` is now a deprecated synonym of
+  `'automatic'`.
+- Log files are under `~/.mbirjax/logs/`; the JIT cache under `~/.mbirjax/jax_cache` (only if you
+  haven't configured your own).
 
-## Scope and known limits
+## Validation
 
-- Multi-GPU is **parallel beam only** for now; cone/translation/multiaxis behave exactly as
-  in prerelease (single device), and the port is the next phase of work.
-- Single machine only (no multi-node).
-- The user-guide page for multi-GPU usage lands with the geometry port.
+- Full test suite green on CPU multi-device (`pytest tests/` runs at 4 virtual CPU devices, which
+  exercises the view/slice padding paths).
+- Nightly regression on GPU (H100) and CPU, with correctness refs vs `main`, single-vs-multi-device,
+  and cross-platform.
+- Sharded recon matches single-device bit-for-bit where the math is reorder-free, and within the
+  iterated-VCD float tolerance otherwise.
+
+## Scope / known limits
+
+- **Single process only** (no multi-node).
+- **Open (under investigation, not a prerelease regression):** a cone-beam 2048³ reconstruction on 8
+  GPUs hangs at the first VCD subset update (NCCL "Acquire clique" timeout); clean through 512³/8.
+  Cone was single-device in prerelease, so this is new-capability territory, not a regression.  Repro
+  tooling is included under `experiments/sharding/cone_deadlock_repro/`.
+- **Follow-ons (post-merge):** shard `mar.py`/preprocessing (incl. `gen_weights_mar`); a doc-xref
+  cleanup pass (autosummary/undocumented-target refs); revisit the automatic device-count basis
+  (recon-slices vs sino-views).
 
 ## For testers
 
-The most valuable things to try: run your existing scripts unchanged on 1/2/4 GPUs and
-compare results and times; use odd view/slice counts; check `model.device_summary`; and
-report anything where time or memory surprises you (please include the `device_summary`
-output in reports).
-
-Test suite: `pytest tests/` (~2.5 min on CPU); multi-device specifics:
-`MBIRJAX_NUM_CPU_DEVICES=4 pytest tests/sharding/`.
+Run your existing scripts unchanged on 1/2/4/8 devices and compare results and times; try odd
+view/slice counts; check `model.device_summary`.  Test suite: `pytest tests/` (~5–6 min on CPU,
+auto 4 virtual CPU devices); override the device count with `MBIRJAX_NUM_CPU_DEVICES=N pytest
+tests/sharding/`.
