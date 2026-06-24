@@ -1199,7 +1199,8 @@ def generate_demo_data(
     use_curved_detector: bool = False,
     voxel_row_aspect: float = 1.0,
     voxel_slice_aspect: float = 1.0,
-    target_max_attenuation: float | None = None
+    target_max_attenuation: float | None = None,
+    devices: list | tuple | None = None,
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1234,6 +1235,7 @@ def generate_demo_data(
         voxel_row_aspect (float, optional): Aspect ratio for recon rows relative to columns.  Defaults to 1.0.
         voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
         target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
+        devices (sequence of jax devices, optional): jax devices to use for sharding. Defaults to None.  Used only for Shepp-Logan data.
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1367,7 +1369,8 @@ def generate_demo_data(
         )
     if object_type == ObjectType.SHEPP_LOGAN:
         phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device,
-                                                                 target_max_attenuation=target_max_attenuation)
+                                                                 target_max_attenuation=target_max_attenuation,
+                                                                 devices=devices)
     elif object_type == ObjectType.CUBE:
         phantom_core = gen_cube_phantom(phantom_shape, device=device)
     else:
@@ -1380,8 +1383,9 @@ def generate_demo_data(
     
     # Generate synthetic sinogram data
     print('Creating sinogram')
-    sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.asarray(sinogram)
+    output_sharded = False if devices is None else True
+    sinogram = ct_model_for_generation.forward_project(phantom, output_sharded=output_sharded)
+    sinogram = sinogram if output_sharded else np.asarray(sinogram)
 
     return phantom, sinogram, params
 

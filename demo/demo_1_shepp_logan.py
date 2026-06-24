@@ -37,14 +37,16 @@ num_det_channels = 90
 # If target_max_attenuation=None, then each phantom voxel is in the range [0, 1].
 # Set to a float to get a sinogram roughly in the range [0, target_max_attenuation]
 target_max_attenuation = None  # 6.0
+import jax
+devices = jax.devices()
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels,
-                                                  target_max_attenuation=target_max_attenuation)
-phantom = np.array(phantom)
+                                                  target_max_attenuation=target_max_attenuation,
+                                                  devices=devices)
 angles = params['angles']
 
 # View the sinogram
@@ -63,8 +65,9 @@ else:
     ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed to reduce the effect of possibly noisy sinogram entries.
+sino_scaling = sinogram.max() if target_max_attenuation is None else 1.0
+weights = mj.gen_weights(sinogram / sino_scaling, weight_type='transmission_root')
 # weights = None
-weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
 
 # Set reconstruction parameter values
 # Sharpness is a float, typically in the range (-1, 2).  The default value is 1.0.
@@ -89,7 +92,7 @@ time0 = time.time()
 # recon and recon_dict can be used together for viewing and saving to an hdf5 file.
 # Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
 # or to recreate the model if desired.
-recon, recon_dict = ct_model.recon(sinogram, weights=weights)
+recon, recon_dict = ct_model.recon(sinogram, weights=weights, output_sharded=True)
 
 max_diff = np.amax(np.abs(phantom - recon))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)

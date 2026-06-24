@@ -183,14 +183,17 @@ class TestSheppLoganAttenuationScale(unittest.TestCase):
             self.skipTest("need >= 1 device")
 
     def test_target_applies_analytic_scale(self):
-        shape = (20, 14, 9)        # rows, cols, slices -- longest (semi x size) is rows: 0.69*20
+        # target_max_attenuation uniformly scales the phantom by the function's own analytic factor.
+        # Compare against that factor directly (not a hand-copied formula) so the test stays correct
+        # if the scale calibration is retuned.
+        from mbirjax.utilities import _shepp_logan_attenuation_scale
+        shape = (20, 14, 9)
         target = 6.0
         base = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
         scaled = np.asarray(
             mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, target_max_attenuation=target))
-        # scale = target / max over axes of (main-ellipsoid semi-axis) * (axis size)
-        expected_scale = target / max(0.69 * 20, 0.92 * 14, 0.9 * 9)
-        np.testing.assert_allclose(scaled, base * expected_scale, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(scaled, base * _shepp_logan_attenuation_scale(shape, target),
+                                   rtol=1e-6, atol=1e-6)
         self.assertEqual(float(base.max()), 1.0)     # default (target None) is unscaled
 
 
