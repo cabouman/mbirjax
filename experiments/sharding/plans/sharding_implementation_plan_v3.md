@@ -46,11 +46,11 @@ name over the number.*
 | **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU-confirmed in the nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok on H100) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
-| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
-| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
+| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  Merged to prerelease in PR #17 |
+| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-confirmed (A100 + 4-GPU nightly); the `1/cos(elevation)` vertical path-length factor (§6) remains open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
 | **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; retired `mesh` (kept `shard_devices` as the public accessor); sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmed (nightly) |
 | **Post-E** — docs + utility sharding + Tk/cache fixes | ✅ **DONE 2026-06-24** (in PR #17): user/dev docs (`usr_multi_gpu`, `dev_sharding_overview`, `dev_api` rewrite); `gen_weights` / `gen_weights_mar` / the Shepp-Logan phantom / `generate_demo_data` made sharding-aware (+ phantom `max_block_gb` blocking and `target_max_attenuation`); `_pad_shard_on_axis` readability; `recon_shard_axis`/`sinogram_shard_axis` → classmethods; viewer/demo Tk-GC noise fix; **JAX per-fusion-autotune-cache disabled** (fixed the A100 `NOT_FOUND` cache errors) |
-| **Prerelease PR (#17)** | ✅ **OPEN 2026-06-24** (`greg/sharding_extensions` → `prerelease`, 55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Open follow-ons (non-blocking): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
+| **Prerelease PR (#17)** | ✅ **MERGED 2026-06-24** into `prerelease` (55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Follow-ons (non-blocking, and likely to grow as wider use surfaces issues): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
 
 ---
 
@@ -176,7 +176,7 @@ The five components, each with its load-bearing technique.
 
 ---
 
-## 4. Cone port (P6) — in progress
+## 4. Cone port (P6) — ✅ DONE (only the B4.5 band-kernel perf optimization is deferred, below)
 
 **The value is CAPACITY, not single-GPU speed.**  Cone projectors already scale ~N⁴ on GPU
 with no cliff and fit 1024³ single-device; sharding is what lets *VCD* exceed one GPU at
@@ -286,7 +286,7 @@ no-single-device-regression.
      (`conftest.assert_sharded_allclose`, surfaced by the translation Hessian + CPU reduction-order
      nondeterminism), and **dropping the redundant sharded VCD-recon test** for translation
      (`_PaddedReconMixin.RUN_SHARDED_VCD`; the sharded VCD loop is geometry-independent, gated on
-     parallel + cone).  In `greg/sharding_extensions`, rebased onto prerelease (PR-ready).
+     parallel + cone).  Merged to prerelease (PR #17).
      **GPU follow-ups (Greg's cluster, not blocking):** the GPU n=1 back short-circuit band-vs-pixel
      platform split for translation (decision 2b — active but UNMEASURED), and per-device memory/time
      scaling.  **Prereq:** `translation` baselines in mbirjax_metrics (separate session).
@@ -324,7 +324,7 @@ no-single-device-regression.
    RETIRE-marker sweep removed the trivial-mesh comparison tests.  **Kept** the single-device back
    driver/kernel (`_sparse_back_project_single_device` / `back_project_one_view_to_pixel_batch`),
    which the GPU n=1 short-circuit calls.  Also sharded the denoiser (E3c) and added
-   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 OPEN
+   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 MERGED
    (2026-06-24).**  Done since: `pixel_indices_worker` collapse (#22), the `mesh`/`shard_devices`
    revisit (`mesh` retired, `shard_devices` kept).  Remaining follow-up: `mar`/preprocessing sharding
    (#18).

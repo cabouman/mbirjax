@@ -21,9 +21,9 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
 
 ---
 
-## HANDOFF (2026-06-24) — PRERELEASE PR #17 OPEN; post-E refinements landed (docs + utility sharding + Tk/cache fixes)
+## HANDOFF (2026-06-24) — PRERELEASE PR #17 MERGED into prerelease; post-E refinements landed (docs + utility sharding + Tk/cache fixes)
 
-▶ **The prerelease PR is OPEN** (`greg/sharding_extensions` → `prerelease`): 55 commits, 83 files (+5032/-1933).  Description: `pr_description_draft.md` (refreshed for the full scope).  It carries all four geometries + the QGGMRF denoiser sharded, the retirement cascade (increment E), and the docs/utility-sharding work below.
+▶ **The prerelease PR is MERGED** (`greg/sharding_extensions` → `prerelease`, #17): 55 commits, 83 files (+5032/-1933).  Description: `pr_description_draft.md` (refreshed for the full scope).  It carried all four geometries + the QGGMRF denoiser sharded, the retirement cascade (increment E), and the docs/utility-sharding work below.  **Expect follow-ons as others exercise the sharded path more widely** (perf surprises, edge cases, API rough edges) — track them against the open items below.
 
 ▶ **Validation:** full CPU suite green (193 passed at the conftest default of 4 virtual CPU devices, which exercises the 3-/4-device padding paths); the A100 run is green for everything runnable — the >2-device tests *skip* on 2 GPUs (`preferred_devices(n)` returns None when GPUs are present but too few) but **pass on the CPU-4 suite** (verified) and get real-hardware coverage from the 4-GPU nightly.
 
@@ -38,7 +38,7 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
   - **Tk noise fix:** `viewer.py` closes the figure by object (no phantom re-create); `demo_7` adds `plt.close('all')` + `gc.collect()` after its raw `plt.show()` (the `Image.__del__` "main thread is not in main loop" was the demo's bare matplotlib, not the viewer).
   - **JAX cache fix:** disable `jax_persistent_cache_enable_xla_caches` when we set the compilation cache — the GPU per-fusion autotune cache's temp-file write/rename fails (NOT_FOUND) on cluster NFS / a fresh cache dir; the executable cache is kept.  This resolved the A100 suite failures.
 
-▶ **NEXT (open items, none blocking the PR):**
+▶ **NEXT (post-merge follow-ons):**
   - **Cone 2048³/8-GPU deadlock** — still under investigation (see the cone bullet below + `sharding_implementation_plan_v3.md` §6).  Clean through 512³/8; NOT a prerelease regression (cone was single-device there).
   - **#18** — shard `mar.py`/preprocessing (incl. the `gen_weights_mar` `init_recon` path).
   - Deferred doc-xref cleanup; the `_auto_device_count` recon-slices-vs-views revisit (§6).
@@ -57,7 +57,7 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
   - **E5** removed the 6 tautological `test_trivial_*_bit_exact` tests (kept+reworded the one meaningful prior cross-check); reworded the stale no-mesh / "runs single-device until the placement port" comments.
   - **Reviewed, no change:** `ConeBeamModel.split_sino_recon` composes with sharding (each half auto-shards via its fresh sub-model).
 
-▶ **NEXT = open the prerelease PR** (`greg/sharding_extensions` → `prerelease`).  **(#22) DONE** — `pixel_indices_worker` collapsed (commit 9f0340d).  Remaining follow-up: **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  **mesh/shard_devices revisit DONE 2026-06-23:** `mesh` **retired** (inlined to `recon_placement.mesh` at the 2 NamedSharding sites; tests/experiments migrated to `shard_devices` / `recon_placement.mesh`); `shard_devices` **kept** as the public device-list accessor (docstring re-blessed).
+▶ **NEXT = open the prerelease PR** — ✅ DONE: PR #17 merged into prerelease 2026-06-24 (see the top handoff).  **(#22) DONE** — `pixel_indices_worker` collapsed (commit 9f0340d).  Remaining follow-up: **(#18)** shard `mar.py`/preprocessing (incl. `gen_weights_mar`, which builds full sino/recon arrays on one device).  **mesh/shard_devices revisit DONE 2026-06-23:** `mesh` **retired** (inlined to `recon_placement.mesh` at the 2 NamedSharding sites; tests/experiments migrated to `shard_devices` / `recon_placement.mesh`); `shard_devices` **kept** as the public device-list accessor (docstring re-blessed).
 
 ▶ **Docs (#24) DONE 2026-06-23** — `usr_multi_gpu.rst` + the use_gpu/overview/FAQ refresh + the Tomography-Model "Device Configuration" move/refresh; prose `:meth:` cross-refs qualified to `mbirjax.*`.  **Deferred:** a doc-cleanup pass for the remaining UNRESOLVED Sphinx py-xrefs that render as plain text with no build warning (autosummary-table entries + wrong-target/undocumented docstring refs) — full enumeration + the detect-by-HTML-grep recipe in `sharding_implementation_plan_v3.md` §5.  Also added the dev **`dev_sharding_overview.rst`** page (sharding architecture: two shardings, placement, banded forward/back, cone whole-cylinders, halos, single-vs-multi paths, thread-pool execution).
 
