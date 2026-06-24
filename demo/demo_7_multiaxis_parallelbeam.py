@@ -2,6 +2,7 @@ import mbirjax as mj
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import time
+import gc
 
 # 1. Setup Parameters (Rectangle Phantom)
 sinogram_shape = (18, 100, 200)
@@ -57,6 +58,12 @@ plt.subplot(1,3,3)
 plt.imshow(sino_ma_tilt[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
 plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,{elevation_degrees}°)')
 plt.show()
+# Close the raw-matplotlib figures and finalize their TkAgg toolbar images on the MAIN thread now.
+# Otherwise a later automatic GC (e.g. during the recon below) runs the tkinter PhotoImage finalizers
+# off the main thread and prints "Exception ignored in Image.__del__: ... main thread is not in main
+# loop".  (slice_viewer does the same cleanup internally; this is for the bare plt.* figures above.)
+plt.close('all')
+gc.collect()
 
 time_start=time.time()
 recon_pb=model_pb.direct_recon(sino_pb)

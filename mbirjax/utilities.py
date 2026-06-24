@@ -1239,9 +1239,12 @@ def generate_demo_data(
 
     Returns:
         tuple: (object, sinogram, params)
-            - object (np.ndarray): a volume with shape (num_det_channels, num_det_channels, num_det_rows)
-            - sinogram (np.ndarray): a sinogram with shape (num_views, num_det_rows, num_det_channels)
-            - params (dict): a dict containing 'angles' and, if model_type is 'cone', then also 'source_detector_dist' and 'source_iso_dist'
+            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).  A
+              single-device jax.Array by default; a slice-sharded jax.Array when ``devices`` is given
+              (the helical case returns a numpy volume regardless).
+            - sinogram: shape (num_views, num_det_rows, num_det_channels).  A numpy array by default;
+              a view-sharded jax.Array when ``devices`` is given.
+            - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
@@ -1338,7 +1341,7 @@ def generate_demo_data(
                 'voxel_slice_aspect': voxel_slice_aspect
             }
     elif model_type == ModelType.TRANSLATION:
-        source_iso_dist = np.min(num_det_rows, num_det_channels) / 2
+        source_iso_dist = min(num_det_rows, num_det_channels) / 2
         source_detector_dist = source_iso_dist
         translation_vectors = gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
         num_views = translation_vectors.shape[0]
@@ -1348,6 +1351,13 @@ def generate_demo_data(
         params = {'translation_vectors': translation_vectors}
     else:
         raise ValueError(f'Invalid model type. Expected one of {[m.value for m in ModelType]}, got {model_type}')
+
+    # Pin the generation model to the requested devices so the phantom, the forward projection, and
+    # the returned sinogram all share one layout.  (Without this the model auto-selects devices, so a
+    # device subset would reshard the phantom and return the sinogram on the auto devices instead.)
+    # None leaves the automatic selection in place.
+    if devices is not None:
+        ct_model_for_generation.configure_devices(devices)
 
     # Generate phantom
     print('Creating phantom')
@@ -1376,8 +1386,12 @@ def generate_demo_data(
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
     if model_type == ModelType.CONE and use_helical:
-        phantom = jnp.zeros(recon_shape, device=device)
-        phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+        # Embed the partial-slice phantom into the full recon volume.  Done on host: the embed slice
+        # range does not align with the slice-shard boundaries, so a sharded phantom_core cannot be
+        # scattered in place -- the helical phantom build is therefore not sharded (the forward
+        # projection below still shards).  forward_project re-shards this host array as needed.
+        phantom = np.zeros(recon_shape, dtype=np.float32)
+        phantom[:, :, embed_slice_start:embed_slice_stop] = np.asarray(phantom_core)
     else:
         phantom = phantom_core
     
