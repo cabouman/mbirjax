@@ -34,11 +34,16 @@ num_views = 60
 num_det_rows = 64
 num_det_channels = 90
 
+# If target_max_attenuation=None, then each phantom voxel is in the range [0, 1].
+# Set to a float to get a sinogram roughly in the range [0, target_max_attenuation]
+target_max_attenuation = None  # 6.0
+
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
-                                                  num_det_channels=num_det_channels)
+                                                  num_det_channels=num_det_channels,
+                                                  target_max_attenuation=target_max_attenuation)
 phantom = np.array(phantom)
 angles = params['angles']
 

@@ -134,5 +134,65 @@ class TestBandMovement(unittest.TestCase):
         self.assertAlmostEqual(lhs, rhs, places=4)
 
 
+class TestShardedSheppLogan(unittest.TestCase):
+    """generate_3d_shepp_logan_low_dynamic_range(devices=...) builds the same phantom as the
+    single-device path, slice-sharded across devices with inert zero padding."""
+
+    def setUp(self):
+        self.devs = preferred_devices(2)
+        if self.devs is None:
+            self.skipTest("need >= 2 devices")
+
+    def test_sharded_matches_single_device_dividing(self):
+        # slices divisible by the device count -> no padding, device-form == real shape.
+        shape = (16, 12, 8)
+        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
+        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
+        self.assertEqual(len(sharded.addressable_shards), len(self.devs))
+        self.assertEqual(tuple(sharded.shape), shape)
+        # Independent per-device build (no reduction) -> bit-identical to single-device.
+        np.testing.assert_array_equal(np.asarray(sharded), single)
+
+    def test_sharded_matches_single_device_padded(self):
+        # slices NOT divisible by the device count -> padded to the next multiple, tail is zero.
+        n = len(self.devs)
+        real_slices = 2 * n + 1                 # not a multiple of n
+        padded_slices = ((real_slices + n - 1) // n) * n
+        shape = (16, 12, real_slices)
+        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
+        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
+        arr = np.asarray(sharded)
+        self.assertEqual(arr.shape, (16, 12, padded_slices))     # device form on the slice axis
+        np.testing.assert_array_equal(arr[:, :, :real_slices], single)   # real region matches
+        np.testing.assert_array_equal(arr[:, :, real_slices:], 0)        # padding is exactly inert
+
+    def test_sharded_target_attenuation_matches_single(self):
+        # The opt-in attenuation scale is applied identically in the sharded and single-device builds.
+        shape = (16, 12, 8)
+        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, target_max_attenuation=6.0))
+        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs, target_max_attenuation=6.0)
+        np.testing.assert_array_equal(np.asarray(sharded), single)
+
+
+class TestSheppLoganAttenuationScale(unittest.TestCase):
+    """The opt-in target_max_attenuation applies the analytic main-ellipsoid scale (single device)."""
+
+    def setUp(self):
+        self.devs = preferred_devices(1)
+        if self.devs is None:
+            self.skipTest("need >= 1 device")
+
+    def test_target_applies_analytic_scale(self):
+        shape = (20, 14, 9)        # rows, cols, slices -- longest (semi x size) is rows: 0.69*20
+        target = 6.0
+        base = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
+        scaled = np.asarray(
+            mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, target_max_attenuation=target))
+        # scale = target / max over axes of (main-ellipsoid semi-axis) * (axis size)
+        expected_scale = target / max(0.69 * 20, 0.92 * 14, 0.9 * 9)
+        np.testing.assert_allclose(scaled, base * expected_scale, rtol=1e-6, atol=1e-6)
+        self.assertEqual(float(base.max()), 1.0)     # default (target None) is unscaled
+
+
 if __name__ == "__main__":
     unittest.main()

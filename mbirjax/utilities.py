@@ -7,6 +7,7 @@ import jax
 import matplotlib.pyplot as plt
 import numpy as np
 import jax.numpy as jnp
+from jax import lax
 from PIL import ImageFont, Image, ImageDraw
 from jax import numpy as jnp
 
@@ -666,32 +667,80 @@ def generate_3d_shepp_logan_reference(phantom_shape):
     return image.transpose((1, 0, 2))
 
 
-def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
+def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None, devices=None, max_block_gb=4.0,
+                                              target_max_attenuation=None):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
 
     Args:
         phantom_shape (tuple): Phantom shape in (rows, columns, slices).
-        device (jax device): Device on which to place the output phantom.
+        device (jax device): Single device on which to place the output phantom.  Ignored when
+            ``devices`` is given.
+        devices (sequence of jax devices, optional): If given, build the phantom **slice-sharded**
+            across these devices -- each device computes its own band of slices on-device, so the
+            full volume is never materialized on a single device (useful for large phantoms that
+            feed a sharded reconstruction).  The result is a slice-sharded ``jax.Array`` padded to
+            the device form (the padding is zero) and can be passed directly to
+            ``forward_project(..., output_sharded=True)``.  Default None builds a single-device
+            array as before.
+        max_block_gb (float, optional): Rough upper bound (GB) on the temporary memory used by the
+            single-device build, which is processed in row blocks to bound peak memory.  Defaults to
+            4.0.  Ignored when ``devices`` is given (each device's slice band is already small).
+        target_max_attenuation (float, optional): If given, scale the phantom so that the peak line
+            integral through it (its forward projection) is roughly this value, **independent of the
+            array shape**.  Without it, the sinogram grows linearly with the array size (a ray
+            crosses more voxels), which is unrealistic -- real -log-attenuation sinograms sit around
+            0 to 6-8.  The scale is analytic (from the main ellipsoid's extent along the longest
+            axis) and ASSUMES ``delta_voxel ~= 1``, since the phantom cannot see the projector's
+            voxel spacing (the sinogram scales linearly with ``delta_voxel``).  Default None leaves
+            the phantom unscaled (the historical behavior).
 
     Returns:
-        ndarray: A 3D numpy array of shape phantom_shape representing the voxel intensities of the phantom.
+        jax array: A 3D array of shape ``phantom_shape`` with the voxel intensities of the phantom --
+        single-device by default, or slice-sharded when ``devices`` is given.
 
     Note:
-        This function uses a memory-efficient approach to generating large phantoms.
+        The phantom is independent across voxels, so the single-device build is blocked over rows
+        and the sharded build is split over slices -- neither needs inter-device communication.
     """
-    # Get space for the result and set up the grids for add_ellipsoid
+    scale = 1.0 if target_max_attenuation is None \
+        else _shepp_logan_attenuation_scale(phantom_shape, target_max_attenuation)
+    if devices is not None:
+        return _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale)
     with jax.default_device(device):
-        phantom = jnp.zeros(phantom_shape, device=device)
-    N, M, P = phantom_shape
-    x_locations = jnp.linspace(-1, 1, N)
-    y_locations = jnp.linspace(-1, 1, M)
-    z_locations = jnp.linspace(-1, 1, P)
-    x_grid, y_grid = jnp.meshgrid(x_locations, y_locations, indexing='ij')
-    i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='ij')
-    grids = (x_grid, y_grid, i_grid, j_grid)
+        return _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale)
 
-    # Main ellipsoid
+
+# Semi-axes (rows, cols, slices) of the MAIN Shepp-Logan ellipsoid -- the largest structure, which
+# dominates the longest line integral.  Must match the first ellipsoid in _add_shepp_logan_ellipsoids.
+_MAIN_ELLIPSOID_SEMI_AXES = (0.69, 0.92, 0.9)
+
+
+def _shepp_logan_attenuation_scale(phantom_shape, target_max_attenuation):
+    """Intensity scale so the peak forward projection of the phantom is ~``target_max_attenuation``.
+
+    The longest line integral runs along the array axis with the largest ``semi_axis_k * shape_k``: a
+    ray through the center of the main ellipsoid crosses ~ ``semi_axis_k * shape_k`` voxels (the
+    ellipsoid spans ``[-semi, semi]`` of the normalized ``[-1, 1]`` axis, i.e. ``semi`` of the
+    ``shape_k`` half-axis voxels on each side).  With intensity 1 and ``delta_voxel = 1`` the peak
+    sinogram value is ~ that voxel count, so scaling the phantom by
+    ``target / max_k(semi_k * shape_k)`` puts the peak near ``target_max_attenuation``.  ASSUMES
+    ``delta_voxel ~= 1`` (the phantom cannot see the projector's voxel spacing; the sinogram scales
+    linearly with ``delta_voxel``).
+    """
+    longest_path_voxels = max(s * n for s, n in zip(_MAIN_ELLIPSOID_SEMI_AXES, phantom_shape))
+    interior_intensity = 0.28  # The approximate average intensity along the center of the main ellipse
+    return (target_max_attenuation / longest_path_voxels) / interior_intensity
+
+
+def _add_shepp_logan_ellipsoids(phantom, grids, z_locations):
+    """Add the nine standard low-dynamic-range Shepp-Logan ellipsoids to ``phantom``.
+
+    ``phantom`` is ``(rows, cols, num_slices)`` and ``z_locations`` holds the z coordinate of each of
+    its slices -- so this works on a full volume or on a contiguous band of slices (the sharded
+    build passes one band per device).  Shared by the single-device and sharded paths so the
+    ellipsoid definitions live in one place.
+    """
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, 0, 0, 0.69, 0.92, 0.9, intensity=1)
     # Smaller ellipsoids and other structures
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, 0.0184, 0, 0.6624, 0.874, 0.88, intensity=-0.8)
@@ -702,8 +751,105 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.1, 0, 0.046, 0.046, 0.046, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, -0.08, -0.605, 0, 0.046, 0.023, 0.02, angle=0, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.605, 0, 0.023, 0.023, 0.02, angle=0, intensity=0.1)
-
     return phantom
+
+
+def _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale=1.0):
+    """Single-device Shepp-Logan build, blocked over ROWS with ``lax.map`` to bound peak memory.
+
+    Every voxel of the phantom is independent, so the rows are split into fixed-size blocks and
+    built one at a time: ``lax.map`` keeps only the current block's transients live (XLA scans the
+    blocks) and the per-block results are concatenated.  Without this, the per-slice ``vmap`` inside
+    each of the nine ``add_ellipsoid`` calls materializes several full-volume transients at once,
+    which can exceed device memory at large sizes (e.g. 2048^3).  Bit-identical to the unblocked
+    build (the per-voxel formula is unchanged; only the loop structure differs).  ``scale`` (default
+    1.0) multiplies the result -- the optional attenuation rescaling.
+    """
+    N, M, P = phantom_shape
+    # Block over ROWS (axis 0), not slices: lax.map stacks its results on a new LEADING axis, so
+    # blocking the leading axis lets the blocks reassemble by a cheap contiguous reshape (concatenate
+    # over axis 0).  Blocking slices would instead need a full-volume transpose to move the block axis
+    # back to axis 2, which would defeat the memory bound.  Every voxel is independent, so the axis is
+    # free and the result is identical to the slice-sharded build -- the sharded path blocks slices
+    # only because that is the recon-by-slice device layout, a constraint this memory blocking lacks.
+    # Choose a row-block count so one block's transients stay near max_block_gb.  A block holds a few
+    # (block_rows, M, P) arrays at once (the ellipsoid comparison + the running sum), so budget ~4x.
+    bytes_per_full = N * M * P * 4
+    num_blocks = max(1, int(np.ceil(4 * bytes_per_full / (max_block_gb * 1024 ** 3))))
+    block_rows = -(-N // num_blocks)          # ceil(N / num_blocks): rows per block
+    n_blocks = -(-N // block_rows)            # ceil(N / block_rows): number of blocks
+    padded_N = n_blocks * block_rows          # pad rows up to a whole number of fixed-size blocks
+
+    # In-plane grids (rows x cols), padded on the row axis so every block is the same fixed size; the
+    # pad rows are cropped off the final result.  z coordinates are shared across all blocks.
+    x_grid, y_grid = jnp.meshgrid(jnp.linspace(-1, 1, N), jnp.linspace(-1, 1, M), indexing='ij')
+    x_grid = jnp.pad(x_grid, ((0, padded_N - N), (0, 0)), mode='edge')
+    y_grid = jnp.pad(y_grid, ((0, padded_N - N), (0, 0)), mode='edge')
+    z_locations = jnp.linspace(-1, 1, P)
+
+    def build_row_block(i):
+        # Build the phantom for one fixed-size band of rows [i*block_rows : (i+1)*block_rows).
+        r0 = i * block_rows
+        xb = lax.dynamic_slice(x_grid, (r0, 0), (block_rows, M))
+        yb = lax.dynamic_slice(y_grid, (r0, 0), (block_rows, M))
+        grids = (xb, yb, None, None)          # add_ellipsoid uses only the x/y grids
+        return _add_shepp_logan_ellipsoids(jnp.zeros((block_rows, M, P)), grids, z_locations)
+
+    blocks = lax.map(build_row_block, jnp.arange(n_blocks))   # (n_blocks, block_rows, M, P)
+    phantom = jnp.concatenate(blocks, axis=0)[:N]             # (N, M, P): merge blocks, crop padded rows
+    return phantom if scale == 1.0 else phantom * scale
+
+
+def _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale=1.0):
+    """Build the Shepp-Logan phantom slice-sharded across ``devices``.
+
+    The phantom is embarrassingly parallel along slices -- each z-slice depends only on the shared
+    in-plane grid and its own z coordinate -- so every device builds its own contiguous band of
+    slices entirely on-device: no halos, no cross-device communication, and the full volume never
+    exists on one device.  The result is a slice-sharded ``jax.Array`` padded to the device form
+    (the tail slices are zero, exactly like a sharded recon), and matches the single-device phantom
+    on the real slices.  ``scale`` (default 1.0) multiplies each shard -- the optional attenuation
+    rescaling (the zero padding stays zero).
+    """
+    import mbirjax._sharding as mjs
+    N, M, P = phantom_shape
+    # Describe the slice-axis (axis 2) layout across the devices: the slice axis is split into one
+    # contiguous band per device, and when P does not divide len(devices) it is padded up to the
+    # next multiple (placement.padded_size), with the extra slices zero-filled and inert.
+    placement = mjs.Placement(devices, axis=2, real_size=P)
+
+    # Build one shard per device.  We just LOOP -- no ThreadPoolExecutor -- because each piece is
+    # pure JAX: the `with jax.default_device(dev)` block DISPATCHES that device's build and returns
+    # immediately (JAX dispatch is asynchronous), so the devices compute concurrently and
+    # assemble_sharded joins them.  A thread pool is only needed when a per-device step BLOCKS (a
+    # host transfer, block_until_ready, or reading addressable_shards) and would otherwise serialize
+    # the loop -- which this fully independent build never does.
+    pieces = []
+    for dev, (start, end), n_real in placement.padded_shard_ranges():
+        block = end - start                       # this device's band length on the padded slice axis
+        with jax.default_device(dev):
+            parts = []
+            if n_real > 0:
+                # This device owns real slices [start, start + n_real).  Rebuild the shared in-plane
+                # grids locally (cheap, (N, M)) so they live on this device, then build just this
+                # band's slices using the same z coordinates as the single-device phantom.
+                x_grid, y_grid = jnp.meshgrid(jnp.linspace(-1, 1, N), jnp.linspace(-1, 1, M), indexing='ij')
+                i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='ij')
+                grids = (x_grid, y_grid, i_grid, j_grid)
+                z_band = jnp.linspace(-1, 1, P)[start:start + n_real]
+                parts.append(_add_shepp_logan_ellipsoids(jnp.zeros((N, M, n_real)), grids, z_band))
+            if block - n_real > 0:
+                # Device-form zero padding at the end of the slice axis (kept inert downstream).
+                parts.append(jnp.zeros((N, M, block - n_real)))
+            # A shard is the real band, the zero pad, or -- on the one boundary device that straddles
+            # real/padding -- both joined along the slice axis.
+            piece = parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=2)
+            if scale != 1.0:
+                piece = piece * scale          # zero padding stays zero
+        pieces.append(piece)
+
+    # Wrap the per-device shards (each already resident on its device) as one slice-sharded array.
+    return mjs.assemble_sharded(pieces, (N, M, placement.padded_size), placement.shard_structure(3))
 
 
 def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None,
@@ -1052,7 +1198,8 @@ def generate_demo_data(
     helical_z_center: float = 0.0,
     use_curved_detector: bool = False,
     voxel_row_aspect: float = 1.0,
-    voxel_slice_aspect: float = 1.0
+    voxel_slice_aspect: float = 1.0,
+    target_max_attenuation: float | None = None
 ) -> (np.ndarray, np.ndarray):
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1084,6 +1231,9 @@ def generate_demo_data(
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
         use_curved_detector (bool, optional): (cone beam geometry parameter)
+        voxel_row_aspect (float, optional): Aspect ratio for recon rows relative to columns.  Defaults to 1.0.
+        voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
+        target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1216,7 +1366,8 @@ def generate_demo_data(
             embed_slice_stop - embed_slice_start,
         )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device,
+                                                                 target_max_attenuation=target_max_attenuation)
     elif object_type == ObjectType.CUBE:
         phantom_core = gen_cube_phantom(phantom_shape, device=device)
     else:
