@@ -1,5 +1,6 @@
 import io
 import datetime
+import warnings
 from typing import Literal, Union, overload, Any
 import numpy as np
 import jax
@@ -575,6 +576,11 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
     * Within each block the filter is computed by rolling the data in all 26
       neighbour directions, stacking the 27 volumes, and taking
       :func:`jnp.median` along the new axis.
+    * This is a whole-volume operation and is **not** sharding-aware.  The built-in d0-blocking
+      already bounds single-device memory, so a large volume can be filtered on one device.  If ``x``
+      is distributed across multiple devices (e.g. a recon returned with ``output_sharded=True``),
+      gather it to a single device first; otherwise JAX partitions the sharded-axis stencil with
+      cross-device communication (a warning is issued in that case).
 
     Examples
     --------
@@ -588,6 +594,15 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
            ...
            dtype=float32)
     """
+    # Not sharding-aware: a multi-device input would have its 3x3x3 stencil partitioned by XLA
+    # (cross-device communication, possibly slow).  Warn so the user can gather it to one device.
+    shards = getattr(x, 'addressable_shards', None)
+    if shards is not None and len(shards) > 1:
+        warnings.warn(
+            'median_filter3d received an array sharded across {} devices; it is a whole-volume '
+            'operation, so JAX will partition the 3x3x3 stencil across devices (cross-device '
+            'communication).  For predictable performance gather it to one device first, e.g. '
+            'np.asarray(x) or jax.device_put(x, jax.devices()[0]).'.format(len(shards)))
     d0, d1, d2 = x.shape
     x_gb = x.size * 4 / (1024**3)
     num_blocks = np.ceil(27 * x_gb / max_block_gb).astype(int)
