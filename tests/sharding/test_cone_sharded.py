@@ -125,7 +125,7 @@ class TestConeShardedRecon(unittest.TestCase):
 
     def _recon(self, model, sino):
         np.random.seed(0)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # Re-extract halos every subset -> the exact prior path (reproduces single-device).
             model._vcd_halo_per_subset = True
         model.set_params(verbose=0)  # Silence warnings about background

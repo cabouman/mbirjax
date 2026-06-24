@@ -240,7 +240,7 @@ class TestPaddedVcdRecon(unittest.TestCase):
 
     def _recon(self, model, sino, weights=None, prepared=False):
         np.random.seed(0)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             model._vcd_halo_per_subset = True   # exact prior path (the tight gate)
         if prepared:
             if weights is not None:
@@ -362,7 +362,7 @@ class _PaddedReconMixin:
 
     def _recon(self, model, sino, weights=None, seed=0):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # Force the EXACT per-subset halo path: the default stages halos once per
             # partition pass, which is exact except at gen_pixel_partition's few replicated
             # pixels (a documented ~2e-3 approximation, tested separately in

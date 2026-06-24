@@ -161,32 +161,15 @@ class TomographyModel(ParameterHandler):
         return super().get_params(parameter_names)
 
     @property
-    def mesh(self):
-        """The 1-D device mesh (axis ``'devices'``), derived from ``recon_placement``.
-
-        A property -- read it as an attribute (``model.mesh``), not a call.
-
-        Read-only view of the device layout; None before the layout is configured.  The recon
-        and sino placements hold equal meshes (same devices on the same axis), so this returns
-        the recon placement's.
-
-        RETIREMENT CANDIDATE: a minimal-churn accessor for the call sites that read the former
-        ``self.mesh`` field (the two ``NamedSharding(self.mesh, ...)`` sites).  A deliberate
-        revisit (see the device-layout plan) will decide whether to delete it -- those sites
-        read ``recon_placement.mesh`` directly -- or keep it.
-        """
-        return self.recon_placement.mesh if self.recon_placement is not None else None
-
-    @property
     def shard_devices(self):
-        """The devices the recon/sino are sharded over, derived from ``recon_placement``.
+        """The devices the recon and sinogram are sharded over (a list), or ``None`` before the
+        device layout is configured.
 
         A property -- read it as an attribute (``model.shard_devices``), not a call.
 
-        Read-only view of the device layout; None before the layout is configured.
-
-        RETIREMENT CANDIDATE: same revisit as ``mesh`` -- delete in favor of
-        ``recon_placement.devices`` at the call sites, or keep as a public accessor.
+        This is the public, read-only view of the device layout: ``len(model.shard_devices)`` is
+        the device count and ``model.shard_devices[0].platform`` its platform.  Derived from
+        ``recon_placement`` (the recon and sino placements share the same devices).
         """
         return self.recon_placement.devices if self.recon_placement is not None else None
 
@@ -458,7 +441,7 @@ class TomographyModel(ParameterHandler):
         spec = [None] * x.ndim
         spec[axis] = 'devices'
         sharding = jax.sharding.NamedSharding(
-            self.mesh, jax.sharding.PartitionSpec(*spec))
+            self.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
         # Skip any movement if x is already in exactly this sharding.
         if isinstance(getattr(x, 'sharding', None), jax.sharding.NamedSharding):
             if x.sharding == sharding:
@@ -1136,7 +1119,7 @@ class TomographyModel(ParameterHandler):
         spec = [None] * len(recon_shape)
         spec[axis] = 'devices'
         recon_sharding = jax.sharding.NamedSharding(
-            self.mesh, jax.sharding.PartitionSpec(*spec))
+            self.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
         # Global slice count from the cylinder (the DEVICE form -- padded when the
         # slice axis pads); rows/cols from the params (never padded).
         return mjs.assemble_sharded(

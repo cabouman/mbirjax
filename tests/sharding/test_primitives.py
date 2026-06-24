@@ -147,8 +147,8 @@ class TestConfigureDevices(unittest.TestCase):
     def test_default_single_device_trivial_mesh(self):
         model = self._make_model()
         model.configure_devices(1)  # pin a single device -> 1-device trivial mesh
-        self.assertIsNotNone(model.mesh)
-        self.assertEqual(model.mesh.devices.size, 1)
+        self.assertIsNotNone(model.shard_devices)
+        self.assertEqual(len(model.shard_devices), 1)
         self.assertTrue(model.dev2dev_safe)
 
     def test_two_device_mesh(self):
@@ -160,7 +160,7 @@ class TestConfigureDevices(unittest.TestCase):
         if num_slices % 2 != 0:
             self.skipTest(f"num_slices {num_slices} not divisible by 2")
         model.configure_devices(devs)
-        self.assertEqual(model.mesh.devices.size, 2)
+        self.assertEqual(len(model.shard_devices), 2)
         self.assertIsInstance(model.dev2dev_safe, bool)
 
     def test_non_dividing_axes_pad_instead_of_raising(self):

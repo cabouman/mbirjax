@@ -245,7 +245,7 @@ class TestShardedRecon(unittest.TestCase):
         np.random.seed(seed)  # fix partitions + subset order so modes are comparable
         if positivity:
             model.set_params(positivity_flag=True)
-        if model.mesh is not None:
+        if model.shard_devices is not None:
             # halo_per_subset=True forces the exact (re-extract-every-subset) prior path,
             # which reproduces single-device exactly; the default (False) stages halos once
             # per partition instead of per subset and is exact except at gen_pixel_partition's few
