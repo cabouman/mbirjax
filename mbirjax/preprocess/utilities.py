@@ -1153,3 +1153,96 @@ def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_
 
     y_scaled = 2.0 * (y_eval - y_min) / (y_max - y_min) - 1.0
     return np.polynomial.chebyshev.chebval(y_scaled, cheb_coeffs)
+
+
+def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1):
+    """
+    Detect zinger pixels from sinogram.
+
+    Zinger pixels are identified as unusually negative values. A pixel is
+    classified as a zinger if its value is less than
+
+        -zinger_pixel_ratio * typical_sino_value
+
+    Args:
+        sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        zinger_pixel_ratio (float, optional): Ratio used zinger pixels detection. Defaults to 0.1.
+
+    Returns:
+        ndarray:
+            Array of zinger pixel indices with shape (num_zinger_pixels, 3). Format in (view_idx, row_idx, channel_idx).
+    """
+    # Compute a binary mask that indicates the region of sinogram support.
+    sino_indicator = mj.TomographyModel._get_sino_indicator(sino)
+
+    # Compute the typical value of sinogram
+    typical_sino_value = float(np.average(sino ** 2, None, sino_indicator) ** 0.5)
+
+    # Detect zinger pixels
+    # Assume that zinger pixel intensity <= -(0.1 * typical value of sinogram)
+    zinger_threshold = -zinger_pixel_ratio * typical_sino_value
+    zinger_pixel_array = np.argwhere(sino < zinger_threshold).astype(int)
+
+    return zinger_pixel_array.reshape((-1, 3))
+
+
+def interpolate_zinger_pixels(sino, zinger_pixel_ratio=0.1):
+    """
+    Detect and interpolates zinger sinogram entries with the median of neighboring pixels in the same view.
+
+    Note:
+        Interpolation code is adapted from the utility interpolate_defective_pixels()
+
+    Args:
+        sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        zinger_pixel_ratio (float, optional): Ratio used zinger pixels detection. Defaults to 0.1.
+
+    Returns:
+        jax array, float: Corrected 3D sinogram with shape (num_views, num_det_rows, num_det_channels).
+    """
+
+    sino_shape = sino.shape
+    sino = jnp.nan_to_num(sino, copy=False, nan=jnp.nan, posinf=jnp.nan, neginf=jnp.nan)
+
+    # Detect zinger pixels
+    zinger_pixel_array = detect_zinger_pixels(sino, zinger_pixel_ratio)
+
+    if len(zinger_pixel_array) == 0:
+        return sino
+
+    neighbor_radius = 1
+
+    # Generate all i_offset and j_offset combinations.  num_nbrs_1d = 2 * neighbor_radius + 1
+    offsets = jnp.arange(-neighbor_radius, neighbor_radius + 1)
+    i_offsets, j_offsets = jnp.meshgrid(offsets, offsets, indexing='ij')  # Shape (num_nbrs_1d, num_nbrs_1d)
+    i_offsets = i_offsets.ravel()  # (num_nbrs_1d^2,)
+    j_offsets = j_offsets.ravel()  # (num_nbrs_1d^2,)
+    offsets_expanded = jnp.stack((0*i_offsets, i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 3)
+
+    # Set all zingers to NaN before interpolation so their original values cannot affect neighboring medians.
+    flat_zinger_indices = jnp.ravel_multi_index(zinger_pixel_array.T, sino_shape)
+    sino = sino.flatten()
+    sino = sino.at[flat_zinger_indices].set(jnp.nan)
+
+    # Repeat on zinger pixels until all listed zingers have finite replacement values.
+    num_zingers = zinger_pixel_array.shape[0]
+    while num_zingers > 0:
+        zinger_pixel_expanded = zinger_pixel_array[:, None, :]  # (num_zingers, 1, 3)
+        neighbor_coords = zinger_pixel_expanded + offsets_expanded  # (num_zingers, num_nbrs_1d^2, 3)
+        flat_indices = jnp.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
+                                             sino_shape, mode='clip')  # (num_zingers, num_nbrs_1d^2)
+
+        # Gather neighbor values and replace the zinger values, ignoring any nan values.
+        neighbor_values_flat = sino[flat_indices]  # (num_zingers, num_nbrs_1d^2)
+        median_values = jnp.nanmedian(neighbor_values_flat, axis=1)
+        flat_zinger_indices = jnp.ravel_multi_index(zinger_pixel_array.T, sino_shape)
+        sino = sino.at[flat_zinger_indices].set(median_values)
+
+        zinger_pixel_array = zinger_pixel_array[np.isnan(sino[flat_zinger_indices])]
+        new_num_zingers = zinger_pixel_array.shape[0]
+        if new_num_zingers >= num_zingers:
+            raise ValueError('Unable to remove all zinger pixels from sinogram.')
+        else:
+            num_zingers = new_num_zingers
+
+    return sino.reshape(sino_shape)
