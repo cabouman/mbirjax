@@ -131,13 +131,14 @@ class QGGMRFDenoiser(TomographyModel):
 
         return recon_std  # typical_image_value
 
-    def _get_sino_indicator(self, noisy_image, sigma_noise=None):
+    def _get_sino_indicator(self, noisy_image, sigma_noise=None, verbose=1):
         """
         Compute a binary mask that indicates the region of noisy_image support.
 
         Args:
             noisy_image (jax array or ndarray): 3D array containing noisy_image with shape (num_views, num_det_rows, num_det_channels).
             sigma_noise (float, optional): Estimated noise standard deviation in the image.  If None, then this is estimated from the image.
+            verbose (int, optional): Verbosity level.
 
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``noisy_image``.

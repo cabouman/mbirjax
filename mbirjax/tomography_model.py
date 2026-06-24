@@ -2217,6 +2217,7 @@ class TomographyModel(ParameterHandler):
 
         Args:
             sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
+            verbose (int, optional): Verbosity level. Defaults to 1.
 
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``.
