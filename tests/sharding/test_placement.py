@@ -197,5 +197,52 @@ class TestSheppLoganAttenuationScale(unittest.TestCase):
         self.assertEqual(float(base.max()), 1.0)     # default (target None) is unscaled
 
 
+class TestGenWeightsSharding(unittest.TestCase):
+    """gen_weights is element-wise, so a view-sharded sinogram gives view-sharded weights with the
+    same sharding (no gather, no collective), and the values match the per-element formulas."""
+
+    @staticmethod
+    def _refs(s):
+        return {'unweighted': np.ones_like(s), 'transmission': np.exp(-s),
+                'transmission_root': np.exp(-s / 2), 'emission': 1.0 / (np.abs(s) + 0.1)}
+
+    def test_values_plain(self):
+        s = (np.random.RandomState(0).rand(6, 5, 7).astype(np.float32) * 3)
+        for wt, ref in self._refs(s).items():
+            np.testing.assert_allclose(np.asarray(mbirjax.gen_weights(s, wt)), ref, rtol=1e-5, atol=1e-6)
+
+    def test_preserves_sharding(self):
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        s = (np.random.RandomState(0).rand(8, 5, 6).astype(np.float32) * 3)
+        mesh = jax.sharding.Mesh(np.array(devs), ('d',))
+        shd = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec('d', None, None))
+        sino = jax.device_put(s, shd)
+        for wt, ref in self._refs(s).items():
+            w = mbirjax.gen_weights(sino, wt)
+            self.assertEqual(len(w.addressable_shards), len(devs))     # sharded in -> sharded out
+            np.testing.assert_allclose(np.asarray(w), ref, rtol=1e-5, atol=1e-6)
+
+
+class TestGenerateDemoDataSharding(unittest.TestCase):
+    """generate_demo_data returns numpy by default and device-sharded data when devices is given."""
+
+    def test_default_returns_numpy_sinogram(self):
+        _, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=12,
+                                                num_det_rows=10, num_det_channels=14)
+        self.assertIsInstance(sino, np.ndarray)
+
+    def test_devices_returns_sharded(self):
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        phantom, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=20,
+                                                      num_det_rows=16, num_det_channels=24, devices=devs)
+        self.assertEqual(tuple(sino.shape), (20, 16, 24))
+        self.assertEqual(len(sino.addressable_shards), len(devs))      # view-sharded sinogram
+        self.assertEqual(len(phantom.addressable_shards), len(devs))   # slice-sharded phantom
+
+
 if __name__ == "__main__":
     unittest.main()

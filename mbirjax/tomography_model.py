@@ -46,6 +46,14 @@ from importlib.metadata import version, PackageNotFoundError
 if jax.config.jax_compilation_cache_dir is None:
     jax.config.update("jax_compilation_cache_dir",
                       os.path.expanduser(os.path.join('~', '.mbirjax', 'jax_cache')))
+    # Persist only the compiled executables, NOT XLA's GPU per-fusion autotune cache.  jax defaults
+    # `jax_persistent_cache_enable_xla_caches` to 'xla_gpu_per_fusion_autotune_cache_dir', which
+    # writes temp files under <cache>/xla_gpu_per_fusion_autotune_cache_dir/tmp and renames them --
+    # that fails with NOT_FOUND on cluster filesystems (NFS) and on a fresh cache dir.  Disabling it
+    # leaves the executable cache (the real recompile-avoidance win) untouched.  Only set here, where
+    # WE configured the cache -- never override a user's explicit cache configuration.
+    if hasattr(jax.config, "jax_persistent_cache_enable_xla_caches"):
+        jax.config.update("jax_persistent_cache_enable_xla_caches", "none")
 # Set the GPU memory fraction for JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
 
@@ -368,21 +376,27 @@ class TomographyModel(ParameterHandler):
     # geometry can declare a different axis by overriding one small method,
     # without hunting down scattered assumptions.
 
-    def sinogram_shard_axis(self):
+    @classmethod
+    def sinogram_shard_axis(cls):
         """Axis of a sinogram-like array (views, det_rows, channels) to shard.
 
         Default 0 (views).  Sinogram, weights, and error-sinogram all share
-        this layout, so they shard on the same axis.
+        this layout, so they shard on the same axis.  A classmethod so it is
+        available without an instance (e.g. to size a placement for generated
+        data) and stays overridable per geometry.
         """
         return 0
 
-    def recon_shard_axis(self):
+    @classmethod
+    def recon_shard_axis(cls):
         """Axis of a recon-like array to shard.
 
         Default -1 (the last axis = slices).  This is correct for both the 3-D
         recon ``(rows, cols, slices)`` and the flat recon
         ``(rows*cols, slices)`` because slices are the last axis in both, so a
-        single value works regardless of rank.
+        single value works regardless of rank.  A classmethod so it is available
+        without an instance (e.g. to size a placement for generated data) and
+        stays overridable per geometry.
         """
         return -1
 

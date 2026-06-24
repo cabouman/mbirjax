@@ -813,10 +813,11 @@ def _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale=1.0):
     """
     import mbirjax._sharding as mjs
     N, M, P = phantom_shape
-    # Describe the slice-axis (axis 2) layout across the devices: the slice axis is split into one
+    # Shard the phantom on the recon shard axis (the slice axis -- last axis for a (rows, cols,
+    # slices) volume), so it matches how a model shards a recon.  The slice axis is split into one
     # contiguous band per device, and when P does not divide len(devices) it is padded up to the
     # next multiple (placement.padded_size), with the extra slices zero-filled and inert.
-    placement = mjs.Placement(devices, axis=2, real_size=P)
+    placement = mjs.Placement(devices, axis=mj.TomographyModel.recon_shard_axis(), real_size=P)
 
     # Build one shard per device.  We just LOOP -- no ThreadPoolExecutor -- because each piece is
     # pure JAX: the `with jax.default_device(dev)` block DISPATCHES that device's build and returns
