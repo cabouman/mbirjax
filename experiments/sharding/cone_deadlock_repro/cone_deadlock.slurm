@@ -28,8 +28,6 @@
 #   SIZES="256 512 1024" sbatch experiments/sharding/cone_deadlock_repro/cone_deadlock.slurm
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # 1) node preamble: modules (conda/cuda/cudnn) + proxy.
 PREAMBLE="${PREAMBLE_FILE:-$HOME/load_conda_cuda.sh}"
 if [ -f "$PREAMBLE" ]; then
@@ -50,10 +48,39 @@ if [ -n "${REPRO_MBIRJAX_DIR:-}" ]; then
   pip install -e "${REPRO_MBIRJAX_DIR}[cuda12]" >/dev/null || { echo "FATAL: pip install failed"; exit 1; }
 fi
 
+# 4) identify the EXACT build under test.  mbirjax has no module __version__; model.version comes
+#    from importlib.metadata, which for an editable install is only the DECLARED version -- the real
+#    build id is the module file path + the git SHA of that checkout.
 echo "host=$(hostname)  env=$CONDA_ENV"
-python -c "import mbirjax, jax; print('mbirjax', mbirjax.__version__, '| jax', jax.__version__, '| devices', jax.devices())"
+REPO_ROOT="$(python -c 'import os,mbirjax; print(os.path.dirname(os.path.dirname(os.path.abspath(mbirjax.__file__))))' 2>/dev/null)"
+python - <<'PY'
+import mbirjax, jax
+try:
+    from importlib.metadata import version
+    ver = version("mbirjax")
+except Exception as e:                       # noqa: BLE001
+    ver = "(unavailable: %s)" % e
+print("mbirjax module :", mbirjax.__file__)
+print("mbirjax version:", ver, "(declared/installed metadata -- not the git commit)")
+print("jax            :", jax.__version__)
+print("devices        :", jax.devices())
+PY
+if [ -n "$REPO_ROOT" ] && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "mbirjax git    : $(git -C "$REPO_ROOT" rev-parse --short HEAD) on $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)  (repo: $REPO_ROOT)"
+  [ -n "$(git -C "$REPO_ROOT" status --porcelain -uno)" ] && echo "                 (NOTE: working tree has uncommitted changes)"
+else
+  echo "mbirjax git    : (no git repo at '$REPO_ROOT' -- non-editable install?)"
+fi
 nvidia-smi -L || true
 
-# 4) run the sweep; output lands next to where you submitted from.
+# 5) locate the repro scripts.  SLURM copies the batch script into a spool dir, so BASH_SOURCE is
+#    useless here -- derive the repro dir from the mbirjax checkout (so it always matches the lib
+#    under test), with a REPRO_DIR override and a submit-dir fallback.
+HERE="${REPRO_DIR:-${REPO_ROOT:+$REPO_ROOT/experiments/sharding/cone_deadlock_repro}}"
+{ [ -n "$HERE" ] && [ -d "$HERE" ]; } || HERE="${SLURM_SUBMIT_DIR:-$PWD}/experiments/sharding/cone_deadlock_repro"
+[ -f "$HERE/run_sweep.sh" ] || { echo "FATAL: run_sweep.sh not found under '$HERE' (set REPRO_DIR to the cone_deadlock_repro dir)"; exit 1; }
+echo "repro scripts  : $HERE"
+
+# 6) run the sweep; output lands next to where you submitted from.
 export OUTDIR="${OUTDIR:-${SLURM_SUBMIT_DIR:-$PWD}/cone_deadlock_out_${SLURM_JOB_ID:-manual}}"
 exec bash "$HERE/run_sweep.sh"
