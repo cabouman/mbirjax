@@ -1202,7 +1202,8 @@ def generate_demo_data(
     voxel_slice_aspect: float = 1.0,
     target_max_attenuation: float | None = None,
     devices: list | tuple | None = None,
-) -> (np.ndarray, np.ndarray):
+    output_sharded: bool | None = None,
+) -> tuple:
     """
     Create a simple object and a sinogram for demonstration purposes.
 
@@ -1210,7 +1211,8 @@ def generate_demo_data(
     parameters to create a simulated sinogram.  The object type 'shepp-logan' gives a simplified version of the
     classic Shepp-Logan test phantom, and type 'cube' gives a simple cube object.
 
-    The output sinogram is a 3D numpy array with shape (num_views, num_det_rows, num_det_channels).  Each 2D array
+    The output sinogram has shape (num_views, num_det_rows, num_det_channels) -- a NumPy array by default,
+    or jax arrays in the device form when ``output_sharded`` is requested (see below).  Each 2D array
     sinogram[view_index] is a simulated image from the detector, with num_det_rows indicating the vertical size
     and num_det_channels representing the horizontal size.
 
@@ -1237,19 +1239,31 @@ def generate_demo_data(
         voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
         target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
         devices (sequence of jax devices, optional): jax devices to use for sharding. Defaults to None.  Used only for Shepp-Logan data.
+        output_sharded (bool, optional): Controls the type and placement of the returned object and
+            sinogram.  None (default) selects device-sharded jax arrays when ``devices`` is given and
+            plain host (NumPy) arrays otherwise.  True returns jax arrays in the device form
+            (slice-sharded object / view-sharded sinogram across ``devices``; single-device jax when no
+            ``devices``).  False returns NumPy arrays and releases the device intermediates before
+            returning, so nothing is left resident on the GPU.
 
     Returns:
         tuple: (object, sinogram, params)
-            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).  A
-              single-device jax.Array by default; a slice-sharded jax.Array when ``devices`` is given
-              (the helical case returns a numpy volume regardless).
-            - sinogram: shape (num_views, num_det_rows, num_det_channels).  A numpy array by default;
-              a view-sharded jax.Array when ``devices`` is given.
+            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).
+            - sinogram: shape (num_views, num_det_rows, num_det_channels).
             - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
+
+        object and sinogram are NumPy arrays when ``output_sharded`` is False (the default unless
+        ``devices`` is given) and jax arrays in the device form when ``output_sharded`` is True.  When
+        NumPy is returned, the arrays in ``params`` are NumPy as well.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
     model_type = ModelType(model_type)
+
+    # Resolve the output form: device-sharded jax arrays when devices are given, plain host arrays
+    # otherwise.  Either default can be overridden explicitly via output_sharded.
+    if output_sharded is None:
+        output_sharded = devices is not None
 
     start_angle = -np.pi
     end_angle = np.pi
@@ -1393,15 +1407,31 @@ def generate_demo_data(
         # projection below still shards).  forward_project re-shards this host array as needed.
         phantom = np.zeros(recon_shape, dtype=np.float32)
         phantom[:, :, embed_slice_start:embed_slice_stop] = np.asarray(phantom_core)
+        if isinstance(phantom_core, jax.Array):
+            phantom_core.delete()      # gathered to the host volume above; free the device copy
     else:
         phantom = phantom_core
     
     # Generate synthetic sinogram data
     print('Creating sinogram')
-    output_sharded = False if devices is None else True
     sinogram = ct_model_for_generation.forward_project(phantom, output_sharded=output_sharded)
-    sinogram = sinogram if output_sharded else np.asarray(sinogram)
 
+    if not output_sharded:
+        # Return plain host arrays and release every device array we created here.  np.asarray blocks
+        # and copies to the host, so the subsequent delete is race-free; we own all of these (none came
+        # from the caller).  Single-device arrays would free on refcount anyway, but sharded ones are
+        # held in jax reference cycles, so delete explicitly (same lesson as the VCD transient cleanup).
+        def _to_host(a):
+            if isinstance(a, jax.Array):
+                host = np.asarray(a)
+                a.delete()
+                return host
+            return a
+        phantom = _to_host(phantom)
+        sinogram = _to_host(sinogram)
+        params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
+
+    del ct_model_for_generation
     return phantom, sinogram, params
 
 

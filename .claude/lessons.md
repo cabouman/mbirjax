@@ -373,7 +373,20 @@ async run-ahead — it was object lifecycle.
   and `.delete()` the transient to avoid it.  (c) Bare `.delete()` of an array still
   feeding a pending op risks a silent race — gate it behind one `block_until_ready` on
   the returned state (every transient is upstream of it).  Consolidate all frees into one
-  end-of-subset cleanup section after that single block.
+  end-of-subset cleanup section after that single block.  (d) **Identity ≠ buffer-ownership
+  when freeing a PASSED-IN array.**  Freeing the init-phase sinogram in `vcd_recon` (2026-06-25,
+  ~4 GiB/shard reclaimed before the Hessian + loop) first guarded on object identity
+  (`placed is not original`) — and broke 4 sweep tests with `RuntimeError: Array has been
+  deleted`.  Cause: `device_put`/`move_shard` can return a **no-copy reshard** — a *different*
+  `ArrayImpl` that *shares the same device buffers* as the input — when the data already lives on
+  the target devices (and `_shard_on_axis` returns the input UNCHANGED on an exact-sharding match).
+  So `.delete()` on the "new" object frees the caller's buffers (the caller, e.g. a `recon` sweep
+  or `prepare_sino_for_devices`, then re-reads a deleted array).  Correct ownership test: we own
+  fresh buffers iff `to_sino` had to TRANSFER the data — host/numpy input, or a jax array whose
+  devices are **disjoint** from the placement's devices (`set(x.devices()).isdisjoint(placement.
+  devices)`).  An input already resident on (any of) the placement devices may alias → do NOT
+  delete.  General rule: before deleting an array derived from a caller-supplied one, prove you
+  allocated its buffers (a cross-device/host transfer), not just that you hold a distinct handle.
 - **Diagnostic method that cracked it.**  A per-subset/per-iteration `peak_bytes_in_use`
   "memjump" trace showed the view-sharded-sino count climbing 1/op; `gc.get_referrers`
   named the holder (`ArrayImpl.__dict__`); an explicit `gc.collect()` dropped `live_end`
