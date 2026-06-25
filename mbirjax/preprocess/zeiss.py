@@ -51,7 +51,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             Supported options are ``None`` (no correction; return the input sinogram unchanged),
             ``'global'`` (estimate one scalar offset from edge regions across all views), and
             ``'per_view'`` (estimate one offset per view from edge regions).
-        zinger_correction (bool, optional): Option for Whether to detect and interpolate zinger pixels in the sinogram.
+        zinger_correction (bool, optional): Option to detect and interpolate zinger pixels in the sinogram.
             If ``True``, zinger pixels are identified as unusually negative values in sinogram and replaced using
             neighboring valid pixels. Defaults to ``True``.
         verbose (int, optional): Verbosity level. Defaults to ``1``.

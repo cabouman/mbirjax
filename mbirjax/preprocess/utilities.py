@@ -1160,13 +1160,13 @@ def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1):
     Detect zinger pixels from sinogram.
 
     Zinger pixels are identified as unusually negative values. A pixel is
-    classified as a zinger if its value is less than
+    classified as a zinger if:
 
-        -zinger_pixel_ratio * typical_sino_value
+        value < -zinger_pixel_ratio * typical_sino_value
 
     Args:
         sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
-        zinger_pixel_ratio (float, optional): Ratio used zinger pixels detection. Defaults to 0.1.
+        zinger_pixel_ratio (float, optional): Ratio used for zinger pixels detection. Defaults to 0.1.
 
     Returns:
         ndarray:
