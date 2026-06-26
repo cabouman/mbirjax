@@ -552,3 +552,20 @@ contaminates, or NaNs.**
   RNG variance, and also makes the fingerprint reproducible across runs/platforms (so vs-main /
   cross-platform are meaningful).  General rule: if an op's result depends on a global RNG, fix the seed
   or you are comparing noise.  (The projection `vcd_nonconst` avoids this by passing PRE-BUILT partitions.)
+- **uPlot's built-in log-axis tick generator can freeze for seconds on tight, non-power-of-10 bounds —
+  hand it your own splits.**  On a `distr:3` (log) axis whose scale min/max aren't round powers of ten
+  (e.g. a 6%-log-padded y-min of `9.76e-5`, just under `1e-4`), uPlot's splitter seeds its increment from
+  `pow(10, floor(log10(min)))`, then as it crosses the first decade boundary the increment degrades to a
+  tiny NON-power value whose internal decimal-places lookup misses — so it crawls the range in millions
+  of micro-steps, building a giant tick array.  Result: a ~2.5s main-thread freeze that leaves the panel
+  half-drawn (`axis._splits` null) — reads exactly like "the plot disappeared."  It surfaced only for the
+  GPU `parallel/back` TIME panel (a new `513³` run's timings happened to land the padded y-min in that
+  spot); CPU / other ops / linear axes were fine, which made it look purely data-specific.  It WAS
+  data-triggered, but the latent bug was the dashboard trusting uPlot's auto-splitter.  Tell: the X axis
+  never hung because it already passes custom `xSplits` (the size ticks), which bypasses the generator —
+  the Y axis didn't.  Fix: give yLog axes explicit ticks too — `logTicks(mn,mx)` = `1-9·10^k` within the
+  range (O(decades), bounded) — placed in the shared `linePlot` wrapper, so all four log panels (scaling
+  time+mem, history time+mem) inherit it; the X axes were already covered.  General rule: when ONE data
+  shape freezes a charting lib's log plot, suspect its auto-tick / auto-range generator and feed it
+  bounded ticks rather than massaging the data.  (Diagnosis aid: see [[dashboard-verify-gotchas]] — the
+  rAF-throttle trap nearly hid this, since uPlot defers its first draw to a `requestAnimationFrame`.)
