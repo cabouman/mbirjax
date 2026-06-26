@@ -1261,9 +1261,9 @@ class ConeBeamModel(TomographyModel):
             weights_bot_half = weights[:, bot_lo:bot_hi, :]
 
         # Apply a sine filter to the overlap parts of the sinogram weights to reduce boundary artifacts.
-        min_input = 1 / half_overlap_sino
-        num_filter_pts = half_overlap_sino - 1
-        sine_filter_inputs = (np.pi / 2) * np.linspace(min_input, 1 - min_input, num_filter_pts)
+        # Note that 0 weight is used deliberately on the most extreme view to reduce ringing.
+        num_filter_pts = half_overlap_sino
+        sine_filter_inputs = (np.pi / 2) * np.linspace(0, 1, num_filter_pts, endpoint=False)
         sine_filter = np.sin(sine_filter_inputs)
         weights_top_half[:, -half_overlap_sino:] = weights_top_half[:, -half_overlap_sino:] * sine_filter[None, ::-1, None]
         weights_bot_half[:, :half_overlap_sino] = weights_bot_half[:, :half_overlap_sino] * sine_filter[None, :, None]
