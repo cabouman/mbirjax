@@ -507,9 +507,16 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     dominant transient (the per-subset forward/back of a slice band over its views, the band reduce, or the
     qGGMRF prox buffers).  (2) reduce cone's peak per-device VCD-update memory — the band slice count, the
     forward pixel-batch size, and the per-subset view working set are the levers — and/or use more GPUs.
-    (3) Secondary UX: an OOM in a sharded cone recon currently *hangs* (OOM-retry × collective barrier)
-    instead of erroring cleanly; surfacing a clean OOM would help users, though it's an XLA/NCCL
-    interaction we may not fully control.
+    (3) Secondary UX: **PARTIALLY ADDRESSED 2026-06-25.**  Added a "use a finer partition_sequence
+    (e.g. [4,6,7])" bullet to the GPU OOM guidance (`log_oom_guidance` in `_utils.py`), which
+    `_handle_jax_error` already prints on a caught `JaxRuntimeError`.  This fires for **catchable** OOMs
+    — single-device too-big recons (clean `RESOURCE_EXHAUSTED`) and the multi-device OOMs that surface
+    cleanly (e.g. parallel n=4).  **STILL OPEN:** the multi-GPU OOM that *hangs* instead of raising (a
+    GPU stuck in the BFC retry loop never reaches the NCCL rendezvous → "Acquire clique" timeout) — the
+    exact 2048³/8 cone case — produces no exception, so the hint never prints there.  Converting that
+    hang into a catchable error is a bigger, riskier change (allocator flags / collective timeouts) and
+    the project deliberately does not pre-estimate fit (`set_devices` docstring); left as a separate
+    follow-on.
   - **Memory-reduction plan (2026-06-25).**  Three independent levers, cheapest-first; the goal is to
     fit cone 2048³/8 by shrinking the first-VCD-update footprint.
     - **(P1) Partition granularity — PRIMARY, zero code.**  The OOM is on the FIRST VCD iteration
@@ -522,19 +529,30 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
       (no code): `ct_model.set_params(partition_sequence=[2,4,6,7])` (first iter → 4 subsets) or
       `[4,6,7]` (→ 16 subsets, each subset array ~270 MiB).  Single-variable sweep; trade-off = a few
       extra iterations vs starting at granularity 1.
-      **SWEEP RESULT (2026-06-25, 1024³, 2×H100, 2 GB/shard):** peak `bytes_in_use`/shard
+      **SWEEP RESULT (2026-06-25, 1024³, 2×H100, 2 GB/shard) — PARALLEL BEAM:** peak `bytes_in_use`/shard
       `[0,2,4,6,7]` = **32.5 GB**, `[2,4,6,7]` = **27.1 GB (−17%)**, `[4,6,7]` = **24.9 GB (−24%)** —
       and TIME was neutral/slightly faster (319.5 → 301 s; the granularity-1 first iteration was the
       slowest, not the cheapest).  Diminishing returns: dropping granularity 1 is the big win (−5.4 GB);
       4→16 subsets adds only −2.2 GB.  Steady-state floor = **8 GB/shard** (resident flat_recon +
       error_sinogram + fm_hessian + 1, each 2 GB) in ALL runs, so the transient ABOVE the floor falls
       24.5 → 16.9 GB.  That ~17 GB residual is the **projection working set** (delta_sinogram + the
-      whole-cylinder back/forward scratch), which granularity does NOT shrink (at 16 subsets the subset
-      arrays are only ~130 MB).  Confirms the diagnosis numerically (the 2 GB/shard subset array here =
-      4.3 GB at 2048³/8 = the failing 4.02 GiB alloc).  **Extrapolation:** per-shard arrays are ~2×
-      larger at 2048³/8; the standard-granularity peak OOM'd at the ~77.6 GB limit (⇒ ~2.4× scale from
-      32.5), so applying that to `[4,6,7]`'s 24.9 GB lands ~60 GB — UNDER 77.6.  So `[4,6,7]` PLAUSIBLY
-      fits 2048³/8 on its own, but that crosses both size and device count — the 8-GPU run is the test.
+      back/forward scratch), which granularity does NOT shrink (at 16 subsets the subset arrays are only
+      ~130 MB).  Confirms the diagnosis numerically (the 2 GB/shard subset array here = 4.3 GB at 2048³/8
+      = the failing 4.02 GiB alloc).
+      **CONE BEAM (1024³, 2×H100, + P2), 2026-06-25 — granularity sweep:** peak/shard default `[0,2,4,6,7]`
+      = **36.09 GB** (380 s), `[4,6,7]` = **28.67 GB** (388 s) → `[4,6,7]` cuts cone peak **−7.43 GB
+      (−21%)**, nearly the same ABSOLUTE saving as parallel (~7.6 GB) — granularity shrinks the
+      geometry-independent subset arrays, and the cone-specific whole-cylinder projection transient
+      (**~8 GB/shard** above parallel) sits on top regardless of granularity.  Steady 2 GB; time neutral.
+      **Extrapolation (CONE → 2048³/8, [4,6,7] + P2), anchored on cone's OWN OOM:** cone default OOM'd at
+      2048³/8 (≥77.6 GB) and is 36.09 GB at 1024³/2, so the cone 1024³/2→2048³/8 scale is **≥ 77.6/36.09 =
+      2.15×**.  Applying that to cone `[4,6,7]`'s 28.67 GB → **~62 GB** (×2.15), ~69 GB (×2.4); it only
+      reaches the 77.6 ceiling near ×2.7.  So **`[4,6,7]` + P2 has a real shot at fitting cone 2048³/8**
+      (best estimate ~62–69 GB), firmer than the earlier parallel-borrowed guess because it is anchored on
+      cone's own scaling — but the margin is thin enough that a super-linear projection transient could
+      reach the edge, so the 8-GPU cone run is still decisive.  If it does not fit, the lever is the
+      **cone projector's per-call working set** (view-batch / band size — that ~8 GB transient), NOT P3
+      (subset arrays are already ~130 MB at 16 subsets).
       **Caveat:** the sweep measured memory+time, not convergence; confirm `fm_rmse`/`prior_loss` land
       together across the three before adopting `[4,6,7]` as a large-problem default.
     - **(P2) Free the init-phase sinogram — DONE 2026-06-25 (`vcd_recon`).**  After
@@ -549,12 +567,13 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
       no-copy reshard is a *different object* that *shares buffers*, so identity ≠ ownership; the
       device-disjoint test is the correct one.  CPU 4-device suite green (delete fires on numpy inputs;
       buffer-sharing reuse correctly skipped).
-      **MEASURED (2026-06-25, 1024³, 2×H100, granularity [4,6,7]):** floor/shard **8 → 4 GB**, peak/shard
-      **24.86 → 20.77 GB** — a −4 GB drop (better than the naive −2 GB sinogram estimate; the peak drop
-      = the floor drop, so P2 lowered the whole baseline).  Likely mechanism: the explicit `.delete()` +
-      `block_until_ready` clears the sinogram AND lets the gc-pending old-error_sinogram cycle reclaim
-      (~2 + ~2); not fully pinned without a per-phase trace.  **Combined with P1 [4,6,7], peak is 32.5 →
-      20.8 GB (−36%) from the original default.**
+      **MEASURED (2026-06-25, 1024³, 2×H100, granularity [4,6,7]) — PARALLEL BEAM:** floor/shard
+      **8 → 4 GB**, peak/shard **24.86 → 20.77 GB** — a −4 GB drop (better than the naive −2 GB sinogram
+      estimate; the peak drop = the floor drop, so P2 lowered the whole baseline).  Likely mechanism: the
+      explicit `.delete()` + `block_until_ready` clears the sinogram AND lets the gc-pending
+      old-error_sinogram cycle reclaim (~2 + ~2); not fully pinned without a per-phase trace.  **Combined
+      with P1 [4,6,7], parallel-beam peak is 32.5 → 20.8 GB (−36%) from the original default.**  (Cone is
+      higher — see the CONE BEAM line under P1; cone is the geometry that drives the 2048³ OOM.)
     - **(P2b) `gen_weights` lands a host sinogram entirely on gpu0 — FIXED 2026-06-25 (host-preserving +
       opt-in shard).**  The bug: `gen_weights` used `jnp` ops unconditionally, so a **numpy/host**
       sinogram promoted the full result to one device (gpu0), and the CALLER held that 2 GB/shard array
