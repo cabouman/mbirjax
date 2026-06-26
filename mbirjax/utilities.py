@@ -1489,7 +1489,7 @@ def gen_cube_phantom(recon_shape, device=None):
     return jnp.array(phantom, device=device)
 
 
-def stitch_arrays(array_list, overlap, axis=2):
+def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     """
     Concatenate JAX arrays along one axis while linearly blending a fixed overlap
     between adjacent arrays.
@@ -1502,9 +1502,10 @@ def stitch_arrays(array_list, overlap, axis=2):
 
     Args:
         array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
-        overlap (int): Number of elements to blend between each adjacent pair.
+        overlap (int): Number of elements overlapped between arrays.
             Must be `>= 1` and not exceed the length of any input along `axis`.
         axis (int, optional): Axis along which to stitch. Defaults to 2.
+        ramp_overlap (int, optional): Target number of blended (0 < w < 1) elements. Defaults to None.
 
     Returns:
         jax.Array: Stitched array. Its shape equals the input shape with the
@@ -1541,10 +1542,19 @@ def stitch_arrays(array_list, overlap, axis=2):
             if np.amin(lengths) < overlap:
                 raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
 
-    # Create a piecewise linear weight array:
-    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
-    t = jnp.linspace(0, 1, overlap)
-    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    # Create weights for blending two arrays
+    # ramp_overlap is the target number of blended (0 < w < 1) pixels
+    # However, if ramp_overlap and overlap have different parities, then ramp_overlap is decremented to match parity.
+    if ramp_overlap is None:
+        ramp_overlap = overlap // 2  # default: ramp over ~half the overlap
+    ramp_overlap = min(ramp_overlap, overlap)
+    ramp_overlap -= (overlap - ramp_overlap) % 2  # match overlap's parity -> symmetric plateaus
+    ramp_overlap = max(ramp_overlap, overlap % 2)  # floor at 0 (even overlap) or 1 (odd overlap)
+    flat_pad = (overlap - ramp_overlap) // 2  # equal plateau on each side
+    ramp = (jnp.arange(ramp_overlap) + 1) / (ramp_overlap + 1)  # strictly between 0 and 1
+    weights = jnp.concatenate([jnp.zeros(flat_pad), ramp, jnp.ones(flat_pad)])
+
+    # Broadcast weights to match array dimensions
     weights_shape = np.ones(array_list[0].ndim, dtype=int)
     weights_shape[0] = len(weights)
     weights = weights.reshape(weights_shape)
