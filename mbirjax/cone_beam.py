@@ -1164,6 +1164,11 @@ class ConeBeamModel(TomographyModel):
             (64, 64, 64)
         """
         # -------- Basic validation --------
+        if half_overlap < 2:
+            raise ValueError('half_overlap must be >= 2.')
+        helical_z_shifts = self.get_params('view_params_array')[:, 1]
+        if any(helical_z_shifts != 0):
+            raise ValueError('helical_z_shifts must be zero.')
         if sino is None:
             raise ValueError("sino must be provided.")
         if not (hasattr(sino, "ndim") and sino.ndim == 3):
@@ -1183,6 +1188,36 @@ class ConeBeamModel(TomographyModel):
         full_recon_shape = self.get_params('recon_shape')
         full_recon_slice_offset = self.get_params('recon_slice_offset')
         magnification = self.get_magnification()
+
+        # Get recon shape parameters
+        full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
+
+        # -------- Compute the recon slice nearest to iso --------
+        full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset / delta_voxel_slice
+        split_index = int(jnp.round(full_recon_iso_slice_index_float))
+        top_num_slices = split_index + 1
+
+        # Compute the offset of the split from iso.
+        # This will be used to slightly shift the slices so that they align with a standard reconstruction.
+        split_offset = split_index - full_recon_iso_slice_index_float
+
+        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
+        if (split_index < 1) or (split_index > full_recon_slices - 2):
+            warnings.warn(
+                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
+                UserWarning,
+            )
+            return self.recon(
+                sino,
+                weights=weights,
+                init_recon=init_recon,
+                max_iterations=max_iterations,
+                stop_threshold_change_pct=stop_threshold_change_pct,
+                first_iteration=first_iteration,
+                compute_prior_loss=compute_prior_loss,
+                logfile_path=logfile_path,
+                print_logs=print_logs,
+            )
 
         # Compute overlaps for sinogram and recon
         delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
@@ -1217,11 +1252,21 @@ class ConeBeamModel(TomographyModel):
         sino_top_half = sino[:, top_lo:top_hi, :]
         sino_bot_half = sino[:, bot_lo:bot_hi, :]
 
-        weights_top_half = None
-        weights_bot_half = None
-        if weights is not None:
+        # Create weight matrices for top and bottom.  Use all 1s if needed for the per-view sine filter.
+        if weights is None:
+            weights_top_half = np.ones_like(sino[:, top_lo:top_hi, :])
+            weights_bot_half = np.ones_like(sino[:, bot_lo:bot_hi, :])
+        else:
             weights_top_half = weights[:, top_lo:top_hi, :]
             weights_bot_half = weights[:, bot_lo:bot_hi, :]
+
+        # Apply a sine filter to the overlap parts of the sinogram weights to reduce boundary artifacts.
+        min_input = 1 / half_overlap_sino
+        num_filter_pts = half_overlap_sino - 1
+        sine_filter_inputs = (np.pi / 2) * np.linspace(min_input, 1 - min_input, num_filter_pts)
+        sine_filter = np.sin(sine_filter_inputs)
+        weights_top_half[:, -half_overlap_sino:] = weights_top_half[:, -half_overlap_sino:] * sine_filter[None, ::-1, None]
+        weights_bot_half[:, :half_overlap_sino] = weights_bot_half[:, :half_overlap_sino] * sine_filter[None, :, None]
 
         # -------- Calculate number of rows and center location for top and bottom sinograms --------
         top_num_rows = top_hi - top_lo
@@ -1247,39 +1292,6 @@ class ConeBeamModel(TomographyModel):
         ct_model_bot_half = mj.copy_ct_model(self, new_num_det_rows=bot_num_rows)
         ct_model_bot_half.set_params(det_row_offset=bot_det_row_offset)
         ct_model_bot_half.set_params(auto_regularize_flag=False)
-
-        """
-        Compute recon shape parameters for top and bottom reconstructions
-        """
-        # Get recon shape parameters for later use
-        full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
-
-        # -------- Compute the recon slice nearest to iso --------
-        full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset/delta_voxel_slice
-        split_index = int(jnp.round(full_recon_iso_slice_index_float))
-        top_num_slices = split_index + 1
-
-        # Compute the offset of the split from iso.
-        # This will be used to slightly shift the slices so that they align with a standard reconstruction.
-        split_offset = split_index - full_recon_iso_slice_index_float
-
-        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
-        if (split_index < 1) or (split_index > full_recon_slices - 2):
-            warnings.warn(
-                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
-                UserWarning,
-            )
-            return self.recon(
-                sino,
-                weights=weights,
-                init_recon=init_recon,
-                max_iterations=max_iterations,
-                stop_threshold_change_pct=stop_threshold_change_pct,
-                first_iteration=first_iteration,
-                compute_prior_loss=compute_prior_loss,
-                logfile_path=logfile_path,
-                print_logs=print_logs,
-            )
 
         # -------- Compute and set the shapes of top and bottom recons --------
         top_recon_shape = (full_recon_shape[0], full_recon_shape[1], top_num_slices + half_overlap_recon)
@@ -1318,8 +1330,17 @@ class ConeBeamModel(TomographyModel):
                                                                  compute_prior_loss=compute_prior_loss,
                                                                  logfile_path=logfile_path, print_logs=print_logs)
         recon_bot_half = jax.device_get(recon_bot_half)
+
         # -------- Stitch together top and bottom reconstructions --------
-        recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], overlap=2 * half_overlap_recon, axis=2)
+        # half_overlap_recon is used on both sides of the seam, so total overlap is 2 * half_overlap_recon.
+        # ramp_overlap determines which slices are blended, which is usually less than 2 * half_overlap_recon
+        # to avoid possible boundary effects.  ramp_overlap should be even so that it applies equally to slices on
+        # either side of the seam.
+        ramp_overlap = 4
+        ramp_overlap = min(ramp_overlap, half_overlap_recon)
+        ramp_overlap -= ramp_overlap % 2  # ensure even
+        recon_full = mj.stitch_arrays([recon_top_half, recon_bot_half], axis=2,
+                                      overlap=2 * half_overlap_recon, ramp_overlap=ramp_overlap)
 
         # -------- Construct full reconstruction dictionary --------
         recon_full_dict = {'recon_params_top': recon_top_dict['recon_params'],
