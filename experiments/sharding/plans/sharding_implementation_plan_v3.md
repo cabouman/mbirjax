@@ -555,6 +555,19 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
       (subset arrays are already ~130 MB at 16 subsets).
       **Caveat:** the sweep measured memory+time, not convergence; confirm `fm_rmse`/`prior_loss` land
       together across the three before adopting `[4,6,7]` as a large-problem default.
+    - **(P1-design) Size-adaptive granularity sequence? — DECIDED 2026-06-25: defer; if ever, SIZE-only,
+      NOT memory-adaptive.**  A memory/hardware-adaptive default (auto-pick the starting granularity from
+      free GPU memory) would BREAK the sharding guarantee that **results are independent of device count**:
+      the same problem would converge differently on different hardware (2048³ on 8×80 GB vs 16×40 GB →
+      different schedule → different image), and that drift would surface in the cross-device/cross-platform
+      correctness gating.  It also needs a peak predictor we do not have (geometry-dependent ~8 GB cone
+      delta, unclear super-linear scaling — "sweep, don't guess").  The only reproducibility-safe form is
+      **size-only**: derive the coarsest starting granularity deterministically from recon voxel count
+      (e.g. subset count ≥ ceil(voxels / threshold), threshold calibrated from a size sweep), overridable —
+      a function of the PROBLEM, identical on any hardware.  Even that is **gated on the convergence-quality
+      data** from the 8-GPU run (unverified assumption: skipping granularity 1 does not hurt the final
+      image).  Until then: keep the `[0,2,4,6,7]` default + the documented "use a finer sequence for large
+      multi-device problems" guidance (now also surfaced in the GPU OOM message).
     - **(P2) Free the init-phase sinogram — DONE 2026-06-25 (`vcd_recon`).**  After
       `error_sinogram = sinogram - alpha*error_sinogram`, the placed sinogram's only remaining use was a
       dtype read (`_sino_ones_device_form`, now fed `error_sinogram`).  Free it then — ~4 GiB/shard

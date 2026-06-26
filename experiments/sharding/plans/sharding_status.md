@@ -38,10 +38,31 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
   - **Tk noise fix:** `viewer.py` closes the figure by object (no phantom re-create); `demo_7` adds `plt.close('all')` + `gc.collect()` after its raw `plt.show()` (the `Image.__del__` "main thread is not in main loop" was the demo's bare matplotlib, not the viewer).
   - **JAX cache fix:** disable `jax_persistent_cache_enable_xla_caches` when we set the compilation cache — the GPU per-fusion autotune cache's temp-file write/rename fails (NOT_FOUND) on cluster NFS / a fresh cache dir; the executable cache is kept.  This resolved the A100 suite failures.
 
-▶ **NEXT (post-merge follow-ons):**
-  - **Cone 2048³/8-GPU deadlock** — still under investigation (see the cone bullet below + `sharding_implementation_plan_v3.md` §6).  Clean through 512³/8; NOT a prerelease regression (cone was single-device there).
-  - **#18** — shard `mar.py`/preprocessing (incl. the `gen_weights_mar` `init_recon` path).  **DECIDED 2026-06-25:** `gen_weights_mar` gets `output_sharded` HERE (it owns a `ct_model`), bundled with its host-preserving fix + the `init_recon`-path sharding (forward_project `output_sharded=True` + sharded Otsu) — adding the kwarg alone would mismatch shardings on that path.  **`gen_weights` does NOT get `output_sharded`** (model-less; output form = input residence + optional `ct_model`).  Principle: `output_sharded` belongs only where a device layout is owned.  Full rationale: v3 §6 (P2d).
-  - Deferred doc-xref cleanup; the `_auto_device_count` recon-slices-vs-views revisit (§6).
+▶ **OPEN FOLLOW-ONS — single authoritative list (2026-06-25).**  Grouped; cone-memory items gate on GPU time (Greg's cluster).  Detail in `sharding_implementation_plan_v3.md` §6 unless noted.
+
+  **A. Gating experiment (the cone-memory items hinge on this):**
+  - **8-GPU cone validation run** — cone 2048³/8 with `partition_sequence=[4,6,7]` + P2, weights via `gen_weights(..., ct_model=model)`.  Confirms whether it now fits (est. ~62–69 GB vs the 77.6 GB limit).  **Blocked on GPU availability.**
+  - **Convergence-quality check** — report `fm_rmse`/`prior_loss` across granularities in that same run.  Memory+time are measured; the "skipping granularity 1 doesn't hurt the image" assumption is UNVERIFIED and gates adopting `[4,6,7]` as a default (and any size-adaptive rule, item E).
+
+  **B. Cone memory levers (only if `[4,6,7]`+P2 still overflows at 2048³/8):**
+  - **Cone projector per-call working set** (view-batch / band size) — the real lever for the ~8 GB/shard whole-cylinder transient.  Not yet investigated.
+  - **P3 — free dead subset arrays in `vcd_subset_updater`** — PARKED, and largely REDUNDANT with fine granularity (subset arrays ~130 MB at 16 subsets).  Only relevant if we deliberately stay coarse.
+
+  **C. Sharding-transparency:**
+  - **#18 — shard `mar.py`/preprocessing.**  Includes the full `gen_weights_mar` treatment: host-preserving fix + `output_sharded` + `init_recon`-path sharding (`forward_project(output_sharded=True)` + sharded Otsu) — must be done together (the kwarg alone mismatches shardings).  Optional cheap half: host-preserving `gen_weights_mar` now to kill its gpu0 dump.  **DECIDED 2026-06-25:** `gen_weights` does NOT get `output_sharded` (model-less; output form = input residence + optional `ct_model`).  Principle: `output_sharded` belongs only where a device layout is owned.  *(v3 §6 P2d)*
+
+  **D. UX / robustness:**
+  - **Multi-GPU OOM hang → clean error** — PARTIALLY DONE: the GPU OOM-guidance message now suggests a finer `partition_sequence`, but it fires only on *catchable* OOMs (single-device + cleanly-erroring multi-device).  The multi-GPU collective HANG (the 2048³/8 case) produces no exception → still open; converting it to a clean error (allocator flags / collective timeouts) is the riskier remainder.  *(v3 §6, Next (3))*
+
+  **E. Deferred cleanup / perf / design (no urgency):**
+  - **Projector batching-machinery simplification** — collapse the scan/map/vmap nest, remove `lax.map` (jax#27591) fragility, unify tail batches.  De-closuring already landed in B3/P6; the n=1 single-device kernel is deliberately KEPT.  Perf/simplicity (first-call latency), NOT memory/correctness.  High blast-radius; gate = projector suite; measure first-call overhead at production size first.  *(v3 §6, v2 §future)*
+  - **Size-adaptive granularity sequence** — DEFER; if ever, SIZE-only (deterministic, reproducible), NOT memory-adaptive (would break device-count-independence + the correctness gating).  Gated on the convergence-quality data (A).  *(v3 §6, P1-design)*
+  - **Doc-xref cleanup** — autosummary / undocumented-target `:meth:` refs.
+  - **`_auto_device_count` basis** — recon-slices vs sino-views revisit (§6).
+  - **CPU-cluster auto-sharding policy** — real-cluster perf + a virtual-vs-real-CPU topology policy (post-P6).  *(v3 §6)*
+  - **(optional, low priority)** Pin the P2 −4-vs-−2 GB decomposition with a per-phase `memory_report` trace.
+
+  **Decided / closed (do NOT re-open):** `gen_weights` no `output_sharded` (above); `mesh` retired / `shard_devices` kept; P1 (skip granularity 1), P2 (free init-phase sinogram), `gen_weights`/`generate_demo_data` host-transparency, and the GPU OOM granularity hint — DONE, staged.
 
 ---
 
