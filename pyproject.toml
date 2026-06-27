@@ -20,8 +20,13 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "jax",
-    "jaxlib",
+    # jax/jaxlib 0.10.2 carries an XLA codegen regression that runs GPU forward projection (and so
+    # vcd) 3-9x slower than 0.10.1 — CPU and the back projector are unaffected.  Exclude that one
+    # release; newer good versions still install.  Re-test each new jax with
+    # mbirjax_metrics/tooling/scaling_tests/measure_one_cell.py and extend this exclusion if it also
+    # regresses (the nightly emails when a new jax ships).  See mbirjax/.claude/lessons.md.
+    "jax!=0.10.2",
+    "jaxlib!=0.10.2",
     "matplotlib",
     "numpy",
     "scipy",
@@ -42,8 +47,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda12 = ["jax[cuda12]"]
-cuda13 = ["jax[cuda13]"]
+cuda12 = ["jax[cuda12]!=0.10.2"]   # see the 0.10.2 exclusion note on the core jax dependency above
+cuda13 = ["jax[cuda13]!=0.10.2"]
 test = ["pytest", "pytest-xdist"]
 docs = [
      "sphinx",
