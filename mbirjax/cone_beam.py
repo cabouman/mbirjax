@@ -295,8 +295,12 @@ class ConeBeamModel(TomographyModel):
         vertical_fan_projector = ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
-        new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
+        # named_scope tags the HLO/trace with a stable, code-localized region name (profiling
+        # attribution that survives recompiles + jax-version renames; see experiments/profiling).
+        with jax.named_scope("cone/forward/vertical_fan"):
+            new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
+        with jax.named_scope("cone/forward/horizontal_fan"):
+            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
 
         return sinogram_view
 
@@ -507,8 +511,10 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Horizontal fan once per view -> detector-based voxel cylinder (num_pixels, num_det_rows).
-        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+        # named_scope: stable, code-localized profiling regions (see experiments/profiling).
+        with jax.named_scope("cone/back/pixel/horizontal_fan"):
+            det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -523,11 +529,15 @@ class ConeBeamModel(TomographyModel):
                 det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
                 g0, band_size, coeff_power=coeff_power)
 
-        bands = jax.lax.map(back_one_band, band_starts)        # (num_bands, num_pixels, band_size)
+        with jax.named_scope("cone/back/pixel/vertical_fan"):
+            bands = jax.lax.map(back_one_band, band_starts)    # (num_bands, num_pixels, band_size)
         # Reassemble into (num_pixels, num_bands * band_size): for pixel p and band b, slice
-        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.
-        back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
-        back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
+        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.  This
+        # transpose-reassembly is UNIQUE to the pixel kernel (the band kernel returns one band) -> its
+        # own region so its cost (vs the band kernel) is visible.
+        with jax.named_scope("cone/back/pixel/assemble"):
+            back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
+            back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
 
         return back_projection
 
@@ -675,11 +685,15 @@ class ConeBeamModel(TomographyModel):
         Horizontal fan once (full det rows) -> banded vertical fan.  Returns
         (num_pixels, num_band_slices).  ``g0`` is traced; ``num_band_slices`` (= L)
         is static."""
-        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
-        return ConeBeamModel.back_vertical_fan_band_pixel_batch(
-            det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
-            g0, num_band_slices, coeff_power=coeff_power)
+        # named_scope tags the HLO/trace with a stable, code-localized region name (the vertical fan
+        # is where the L1-bound transpose lives; see experiments/profiling/key_findings.md).
+        with jax.named_scope("cone/back/band/horizontal_fan"):
+            det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+        with jax.named_scope("cone/back/band/vertical_fan"):
+            return ConeBeamModel.back_vertical_fan_band_pixel_batch(
+                det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+                g0, num_band_slices, coeff_power=coeff_power)
 
     @staticmethod
     def compute_vertical_data_single_pixel(pixel_index, slice_indices, single_view_params, projector_params):
