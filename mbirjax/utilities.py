@@ -1501,14 +1501,17 @@ def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     All non‑`axis` dimensions must match across inputs.
 
     Args:
-        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
+        array_list (list of ndarray or jax.Array): Sequence of 2+ arrays to stitch.  The result is
+            built on the inputs' own array module, so host (NumPy) inputs stitch on the host (no gather
+            to a single device) and jax inputs stitch on-device.
         overlap (int): Number of elements overlapped between arrays.
             Must be `>= 1` and not exceed the length of any input along `axis`.
         axis (int, optional): Axis along which to stitch. Defaults to 2.
         ramp_overlap (int, optional): Target number of blended (0 < w < 1) elements. Defaults to None.
 
     Returns:
-        jax.Array: Stitched array. Its shape equals the input shape with the
+        ndarray or jax.Array: Stitched array, on the inputs' own array module (host NumPy in -> host
+        out, jax in -> on-device out). Its shape equals the input shape with the
         length along `axis` equal to:
 
             sum(len_k) - (len(array_list) - 1) * overlap_length
@@ -1551,8 +1554,14 @@ def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     ramp_overlap -= (overlap - ramp_overlap) % 2  # match overlap's parity -> symmetric plateaus
     ramp_overlap = max(ramp_overlap, overlap % 2)  # floor at 0 (even overlap) or 1 (odd overlap)
     flat_pad = (overlap - ramp_overlap) // 2  # equal plateau on each side
-    ramp = (jnp.arange(ramp_overlap) + 1) / (ramp_overlap + 1)  # strictly between 0 and 1
-    weights = jnp.concatenate([jnp.zeros(flat_pad), ramp, jnp.ones(flat_pad)])
+    # Build the blend weights and assemble on the inputs' OWN array module so the result stays where the
+    # inputs live: host (NumPy) arrays stitch on the HOST (no gather to a single device), device/jax
+    # arrays stitch on-device.  split_sino_recon relies on this -- it passes host halves, so the full
+    # volume is never reassembled on one GPU (which would defeat the half-at-a-time memory saving and
+    # OOM for a recon too large to fit whole).  float32 weights avoid upcasting a float32 recon to f64.
+    xp = jnp if any(isinstance(a, jax.Array) for a in array_list) else np
+    ramp = (xp.arange(ramp_overlap, dtype=xp.float32) + 1) / (ramp_overlap + 1)  # strictly between 0 and 1
+    weights = xp.concatenate([xp.zeros(flat_pad, dtype=xp.float32), ramp, xp.ones(flat_pad, dtype=xp.float32)])
 
     # Broadcast weights to match array dimensions
     weights_shape = np.ones(array_list[0].ndim, dtype=int)
@@ -1560,25 +1569,25 @@ def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     weights = weights.reshape(weights_shape)
 
     # Start with the first array in the list
-    stitched = jnp.swapaxes(array_list[0], 0, axis)
+    stitched = xp.swapaxes(array_list[0], 0, axis)
 
     # Iterate through each subsequent array in the list
     for next_array in array_list[1:]:
         # Extract the overlap from the current end of the stitched array and the beginning of the next array
         overlap_current = stitched[-overlap:]
-        next_array = jnp.swapaxes(next_array, 0, axis)
+        next_array = xp.swapaxes(next_array, 0, axis)
         overlap_next = next_array[:overlap]
 
         # Weighted average for the overlapping part
         weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
 
         # Replace the overlap in the stitched array
-        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+        stitched = xp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
 
         # Append the non-overlapping remainder of the next array
-        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+        stitched = xp.concatenate([stitched, next_array[overlap:]], axis=0)
 
-    return jnp.swapaxes(stitched, 0, axis)
+    return xp.swapaxes(stitched, 0, axis)
 
 
 def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None, helical_z_shifts=None):

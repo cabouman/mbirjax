@@ -660,6 +660,44 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     to the per-fusion autotune cache, whose temp-file writes fail on cluster NFS / a fresh cache dir.
     Fix: disable it when we set the compilation cache (keep the executable cache).  Not the cone hang.
 
+- **`split_sino_recon` hardening (cone, no-z-shift split-recon) — IN PROGRESS (2026-06-25).**  Review
+  found transients/contract gaps that undercut the function's "do half at a time on a fixed GPU set"
+  purpose (revisits #16, which didn't cover the memory/host transients).  Ordered plan:
+  - **S1 — host-side stitch (BIGGEST WIN; doing first).**  `stitch_arrays` is `jnp`-based, so stitching
+    the two `device_get`'d halves re-uploads them to gpu0 and assembles the FULL volume (+ concat
+    transients) on one device — and `split_sino_recon` returns that gpu0 array.  For a recon too big to
+    fit whole on the GPUs (the reason to split) the stitch itself OOMs.  Fix: make `stitch_arrays`
+    **host-preserving** (`xp = jnp if any-input-is-jax else np`, float32 blend weights so a float32 recon
+    is not upcast), mirroring the `gen_weights`/`generate_demo_data` pattern.  Halves are already on host
+    (`device_get`), so the full volume stays on host and is returned as numpy.  Blast radius: only
+    `split_sino_recon` + a shape-only doctest.
+  - **S2 — stop mutating the caller's weights (CORRECTNESS) — DONE 2026-06-25.**  `weights[:, lo:hi, :]`
+    was a numpy VIEW and the in-place sine taper wrote through it (tapered the caller's `weights`; a
+    jax/sharded weights would crash).  Fix: coerce `sino`/`weights` to host (`np.asarray`) at entry, build
+    the weight halves as fresh `np.array` copies, and make the `sine_filter` **float32** (out-of-place it
+    would upcast the float32 weights to f64).  Verified: caller's `weights` unmutated; jax `sino`/`weights`
+    run without crashing and match the numpy path; recon stays float32; `test_split_sino` green.  (Folds
+    in **S6** — the host-input contract is now coerced + documented in the docstring.)
+  - **S3 — half-models inherit the parent device config — DONE 2026-06-25.**  `copy_ct_model` copies
+    params but NOT the device layout, so an explicit `configure_devices(...)` on the parent was dropped
+    and an auto half could pick a different count for its smaller recon.  Fix: after each half's
+    recon_shape is set, `configure_devices(self.shard_devices)` on both halves (rebuilds each placement
+    for its own shape; inert slice padding makes any count safe).  Done in `split_sino_recon` (targeted,
+    not `copy_ct_model`, whose only caller this is).  Verified at 4 virtual devices: parent pinned to 2 →
+    both halves inherit exactly those 2 (previously they ignored it); `test_split_sino` green.
+  - **S4 — one half at a time — DONE 2026-06-25.**  Both halves' sino+weights+models were built upfront
+    and held together.  Fix: extracted a nested `_recon_one_half(lo, hi, recon_shape, recon_slice_offset,
+    taper_top)` that builds the half's model + sino slice + weights, recons, and `device_get`s — all
+    heavy state local, so the top half is fully done and freed before the bottom is built (only one
+    half's inputs resident at a time).  Pure restructure (same per-half params/order); `test_split_sino`
+    green and S2/S3 re-verified (weights unmutated, both halves inherit the parent's 2-of-4 devices).
+  - **S5 — `weights=None` overhead (low priority).**  Materializes full-half `np.ones` and forces
+    non-constant-weights recons (a full-half weights array resident on GPU per half).  Inherent to the
+    overlap taper given the `recon` API; note it, free the host ones promptly.
+  - **S6 — document/enforce the host-input contract — DONE with S2** (`np.asarray` coercion + docstring note).
+  - **Gate:** `tests/geometries/test_vcd.py::...test_split_sino` (split-vs-full nrmse) + the
+    `stitch_arrays` doctest; values must be unchanged (S1 is a placement change, not a math change).
+
 ---
 
 ## 7. Durable principles & facts (pointers, not copies)
