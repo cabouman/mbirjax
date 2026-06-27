@@ -1202,7 +1202,8 @@ def generate_demo_data(
     voxel_slice_aspect: float = 1.0,
     target_max_attenuation: float | None = None,
     devices: list | tuple | None = None,
-) -> (np.ndarray, np.ndarray):
+    output_sharded: bool | None = None,
+) -> tuple:
     """
     Create a simple object and a sinogram for demonstration purposes.
 
@@ -1210,7 +1211,8 @@ def generate_demo_data(
     parameters to create a simulated sinogram.  The object type 'shepp-logan' gives a simplified version of the
     classic Shepp-Logan test phantom, and type 'cube' gives a simple cube object.
 
-    The output sinogram is a 3D numpy array with shape (num_views, num_det_rows, num_det_channels).  Each 2D array
+    The output sinogram has shape (num_views, num_det_rows, num_det_channels) -- a NumPy array by default,
+    or jax arrays in the device form when ``output_sharded`` is requested (see below).  Each 2D array
     sinogram[view_index] is a simulated image from the detector, with num_det_rows indicating the vertical size
     and num_det_channels representing the horizontal size.
 
@@ -1237,19 +1239,31 @@ def generate_demo_data(
         voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
         target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
         devices (sequence of jax devices, optional): jax devices to use for sharding. Defaults to None.  Used only for Shepp-Logan data.
+        output_sharded (bool, optional): Controls the type and placement of the returned object and
+            sinogram.  None (default) selects device-sharded jax arrays when ``devices`` is given and
+            plain host (NumPy) arrays otherwise.  True returns jax arrays in the device form
+            (slice-sharded object / view-sharded sinogram across ``devices``; single-device jax when no
+            ``devices``).  False returns NumPy arrays and releases the device intermediates before
+            returning, so nothing is left resident on the GPU.
 
     Returns:
         tuple: (object, sinogram, params)
-            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).  A
-              single-device jax.Array by default; a slice-sharded jax.Array when ``devices`` is given
-              (the helical case returns a numpy volume regardless).
-            - sinogram: shape (num_views, num_det_rows, num_det_channels).  A numpy array by default;
-              a view-sharded jax.Array when ``devices`` is given.
+            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).
+            - sinogram: shape (num_views, num_det_rows, num_det_channels).
             - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
+
+        object and sinogram are NumPy arrays when ``output_sharded`` is False (the default unless
+        ``devices`` is given) and jax arrays in the device form when ``output_sharded`` is True.  When
+        NumPy is returned, the arrays in ``params`` are NumPy as well.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
     model_type = ModelType(model_type)
+
+    # Resolve the output form: device-sharded jax arrays when devices are given, plain host arrays
+    # otherwise.  Either default can be overridden explicitly via output_sharded.
+    if output_sharded is None:
+        output_sharded = devices is not None
 
     start_angle = -np.pi
     end_angle = np.pi
@@ -1393,15 +1407,31 @@ def generate_demo_data(
         # projection below still shards).  forward_project re-shards this host array as needed.
         phantom = np.zeros(recon_shape, dtype=np.float32)
         phantom[:, :, embed_slice_start:embed_slice_stop] = np.asarray(phantom_core)
+        if isinstance(phantom_core, jax.Array):
+            phantom_core.delete()      # gathered to the host volume above; free the device copy
     else:
         phantom = phantom_core
     
     # Generate synthetic sinogram data
     print('Creating sinogram')
-    output_sharded = False if devices is None else True
     sinogram = ct_model_for_generation.forward_project(phantom, output_sharded=output_sharded)
-    sinogram = sinogram if output_sharded else np.asarray(sinogram)
 
+    if not output_sharded:
+        # Return plain host arrays and release every device array we created here.  np.asarray blocks
+        # and copies to the host, so the subsequent delete is race-free; we own all of these (none came
+        # from the caller).  Single-device arrays would free on refcount anyway, but sharded ones are
+        # held in jax reference cycles, so delete explicitly (same lesson as the VCD transient cleanup).
+        def _to_host(a):
+            if isinstance(a, jax.Array):
+                host = np.asarray(a)
+                a.delete()
+                return host
+            return a
+        phantom = _to_host(phantom)
+        sinogram = _to_host(sinogram)
+        params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
+
+    del ct_model_for_generation
     return phantom, sinogram, params
 
 
@@ -1459,7 +1489,7 @@ def gen_cube_phantom(recon_shape, device=None):
     return jnp.array(phantom, device=device)
 
 
-def stitch_arrays(array_list, overlap, axis=2):
+def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     """
     Concatenate JAX arrays along one axis while linearly blending a fixed overlap
     between adjacent arrays.
@@ -1471,13 +1501,17 @@ def stitch_arrays(array_list, overlap, axis=2):
     All non‑`axis` dimensions must match across inputs.
 
     Args:
-        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
-        overlap (int): Number of elements to blend between each adjacent pair.
+        array_list (list of ndarray or jax.Array): Sequence of 2+ arrays to stitch.  The result is
+            built on the inputs' own array module, so host (NumPy) inputs stitch on the host (no gather
+            to a single device) and jax inputs stitch on-device.
+        overlap (int): Number of elements overlapped between arrays.
             Must be `>= 1` and not exceed the length of any input along `axis`.
         axis (int, optional): Axis along which to stitch. Defaults to 2.
+        ramp_overlap (int, optional): Target number of blended (0 < w < 1) elements. Defaults to None.
 
     Returns:
-        jax.Array: Stitched array. Its shape equals the input shape with the
+        ndarray or jax.Array: Stitched array, on the inputs' own array module (host NumPy in -> host
+        out, jax in -> on-device out). Its shape equals the input shape with the
         length along `axis` equal to:
 
             sum(len_k) - (len(array_list) - 1) * overlap_length
@@ -1511,34 +1545,49 @@ def stitch_arrays(array_list, overlap, axis=2):
             if np.amin(lengths) < overlap:
                 raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
 
-    # Create a piecewise linear weight array:
-    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
-    t = jnp.linspace(0, 1, overlap)
-    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    # Create weights for blending two arrays
+    # ramp_overlap is the target number of blended (0 < w < 1) pixels
+    # However, if ramp_overlap and overlap have different parities, then ramp_overlap is decremented to match parity.
+    if ramp_overlap is None:
+        ramp_overlap = overlap // 2  # default: ramp over ~half the overlap
+    ramp_overlap = min(ramp_overlap, overlap)
+    ramp_overlap -= (overlap - ramp_overlap) % 2  # match overlap's parity -> symmetric plateaus
+    ramp_overlap = max(ramp_overlap, overlap % 2)  # floor at 0 (even overlap) or 1 (odd overlap)
+    flat_pad = (overlap - ramp_overlap) // 2  # equal plateau on each side
+    # Build the blend weights and assemble on the inputs' OWN array module so the result stays where the
+    # inputs live: host (NumPy) arrays stitch on the HOST (no gather to a single device), device/jax
+    # arrays stitch on-device.  split_sino_recon relies on this -- it passes host halves, so the full
+    # volume is never reassembled on one GPU (which would defeat the half-at-a-time memory saving and
+    # OOM for a recon too large to fit whole).  float32 weights avoid upcasting a float32 recon to f64.
+    xp = jnp if any(isinstance(a, jax.Array) for a in array_list) else np
+    ramp = (xp.arange(ramp_overlap, dtype=xp.float32) + 1) / (ramp_overlap + 1)  # strictly between 0 and 1
+    weights = xp.concatenate([xp.zeros(flat_pad, dtype=xp.float32), ramp, xp.ones(flat_pad, dtype=xp.float32)])
+
+    # Broadcast weights to match array dimensions
     weights_shape = np.ones(array_list[0].ndim, dtype=int)
     weights_shape[0] = len(weights)
     weights = weights.reshape(weights_shape)
 
     # Start with the first array in the list
-    stitched = jnp.swapaxes(array_list[0], 0, axis)
+    stitched = xp.swapaxes(array_list[0], 0, axis)
 
     # Iterate through each subsequent array in the list
     for next_array in array_list[1:]:
         # Extract the overlap from the current end of the stitched array and the beginning of the next array
         overlap_current = stitched[-overlap:]
-        next_array = jnp.swapaxes(next_array, 0, axis)
+        next_array = xp.swapaxes(next_array, 0, axis)
         overlap_next = next_array[:overlap]
 
         # Weighted average for the overlapping part
         weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
 
         # Replace the overlap in the stitched array
-        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+        stitched = xp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
 
         # Append the non-overlapping remainder of the next array
-        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+        stitched = xp.concatenate([stitched, next_array[overlap:]], axis=0)
 
-    return jnp.swapaxes(stitched, 0, axis)
+    return xp.swapaxes(stitched, 0, axis)
 
 
 def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None, helical_z_shifts=None):

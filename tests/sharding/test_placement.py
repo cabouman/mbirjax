@@ -211,6 +211,33 @@ class TestGenWeightsSharding(unittest.TestCase):
         for wt, ref in self._refs(s).items():
             np.testing.assert_allclose(np.asarray(mbirjax.gen_weights(s, wt)), ref, rtol=1e-5, atol=1e-6)
 
+    def test_host_input_stays_on_host(self):
+        # A numpy sinogram yields numpy weights (host-preserving): nothing is landed on a device, so a
+        # large host sinogram is never copied whole onto one GPU before recon streams it to shards.
+        s = (np.random.RandomState(1).rand(6, 5, 7).astype(np.float32) * 3)
+        for wt in self._refs(s):
+            w = mbirjax.gen_weights(s, wt)
+            self.assertIsInstance(w, np.ndarray)        # host in -> host out (not a single-device jax array)
+            self.assertEqual(w.dtype, np.float32)       # element-wise op preserves dtype
+
+    def test_ct_model_shards_host_input(self):
+        # ct_model= distributes a host sinogram into the model's view-sharded device form and weights it
+        # per shard, so the result is sharded across all devices (no single-device copy of the input).
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        # views (sharded) and det-rows (parallel beam pads rows to the recon-slice count) both
+        # divisible by the device count -> device form == real shape, so no inert padding to mask.
+        num_views, num_rows, num_channels = 4 * len(devs), 2 * len(devs), 6
+        s = (np.random.RandomState(2).rand(num_views, num_rows, num_channels).astype(np.float32) * 3)
+        angles = np.linspace(0, np.pi, num_views, endpoint=False)
+        model = mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
+        model.configure_devices(devs)
+        for wt, ref in self._refs(s).items():
+            w = mbirjax.gen_weights(s, wt, ct_model=model)
+            self.assertEqual(len(w.addressable_shards), len(devs))   # host in + ct_model -> sharded out
+            np.testing.assert_allclose(np.asarray(w), ref, rtol=1e-5, atol=1e-6)
+
     def test_preserves_sharding(self):
         devs = preferred_devices(2)
         if devs is None:
@@ -228,10 +255,23 @@ class TestGenWeightsSharding(unittest.TestCase):
 class TestGenerateDemoDataSharding(unittest.TestCase):
     """generate_demo_data returns numpy by default and device-sharded data when devices is given."""
 
-    def test_default_returns_numpy_sinogram(self):
-        _, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=12,
-                                                num_det_rows=10, num_det_channels=14)
+    def test_default_returns_numpy(self):
+        # Default (no devices): BOTH object and sinogram are plain numpy, and params arrays too -- no
+        # device residue.  (Previously the shepp-logan object came back as a single-device jax array.)
+        phantom, sino, params = mbirjax.generate_demo_data(model_type='parallel', num_views=12,
+                                                           num_det_rows=10, num_det_channels=14)
         self.assertIsInstance(sino, np.ndarray)
+        self.assertIsInstance(phantom, np.ndarray)
+        self.assertIsInstance(params['angles'], np.ndarray)
+
+    def test_output_sharded_true_without_devices_is_jax(self):
+        # output_sharded=True overrides the default and returns device-form jax arrays even with no
+        # devices (single-device / trivial 1-shard).
+        phantom, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=12,
+                                                       num_det_rows=10, num_det_channels=14,
+                                                       output_sharded=True)
+        self.assertIsInstance(sino, jax.Array)
+        self.assertIsInstance(phantom, jax.Array)
 
     def test_devices_returns_sharded(self):
         devs = preferred_devices(2)
@@ -242,6 +282,20 @@ class TestGenerateDemoDataSharding(unittest.TestCase):
         self.assertEqual(tuple(sino.shape), (20, 16, 24))
         self.assertEqual(len(sino.addressable_shards), len(devs))      # view-sharded sinogram
         self.assertEqual(len(phantom.addressable_shards), len(devs))   # slice-sharded phantom
+
+    def test_devices_with_output_sharded_false_gathers_to_numpy(self):
+        # devices given but output_sharded=False: compute sharded, then gather to numpy and free the
+        # device arrays.  Values match the sharded path.
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        kw = dict(model_type='parallel', num_views=20, num_det_rows=16, num_det_channels=24)
+        ph_s, sino_s, _ = mbirjax.generate_demo_data(devices=devs, **kw)
+        ph_h, sino_h, _ = mbirjax.generate_demo_data(devices=devs, output_sharded=False, **kw)
+        self.assertIsInstance(sino_h, np.ndarray)
+        self.assertIsInstance(ph_h, np.ndarray)
+        np.testing.assert_allclose(sino_h, np.asarray(sino_s), rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(ph_h, np.asarray(ph_s), rtol=1e-5, atol=1e-6)
 
 
 if __name__ == "__main__":

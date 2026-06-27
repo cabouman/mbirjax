@@ -373,7 +373,20 @@ async run-ahead — it was object lifecycle.
   and `.delete()` the transient to avoid it.  (c) Bare `.delete()` of an array still
   feeding a pending op risks a silent race — gate it behind one `block_until_ready` on
   the returned state (every transient is upstream of it).  Consolidate all frees into one
-  end-of-subset cleanup section after that single block.
+  end-of-subset cleanup section after that single block.  (d) **Identity ≠ buffer-ownership
+  when freeing a PASSED-IN array.**  Freeing the init-phase sinogram in `vcd_recon` (2026-06-25,
+  ~4 GiB/shard reclaimed before the Hessian + loop) first guarded on object identity
+  (`placed is not original`) — and broke 4 sweep tests with `RuntimeError: Array has been
+  deleted`.  Cause: `device_put`/`move_shard` can return a **no-copy reshard** — a *different*
+  `ArrayImpl` that *shares the same device buffers* as the input — when the data already lives on
+  the target devices (and `_shard_on_axis` returns the input UNCHANGED on an exact-sharding match).
+  So `.delete()` on the "new" object frees the caller's buffers (the caller, e.g. a `recon` sweep
+  or `prepare_sino_for_devices`, then re-reads a deleted array).  Correct ownership test: we own
+  fresh buffers iff `to_sino` had to TRANSFER the data — host/numpy input, or a jax array whose
+  devices are **disjoint** from the placement's devices (`set(x.devices()).isdisjoint(placement.
+  devices)`).  An input already resident on (any of) the placement devices may alias → do NOT
+  delete.  General rule: before deleting an array derived from a caller-supplied one, prove you
+  allocated its buffers (a cross-device/host transfer), not just that you hold a distinct handle.
 - **Diagnostic method that cracked it.**  A per-subset/per-iteration `peak_bytes_in_use`
   "memjump" trace showed the view-sharded-sino count climbing 1/op; `gc.get_referrers`
   named the holder (`ArrayImpl.__dict__`); an explicit `gc.collect()` dropped `live_end`
@@ -539,3 +552,20 @@ contaminates, or NaNs.**
   RNG variance, and also makes the fingerprint reproducible across runs/platforms (so vs-main /
   cross-platform are meaningful).  General rule: if an op's result depends on a global RNG, fix the seed
   or you are comparing noise.  (The projection `vcd_nonconst` avoids this by passing PRE-BUILT partitions.)
+- **uPlot's built-in log-axis tick generator can freeze for seconds on tight, non-power-of-10 bounds —
+  hand it your own splits.**  On a `distr:3` (log) axis whose scale min/max aren't round powers of ten
+  (e.g. a 6%-log-padded y-min of `9.76e-5`, just under `1e-4`), uPlot's splitter seeds its increment from
+  `pow(10, floor(log10(min)))`, then as it crosses the first decade boundary the increment degrades to a
+  tiny NON-power value whose internal decimal-places lookup misses — so it crawls the range in millions
+  of micro-steps, building a giant tick array.  Result: a ~2.5s main-thread freeze that leaves the panel
+  half-drawn (`axis._splits` null) — reads exactly like "the plot disappeared."  It surfaced only for the
+  GPU `parallel/back` TIME panel (a new `513³` run's timings happened to land the padded y-min in that
+  spot); CPU / other ops / linear axes were fine, which made it look purely data-specific.  It WAS
+  data-triggered, but the latent bug was the dashboard trusting uPlot's auto-splitter.  Tell: the X axis
+  never hung because it already passes custom `xSplits` (the size ticks), which bypasses the generator —
+  the Y axis didn't.  Fix: give yLog axes explicit ticks too — `logTicks(mn,mx)` = `1-9·10^k` within the
+  range (O(decades), bounded) — placed in the shared `linePlot` wrapper, so all four log panels (scaling
+  time+mem, history time+mem) inherit it; the X axes were already covered.  General rule: when ONE data
+  shape freezes a charting lib's log plot, suspect its auto-tick / auto-range generator and feed it
+  bounded ticks rather than massaging the data.  (Diagnosis aid: see [[dashboard-verify-gotchas]] — the
+  rAF-throttle trap nearly hid this, since uPlot defers its first draw to a `requestAnimationFrame`.)

@@ -38,15 +38,13 @@ num_det_channels = 90
 # Set to a float to get a sinogram roughly in the range [0, target_max_attenuation]
 target_max_attenuation = None  # 6.0
 import jax
-devices = jax.devices()
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
                                                   num_det_channels=num_det_channels,
-                                                  target_max_attenuation=target_max_attenuation,
-                                                  devices=devices)
+                                                  target_max_attenuation=target_max_attenuation)
 angles = params['angles']
 
 # View the sinogram

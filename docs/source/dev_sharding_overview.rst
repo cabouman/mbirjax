@@ -114,11 +114,19 @@ first slicing its sinogram views to those rows -- the transient cylinder buffer
 can be held at one destination's slice range.
 
 Cone beam cannot do this cheaply: magnification maps a single slice to a
-*data-dependent band* of detector rows, so the slice and detector-row axes are
-coupled.  A view-owner therefore computes the **full voxel cylinder** once and
-then splits it into bands, rather than restricting the computation to a band up
-front.  This coupling is also why the sinogram is sharded by view (not by
-detector row) uniformly across geometries.
+*data-dependent band* of detector rows (dependent on the cone angle and the
+particular slice), so the slice and detector-row axes are
+coupled.  This projection could proceed one band of slices at a time, but
+then each detector row requires multiple updates from a single voxel cylinder.
+Alternatively, each view owner can collect all the bands for a batch of pixels
+and then project the resulting full cylinders.  A/B tests on representative
+shapes showed that the second approach increased transient memory for the
+projector by about 10% but decreased time by about 2x.
+
+A view-owner therefore collects the **full voxel cylinder** once and
+then projects the full cylinder, rather than restricting the computation
+to a band up front.  This coupling is also why the sinogram is sharded
+by view (not by detector row) uniformly across geometries.
 
 
 The QGGMRF prior and halos

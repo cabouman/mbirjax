@@ -376,24 +376,41 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     return weights
 
 
-def gen_weights(sinogram, weight_type):
+def gen_weights(sinogram, weight_type, ct_model=None):
     """
     Compute optional weights used in MBIR reconstruction based on the noise model.
 
     The weights should be proportional to the inverse variance of the noise for each sinogram entry.
     They can be used to improve reconstruction quality.
 
+    The result is returned where the input lives, so it feeds reconstruction without landing a large
+    array on a single device:
+
+    - a host (NumPy) sinogram yields host weights (reconstruction streams them to the devices
+      shard-by-shard);
+    - a JAX array yields JAX weights inheriting its sharding (a view-sharded sinogram gives
+      view-sharded weights, with no cross-device communication or gather).
+
+    To build the weights already distributed across a multi-device reconstruction -- avoiding any
+    single-device copy of a large host sinogram -- pass the model as ``ct_model``: the sinogram is
+    placed in the model's view-sharded device form first, then weighted per shard.
+
     Args:
-        sinogram (jax.Array): A 3D JAX array of shape (num_views, num_det_rows, num_det_channels)
+        sinogram (ndarray or jax.Array): A 3D array of shape (num_views, num_det_rows, num_det_channels)
             representing the sinogram.
         weight_type (str): The type of noise model to use for weighting. Must be one of:
             - 'unweighted': Use uniform weights (all ones).
             - 'transmission': Use exponential decay, `exp(-sinogram)`.
             - 'transmission_root': Use square-root decay, `exp(-sinogram / 2)`.
             - 'emission': Use reciprocal decay, `1 / (abs(sinogram) + 0.1)`.
+        ct_model (TomographyModel, optional): If given, distribute the sinogram in this model's
+            sinogram device form (view-sharded across its devices) before weighting, so the weights
+            are returned sharded and ready for reconstruction with no single-device copy.  Defaults to
+            None (the result preserves the input's residence, as described above).
 
     Returns:
-        jax.Array: A 3D array of weights with the same shape as the input sinogram.
+        ndarray or jax.Array: A 3D array of weights with the same shape as the input sinogram, on the
+        host or sharded across devices to match the input (or ``ct_model``).
 
     Raises:
         Exception: If `weight_type` is not one of the supported options.
@@ -408,19 +425,26 @@ def gen_weights(sinogram, weight_type):
         >>> weights.shape
         (180, 64, 128)
     """
-    # The weights are an element-wise function of the sinogram, so they are computed in one pass.
-    # On a view-sharded sinogram each shard is processed in place -- element-wise ops need no
-    # cross-device communication and the result inherits the input's sharding -- so the weights land
-    # exactly where the sinogram lives and feed recon with no gather or re-shard.  On a single device
-    # the peak is ~2x the sinogram (input + output); shard a sinogram too large for one device.
+    # Optionally place the sinogram in the model's view-sharded device form first, so the weights are
+    # built per shard (no single-device copy of a large host sinogram).
+    if ct_model is not None:
+        sinogram = ct_model._shard_sinogram(sinogram)
+    # The weights are an element-wise function of the sinogram, computed in one pass with the input's
+    # OWN array module so the result stays where the input is: a host (NumPy) sinogram yields host
+    # weights, a JAX array yields JAX weights inheriting its sharding (each shard processed in place --
+    # element-wise ops need no cross-device communication).  This keeps a large host sinogram OFF the
+    # devices until reconstruction streams it shard-by-shard, and never lands the whole array on one
+    # device.  On a single device the peak is ~2x the sinogram (input + output); shard the sinogram
+    # (or pass ct_model) when it is too large for one device.
+    xp = jnp if isinstance(sinogram, jax.Array) else np
     if weight_type == 'unweighted':
-        weights = jnp.ones_like(sinogram)       # ones_like (not jnp.ones) preserves the sharding
+        weights = xp.ones_like(sinogram)        # ones_like (not ones) preserves the input's sharding
     elif weight_type == 'transmission':
-        weights = jnp.exp(-sinogram)
+        weights = xp.exp(-sinogram)
     elif weight_type == 'transmission_root':
-        weights = jnp.exp(-sinogram / 2)
+        weights = xp.exp(-sinogram / 2)
     elif weight_type == 'emission':
-        weights = 1.0 / (jnp.absolute(sinogram) + 0.1)
+        weights = 1.0 / (xp.absolute(sinogram) + 0.1)
     else:
         raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
     return weights

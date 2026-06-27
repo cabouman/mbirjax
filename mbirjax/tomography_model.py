@@ -2684,6 +2684,16 @@ class TomographyModel(ParameterHandler):
 
         # Place the sinogram (view-sharded when sharding is on) so direct_recon yields a matching
         # slice-sharded init and the alpha dot-products below stay aligned with the error sinogram.
+        # Decide whether we may free the placed sinogram once consumed (below).  We own FRESH
+        # buffers only when to_sino had to transfer the data here: a host/numpy input, or a jax
+        # array on OTHER devices, forces a copy to new buffers on the sino devices.  An input
+        # already resident on these devices may be returned by to_sino as a no-copy reshard that
+        # SHARES the caller's buffers (or unchanged, e.g. prepare_sino_for_devices) -- deleting
+        # that would invalidate the caller's array, so leave it.
+        if isinstance(sinogram, jax.Array):
+            own_sinogram = set(sinogram.devices()).isdisjoint(self.sino_placement.devices)
+        else:
+            own_sinogram = True   # numpy/host input -> to_sino copies to device buffers we own
         sinogram = to_sino(sinogram)
 
         scale_recon_to_sinogram = True if init_recon is None else False
@@ -2735,6 +2745,18 @@ class TomographyModel(ParameterHandler):
         recon = to_recon(recon)  # slice-shard (a single device is the trivial 1-shard case)
         error_sinogram = to_sino(error_sinogram)
 
+        # sinogram's contents are now fully folded into error_sinogram (above); its only remaining
+        # use is a dtype read for the constant-weights ones array, which error_sinogram serves.  Free
+        # the view-sharded sinogram now -- at 2048^3/8 that reclaims ~4 GiB/shard before the Hessian
+        # diagonal and the VCD loop -- but ONLY when we own it (to_sino copied the input).  A caller
+        # who pre-sharded via prepare_sino_for_devices still owns their array, so we must not delete.
+        # block_until_ready makes the delete race-free (error_sinogram has finished reading sinogram);
+        # it is a one-time init sync, not in the hot subset loop.
+        if own_sinogram:
+            jax.block_until_ready(error_sinogram)
+            sinogram.delete()
+        sinogram = None
+
         # Test to make sure the prox_input input is correct
         if prox_input is not None:
             # Accept the problem's REAL shape (the normal user input) or the device form
@@ -2770,7 +2792,9 @@ class TomographyModel(ParameterHandler):
         if constant_weights:
             # Ones over the real views, ZEROS over any padded views (device form):
             # padded views must not contribute to the Hessian back projection.
-            weights = self._sino_ones_device_form(sinogram)
+            # _sino_ones_device_form uses only its argument's dtype; error_sinogram (same dtype,
+            # same device form) stands in so the original sinogram can be freed above.
+            weights = self._sino_ones_device_form(error_sinogram)
 
         self.logger.info('Computing Hessian diagonal')
         # output_sharded=True keeps the Hessian in the device form (slice-sharded, slice

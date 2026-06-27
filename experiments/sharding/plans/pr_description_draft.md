@@ -85,8 +85,10 @@ pre-sharding representations and their dead branches are gone:
 ## Scope / known limits
 
 - **Single process only** (no multi-node).
-- **Open (under investigation, not a prerelease regression):** a cone-beam 2048³ reconstruction on 8
-  GPUs hangs at the first VCD subset update (NCCL "Acquire clique" timeout); clean through 512³/8.
+- **Known capacity limit (not a prerelease regression):** a cone-beam 2048³ reconstruction does not fit
+  per-device on 8×80 GB H100s — the first VCD subset update runs out of memory (it shows up as an NCCL
+  "Acquire clique" timeout, which is a downstream symptom of a GPU stuck OOM-retrying).  Clean through
+  512³/8.  FDK init and the Hessian diagonal fit; the VCD subset-update working set is what overflows.
   Cone was single-device in prerelease, so this is new-capability territory, not a regression.  Repro
   tooling is included under `experiments/sharding/cone_deadlock_repro/`.
 - **Follow-ons (post-merge):** shard `mar.py`/preprocessing (incl. `gen_weights_mar`); a doc-xref

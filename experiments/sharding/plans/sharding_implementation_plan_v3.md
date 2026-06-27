@@ -46,11 +46,11 @@ name over the number.*
 | **Cone B5** — exactly-inert slice padding | ✅ **done** (2026-06-18; CPU-validated — 4 deferred tests pass at 4 devices, full suite green at the default 4 CPU devices; GPU-confirmed in the nightly — the 4 non-dividing cone cells `513x449x385` flipped failing→ok on H100) |
 | **Cone B4.5** — band kernel GPU cost | ⏸ open (deferred behind decision (a); see §4) |
 | **C** — ParallelBeam on the `(g0,L)` template; FDK filter sharded; both cone back kernels kept | ✅ **substance done** (landed interspersed with B4/B5: polymorphic override-dispatch template, FDK filter per-view-shard, parallel overrides **kept** by decision 2026-06-18 — cheaper for parallel; no separate code phase) |
-| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  In `greg/sharding_extensions` (rebased onto prerelease, PR-ready) |
-| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-cluster confirmation + the `1/cos(elevation)` vertical path-length factor (§6) still open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
+| **D — translation** — T1 FDK filter, T2 banded back, T3 forward anchor, T4 `_supports_sharding`, T5 inert padding | ✅ **DONE 2026-06-19/20**, CPU + GPU validated (`increment_d_translation_design.md`).  Now on the always-on placement path; correct at all device counts incl. padding.  Merged to prerelease in PR #17 |
+| **D — multiaxis** | ✅ **DONE 2026-06-20**, CPU-validated.  On the always-on placement path; correct at all device counts incl. padding.  Port (M0–M5): FBP angular-weighting fix (order-invariant channel ramp, §6); anisotropic voxels (row + slice aspect); banded back kernel + channel-major horizontal fans; forward anchor on `recon_shape[2]`; `_supports_sharding=True` (no driver overrides); inert padding (test-only).  Calibration anchored to ParallelBeam at el=0 (forward bit-exact).  GPU-confirmed (A100 + 4-GPU nightly); the `1/cos(elevation)` vertical path-length factor (§6) remains open.  Channel-major transpose also added to **translation** (forward ~1.8× on CPU) |
 | **E** — retirement cascade (legacy single-device dispatch, `main_device`, `view_indices`, …) | ✅ **DONE 2026-06-22**, CPU-validated + committed (`increment_e_retirement_design.md` §4 — every row).  Retired `view_indices`→`owned_view_indices`, the no-mesh path + `_supports_sharding`, `output_device`, `main_device`/`sinogram_device`, `configure_sharding` (→ `configure_devices` only), the vacuous `if is_sharded` branches + the `is_sharded` property; merged the device-config into `_set_device_layout`+`_auto_device_pool`; retired `mesh` (kept `shard_devices` as the public accessor); sharded the denoiser (E3c); dropped redundant `initialize_recon` device-puts (P3).  Placements are the single source of device layout.  GPU-cluster confirmed (nightly) |
 | **Post-E** — docs + utility sharding + Tk/cache fixes | ✅ **DONE 2026-06-24** (in PR #17): user/dev docs (`usr_multi_gpu`, `dev_sharding_overview`, `dev_api` rewrite); `gen_weights` / `gen_weights_mar` / the Shepp-Logan phantom / `generate_demo_data` made sharding-aware (+ phantom `max_block_gb` blocking and `target_max_attenuation`); `_pad_shard_on_axis` readability; `recon_shard_axis`/`sinogram_shard_axis` → classmethods; viewer/demo Tk-GC noise fix; **JAX per-fusion-autotune-cache disabled** (fixed the A100 `NOT_FOUND` cache errors) |
-| **Prerelease PR (#17)** | ✅ **OPEN 2026-06-24** (`greg/sharding_extensions` → `prerelease`, 55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Open follow-ons (non-blocking): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
+| **Prerelease PR (#17)** | ✅ **MERGED 2026-06-24** into `prerelease` (55 commits, +5032/-1933).  All four geometries + the QGGMRF denoiser sharded.  CPU suite green at 4 devices; A100 green for everything runnable.  Follow-ons (non-blocking, and likely to grow as wider use surfaces issues): cone 2048³/8 deadlock (§6), `mar`/preprocessing (#18), doc-xref cleanup |
 
 ---
 
@@ -176,7 +176,7 @@ The five components, each with its load-bearing technique.
 
 ---
 
-## 4. Cone port (P6) — in progress
+## 4. Cone port (P6) — ✅ DONE (only the B4.5 band-kernel perf optimization is deferred, below)
 
 **The value is CAPACITY, not single-GPU speed.**  Cone projectors already scale ~N⁴ on GPU
 with no cliff and fit 1024³ single-device; sharding is what lets *VCD* exceed one GPU at
@@ -286,7 +286,7 @@ no-single-device-regression.
      (`conftest.assert_sharded_allclose`, surfaced by the translation Hessian + CPU reduction-order
      nondeterminism), and **dropping the redundant sharded VCD-recon test** for translation
      (`_PaddedReconMixin.RUN_SHARDED_VCD`; the sharded VCD loop is geometry-independent, gated on
-     parallel + cone).  In `greg/sharding_extensions`, rebased onto prerelease (PR-ready).
+     parallel + cone).  Merged to prerelease (PR #17).
      **GPU follow-ups (Greg's cluster, not blocking):** the GPU n=1 back short-circuit band-vs-pixel
      platform split for translation (decision 2b — active but UNMEASURED), and per-device memory/time
      scaling.  **Prereq:** `translation` baselines in mbirjax_metrics (separate session).
@@ -324,10 +324,10 @@ no-single-device-regression.
    RETIRE-marker sweep removed the trivial-mesh comparison tests.  **Kept** the single-device back
    driver/kernel (`_sparse_back_project_single_device` / `back_project_one_view_to_pixel_batch`),
    which the GPU n=1 short-circuit calls.  Also sharded the denoiser (E3c) and added
-   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 OPEN
+   `mjs.sharded_full`.  Full record: `increment_e_retirement_design.md`.  **Prerelease PR #17 MERGED
    (2026-06-24).**  Done since: `pixel_indices_worker` collapse (#22), the `mesh`/`shard_devices`
    revisit (`mesh` retired, `shard_devices` kept).  Remaining follow-up: `mar`/preprocessing sharding
-   (#18).
+   (#18 — see the `output_sharded` decision in §6).
 5. **Post-P6** — the multi-GPU **user docs page** ✅ **DONE 2026-06-23**: `usr_multi_gpu.rst`
    (zero-effort path, device subsetting via `configure_devices`, efficiency tips, expectations,
    a gentle "sharding" overview) + `use_gpu`/`overview`/`advanced_features`/FAQ refresh, and the
@@ -462,7 +462,8 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
-- **Cone-beam 8-GPU 2048³ recon hang (NCCL "Acquire clique" timeout) — INVESTIGATING (2026-06-23).**
+- **Cone-beam 8-GPU 2048³ recon hang — DIAGNOSED 2026-06-24 as OUT OF MEMORY** (the NCCL "Acquire
+  clique" timeout was a downstream symptom, not the cause; see the DIAGNOSED bullet below).
   A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
   Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
   config worked.  Repro tooling: `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
@@ -487,16 +488,215 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     `gen_modified_3d_sl_phantom` and the 32 GiB host-random) and keep the forward projection AND the
     recon **device-sharded** (`output_sharded=True`) -- no single-device 32 GiB array anywhere.  (Side lesson: at 2048³ a gathered single-device output is itself 32 GiB — real runs must
     stay sharded.)
-  - **Next (still PENDING as of 2026-06-24, cluster availability):** re-run 2048³ (n=4/8) with the
-    fixed repro — it has not yet actually reached the VCD loop at 2048³.  If it reproduces the hang,
-    the prime fix is making the line-search reductions **collective-free** (thread-pool partial sums +
-    a host reduce of the two floats), removing the only NCCL dependency.  If it completes, the original
-    hang was build/env and the branch is fine at scale.
+  - **DIAGNOSED (2026-06-24, job 12777612): the root cause is OUT OF MEMORY, not a collective deadlock.**
+    Hardware: **80 GB H100s** (8 GPUs).  cone 2048³ TIMEOUT at n=4 and n=8; the cone n8 log is the BFC
+    allocator failing a **4.02 GiB** allocation (`GPU_4_bfc`) on 5 of 8 GPUs.  HLO disproves the collective
+    theory: cone has **67** all-reduces vs parallel's **139**, and **parallel n=8 (more collectives)
+    completed OK** — so no unique/missing cone collective.  The original "Acquire clique … not all threads
+    arrived" was a downstream symptom: a GPU stuck in the OOM-retry loop never reaches the rendezvous, so
+    peers time out.  parallel n=4 ERR'd with a clean OOM.
+    **Phase confirmed = the first VCD subset update.**  The cone n8 log reaches:
+    forward-project → sinogram (552 s) → `Starting direct recon` (FDK init) → `Initializing error
+    sinogram` → `Computing Hessian diagonal` → `Starting VCD iterations`, and the BFC failure fires
+    *immediately after* the VCD-iterations banner.  So FDK init and the Hessian diagonal both fit; it is
+    the **VCD subset-update working set** that overflows.
+    **Conclusion:** cone's per-device VCD-update working set at 2048³/8 exceeds an 80 GB H100 (cone's
+    whole-cylinder transients ≫ parallel's separable kernel).  **The collective-free-reduction candidate
+    is OFF.**
+  - **Next:** (1) phase is now pinned (first VCD subset update) — instrument the subset update to find the
+    dominant transient (the per-subset forward/back of a slice band over its views, the band reduce, or the
+    qGGMRF prox buffers).  (2) reduce cone's peak per-device VCD-update memory — the band slice count, the
+    forward pixel-batch size, and the per-subset view working set are the levers — and/or use more GPUs.
+    (3) Secondary UX: **PARTIALLY ADDRESSED 2026-06-25.**  Added a "use a finer partition_sequence
+    (e.g. [4,6,7])" bullet to the GPU OOM guidance (`log_oom_guidance` in `_utils.py`), which
+    `_handle_jax_error` already prints on a caught `JaxRuntimeError`.  This fires for **catchable** OOMs
+    — single-device too-big recons (clean `RESOURCE_EXHAUSTED`) and the multi-device OOMs that surface
+    cleanly (e.g. parallel n=4).  **STILL OPEN:** the multi-GPU OOM that *hangs* instead of raising (a
+    GPU stuck in the BFC retry loop never reaches the NCCL rendezvous → "Acquire clique" timeout) — the
+    exact 2048³/8 cone case — produces no exception, so the hint never prints there.  Converting that
+    hang into a catchable error is a bigger, riskier change (allocator flags / collective timeouts) and
+    the project deliberately does not pre-estimate fit (`set_devices` docstring); left as a separate
+    follow-on.
+  - **Memory-reduction plan (2026-06-25).**  Three independent levers, cheapest-first; the goal is to
+    fit cone 2048³/8 by shrinking the first-VCD-update footprint.
+    - **(P1) Partition granularity — PRIMARY, zero code.**  The OOM is on the FIRST VCD iteration
+      because `partition_sequence` defaults to `[0, 2, 4, 6, 7]` (indices into
+      `granularity = [1, 2, 4, 8, 16, 32, 64, 128, 256]`), so iteration 0 uses `granularity[0] = 1` — a
+      single subset = **the entire recon**.  Hence `len(pixel_indices)` = all ~4.2M pixels and every
+      subset-domain array (`prior_grad/hess`, `forward_grad/hess`, `delta`) is `(4.2M, 256/device)·4B ≈
+      4.3 GiB` — exactly the failing 4.02 GiB allocation, ×5 co-resident, plus the whole-cylinder
+      back-projection transient.  Finer first partition shrinks ALL of these proportionally.  Experiment
+      (no code): `ct_model.set_params(partition_sequence=[2,4,6,7])` (first iter → 4 subsets) or
+      `[4,6,7]` (→ 16 subsets, each subset array ~270 MiB).  Single-variable sweep; trade-off = a few
+      extra iterations vs starting at granularity 1.
+      **SWEEP RESULT (2026-06-25, 1024³, 2×H100, 2 GB/shard) — PARALLEL BEAM:** peak `bytes_in_use`/shard
+      `[0,2,4,6,7]` = **32.5 GB**, `[2,4,6,7]` = **27.1 GB (−17%)**, `[4,6,7]` = **24.9 GB (−24%)** —
+      and TIME was neutral/slightly faster (319.5 → 301 s; the granularity-1 first iteration was the
+      slowest, not the cheapest).  Diminishing returns: dropping granularity 1 is the big win (−5.4 GB);
+      4→16 subsets adds only −2.2 GB.  Steady-state floor = **8 GB/shard** (resident flat_recon +
+      error_sinogram + fm_hessian + 1, each 2 GB) in ALL runs, so the transient ABOVE the floor falls
+      24.5 → 16.9 GB.  That ~17 GB residual is the **projection working set** (delta_sinogram + the
+      back/forward scratch), which granularity does NOT shrink (at 16 subsets the subset arrays are only
+      ~130 MB).  Confirms the diagnosis numerically (the 2 GB/shard subset array here = 4.3 GB at 2048³/8
+      = the failing 4.02 GiB alloc).
+      **CONE BEAM (1024³, 2×H100, + P2), 2026-06-25 — granularity sweep:** peak/shard default `[0,2,4,6,7]`
+      = **36.09 GB** (380 s), `[4,6,7]` = **28.67 GB** (388 s) → `[4,6,7]` cuts cone peak **−7.43 GB
+      (−21%)**, nearly the same ABSOLUTE saving as parallel (~7.6 GB) — granularity shrinks the
+      geometry-independent subset arrays, and the cone-specific whole-cylinder projection transient
+      (**~8 GB/shard** above parallel) sits on top regardless of granularity.  Steady 2 GB; time neutral.
+      **Extrapolation (CONE → 2048³/8, [4,6,7] + P2), anchored on cone's OWN OOM:** cone default OOM'd at
+      2048³/8 (≥77.6 GB) and is 36.09 GB at 1024³/2, so the cone 1024³/2→2048³/8 scale is **≥ 77.6/36.09 =
+      2.15×**.  Applying that to cone `[4,6,7]`'s 28.67 GB → **~62 GB** (×2.15), ~69 GB (×2.4); it only
+      reaches the 77.6 ceiling near ×2.7.  So **`[4,6,7]` + P2 has a real shot at fitting cone 2048³/8**
+      (best estimate ~62–69 GB), firmer than the earlier parallel-borrowed guess because it is anchored on
+      cone's own scaling — but the margin is thin enough that a super-linear projection transient could
+      reach the edge, so the 8-GPU cone run is still decisive.  If it does not fit, the lever is the
+      **cone projector's per-call working set** (view-batch / band size — that ~8 GB transient), NOT P3
+      (subset arrays are already ~130 MB at 16 subsets).
+      **Caveat:** the sweep measured memory+time, not convergence; confirm `fm_rmse`/`prior_loss` land
+      together across the three before adopting `[4,6,7]` as a large-problem default.
+    - **(P1-design) Size-adaptive granularity sequence? — DECIDED 2026-06-25: defer; if ever, SIZE-only,
+      NOT memory-adaptive.**  A memory/hardware-adaptive default (auto-pick the starting granularity from
+      free GPU memory) would BREAK the sharding guarantee that **results are independent of device count**:
+      the same problem would converge differently on different hardware (2048³ on 8×80 GB vs 16×40 GB →
+      different schedule → different image), and that drift would surface in the cross-device/cross-platform
+      correctness gating.  It also needs a peak predictor we do not have (geometry-dependent ~8 GB cone
+      delta, unclear super-linear scaling — "sweep, don't guess").  The only reproducibility-safe form is
+      **size-only**: derive the coarsest starting granularity deterministically from recon voxel count
+      (e.g. subset count ≥ ceil(voxels / threshold), threshold calibrated from a size sweep), overridable —
+      a function of the PROBLEM, identical on any hardware.  Even that is **gated on the convergence-quality
+      data** from the 8-GPU run (unverified assumption: skipping granularity 1 does not hurt the final
+      image).  Until then: keep the `[0,2,4,6,7]` default + the documented "use a finer sequence for large
+      multi-device problems" guidance (now also surfaced in the GPU OOM message).
+    - **(P2) Free the init-phase sinogram — DONE 2026-06-25 (`vcd_recon`).**  After
+      `error_sinogram = sinogram - alpha*error_sinogram`, the placed sinogram's only remaining use was a
+      dtype read (`_sino_ones_device_form`, now fed `error_sinogram`).  Free it then — ~4 GiB/shard
+      reclaimed before the Hessian and the VCD loop — guarded by an **ownership test**: we delete only
+      when to_sino allocated fresh buffers we own (host/numpy input, or a jax array on OTHER devices).
+      An input already resident on the sino devices may be returned by to_sino as a no-copy reshard that
+      **shares the caller's buffers** (or unchanged, e.g. `prepare_sino_for_devices`); deleting that
+      corrupts the caller's array.  **Lesson learned the hard way:** the first attempt guarded on object
+      identity (`sinogram is not _sino_in`) and broke 4 sweep tests with `Array has been deleted` — a
+      no-copy reshard is a *different object* that *shares buffers*, so identity ≠ ownership; the
+      device-disjoint test is the correct one.  CPU 4-device suite green (delete fires on numpy inputs;
+      buffer-sharing reuse correctly skipped).
+      **MEASURED (2026-06-25, 1024³, 2×H100, granularity [4,6,7]) — PARALLEL BEAM:** floor/shard
+      **8 → 4 GB**, peak/shard **24.86 → 20.77 GB** — a −4 GB drop (better than the naive −2 GB sinogram
+      estimate; the peak drop = the floor drop, so P2 lowered the whole baseline).  Likely mechanism: the
+      explicit `.delete()` + `block_until_ready` clears the sinogram AND lets the gc-pending
+      old-error_sinogram cycle reclaim (~2 + ~2); not fully pinned without a per-phase trace.  **Combined
+      with P1 [4,6,7], parallel-beam peak is 32.5 → 20.8 GB (−36%) from the original default.**  (Cone is
+      higher — see the CONE BEAM line under P1; cone is the geometry that drives the 2048³ OOM.)
+    - **(P2b) `gen_weights` lands a host sinogram entirely on gpu0 — FIXED 2026-06-25 (host-preserving +
+      opt-in shard).**  The bug: `gen_weights` used `jnp` ops unconditionally, so a **numpy/host**
+      sinogram promoted the full result to one device (gpu0), and the CALLER held that 2 GB/shard array
+      there for the whole recon → persistent inter-GPU asymmetry (Greg "had to be very careful" to avoid
+      it).  Fix (Greg chose the interface): compute with the **input's own array module** — `xp = jnp if
+      isinstance(sinogram, jax.Array) else np` — so a host sinogram yields **host** weights (recon
+      streams them to shards; never a single-GPU full copy) and a (possibly sharded) jax sinogram yields
+      jax weights inheriting its sharding (unchanged).  PLUS an optional **`ct_model=`** that places the
+      sinogram in the model's view-sharded device form (`_shard_sinogram`, pad-aware) before weighting,
+      returning recon-ready sharded weights with no single-device copy.  Strict improvement for every
+      caller (`nsi.py`, demos).  Tests added: host-in→host-out, and `ct_model`-host-in→sharded-out (full
+      sharding + preprocessing suites green).  Pairs with #18 (gen_weights_mar / preprocessing sharding).
+    - **(P2c) `generate_demo_data` output type + gpu residue — FIXED 2026-06-25.**  Two issues: (1) the
+      return annotation said `(np.ndarray, np.ndarray)` and the prose said "numpy", but it returns a
+      3-tuple whose phantom was a single-device **jax** array (shepp-logan default) and whose
+      `params['angles']` was always a gpu `jnp` array; (2) it left jax intermediates resident on the gpu.
+      Fix: added **`output_sharded`** (matches `forward_project`/`recon` naming; default `None` →
+      `devices is not None`).  `output_sharded=False` returns plain numpy (phantom + sinogram + params
+      arrays) and explicitly `.delete()`s the device arrays we created (incl. the helical `phantom_core`)
+      and `del`s the generation model — nothing left on the gpu; `True` returns device-form jax (sharded
+      with `devices`, single-device otherwise).  Annotation → `tuple`; docs corrected.  Behavior change:
+      the default (`devices=None`) phantom is now numpy (was single-device jax); demos/tests don't depend
+      on it being jax.  Tests: default-all-numpy, `output_sharded=True` w/o devices → jax, and
+      devices+`output_sharded=False` → gather-to-numpy matches the sharded values (suite green).
+    - **(P2d) Should `gen_weights` / `gen_weights_mar` also get `output_sharded`? — DECIDED 2026-06-25.**
+      **Design principle: `output_sharded` belongs only on functions that OWN a device layout** — model
+      methods (`forward_project`/`recon`/…) and `generate_demo_data` (builds a model internally).
+      - **`gen_weights`: NO.**  It is a model-less free function; with no devices of its own a bare
+        `output_sharded=True` has nothing to shard across (it would only work *paired with* `ct_model` — a
+        kwarg needing another kwarg).  Output form is already set by the **input's residence**
+        (host→host, sharded→sharded) plus the optional **`ct_model=`** (the sharding source).
+        `output_sharded=False` on a sharded input is a one-liner the caller can do.  Leave as-is.
+      - **`gen_weights_mar`: YES, but FOLD INTO #18 (not a standalone add).**  It already takes `ct_model`
+        (so it owns a layout → `output_sharded` fits, like `forward_project`), AND it still has the same
+        host→gpu0 dump `gen_weights` had (the final `jnp.exp` promotes a host sinogram to one device).
+        But a correct `output_sharded` also needs the **`init_recon` path** sharded: it calls
+        `ct_model.forward_project(metal_mask)` with the DEFAULT gathered output (+ `multi_threshold_otsu`
+        gathers), so `output_sharded=True` there would mix a sharded sinogram with a single-device
+        `delta_metal` → sharding mismatch.  Making it work = host-preserving fix + `forward_project(...,
+        output_sharded=True)` + sharded Otsu, which is exactly #18.  No in-repo callers → no urgency.
+        (Option if wanted sooner: land just the host-preserving half — compute the final weights with the
+        input's array module — to kill the gpu0 dump for the `init_recon=None` case, deferring
+        `output_sharded` + the `init_recon` path to #18.  Not done now.)
+    - **(P3) Free dead subset arrays in `vcd_subset_updater` — PLANNED, measure-first.**  `forward_grad/
+      forward_hess` are dead after `delta` (line ~3019); `prior_grad/prior_hess` after `prior_quadratic`
+      (~3027).  Freeing both drops co-resident subset arrays 5→~2 at the peak (~12 GiB/shard at
+      granularity 1).  Open question is `del` (refcount, no sync — cheap) vs explicit `.delete()`
+      (needs a per-subset `block_until_ready`, the cost the staged-halo work fought to avoid): some
+      freshly-computed sharded arrays sit in jax ref cycles and don't free on refcount, others (assemble_
+      sharded outputs) do.  Plan: land plain `del`, A/B the peak with `mbirjax.memory_stats.memory_report`
+      (`peak_bytes_in_use`) on a mid-size cone case, escalate to `.delete()` only if `del` doesn't free
+      and the peak reduction justifies the sync.  **Parked behind a GPU measurement.**
+      **UPDATE (2026-06-25, after the P1 sweep): P3 is now largely redundant with fine granularity.**
+      The sweep shows that at granularity 16 the subset arrays are only ~130 MB/shard (vs 2 GB at
+      granularity 1) and the residual ~17 GB/shard transient is the PROJECTION working set, not the
+      subset arrays.  So P3 only matters if we deliberately stay coarse.  If `[4,6,7]` does NOT get
+      2048³/8 under the limit, the real next lever is that fixed projection transient — the cone
+      projector's per-call working set (view-batch / band size), NOT the VCD subset arrays.
+    - **Rejected: the `update_recon`-accumulation reorg.**  Folding the forward terms into the prior
+      arrays via `update_recon(grad, pixel_indices, …)` does NOT work: (a) `update_recon` is
+      `arr.at[idx].add` into the **full-recon-domain** array, but `prior_grad`/`forward_grad` are
+      **subset-domain** `(len(pixel_indices), num_slices)` already row-aligned — combining them is the
+      plain elementwise add the code already does; routing through a scatter writes the wrong rows; and
+      (b) it destroys `prior_grad`/`prior_hess`, which the alpha line search needs (`prior_linear`,
+      `prior_quadratic`).  Even adapted it wouldn't cut peak (the back-project output and the
+      `fm_hessian` gather materialize either way; scatters add buffers).  P3 is the correct expression of
+      the same instinct (drop dead arrays, don't re-route live ones).
   - **Unrelated cache aside (resolved 2026-06-24):** a *separate* GPU failure mode — `NOT_FOUND` on
     `<cache>/xla_gpu_per_fusion_autotune_cache_dir/tmp/...textproto` — surfaced when running the full
     suite on A100s after an env rebuild.  Root cause: jax defaults `jax_persistent_cache_enable_xla_caches`
     to the per-fusion autotune cache, whose temp-file writes fail on cluster NFS / a fresh cache dir.
     Fix: disable it when we set the compilation cache (keep the executable cache).  Not the cone hang.
+
+- **`split_sino_recon` hardening (cone, no-z-shift split-recon) — IN PROGRESS (2026-06-25).**  Review
+  found transients/contract gaps that undercut the function's "do half at a time on a fixed GPU set"
+  purpose (revisits #16, which didn't cover the memory/host transients).  Ordered plan:
+  - **S1 — host-side stitch (BIGGEST WIN; doing first).**  `stitch_arrays` is `jnp`-based, so stitching
+    the two `device_get`'d halves re-uploads them to gpu0 and assembles the FULL volume (+ concat
+    transients) on one device — and `split_sino_recon` returns that gpu0 array.  For a recon too big to
+    fit whole on the GPUs (the reason to split) the stitch itself OOMs.  Fix: make `stitch_arrays`
+    **host-preserving** (`xp = jnp if any-input-is-jax else np`, float32 blend weights so a float32 recon
+    is not upcast), mirroring the `gen_weights`/`generate_demo_data` pattern.  Halves are already on host
+    (`device_get`), so the full volume stays on host and is returned as numpy.  Blast radius: only
+    `split_sino_recon` + a shape-only doctest.
+  - **S2 — stop mutating the caller's weights (CORRECTNESS) — DONE 2026-06-25.**  `weights[:, lo:hi, :]`
+    was a numpy VIEW and the in-place sine taper wrote through it (tapered the caller's `weights`; a
+    jax/sharded weights would crash).  Fix: coerce `sino`/`weights` to host (`np.asarray`) at entry, build
+    the weight halves as fresh `np.array` copies, and make the `sine_filter` **float32** (out-of-place it
+    would upcast the float32 weights to f64).  Verified: caller's `weights` unmutated; jax `sino`/`weights`
+    run without crashing and match the numpy path; recon stays float32; `test_split_sino` green.  (Folds
+    in **S6** — the host-input contract is now coerced + documented in the docstring.)
+  - **S3 — half-models inherit the parent device config — DONE 2026-06-25.**  `copy_ct_model` copies
+    params but NOT the device layout, so an explicit `configure_devices(...)` on the parent was dropped
+    and an auto half could pick a different count for its smaller recon.  Fix: after each half's
+    recon_shape is set, `configure_devices(self.shard_devices)` on both halves (rebuilds each placement
+    for its own shape; inert slice padding makes any count safe).  Done in `split_sino_recon` (targeted,
+    not `copy_ct_model`, whose only caller this is).  Verified at 4 virtual devices: parent pinned to 2 →
+    both halves inherit exactly those 2 (previously they ignored it); `test_split_sino` green.
+  - **S4 — one half at a time — DONE 2026-06-25.**  Both halves' sino+weights+models were built upfront
+    and held together.  Fix: extracted a nested `_recon_one_half(lo, hi, recon_shape, recon_slice_offset,
+    taper_top)` that builds the half's model + sino slice + weights, recons, and `device_get`s — all
+    heavy state local, so the top half is fully done and freed before the bottom is built (only one
+    half's inputs resident at a time).  Pure restructure (same per-half params/order); `test_split_sino`
+    green and S2/S3 re-verified (weights unmutated, both halves inherit the parent's 2-of-4 devices).
+  - **S5 — `weights=None` overhead (low priority).**  Materializes full-half `np.ones` and forces
+    non-constant-weights recons (a full-half weights array resident on GPU per half).  Inherent to the
+    overlap taper given the `recon` API; note it, free the host ones promptly.
+  - **S6 — document/enforce the host-input contract — DONE with S2** (`np.asarray` coercion + docstring note).
+  - **Gate:** `tests/geometries/test_vcd.py::...test_split_sino` (split-vs-full nrmse) + the
+    `stitch_arrays` doctest; values must be unchanged (S1 is a placement change, not a math change).
 
 ---
 

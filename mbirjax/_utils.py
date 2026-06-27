@@ -36,6 +36,8 @@ def log_oom_guidance(logger, on_gpu):
     if on_gpu:
         logger.error(">>> Insufficient GPU memory: the reconstruction does not fit on the GPU(s).  You may try:")
         logger.error(">>>   - spreading it over (more) GPUs with ct_model.configure_devices(...)")
+        logger.error(">>>   - a finer partition_sequence, e.g. ct_model.set_params(partition_sequence=[4, 6, 7]),")
+        logger.error(">>>     to lower the per-device peak memory of the early VCD iterations")
         logger.error(">>>   - reducing recon_shape (e.g. via set_params or auto_set_recon_geometry)")
         logger.error(">>>   - reconstructing the volume in slice subsets")
         logger.error(">>>   - running on the cpu with ct_model.set_params(use_gpu='none') before calling recon")
