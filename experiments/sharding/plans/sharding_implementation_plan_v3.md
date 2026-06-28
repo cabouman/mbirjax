@@ -698,6 +698,83 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
   - **Gate:** `tests/geometries/test_vcd.py::...test_split_sino` (split-vs-full nrmse) + the
     `stitch_arrays` doctest; values must be unchanged (S1 is a placement change, not a math change).
 
+- **NSI production workflow (Lilly_recon.py; num_metal=0, cone) — observations + plan (2026-06-26).**
+  Traced for memory/transients + sharding.  The recon is already the hardened path (num_metal=0 cone →
+  `recon_plastic_metal` → `split_sino_recon`), so the work is in the script + preprocessing.
+  **IMPLEMENTATION ORDER (2026-06-28):** (1) export host-side fix (#4) + its guard test — production
+  blocker, small, host-residence proxy not an 18 GiB run; (2) two-stage split (#2) — debugging +
+  clean-process recon, depends on (1) to finish end-to-end; (3) #18 preprocessing/MAR sharding — the
+  time win, biggest, last (4a `gen_weights_mar`, then 4b view-shard the sino pipeline).  (1)+(2) are
+  CPU-developable and independent of the 8-GPU cone gating run (which stays top overall priority).
+  - **#1 — clip on the host — DONE 2026-06-26.**  `sino = jnp.maximum(sino, 0.0)` pushed the FULL
+    sinogram onto gpu0, and `gen_weights` then added a second full-sino gpu0 array, only for
+    `split_sino_recon` to gather both back to the host — a wasteful round-trip that can OOM one GPU
+    before the recon starts.  Fixed to `np.maximum` (host); `gen_weights` (host-preserving) then yields
+    host weights and each half-recon shards its own half from the host.  (`jnp` import now unused in that
+    script — optional cleanup.)
+  - **#2 — two-stage preprocess/recon split (PLANNED; Greg wants it regardless, for debugging).**
+    **TWO SEPARATE SCRIPTS (Greg's call 2026-06-28), not a `--stage` flag** — separation of concerns +
+    honest naming (Lilly_recon currently does preprocessing too) AND it *guarantees* the fresh-process
+    benefit (a `--stage both` one-shot runs in one process and loses the clean allocator):
+    - **`Lilly_preprocess_to_disk.py`** — `compute_sino_and_params` → `auto_crop_sino_conebeam` →
+      `np.maximum` → `mj.save_preprocessing(out, sino, cone_beam_params, optional_params)`.
+    - **`Lilly_recon_from_disk.py`** — `mj.load_preprocessing(path)` → build `ConeBeamModel` + set_params
+      → recompute weights (`gen_weights`, one cheap pass — NOT saved) → `recon_plastic_metal` →
+      `export_recon_hdf5`.  (sino + the two param dicts is everything the recon needs; voxel pitch for the
+      filename comes from the rebuilt model.)
+    - **`mj.save_preprocessing`/`load_preprocessing`** (the ONLY mbirjax core add) — HDF5 (matches
+      `save_data_hdf5`): sino as a float32 dataset + the two param dicts (scalars as attrs, `angles` as a
+      dataset).  Reusable by other NSI scripts.
+    - **Orchestrator:** a shell script (two `python` invocations) and/or a Python orchestrator — but it
+      MUST launch the recon as a SEPARATE process (shell sequence / `subprocess`), NOT import-and-call,
+      or the clean-allocator benefit is lost.
+    Rationale: (i) inspect/reuse the preprocessed sino while iterating on recon params (debugging — the
+    primary motive); (ii) a FRESH recon process starts with a clean GPU BFC allocator + no leftover jit
+    caches from preprocessing's batched gpu0 work — matters for memory-tight large recons.  **Fate of
+    `Lilly_recon.py`:** the two split scripts become primary; retire the combined script eventually (it
+    has the preprocessing-in-recon smell), keep it short-term until `test_script_no_metal.sh` is
+    repointed.  **Confirm-first:** a `memory_report` at recon start, single-process (post-#1) vs a fresh
+    process, quantifies the clean-allocator gain.  Composes with #18-4b: a view-sharded preprocessing just
+    gathers at the disk boundary, so the on-disk contract stays host numpy (what recon-from-disk wants).
+  - **#3 — shard the sino preprocessing (part of #18; benefit = TIME).**  The pipeline
+    (`compute_sino_transmission`, `correct_det_rotation`, `correct_background_offset`, defective-pixel
+    interpolation) batches over views on ONE device and gathers each batch to host — serialized.  It is
+    per-view **independent** (no cross-view coupling), so view-sharding it is **embarrassingly parallel →
+    near-linear time speedup** across devices (cleaner than the recon's band-coupled sharding).  Mechanism:
+    distribute the raw `obj_scan` by view across devices (blank/dark means are small/replicated), run the
+    per-view ops per shard (existing per-device pool / a NamedSharding over views), and EITHER gather to
+    host (for the disk split) OR keep view-sharded to feed the recon's view-sharding with no gather.
+    Caveat: `multi_threshold_otsu` (MAR, num_metal>0) is global and would gather — out of scope for the
+    num_metal=0 path.  Real work; fold into #18.  Plan reference: this block.
+  - **#4 — `export_recon_hdf5` OOMs on large recons (Charlie, 2026-06-28) — CODE DONE 2026-06-28
+    (validation pending an env fix; see below).**  `export_recon_hdf5` `device_get`s to host (utilities.py:581) but then ships
+    the FULL volume back to ONE GPU twice: `apply_cylindrical_mask` (remove_flash=True) is `jnp`
+    throughout (`recon * circular_mask` is a full-volume jnp multiply), and `jnp.transpose` (utilities.py:586)
+    needs another full-volume buffer → `RESOURCE_EXHAUSTED` at downsampling 1 (`f32[1370,1880,1880]` ≈ 18
+    GiB; the transpose is the dying line, but the mask is also on-GPU).  Same pattern as the host-preserving
+    campaign (gen_weights / stitch_arrays / generate_demo_data / split_sino stitch): post-recon
+    whole-volume ops on one device don't scale.  **Fix (keep the whole export host-side):** (a)
+    `apply_cylindrical_mask` → host-preserving (`xp = jnp if jax else np`; the 2D circular + 1D slice masks
+    are small, so a host recon's multiplies stay on host), (b) `jnp.transpose` → `np.transpose` in
+    `export_recon_hdf5`, (c) fix the stale "processes ... in batches to avoid GPU memory issues" docstring
+    (it does whole-volume ops).  The report's minimal `np.transpose`-only fix is INCOMPLETE — the mask step
+    still puts ~18 GiB on one GPU and can OOM there first.  Gate: a downsampling-1-scale export (or a check
+    that no GPU array is created post-device_get).  (Reporter's install was non-editable — needs reinstall.)
+    **DONE 2026-06-28:** all three fixes applied (`apply_cylindrical_mask` host-preserving via `xp`;
+    `np.transpose`; docstrings) + a guard test `tests/test_utilities.py::TestExportReconHostResidence`
+    (host-residence proxy: numpy-in→numpy-out for the mask, jax-in→jax-out, small export→import
+    round-trip).  **Syntax-checked (py_compile); FULL validation PENDING an env fix** — the `mbirjax`
+    conda env is broken (jax 0.4.21 vs jaxlib 0.10.1: the `pip install -e .` resolved an old jax against
+    the loose `jax!=0.10.2` pin).  Fix = `pip install "jax==0.10.1"` (match jaxlib; ≠ 0.10.2 per the
+    deliberate exclusion), then run the guard test + suite.  Consider tightening the pin (e.g.
+    `jax>=0.10,!=0.10.2`) so `-e` can't pull a stale jax again.
+  - **Problem 2 — benign `cuda_vmm` FABRIC warnings on ≥2 GPUs (Charlie) — no real plan change.**  XLA probes
+    an NVLink-fabric memory handle the cluster disallows, prints `W… will retry with simpler handle types`,
+    falls back to the standard peer path → no correctness/perf impact; ≥2 GPUs only; already in lessons.md
+    (cuda_vmm_allocator).  Suppress with `TF_CPP_MIN_LOG_LEVEL=2` BEFORE `import jax` (already in
+    tests/conftest.py); optionally set it in the NSI app scripts (caveat: hides ALL XLA warnings — unset
+    when debugging).  Low priority, app-env-var level.
+
 ---
 
 ## 7. Durable principles & facts (pointers, not copies)

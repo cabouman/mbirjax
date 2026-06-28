@@ -555,10 +555,10 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function processes the input recon volume in batches to avoid GPU memory issues, transposes it
-    to right-hand coordinates (slice, col, row), optionally applies a cylindrical mask to remove
-    peripheral and top/bottom slices (referred to as `flash`), and writes the volume and optional
-    metadata to an HDF5 file.
+    This function moves the recon to the host (NumPy), optionally applies a cylindrical mask to remove
+    peripheral and top/bottom slices (referred to as `flash`), transposes it to right-hand coordinates
+    (slice, col, row), and writes the volume and optional metadata to an HDF5 file.  All steps run on the
+    host, so the full volume is never copied back onto a single device (which would OOM for large recons).
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -577,13 +577,15 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
 
 
-    # Move recon to CPU
+    # Move recon to the host and keep every step host-side (apply_cylindrical_mask is host-preserving,
+    # and np.transpose stays on the host) so the full volume is never copied back onto a single device --
+    # a whole-volume jnp.transpose here OOMed on large recons (e.g. f32[1370,1880,1880] at downsampling 1).
     recon = jax.device_get(recon)
 
     if remove_flash:
         recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
-    recon = jnp.transpose(recon, (2, 1, 0))
+    recon = np.transpose(recon, (2, 1, 0))
 
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 

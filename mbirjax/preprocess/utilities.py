@@ -572,16 +572,18 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
     Note:
-        This function may need to be converted to batch over slices for very large recons.
+        Operates on the input's array module: a host (NumPy) recon stays on the host (no copy to a
+        device) and a jax recon stays on-device.  So a large host volume is masked without being shipped
+        onto a single device -- which would otherwise OOM for big recons.
 
     Args:
-        recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
+        recon (np.ndarray or jax.Array): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
         top_margin (int): Number of top slices to set to zero along the Z-axis.
         bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
 
     Returns:
-        jnp.ndarray: Masked 3D volume of the same shape as `recon`.
+        np.ndarray or jax.Array: Masked 3D volume of the same shape and array module as `recon`.
 
     Example:
         >>> import jax.numpy as jnp
@@ -590,6 +592,12 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         >>> masked_vol.shape
         (128, 128, 64)
     """
+    # Operate on the input's OWN array module so a host (NumPy) recon stays on the host and a device/jax
+    # recon stays on-device.  The masks are tiny; the expensive op is the full-volume multiply, which
+    # follows recon's residence.  export_recon_hdf5 passes a host recon, so for large volumes nothing is
+    # shipped back onto a single device (jnp here previously forced the whole volume onto gpu0 -> OOM).
+    xp = jnp if isinstance(recon, jax.Array) else np
+
     num_recon_rows, num_recon_cols, num_slices = recon.shape
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
@@ -597,20 +605,21 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     base_radius = max(row_center, col_center)
     radius = base_radius - radial_margin
 
-    # Create circular mask in (row, col) plane
-    row_coords, col_coords = jnp.meshgrid(jnp.arange(num_recon_rows), jnp.arange(num_recon_cols), indexing='ij')
+    # Create circular mask in (row, col) plane (small; built on recon's module).
+    row_coords, col_coords = xp.meshgrid(xp.arange(num_recon_rows), xp.arange(num_recon_cols), indexing='ij')
     dist_sq = (row_coords - row_center) ** 2 + (col_coords - col_center) ** 2
     circular_mask = (dist_sq <= radius ** 2).astype(recon.dtype)
 
     # Apply cylindrical mask to all slices
     recon = recon * circular_mask[:, :, None]
 
-    # Apply a mask to the top and bottom margins
-    slice_mask = jnp.ones((num_slices, ))
+    # Apply a mask to the top and bottom margins.  Built with NumPy (tiny 1-D) to sidestep jax's
+    # functional index-update; the multiply promotes it to recon's module if needed.
+    slice_mask = np.ones((num_slices,), dtype=recon.dtype)
     if top_margin > 0:
-        slice_mask = slice_mask.at[:top_margin].set(0)
+        slice_mask[:top_margin] = 0
     if bottom_margin > 0:
-        slice_mask = slice_mask.at[-bottom_margin:].set(0)
+        slice_mask[-bottom_margin:] = 0
     recon = recon * slice_mask[None, None, :]
 
     return recon
