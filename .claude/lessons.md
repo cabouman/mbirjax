@@ -569,3 +569,20 @@ contaminates, or NaNs.**
   shape freezes a charting lib's log plot, suspect its auto-tick / auto-range generator and feed it
   bounded ticks rather than massaging the data.  (Diagnosis aid: see [[dashboard-verify-gotchas]] — the
   rAF-throttle trap nearly hid this, since uPlot defers its first draw to a `requestAnimationFrame`.)
+- **An op-specific, platform-specific slowdown with the sibling ops flat is a TOOLCHAIN regression —
+  bisect the jax version, not your diff.**  2026-06-27: GPU `forward` (and `vcd`, which calls it) ran
+  3–9× slower across EVERY geometry/size/device-count, while `back`/`direct_filter`/`denoise` were
+  byte-identical and CPU `forward` was unchanged.  The op-specificity (forward's GEMM-heavy kernels vs
+  back's custom scatter) + GPU-only pattern ruled out thermal throttling (SM/HBM clocks pinned at full
+  boost in both runs) AND the measured code.  The decisive ablation: checking out the fast mbirjax commit
+  **and** the matching `mbirjax_metrics` commit on the GPU STILL reproduced it ⇒ environment, not code.
+  A clean reinstall had bumped `jax`/`jaxlib` 0.10.1 → 0.10.2; downgrading ONLY those (CUDA 12.9 / cuDNN
+  92302 / cuBLAS 120900 unchanged) restored forward to 33.3 ms @ 200³ n=1 (from ~170 ms).  So jaxlib
+  0.10.2's XLA regressed the forward GEMM path.  Playbook: (1) op- + platform-specific with siblings flat
+  ⇒ suspect the compiler/runtime, not the code; (2) the cheap discriminator is to pin the code and
+  downgrade jax one release at a time (`pip install 'jax[cuda12]==<prev>' 'jaxlib==<prev>'`) and
+  re-measure; (3) `tooling/scaling_tests/measure_one_cell.py` reproduces ONE cell group in ~30 s for this
+  bisect, and prints `toolchain_info()` so the jax/CUDA/cuDNN/cuBLAS stack is on every line; (4) the
+  `toolchain` field is now in each regression YAML, so the NEXT drift is a one-line diff, not a multi-day
+  hunt.  Mitigation when it recurs: pin jax/jaxlib in the regression env for a stable mbirjax baseline (+
+  re-baseline deliberately on a bump), and report the upstream XLA regression.
