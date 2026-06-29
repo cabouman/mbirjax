@@ -808,7 +808,13 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     GB/shard) instead of 32 GB on gpu0.  Tests updated (`TestShardedSheppLogan`/`TestGenerateDemoDataSharding`
     → host-numpy + value-match, 1-device vs N-device; the phantom is bit-identical 1-vs-N but only
     ~1e-5-close across two different shard counts — XLA float32 fusion varies by shard shape).  Also
-    de-`device`-d the deprecated `gen_modified_3d_sl_phantom`.
+    de-`device`-d the deprecated `gen_modified_3d_sl_phantom`.  **Follow-up fix 2026-06-28:** the sinogram
+    must be gathered with `forward_project(..., output_sharded=True)` + `np.asarray` (shard-by-shard to the
+    host).  The first version used `forward_project`'s default gather, which routes the whole sinogram
+    through ONE device (`jnp.array(np.asarray(...))`) and OOM'd on the real 2048³/8 run (32 GiB on gpu0);
+    `output_sharded=True` keeps it 4 GB/shard and `np.asarray` of a multi-device array assembles on the
+    host.  (`save_preprocessing`/`load_preprocessing` also moved to `preprocess/utilities.py` →
+    `mj.preprocess.*`.)
 
 ---
 

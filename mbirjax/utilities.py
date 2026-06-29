@@ -1420,11 +1420,14 @@ def generate_demo_data(
     else:
         phantom = phantom_core
 
-    # Forward project across the model's devices, then gather the sinogram to the host.  recon prefers a
-    # host sinogram (it shards it itself) and the phantom is already host, so both are returned as NumPy
-    # (the params arrays too); nothing is left resident on a device.
+    # Forward project across the model's devices, then gather the sinogram to the host.  Keep the
+    # sinogram SHARDED out of forward_project (output_sharded=True) and let np.asarray assemble it on the
+    # host shard-by-shard: the default (output_sharded=False) gather instead routes the whole sinogram
+    # through a single device, which OOMs at large sizes (e.g. a 32 GiB 2048^3 sinogram on one GPU).
+    # recon prefers a host sinogram (it shards it itself) and the phantom is already host, so both are
+    # returned as NumPy (the params arrays too); nothing large is left resident on a device.
     print('Creating sinogram')
-    sinogram = np.asarray(ct_model_for_generation.forward_project(phantom))   # default output gathers off-device
+    sinogram = np.asarray(ct_model_for_generation.forward_project(phantom, output_sharded=True))
     params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
 
     del ct_model_for_generation
