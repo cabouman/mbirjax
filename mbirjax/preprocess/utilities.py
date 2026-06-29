@@ -9,6 +9,24 @@ import h5py
 import mbirjax as mj
 import scipy
 
+from . import pipeline
+
+def _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean, flat_indices, defective_pixel_array_jax):
+    """Per-view-batch transmission kernel (pure device-array op).
+
+    Computes ``-log`` of the dark-corrected, blank-normalized object scan, sets shared defective
+    pixels to NaN, and interpolates the NaNs.  ``blank_minus_dark = |blank_mean - dark_mean|`` is
+    precomputed by the caller (it does not vary across batches).
+    """
+    obj_batch = jnp.abs(obj_batch - dark_scan_mean)
+    # jnp.nan for non-positive ratios so nanmedian later removes them along with defective pixels.
+    sino_batch = -jnp.log(jnp.where(obj_batch / blank_minus_dark > 0, obj_batch / blank_minus_dark, jnp.nan))
+    if flat_indices is not None:
+        # Shared defective pixels (same in every view) -> NaN for nanmedian interpolation.
+        sino_batch = put_in_slice(sino_batch, flat_indices, jnp.nan)
+    return interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
+
+
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
     Compute sinogram from object, blank, and dark scans.
@@ -39,47 +57,25 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
     Returns:
         ndarray: 
             The computed sinogram, with shape (num_views, num_det_rows, num_det_channels).
-    """    # Compute mean for blank and dark scans and move them to GPU if available
-    import tqdm
+    """
+    # Blank/dark means (device); blank_minus_dark does not vary across batches, so precompute it once.
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
+    blank_minus_dark = jnp.abs(blank_scan_mean - dark_scan_mean)
 
-    sino_batches_list = []  # Initialize a list to store sinogram batches
-
-    num_views = obj_scan.shape[0]  # Total number of views
-
-    num_defective_pixels = len(defective_pixel_array)
-    if num_defective_pixels > 0:
+    if len(defective_pixel_array) > 0:
         defective_pixel_array_jax = jnp.array(defective_pixel_array)
         flat_indices = jnp.ravel_multi_index(defective_pixel_array_jax.T, obj_scan.shape[1:])
     else:
         defective_pixel_array_jax = ()
         flat_indices = None
 
-    # Process obj_scan in batches
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):
-
-        obj_scan_batch = obj_scan[i:min(i + batch_size, num_views)]
-        obj_scan_batch = jnp.array(obj_scan_batch)
-
-        obj_scan_batch = jnp.abs(obj_scan_batch - dark_scan_mean)
-        blank_scan_batch = jnp.abs(blank_scan_mean - dark_scan_mean)
-
-        # We use jnp.nan here because we'll later use np.nanmedian to get rid of nans and other defective pixels.
-        sino_batch = -jnp.log(jnp.where(obj_scan_batch / blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
-
-        # We'll set all defective pixels to NaN to be able to use jnp.nanmedian in interpolate_defective_pixels
-        num_defective_pixels = len(defective_pixel_array)
-        if num_defective_pixels > 0:
-            # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
-            sino_batch = put_in_slice(sino_batch, flat_indices, jnp.nan)
-
-        sino_batch = interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
-        sino_batches_list.append(np.array(sino_batch))
-
-    sino = np.concatenate(sino_batches_list, axis=0)
+    sino = pipeline.map_view_batches(
+        obj_scan,
+        lambda obj_batch: _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                               flat_indices, defective_pixel_array_jax),
+        batch_size)
     print("Sinogram computation complete.")
-
     return sino
 
 
@@ -159,6 +155,15 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
 
 
 
+def _rotation_kernel(sino_batch, det_rotation):
+    """Per-view-batch detector-rotation kernel (pure device-array op): rotate each view by
+    ``det_rotation`` radians with bilinear interpolation (zero fill outside)."""
+    import dm_pix
+    sino_batch = sino_batch.transpose(1, 2, 0)
+    sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0)
+    return sino_batch.transpose(2, 0, 1)
+
+
 def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
@@ -174,28 +179,7 @@ def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
-    import dm_pix
-    import tqdm
-    num_views = sino.shape[0]  # Total number of views
-    sino_batches_list = []  # Initialize a list to store sinogram batches
-
-    # Process in batches with looping and progress printing
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):
-
-        # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)])
-
-        # Apply the rotation on this batch
-        sino_batch = sino_batch.transpose(1, 2, 0)
-        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0)
-        sino_batch = sino_batch.transpose(2, 0, 1)
-
-        # Append the rotated batch to the list
-        sino_batches_list.append(np.array(sino_batch))
-
-    sino_rotated = np.concatenate(sino_batches_list, axis=0)
-
-    return sino_rotated
+    return pipeline.map_view_batches(sino, lambda b: _rotation_kernel(b, det_rotation), batch_size)
 
 
 def correct_background_offset(sino, edge_width=9, option='global'):
@@ -252,6 +236,16 @@ def correct_background_offset(sino, edge_width=9, option='global'):
 
 
 # ####### subroutines for image cropping and down-sampling
+def _downsample_obj_kernel(obj_batch, flat_indices, new_size1, new_size2, block_shape):
+    """Per-view-batch object-scan downsample kernel (pure device-array op): set defective pixels to
+    NaN, crop to a block-divisible size, and block-average with nanmean."""
+    if flat_indices is not None:
+        obj_batch = put_in_slice(obj_batch, flat_indices, jnp.nan)
+    obj_batch = obj_batch[:, 0:new_size1, 0:new_size2]
+    obj_batch = obj_batch.reshape((obj_batch.shape[0],) + block_shape)
+    return jnp.nanmean(obj_batch, axis=(2, 4))
+
+
 def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
     """
     Performs down-sampling of the scan images in the detector plane.
@@ -277,16 +271,17 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
         - **dark_scan** (ndarray): Downsampled dark scan(s). Shape (num_dark_views, new_rows, new_cols).
         - **defective_pixel_array** (ndarray): Updated defective pixel coordinates. Shape (N_def, 2).
     """
-    import tqdm
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    # Set defective pixels to nan for use with nanmean
+    # Set defective pixels to NaN for use with nanmean.  blank_scan and dark_scan may have different
+    # numbers of views, so loop each over its OWN leading dimension (a single shared loop over
+    # blank_scan.shape[0] would index out of bounds on a singleton dark_scan, or vice versa).
     if len(defective_pixel_array) > 0:
-        # Set defective pixels to 0
         flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
         for i in range(blank_scan.shape[0]):
             np.put(blank_scan[i], flat_indices, np.nan)
+        for i in range(dark_scan.shape[0]):
             np.put(dark_scan[i], flat_indices, np.nan)
     else:
         flat_indices = None
@@ -313,26 +308,13 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
         for scan in dark_scan
     ], axis=0)
 
-    # For obj_scan, we'll batch over the views.
-    num_views = obj_scan.shape[0]  # Total number of views
-    obj_scan_list = []  # Initialize a list to store sinogram batches
-
-    # Process in batches using jax with looping and progress printing
+    # Object scan: batch over views through the shared driver, block-averaging each view-batch.
     if flat_indices is not None:
         flat_indices = jnp.array(flat_indices)
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):        # Get the current batch (from i to i + batch_size)
-        obj_scan_batch = jnp.array(obj_scan[i:min(i + batch_size, num_views)])  # Send to the gpu if there is one
-        if flat_indices is not None:
-            obj_scan_batch = put_in_slice(obj_scan_batch, flat_indices, jnp.nan)
-        # Crop and reshape into blocks
-        obj_scan_batch = obj_scan_batch[:, 0:new_size1, 0:new_size2]
-        obj_scan_batch = obj_scan_batch.reshape((obj_scan_batch.shape[0],) + block_shape)
-
-        # Compute block mean and append this batch to the list back on the cpu
-        obj_scan_batch = jnp.nanmean(obj_scan_batch, axis=(2, 4))
-        obj_scan_list.append(np.array(obj_scan_batch))
-
-    obj_scan = np.concatenate(obj_scan_list, axis=0)
+    obj_scan = pipeline.map_view_batches(
+        obj_scan,
+        lambda b: _downsample_obj_kernel(b, flat_indices, new_size1, new_size2, block_shape),
+        batch_size)
 
     # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
     nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views

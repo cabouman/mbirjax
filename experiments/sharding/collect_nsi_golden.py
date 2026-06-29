@@ -31,6 +31,8 @@ import os
 import time
 
 import numpy as np
+import mbirjax
+print("IMPORTING mbirjax FROM:", mbirjax.__file__)
 import mbirjax.preprocess as mjp
 
 

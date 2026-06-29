@@ -174,7 +174,26 @@ the small reference. (Large datasets are not committed.)
 - **pymbir asymmetry:** no scan→sino front and a `bh` step no other format has — kept optional so it
   doesn't gate the main DRY win.
 
-## 6. Open decisions
+## 6. Deferred candidates (pre-recon path — on the list, not in this pass)
+
+The same treatment (input/output contract, host↔device round-trips, sharding) applies to **anything
+between load and the start of recon that we have not already cleaned**. Captured here so it is not lost;
+explicitly **deferred** — outside the nsi-first / siblings sequence above — but the natural follow-on
+once the main pipeline is fused and sharded.
+
+- **`auto_crop_sino_conebeam` + `est_crop_width`** (`preprocess/utilities.py`): auto-detect blank
+  detector margins, crop the sinogram, and adjust geometry offsets. Runs right after
+  `compute_sino_and_params` in `Lilly_recon.py`. Review for input/output contract (currently host
+  numpy: `_get_sino_indicator` → `np.any`/`np.argmax`) and whether `_get_sino_indicator` round-trips
+  the full sinogram host↔device.
+- **`TomographyModel._get_sino_indicator`** (`tomography_model.py`, staticmethod): builds the
+  object-support mask from the sinogram. **Needs a closer look before any change** because it is
+  **shared across three call sites** — the recon init path (`vcd`/recon setup), denoising
+  (`denoising.py`), and the preprocess crop helpers (`est_crop_width`, and another use ~`utilities.py:1189`).
+  Cleaning it is therefore *not* a preprocess-local edit: it touches the recon contract and must be
+  verified on the recon side too. Treat as its own scoped item, not folded into the nsi pass.
+
+## 7. Open decisions
 - Small-fixture format/location (committed .npz vs opt-in cluster path test).
 - Whether `compute_weight` (zeiss_tct) becomes a driver kernel now or stays a separate host call until
   Phase 4.
