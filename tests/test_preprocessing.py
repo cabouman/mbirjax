@@ -164,6 +164,54 @@ class TestNSIPreprocessing(unittest.TestCase):
         self.assertFalse(np.isnan(sino_computed).any(), "Error: sino_computed contains NaN values!")
 
 
+class TestSavePreprocessing(unittest.TestCase):
+    """mj.preprocess.save_preprocessing / load_preprocessing round-trip (the two-stage preprocess->recon
+    workflow): the sinogram, geometry-parameter dicts, and optional custom weights survive a disk
+    round-trip, with sinogram_shape restored to a tuple and numpy-scalar params coerced cleanly."""
+
+    @staticmethod
+    def _example():
+        sino = (np.random.RandomState(0).rand(8, 6, 5) * 3).astype(np.float32)
+        cone_beam_params = {'sinogram_shape': (8, 6, 5),
+                            'angles': np.linspace(0, np.pi, 8, dtype=np.float64),
+                            'source_detector_dist': np.float64(8192), 'source_iso_dist': 4096}
+        optional_params = {'delta_det_channel': 1.0, 'delta_det_row': np.float32(1.0),
+                           'delta_voxel': 0.5, 'det_channel_offset': np.float64(0.0),
+                           'det_row_offset': 0.0, 'recon_slice_offset': 0.0,
+                           'alu_unit': 'mm', 'alu_value': 1.0}
+        return sino, cone_beam_params, optional_params
+
+    def test_roundtrip_no_weights(self):
+        import os, tempfile
+        sino, cbp, opt = self._example()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'pre.h5')
+            mj.preprocess.save_preprocessing(path, sino, cbp, opt)
+            s2, cbp2, opt2, w2 = mj.preprocess.load_preprocessing(path)
+        np.testing.assert_array_equal(s2, sino)
+        self.assertEqual(s2.dtype, np.float32)
+        self.assertIsNone(w2)                                            # no weights saved -> None
+        self.assertEqual(cbp2['sinogram_shape'], (8, 6, 5))
+        self.assertIsInstance(cbp2['sinogram_shape'], tuple)             # JSON list restored to tuple
+        np.testing.assert_allclose(cbp2['angles'], cbp['angles'])        # array param round-trips
+        self.assertEqual(float(cbp2['source_detector_dist']), 8192.0)    # numpy scalar coerced
+        self.assertEqual(opt2['alu_unit'], 'mm')                         # string preserved
+        self.assertEqual(set(cbp2), set(cbp))
+        self.assertEqual(set(opt2), set(opt))
+
+    def test_roundtrip_with_custom_weights(self):
+        import os, tempfile
+        sino, cbp, opt = self._example()
+        weights = (np.random.RandomState(1).rand(8, 6, 5)).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'pre.h5')
+            mj.preprocess.save_preprocessing(path, sino, cbp, opt, weights=weights)
+            s2, _, _, w2 = mj.preprocess.load_preprocessing(path)
+        np.testing.assert_array_equal(s2, sino)
+        np.testing.assert_array_equal(w2, weights)                       # custom weights survive
+        self.assertEqual(w2.dtype, np.float32)
+
+
 if __name__ == '__main__':
     unittest.main()
 

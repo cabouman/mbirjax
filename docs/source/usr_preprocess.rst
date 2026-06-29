@@ -57,6 +57,8 @@ General preprocess functions
 .. autofunction:: downsample_view_data
 .. autofunction:: crop_view_data
 .. autofunction:: apply_cylindrical_mask
+.. autofunction:: save_preprocessing
+.. autofunction:: load_preprocessing
 .. autofunction:: read_tif_stack_dir
 .. autofunction:: read_tif_img
 

@@ -5,6 +5,7 @@ import os
 import jax.numpy as jnp
 import jax
 import cv2
+import h5py
 import mbirjax as mj
 import scipy
 
@@ -559,8 +560,11 @@ def project_vector_to_vector(u1, u2):
     u1_proj = np.dot(u1, u2)*u2
     return u1_proj
 
-from functools import partial
-@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin'])
+
+# NOT jitted: this runs eagerly so it is host-preserving (a NumPy recon stays on the host, a jax recon
+# stays on-device -- see the body).  jit would force a device array and trace the input, shipping the
+# whole volume to one GPU (the export-time OOM on large recons).  It's a one-shot post-recon mask (export
+# + MAR segmentation), not a hot path, so eager costs nothing meaningful.
 def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
@@ -1255,3 +1259,91 @@ def interpolate_zinger_pixels(sino, zinger_pixel_ratio=0.1):
             num_zingers = new_num_zingers
 
     return sino.reshape(sino_shape)
+
+
+def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, weights=None):
+    """Save a preprocessed sinogram and its geometry parameters for a two-stage (preprocess -> recon)
+    workflow.
+
+    This lets preprocessing run once and write its result to disk, so reconstruction can be launched as
+    a separate process -- useful for debugging (inspect/reuse the preprocessed sinogram) and so the
+    memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_preprocessing` and
+    rebuild the model with ``ConeBeamModel(**cone_beam_params)`` + ``set_params(**optional_params)``.
+
+    Only the GEOMETRY/preprocessing parameters are saved (the two dicts above); regularization
+    parameters (sharpness, sigma_x, snr_db, ...) are deliberately NOT saved -- they are a recon-time
+    choice and are set in the recon stage (iterating on them without re-preprocessing is the point of
+    the split).  For full model persistence (geometry + regularization), use the parameter-handler
+    save/load instead.
+
+    The sinogram, any array-valued parameters (e.g. ``angles``), and ``weights`` (if given) are stored
+    as HDF5 datasets; the remaining scalar parameters are stored as one JSON attribute.  The sinogram
+    (and weights) are written as float32.
+
+    Args:
+        file_path (str): Output HDF5 path (parent directories are created).
+        sinogram (ndarray or jax.Array): The preprocessed sinogram (gathered to the host and cast to
+            float32 before writing).
+        cone_beam_params (dict): Parameters for the model constructor (as returned by, e.g.,
+            ``mbirjax.preprocess.nsi.compute_sino_and_params``).
+        optional_params (dict): Parameters applied via ``set_params`` after construction.
+        weights (ndarray or jax.Array, optional): Custom reconstruction weights to save alongside the
+            sinogram.  Defaults to None -- omit them when the recon will regenerate standard weights with
+            ``gen_weights`` (cheaper to recompute than to store a second full-size array); pass them only
+            when they are custom and worth preserving.
+
+    Returns:
+        None
+    """
+    import json
+    mj.makedirs(file_path)
+
+    def _is_array(v):
+        # numpy/jax arrays (and other ndim>0 array-likes) -> datasets; scalars/tuples/str -> JSON.
+        return hasattr(v, 'ndim') and getattr(v, 'ndim', 0) > 0
+
+    scalar_params = {'cone_beam_params': {}, 'optional_params': {}}
+    with h5py.File(file_path, 'w') as f:
+        f.create_dataset('sinogram', data=np.asarray(sinogram, dtype=np.float32))
+        if weights is not None:
+            f.create_dataset('weights', data=np.asarray(weights, dtype=np.float32))
+        for dname, d in (('cone_beam_params', cone_beam_params), ('optional_params', optional_params)):
+            for key, value in d.items():
+                if _is_array(value):
+                    f.create_dataset('{}__{}'.format(dname, key), data=np.asarray(value))
+                else:
+                    scalar_params[dname][key] = value
+        # numpy scalars -> Python via .item(); tuples -> JSON lists (sinogram_shape restored on load).
+        f.attrs['params'] = json.dumps(scalar_params, default=lambda o: o.item())
+        f.attrs['format'] = 'mbirjax_preprocessing_v1'
+
+
+def load_preprocessing(file_path):
+    """Load a sinogram and geometry parameters saved by :func:`save_preprocessing`.
+
+    Args:
+        file_path (str): Path to the HDF5 file written by :func:`save_preprocessing`.
+
+    Returns:
+        tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
+        two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
+        ``set_params(**optional_params)``), and ``weights`` (a host NumPy array if custom weights were
+        saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
+    """
+    import json
+    params = {'cone_beam_params': {}, 'optional_params': {}}
+    with h5py.File(file_path, 'r') as f:
+        sinogram = f['sinogram'][()]
+        weights = f['weights'][()] if 'weights' in f else None
+        scalar_params = json.loads(f.attrs['params'])
+        for dname in params:
+            params[dname].update(scalar_params.get(dname, {}))
+            prefix = dname + '__'
+            for ds_name in f:
+                if ds_name.startswith(prefix):
+                    params[dname][ds_name[len(prefix):]] = f[ds_name][()]
+    cone_beam_params, optional_params = params['cone_beam_params'], params['optional_params']
+    # JSON turns the sinogram_shape tuple into a list; restore the tuple the constructor expects.
+    if 'sinogram_shape' in cone_beam_params:
+        cone_beam_params['sinogram_shape'] = tuple(int(x) for x in cone_beam_params['sinogram_shape'])
+    return sinogram, cone_beam_params, optional_params, weights

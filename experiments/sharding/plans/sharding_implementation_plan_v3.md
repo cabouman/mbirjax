@@ -462,11 +462,17 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
+- **Cone-beam 8-GPU 2048³ recon hang — ✅ RESOLVED 2026-06-28.**  `partition_sequence=[4,6,7]` (skip the
+  granularity-1 first partition) + the memory work (P2 init-sino free + host-transparency) let the **plain
+  sharded `recon()`** run cone 2048³/8 at **peak 45.3 GB/shard of 77.6**, 3 iterations, healthy convergence
+  (loss 1.73→0.86→0.56), completes + saves.  Better than the ~62–69 GB estimate (the per-subset transient
+  scales sub-linearly with the full per-shard volume at fine granularity, so the cone-default OOM's ≥2.15×
+  scaling overstated the [4,6,7] case).  Diagnosis history below.
 - **Cone-beam 8-GPU 2048³ recon hang — DIAGNOSED 2026-06-24 as OUT OF MEMORY** (the NCCL "Acquire
   clique" timeout was a downstream symptom, not the cause; see the DIAGNOSED bullet below).
   A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
   Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
-  config worked.  Repro tooling: `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
+  config worked.  Repro tooling (REMOVED 2026-06-28 once the cone OOM was resolved): `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
   size × device-count sweep, each config `timeout`-isolated, HLO dumped, build-ID printed).
   - **Mechanism:** no explicit collectives in mbirjax — projection is collective-free (thread pool
     + `make_array_from_single_device_arrays`).  The only multi-device collectives are XLA-GSPMD
@@ -713,16 +719,24 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     host weights and each half-recon shards its own half from the host.  (`jnp` import now unused in that
     script — optional cleanup.)
   - **#2 — two-stage preprocess/recon split (PLANNED; Greg wants it regardless, for debugging).**
+    **IMPLEMENTED 2026-06-28:** `mj.preprocess.save_preprocessing`/`load_preprocessing` added to
+    `preprocess/utilities.py` (moved there from `utilities.py` — it is preprocessing-output I/O, co-located
+    with the preprocessing pipeline; HDF5: sinogram + array params as datasets, scalars as one JSON attr;
+    round-trip test in `tests/test_preprocessing.py` — exact sino/float32, tuple-restored `sinogram_shape`,
+    numpy-scalar coercion, optional custom weights).  Two scripts in `mbirjax_applications/nsi/`:
+    `Lilly_preprocess_to_disk.py`, `Lilly_recon_from_disk.py`, plus `Lilly_two_stage.sh` (runs stage 2 in a
+    SEPARATE process for the clean allocator).  (Scripts live in the separate `mbirjax_applications` repo;
+    only the `preprocess/utilities.py` helpers are the mbirjax change.)
     **TWO SEPARATE SCRIPTS (Greg's call 2026-06-28), not a `--stage` flag** — separation of concerns +
     honest naming (Lilly_recon currently does preprocessing too) AND it *guarantees* the fresh-process
     benefit (a `--stage both` one-shot runs in one process and loses the clean allocator):
     - **`Lilly_preprocess_to_disk.py`** — `compute_sino_and_params` → `auto_crop_sino_conebeam` →
-      `np.maximum` → `mj.save_preprocessing(out, sino, cone_beam_params, optional_params)`.
-    - **`Lilly_recon_from_disk.py`** — `mj.load_preprocessing(path)` → build `ConeBeamModel` + set_params
+      `np.maximum` → `mjp.save_preprocessing(out, sino, cone_beam_params, optional_params)`.
+    - **`Lilly_recon_from_disk.py`** — `mjp.load_preprocessing(path)` → build `ConeBeamModel` + set_params
       → recompute weights (`gen_weights`, one cheap pass — NOT saved) → `recon_plastic_metal` →
       `export_recon_hdf5`.  (sino + the two param dicts is everything the recon needs; voxel pitch for the
       filename comes from the rebuilt model.)
-    - **`mj.save_preprocessing`/`load_preprocessing`** (the ONLY mbirjax core add) — HDF5 (matches
+    - **`mj.preprocess.save_preprocessing`/`load_preprocessing`** (the ONLY mbirjax core add) — HDF5 (matches
       `save_data_hdf5`): sino as a float32 dataset + the two param dicts (scalars as attrs, `angles` as a
       dataset).  Reusable by other NSI scripts.
     - **Orchestrator:** a shell script (two `python` invocations) and/or a Python orchestrator — but it
@@ -760,8 +774,13 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     (it does whole-volume ops).  The report's minimal `np.transpose`-only fix is INCOMPLETE — the mask step
     still puts ~18 GiB on one GPU and can OOM there first.  Gate: a downsampling-1-scale export (or a check
     that no GPU array is created post-device_get).  (Reporter's install was non-editable — needs reinstall.)
-    **DONE 2026-06-28:** all three fixes applied (`apply_cylindrical_mask` host-preserving via `xp`;
-    `np.transpose`; docstrings) + a guard test `tests/test_utilities.py::TestExportReconHostResidence`
+    **DONE 2026-06-28 (validated, env now jax 0.10.1):** the REAL blocker for the mask was that
+    `apply_cylindrical_mask` is **`@jax.jit`-decorated** — jit forces a device array and traces the input,
+    so the `xp` host-preserving logic was INERT and the mask still shipped the whole volume to one GPU
+    (the first `np.transpose`-only attempt would still have OOM'd at the mask).  Fix: **removed the jit
+    decorator** (it's a one-shot post-recon mask, not a hot path; both callers — export + MAR
+    segmentation — are non-hot) so the eager `xp` logic is genuinely host-preserving.  Plus `np.transpose`
+    (host view) and docstrings.  Guard test `tests/test_utilities.py::TestExportReconHostResidence`
     (host-residence proxy: numpy-in→numpy-out for the mask, jax-in→jax-out, small export→import
     round-trip).  **Syntax-checked (py_compile); FULL validation PENDING an env fix** — the `mbirjax`
     conda env is broken (jax 0.4.21 vs jaxlib 0.10.1: the `pip install -e .` resolved an old jax against
@@ -774,6 +793,22 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     (cuda_vmm_allocator).  Suppress with `TF_CPP_MIN_LOG_LEVEL=2` BEFORE `import jax` (already in
     tests/conftest.py); optionally set it in the NSI app scripts (caveat: hides ALL XLA warnings — unset
     when debugging).  Low priority, app-env-var level.
+  - **#5 — `generate_demo_data` / shepp-logan generator: single `devices`, always host NumPy — DONE
+    2026-06-28 (Greg's design).**  Was: `generate_demo_data` without `devices` built the phantom on
+    `recon_placement.devices[0]` (ONE GPU) even though the model spanned 8 → the full 2048³ phantom
+    (32 GB) materialized on gpu0 (+ a full-volume `* scale` ~64 GB transient + the reshard/gather) →
+    OOM.  And the generator took a confusing `device`-vs-`devices` pair.  Now: (a)
+    `generate_3d_shepp_logan_low_dynamic_range(phantom_shape, devices=None, ...)` — single `devices`
+    (None → all available: GPUs else CPU); builds slice-sharded across them in parallel (or row-blocked
+    on a single device), **gathers to host, frees the device arrays, returns NumPy** cropped to the real
+    shape; `scale` folded per block/shard (no full-volume scale transient).  (b) `generate_demo_data`
+    builds the phantom on the **model's** devices, forward-projects, and gathers **both phantom and
+    sinogram to host NumPy** — `output_sharded` DROPPED (the phantom is a reference; recon prefers a host
+    sinogram it shards itself).  So 2048³ generate_demo_data shards the phantom across all 8 GPUs (≈4
+    GB/shard) instead of 32 GB on gpu0.  Tests updated (`TestShardedSheppLogan`/`TestGenerateDemoDataSharding`
+    → host-numpy + value-match, 1-device vs N-device; the phantom is bit-identical 1-vs-N but only
+    ~1e-5-close across two different shard counts — XLA float32 fusion varies by shard shape).  Also
+    de-`device`-d the deprecated `gen_modified_3d_sl_phantom`.
 
 ---
 

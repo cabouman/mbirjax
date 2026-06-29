@@ -577,15 +577,19 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
 
 
-    # Move recon to the host and keep every step host-side (apply_cylindrical_mask is host-preserving,
-    # and np.transpose stays on the host) so the full volume is never copied back onto a single device --
-    # a whole-volume jnp.transpose here OOMed on large recons (e.g. f32[1370,1880,1880] at downsampling 1).
+    # Keep every step host-side so the full volume is never copied back onto a single device -- a
+    # whole-volume jnp.transpose here OOMed on large recons (f32[1370,1880,1880] ~ 18 GiB at downsampling
+    # 1).  Gather FIRST (deliberate): apply_cylindrical_mask is host-preserving and np.transpose stays on
+    # the host, so both run in host RAM.  Masking a *sharded* recon before the gather would parallelize
+    # it, but masking a *single-device* recon on-device allocates the masked copy on that one device
+    # (~2x its footprint -> OOM); gather-first is safe for every input and the host mask on ~18 GiB is
+    # only seconds.  np.transpose returns a VIEW (no copy) -- the device->host gather is the only copy.
     recon = jax.device_get(recon)
 
     if remove_flash:
         recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
 
-    recon = np.transpose(recon, (2, 1, 0))
+    recon = np.transpose(recon, (2, 1, 0))   # host view, no copy
 
     save_data_hdf5(file_path, recon, 'recon', recon_dict)
 
@@ -669,25 +673,27 @@ def generate_3d_shepp_logan_reference(phantom_shape):
     return image.transpose((1, 0, 2))
 
 
-def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None, devices=None, max_block_gb=4.0,
+def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, devices=None, max_block_gb=4.0,
                                               target_max_attenuation=None):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
 
+    The phantom is a reference object, so it is always returned as a host NumPy array: the build is
+    distributed across ``devices`` (slice-sharded, in parallel) so a large phantom is never
+    materialized whole on a single device, then it is gathered to the host and the device arrays are
+    freed.
+
     Args:
         phantom_shape (tuple): Phantom shape in (rows, columns, slices).
-        device (jax device): Single device on which to place the output phantom.  Ignored when
-            ``devices`` is given.
-        devices (sequence of jax devices, optional): If given, build the phantom **slice-sharded**
-            across these devices -- each device computes its own band of slices on-device, so the
-            full volume is never materialized on a single device (useful for large phantoms that
-            feed a sharded reconstruction).  The result is a slice-sharded ``jax.Array`` padded to
-            the device form (the padding is zero) and can be passed directly to
-            ``forward_project(..., output_sharded=True)``.  Default None builds a single-device
-            array as before.
+        devices (sequence of jax devices, optional): Devices to build the phantom across.  Defaults to
+            None, which uses all available devices (the GPUs when a GPU backend is present, else the
+            CPU devices) -- the same set a reconstruction would shard over.  With more than one device
+            the phantom is built **slice-sharded** (each device builds its own band of slices, no
+            inter-device communication); with a single device it is built row-blocked to bound peak
+            memory.  Either way the result is gathered to the host.
         max_block_gb (float, optional): Rough upper bound (GB) on the temporary memory used by the
-            single-device build, which is processed in row blocks to bound peak memory.  Defaults to
-            4.0.  Ignored when ``devices`` is given (each device's slice band is already small).
+            single-device (row-blocked) build.  Defaults to 4.0.  Ignored for a multi-device build
+            (each device's slice band is already small).
         target_max_attenuation (float, optional): If given, scale the phantom so that the peak line
             integral through it (its forward projection) is roughly this value, **independent of the
             array shape**.  Without it, the sinogram grows linearly with the array size (a ray
@@ -698,19 +704,29 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None, device
             the phantom unscaled (the historical behavior).
 
     Returns:
-        jax array: A 3D array of shape ``phantom_shape`` with the voxel intensities of the phantom --
-        single-device by default, or slice-sharded when ``devices`` is given.
+        numpy.ndarray: A 3D host array of shape ``phantom_shape`` with the voxel intensities of the
+        phantom.
 
     Note:
-        The phantom is independent across voxels, so the single-device build is blocked over rows
-        and the sharded build is split over slices -- neither needs inter-device communication.
+        The phantom is independent across voxels, so the multi-device build splits slices and the
+        single-device build blocks rows -- neither needs inter-device communication.
     """
     scale = 1.0 if target_max_attenuation is None \
         else _shepp_logan_attenuation_scale(phantom_shape, target_max_attenuation)
-    if devices is not None:
-        return _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale)
-    with jax.default_device(device):
-        return _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale)
+    if devices is None:
+        devices = jax.devices()        # all available devices (GPUs if a GPU backend is present, else CPU)
+    if len(devices) > 1:
+        phantom = _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale)  # slice-sharded (device form)
+    else:
+        with jax.default_device(devices[0]):
+            phantom = _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale)
+    # The phantom is a reference: gather to the host, drop any device-form slice padding (the sharded
+    # build pads the slice axis up to the device count), free the device array(s), and return NumPy.
+    n_rows, n_cols, n_slices = phantom_shape
+    host = np.asarray(phantom)[:n_rows, :n_cols, :n_slices]
+    if isinstance(phantom, jax.Array):
+        phantom.delete()
+    return host
 
 
 # Semi-axes (rows, cols, slices) of the MAIN Shepp-Logan ellipsoid -- the largest structure, which
@@ -795,11 +811,12 @@ def _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale=1.0):
         xb = lax.dynamic_slice(x_grid, (r0, 0), (block_rows, M))
         yb = lax.dynamic_slice(y_grid, (r0, 0), (block_rows, M))
         grids = (xb, yb, None, None)          # add_ellipsoid uses only the x/y grids
-        return _add_shepp_logan_ellipsoids(jnp.zeros((block_rows, M, P)), grids, z_locations)
+        block = _add_shepp_logan_ellipsoids(jnp.zeros((block_rows, M, P)), grids, z_locations)
+        return block if scale == 1.0 else block * scale       # scale per block -> no full-volume transient
 
     blocks = lax.map(build_row_block, jnp.arange(n_blocks))   # (n_blocks, block_rows, M, P)
     phantom = jnp.concatenate(blocks, axis=0)[:N]             # (N, M, P): merge blocks, crop padded rows
-    return phantom if scale == 1.0 else phantom * scale
+    return phantom
 
 
 def _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale=1.0):
@@ -1204,7 +1221,6 @@ def generate_demo_data(
     voxel_slice_aspect: float = 1.0,
     target_max_attenuation: float | None = None,
     devices: list | tuple | None = None,
-    output_sharded: bool | None = None,
 ) -> tuple:
     """
     Create a simple object and a sinogram for demonstration purposes.
@@ -1213,10 +1229,11 @@ def generate_demo_data(
     parameters to create a simulated sinogram.  The object type 'shepp-logan' gives a simplified version of the
     classic Shepp-Logan test phantom, and type 'cube' gives a simple cube object.
 
-    The output sinogram has shape (num_views, num_det_rows, num_det_channels) -- a NumPy array by default,
-    or jax arrays in the device form when ``output_sharded`` is requested (see below).  Each 2D array
-    sinogram[view_index] is a simulated image from the detector, with num_det_rows indicating the vertical size
-    and num_det_channels representing the horizontal size.
+    The phantom and the sinogram are built distributed across the model's devices (in parallel) so a
+    large problem is never materialized whole on one device, then gathered to the host: both are
+    returned as host NumPy arrays.  The output sinogram has shape (num_views, num_det_rows,
+    num_det_channels); each 2D array sinogram[view_index] is a simulated image from the detector, with
+    num_det_rows indicating the vertical size and num_det_channels the horizontal size.
 
     Args:
         object_type (str, optional): One of 'shepp-logan' or 'cube'.  Defaults to 'shepp-logan'.
@@ -1240,13 +1257,10 @@ def generate_demo_data(
         voxel_row_aspect (float, optional): Aspect ratio for recon rows relative to columns.  Defaults to 1.0.
         voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
         target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
-        devices (sequence of jax devices, optional): jax devices to use for sharding. Defaults to None.  Used only for Shepp-Logan data.
-        output_sharded (bool, optional): Controls the type and placement of the returned object and
-            sinogram.  None (default) selects device-sharded jax arrays when ``devices`` is given and
-            plain host (NumPy) arrays otherwise.  True returns jax arrays in the device form
-            (slice-sharded object / view-sharded sinogram across ``devices``; single-device jax when no
-            ``devices``).  False returns NumPy arrays and releases the device intermediates before
-            returning, so nothing is left resident on the GPU.
+        devices (sequence of jax devices, optional): Devices to distribute the generation across.
+            Defaults to None, which uses the model's automatic selection (all available GPUs, else the
+            CPU devices).  The phantom and sinogram are built across these devices in parallel and then
+            gathered to the host -- this only affects where the work runs, not the (always NumPy) result.
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1254,18 +1268,13 @@ def generate_demo_data(
             - sinogram: shape (num_views, num_det_rows, num_det_channels).
             - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
 
-        object and sinogram are NumPy arrays when ``output_sharded`` is False (the default unless
-        ``devices`` is given) and jax arrays in the device form when ``output_sharded`` is True.  When
-        NumPy is returned, the arrays in ``params`` are NumPy as well.
+        object and sinogram are always host NumPy arrays (the phantom is a reference, and a NumPy
+        sinogram is what ``recon`` prefers -- it shards it across devices itself); the arrays in
+        ``params`` are NumPy as well.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
     model_type = ModelType(model_type)
-
-    # Resolve the output form: device-sharded jax arrays when devices are given, plain host arrays
-    # otherwise.  Either default can be overridden explicitly via output_sharded.
-    if output_sharded is None:
-        output_sharded = devices is not None
 
     start_angle = -np.pi
     end_angle = np.pi
@@ -1376,10 +1385,12 @@ def generate_demo_data(
     if devices is not None:
         ct_model_for_generation.configure_devices(devices)
 
-    # Generate phantom
+    # Generate the phantom on the MODEL's devices (slice-sharded across all of them when multi-device,
+    # so a large phantom is never built whole on one device).  generate_3d_shepp_logan_low_dynamic_range
+    # gathers it to the host and returns NumPy; gen_cube_phantom is host already.
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
-    device = ct_model_for_generation.recon_placement.devices[0]
+    model_devices = ct_model_for_generation.shard_devices   # None -> the generator uses all available
     phantom_shape = recon_shape
     embed_slice_start = 0
     embed_slice_stop = recon_shape[2]
@@ -1395,43 +1406,26 @@ def generate_demo_data(
             embed_slice_stop - embed_slice_start,
         )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device,
-                                                                 target_max_attenuation=target_max_attenuation,
-                                                                 devices=devices)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(
+            phantom_shape, devices=model_devices, target_max_attenuation=target_max_attenuation)
     elif object_type == ObjectType.CUBE:
-        phantom_core = gen_cube_phantom(phantom_shape, device=device)
+        phantom_core = gen_cube_phantom(phantom_shape)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
     if model_type == ModelType.CONE and use_helical:
-        # Embed the partial-slice phantom into the full recon volume.  Done on host: the embed slice
-        # range does not align with the slice-shard boundaries, so a sharded phantom_core cannot be
-        # scattered in place -- the helical phantom build is therefore not sharded (the forward
-        # projection below still shards).  forward_project re-shards this host array as needed.
+        # Embed the partial-slice phantom into the full recon volume (host arrays throughout --
+        # phantom_core is already host NumPy).
         phantom = np.zeros(recon_shape, dtype=np.float32)
-        phantom[:, :, embed_slice_start:embed_slice_stop] = np.asarray(phantom_core)
-        if isinstance(phantom_core, jax.Array):
-            phantom_core.delete()      # gathered to the host volume above; free the device copy
+        phantom[:, :, embed_slice_start:embed_slice_stop] = phantom_core
     else:
         phantom = phantom_core
-    
-    # Generate synthetic sinogram data
-    print('Creating sinogram')
-    sinogram = ct_model_for_generation.forward_project(phantom, output_sharded=output_sharded)
 
-    if not output_sharded:
-        # Return plain host arrays and release every device array we created here.  np.asarray blocks
-        # and copies to the host, so the subsequent delete is race-free; we own all of these (none came
-        # from the caller).  Single-device arrays would free on refcount anyway, but sharded ones are
-        # held in jax reference cycles, so delete explicitly (same lesson as the VCD transient cleanup).
-        def _to_host(a):
-            if isinstance(a, jax.Array):
-                host = np.asarray(a)
-                a.delete()
-                return host
-            return a
-        phantom = _to_host(phantom)
-        sinogram = _to_host(sinogram)
-        params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
+    # Forward project across the model's devices, then gather the sinogram to the host.  recon prefers a
+    # host sinogram (it shards it itself) and the phantom is already host, so both are returned as NumPy
+    # (the params arrays too); nothing is left resident on a device.
+    print('Creating sinogram')
+    sinogram = np.asarray(ct_model_for_generation.forward_project(phantom))   # default output gathers off-device
+    params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
 
     del ct_model_for_generation
     return phantom, sinogram, params

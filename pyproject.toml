@@ -25,8 +25,13 @@ dependencies = [
     # release; newer good versions still install.  Re-test each new jax with
     # mbirjax_metrics/tooling/scaling_tests/measure_one_cell.py and extend this exclusion if it also
     # regresses (the nightly emails when a new jax ships).  See mbirjax/.claude/lessons.md.
-    "jax!=0.10.2",
-    "jaxlib!=0.10.2",
+    # The >=0.10 FLOOR is load-bearing: jax and jaxlib must be version-matched, but a bare `!=0.10.2`
+    # let `pip install -e .` leave a stale ancient jax (0.4.21) against a current jaxlib (0.10.1) -- an
+    # incompatible skew that pip does NOT flag (jax checks the pairing only at runtime).  The floor
+    # forces jax up to the 0.10 line; jax's own metadata then pulls a matching jaxlib.  Keep the two
+    # bounds identical, and bump the floor (not an upper cap) as the supported baseline advances.
+    "jax>=0.10,!=0.10.2",
+    "jaxlib>=0.10,!=0.10.2",
     "matplotlib",
     "numpy",
     "scipy",

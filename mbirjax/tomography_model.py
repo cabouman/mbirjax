@@ -3308,21 +3308,6 @@ class TomographyModel(ParameterHandler):
         warnings.warn('TomographyModel.gen_weights() is deprecated and will be removed in a future release.  Use mbirjax.gen_weights() instead.')
         return mj.gen_weights(sinogram, weight_type)
 
-    def gen_modified_3d_sl_phantom(self):
-        """
-        DEPRECATED:  This method has been deprecated and will be removed in a future release.
-        Instead, use :func:`mbirjax.generate_3d_shepp_logan_low_dynamic_range`
-
-        Generates a simplified, low-dynamic range version of the 3D Shepp-Logan phantom.
-
-        Returns:
-            ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
-        """
-        warnings.warn('This method has been deprecated and will be removed in a future release.  Instead, use mbirjax.generate_3d_shepp_logan_low_dynamic_range()')
-        recon_shape = self.get_params('recon_shape')
-        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.recon_placement.devices[0])
-        return phantom
-
     def reshape_recon(self, recon):
         """
         Reshape recon into its 3D form.
