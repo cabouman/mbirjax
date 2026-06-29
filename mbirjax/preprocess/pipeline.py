@@ -66,7 +66,13 @@ def map_view_batches(array, kernel, batch_size, desc=None, devices=None):
     if len(devices) <= 1:
         return _run_view_batches(array, kernel, batch_size, devices[0], 0, num_views, desc=desc)
 
-    # Multi-device: contiguous, in-order view shards, one per device, run concurrently.
+    # Multi-device: contiguous, in-order view shards, one per device.  Each worker BLOCKS per batch on
+    # the device->host transfer (np.array), so we use run_per_device's THREAD POOL (one thread per
+    # device) to get true cross-device concurrency: while one thread waits on its transfer/compute, the
+    # others run on their own devices (JAX releases the GIL during XLA execution and transfers).  This
+    # is the opposite of a single-threaded async-dispatch loop, where any per-step block serializes the
+    # devices.  Note: a CPU with forced virtual devices shares the physical cores and shows NO speedup
+    # -- the parallelism is real only on separate hardware (e.g. multiple GPUs).
     from mbirjax import _sharding as mjs
     view_ranges = np.array_split(np.arange(num_views), len(devices))
 

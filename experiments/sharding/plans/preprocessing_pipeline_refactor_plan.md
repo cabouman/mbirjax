@@ -229,6 +229,13 @@ once the main pipeline is fused and sharded.
   Cleaning it is therefore *not* a preprocess-local edit: it touches the recon contract and must be
   verified on the recon side too. Treat as its own scoped item, not folded into the nsi pass.
 
+**Related sharding finding (Phase 3, not pre-recon):** `_generate_3d_shepp_logan_sharded`
+(`utilities.py`) uses a single-threaded loop + async dispatch (no thread pool).  A GPU run showed no
+speedup (and `block_until_ready` made no difference) — single-thread async dispatch does not overlap
+devices well.  The preprocessing path's `run_per_device` (thread pool) DID parallelize on GPU
+(user+sys ~2.6x with lower wall on the collect-golden `time`).  So the generator should likely switch
+to `run_per_device` too — separate revisit.
+
 ## 7. Open decisions
 - Small-fixture format/location (committed .npz vs opt-in cluster path test).
 - Whether `compute_weight` (zeiss_tct) becomes a driver kernel now or stays a separate host call until
