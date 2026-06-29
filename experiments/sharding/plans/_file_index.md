@@ -12,6 +12,11 @@
   planning by `sharding_implementation_plan_v2.md`; read it for history and principles.
 - `sharding_status.md` — short living status: current phase, phase tracker,
   verified hardware facts, open items.
+- `preprocessing_pipeline_refactor_plan.md` — **PLAN (2026-06-29)** for `mbirjax/preprocess/`: split the
+  per-stage utilities into pure kernels + a single batched/sharded driver (one upload / one gather), fuse
+  the scan→sino path, view-shard across devices, and DRY the near-duplicate format loaders behind one core.
+  Sequencing: full nsi conversion first (kernel split → fuse → shard), then migrate zeiss/zeiss_tct; pymbir
+  optional.  Validation = synthetic kernel tests + a small Lilly golden fixture + cluster multi-GPU run.
 - `correctness_gating_redesign.md` — **design note (2026-06-21, PLAN/for-review)** for the metrics
   harness (`mbirjax_metrics`): make correctness its own severity tier, add layered references (vs-main +
   cross-device + CPU↔GPU) to stop the prior-run ratchet, surface it as a dashboard banner + tab/favicon
