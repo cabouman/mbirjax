@@ -52,8 +52,6 @@ class MultiAxisParallelModel(TomographyModel):
 
     """
 
-    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
-
     def __init__(self, sinogram_shape, angles):
         # Validate input shape
         angles = jnp.asarray(angles)
@@ -616,17 +614,16 @@ class MultiAxisParallelModel(TomographyModel):
     # =========================================================================
     # This is a novel extension of the standard ramp filter in ParallelBeamModel.
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
-        return self.fbp_recon(sinogram, filter_name, view_batch_size, output_sharded=output_sharded)
+    def direct_recon(self, sinogram, filter_name="ramp", output_sharded=False):
+        return self.fbp_recon(sinogram, filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def direct_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """Thin alias for :meth:`fbp_filter` — the FBP filtering step of a direct recon (mirrors
         ParallelBeamModel.direct_filter so ``model.direct_filter`` works uniformly across geometries).
         ``output_sharded`` chooses the output form (numpy by default, view-sharded when True)."""
         return self.fbp_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def fbp_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FBP filtering on the given sinogram with a standard 1-D ramp filter along
         the detector channels (the same shared path as ``ParallelBeamModel.fbp_filter``).
@@ -651,8 +648,6 @@ class MultiAxisParallelModel(TomographyModel):
         Args:
             sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp".
-            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
-                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
             output_sharded (bool, optional): If False (default), return a numpy array; if True,
                 return the view-sharded device form (on a single device the same either way).
 
@@ -669,7 +664,7 @@ class MultiAxisParallelModel(TomographyModel):
             sinogram, filter_name, filter_scale=scaling_factor,
             output_sharded=output_sharded, row_weight=None)
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def fbp_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FBP reconstruction: ramp-filter the sinogram, then back-project (the adjoint).
 

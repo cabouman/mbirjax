@@ -81,7 +81,6 @@ class TomographyModel(ParameterHandler):
     Sets up the reconstruction size and parameters.
     """
 
-    DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
 
     def __init__(self, sinogram_shape, **kwargs):
 
@@ -1512,14 +1511,21 @@ class TomographyModel(ParameterHandler):
     def _sparse_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """
-        Single-device back projection: project ALL views (transfer-batched) to voxel cylinders.
+        Single-device back projection: project ALL views (view-batched) to voxel cylinders.
 
         No longer a dispatch target of :meth:`sparse_back_project` (which always takes the
         placement path); it is kept LIVE because the GPU n=1 back short-circuit in
         :meth:`_sparse_back_project_sharded` routes a single-GPU recon here -- the monolithic
         pixel kernel is ~2.25x faster than the band kernel on a single GPU.
+
+        Contract: ``sinogram`` may be plain or view-sharded; it is sharded at entry
+        (:meth:`_shard_sinogram`, a no-op when already sharded) so the whole body operates on
+        the model's single device (``sino_placement.devices[0]``).
         """
-        # Batch the views and pixels for possible transfer to the gpu
+        # Shard at entry so every sinogram slice below is already on the model's single device.
+        sinogram = self._shard_sinogram(sinogram)
+
+        # Batch the views and pixels to bound vmap memory.
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
@@ -1527,6 +1533,10 @@ class TomographyModel(ParameterHandler):
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(all_view_indices, num_view_batches)
 
+        # Pin the indices to the MODEL's device -- not necessarily JAX's default device, since a
+        # single-GPU recon can run on a non-default GPU of a multi-GPU host.  jnp.array_split below
+        # would otherwise place its batches on the default device, mismatching the sharded
+        # sinogram's device in the projector call.
         pixel_indices = jax.device_put(pixel_indices, self.sino_placement.devices[0])
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
@@ -1538,8 +1548,8 @@ class TomographyModel(ParameterHandler):
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
         for view_indices_batch in view_indices_batched:
+            # sinogram was sharded at entry, so this slice is already on the model's device.
             view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.sino_placement.devices[0])
 
             # Loop over pixel batches
             voxel_batch_list = []
@@ -2334,8 +2344,7 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
+    def direct_recon(self, sinogram, filter_name=None, output_sharded=False):
         """
         Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
         implementation details are geometry specific, and direct_recon may not be available for all geometries.
@@ -2343,7 +2352,6 @@ class TomographyModel(ParameterHandler):
         Args:
             sinogram (numpy or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
-            view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
             output_sharded (bool, optional): If False (default), return a numpy array.  If True, return
                 the internal device form (slice-sharded on a sharded model; on an unsharded model the
                 output is the same single-device array either way).
@@ -2361,15 +2369,13 @@ class TomographyModel(ParameterHandler):
             return mjs.sharded_full(self.recon_placement, tuple(recon_shape), 0.0)
         return np.zeros(recon_shape, dtype=np.float32)
 
-    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                      output_sharded=False):
+    def direct_filter(self, sinogram, filter_name=None, output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
             sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
             output_sharded (bool, optional): If False (default), return a numpy array.  If True, return
                 the internal device form (view-sharded on a sharded model; on an unsharded model the
                 output is the same single-device array either way).

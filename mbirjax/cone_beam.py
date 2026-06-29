@@ -66,8 +66,6 @@ class ConeBeamModel(TomographyModel):
     TomographyModel : The base class from which this class inherits.
     """
 
-    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
-
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None,
                  use_curved_detector=False):
 
@@ -955,20 +953,16 @@ class ConeBeamModel(TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
-        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                              output_sharded=output_sharded)
+    def direct_recon(self, sinogram, filter_name="ramp", output_sharded=False):
+        return self.fdk_recon(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                      output_sharded=False):
+    def direct_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
             sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
             output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
@@ -977,11 +971,9 @@ class ConeBeamModel(TomographyModel):
             filtered_sinogram (numpy or jax array): The sinogram after FDK filtering -- numpy by default,
             view-sharded if output_sharded=True.
         """
-        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                               output_sharded=output_sharded)
+        return self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                   output_sharded=False):
+    def fdk_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK filtering on the given sinogram.
 
@@ -995,8 +987,6 @@ class ConeBeamModel(TomographyModel):
         Args:
             sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
-                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
             output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
@@ -1080,8 +1070,7 @@ class ConeBeamModel(TomographyModel):
 
         return recon
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                  output_sharded=False):
+    def fdk_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -1100,8 +1089,6 @@ class ConeBeamModel(TomographyModel):
         Args:
             sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
             output_sharded (bool, optional): If False (default), return a numpy array.  If
                 True, return the slice-sharded device form (on an unsharded model the output
                 is the same either way).
