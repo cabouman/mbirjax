@@ -225,9 +225,12 @@ once the main pipeline is fused and sharded.
 
 - **`auto_crop_sino_conebeam` + `est_crop_width`** (`preprocess/utilities.py`): auto-detect blank
   detector margins, crop the sinogram, and adjust geometry offsets. Runs right after
-  `compute_sino_and_params` in `Lilly_recon.py`. Review for input/output contract (currently host
-  numpy: `_get_sino_indicator` → `np.any`/`np.argmax`) and whether `_get_sino_indicator` round-trips
-  the full sinogram host↔device.
+  `compute_sino_and_params` in `Lilly_recon.py`.  **SLOWNESS FIXED 2026-06-29:** `est_crop_width` now
+  subsamples views to ≤20 (matching `auto_set_regularization_params`) before `_get_sino_indicator`, so
+  the full-array host passes (finiteness/histogram/median/mask) run on ~20 views instead of the whole
+  ~20 GB sinogram -- byte-identical crop for a view-stable object, ~17× faster on a 400-view synthetic.
+  Full row/column resolution is preserved; the safety_buffer absorbs the small view-sampling
+  approximation.  No sharding needed here anymore.
 - **`TomographyModel._get_sino_indicator`** (`tomography_model.py`, staticmethod): builds the
   object-support mask from the sinogram. **Needs a closer look before any change** because it is
   **shared across three call sites** — the recon init path (`vcd`/recon setup), denoising

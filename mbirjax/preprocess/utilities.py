@@ -700,13 +700,15 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     return recon
 
-def est_crop_width(sino, safety_buffer=20):
+def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
     """Estimate crop widths for removing blank margins in a 3D sinogram.
 
     Args:
         sino (np.ndarray): Input sinogram array .
         safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
             detected object region on each boundary. Defaults to 20.
+        max_views_to_use (int, optional): Cap on the number of views sampled for the support
+            estimate. Defaults to 20.
 
     Returns:
         crop_top (int): Number of detector rows to crop from the top.
@@ -715,6 +717,16 @@ def est_crop_width(sino, safety_buffer=20):
         crop_right (int): Number of detector channels to crop from the right.
 
     """
+    # The crop boundaries need full detector row/column resolution, but support detection is
+    # statistical across views -- so subsample VIEWS (axis 0), exactly as auto_set_regularization_params
+    # does, to keep this fast on large sinograms.  _get_sino_indicator on the full sinogram is several
+    # full-array host passes (finiteness check, histogram, median of the object subset, the full int8
+    # mask); on ~max_views_to_use views it is cheap.  The safety_buffer absorbs the small approximation
+    # from sampling fewer views (the object's row/column extent is stable across the rotation).
+    max_views_to_use = min(max_views_to_use, sino.shape[0])
+    step_size = max(sino.shape[0] // max_views_to_use, 1)
+    sino = np.array(sino[::step_size])
+
     sino_indicator_mask = mj.TomographyModel._get_sino_indicator(sino)
 
     union_mask = np.any(sino_indicator_mask, axis=0)
@@ -1240,7 +1252,7 @@ def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_
     return np.polynomial.chebyshev.chebval(y_scaled, cheb_coeffs)
 
 
-def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1):
+def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1, max_views_to_use=20):
     """
     Detect zinger pixels from sinogram.
 
@@ -1252,18 +1264,28 @@ def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1):
     Args:
         sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
         zinger_pixel_ratio (float, optional): Ratio used for zinger pixels detection. Defaults to 0.1.
+        max_views_to_use (int, optional): Cap on the number of views sampled for the typical-value
+            (threshold) estimate. Defaults to 20.
 
     Returns:
         ndarray:
             Array of zinger pixel indices with shape (num_zinger_pixels, 3). Format in (view_idx, row_idx, channel_idx).
     """
-    # Compute a binary mask that indicates the region of sinogram support.
-    sino_indicator = mj.TomographyModel._get_sino_indicator(sino)
+    # The zinger threshold is a STATISTICAL quantity (the RMS sinogram value over its support), so
+    # estimate it from a view subsample -- like auto_set_regularization_params / est_crop_width -- to
+    # avoid running _get_sino_indicator and sino**2 over the whole (possibly ~20 GB) sinogram.  The
+    # DETECTION itself stays on the full sinogram below: a zinger can occur in any view.
+    max_views_to_use = min(max_views_to_use, sino.shape[0])
+    step_size = max(sino.shape[0] // max_views_to_use, 1)
+    sino_sub = np.array(sino[::step_size])
 
-    # Compute the typical value of sinogram
-    typical_sino_value = float(np.average(sino ** 2, None, sino_indicator) ** 0.5)
+    # Compute a binary mask that indicates the region of sinogram support (on the subsample).
+    sino_indicator = mj.TomographyModel._get_sino_indicator(sino_sub)
 
-    # Detect zinger pixels
+    # Compute the typical value of sinogram (on the subsample).
+    typical_sino_value = float(np.average(sino_sub ** 2, None, sino_indicator) ** 0.5)
+
+    # Detect zinger pixels across ALL views.
     # Assume that zinger pixel intensity <= -(0.1 * typical value of sinogram)
     zinger_threshold = -zinger_pixel_ratio * typical_sino_value
     zinger_pixel_array = np.argwhere(sino < zinger_threshold).astype(int)
