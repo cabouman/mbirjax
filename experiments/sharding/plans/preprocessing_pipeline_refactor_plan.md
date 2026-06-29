@@ -161,7 +161,18 @@ PASS — fusion epsilon ≪ 1e-5).
 - **Gate:** nsi golden stable (document any tiny float-fusion epsilon from op reordering); peak host
   memory drops (no per-stage `concatenate`). Siblings still unchanged.
 
-### Phase 3 — Shard the driver; nsi runs multi-device  *(nsi fully converted here)*
+### Phase 3 — Shard the driver; nsi runs multi-device  *(nsi fully converted here)*  **[DONE 2026-06-29, local; cluster speedup pending]**
+Implemented: `map_view_batches` gained a `devices` arg — single device → the sequential loop (default,
+so the legacy public helpers are unchanged); multiple devices → contiguous in-order view shards run
+concurrently via `mjs.run_per_device` (each worker under `jax.default_device`).  `scan_to_sino` defaults
+to `jax.devices()` and was made **device-agnostic**: its constants are HOST NumPy that auto-promote to
+each batch's device (and `_downsample_blank_dark` now returns a host `flat_indices`).  Every stage is
+per-view (defective interpolation uses within-view neighbors; the `per_view` offset is the separate host
+pass), so there is **no cross-device communication**.  Gates passed (forced 4 CPU devices): scan_to_sino
+**1-device vs 4-device byte-identical** across {ds 1×1 / 2×2} × {rot 0 / ≠0} × {even & uneven shards};
+full-nsi 4-CPU-sharded on the real Lilly data **matches HEAD-on-Mac exactly** (sum/min/max/mean);
+public helpers still byte-identical to HEAD; suite green.  Pending: multi-GPU **speedup** measurement on
+the cluster (correctness is proven; only the wall-clock payoff remains to confirm).
 - Distribute the driver's view loop across all devices via `mjs` `Placement` / `run_per_device`,
   reusing the recon's sharding mechanism. Isolate the two non-per-view operations — the **global**
   background-offset percentile and the **residual-NaN cleanup** in `interpolate_defective_pixels` —

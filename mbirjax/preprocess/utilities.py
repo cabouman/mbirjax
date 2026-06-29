@@ -297,8 +297,9 @@ def _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_p
     if len(defective_pixel_array) == 0:
         defective_pixel_array = ()
 
-    obj_flat_indices = None if flat_indices is None else jnp.array(flat_indices)
-    return blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape
+    # flat_indices stays a HOST array so the per-view object-scan kernel is device-agnostic (it
+    # auto-promotes to each batch's device); this matters for the multi-device fused path.
+    return blank_scan, dark_scan, defective_pixel_array, flat_indices, new_size1, new_size2, block_shape
 
 
 def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
@@ -342,8 +343,8 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
 
 def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
-                 downsample_factor=(1, 1), det_rotation=0.0, batch_size=90):
-    """Fused scan -> sinogram for cropped scan data.
+                 downsample_factor=(1, 1), det_rotation=0.0, batch_size=90, devices=None):
+    """Fused scan -> sinogram for cropped scan data, view-sharded across devices.
 
     Runs (optional downsample) -> transmission -> (optional detector rotation) as a single on-device
     pass per view-batch, so the object scan is uploaded once and the sinogram gathered once -- instead
@@ -352,9 +353,12 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
     but without materializing the intermediates on the host.  Background-offset correction is left to
     the caller (a cheap host pass).
 
-    The per-view kernels are batch-size-independent, so the single ``batch_size`` here reproduces the
-    sequential result exactly.  Detector rotation is skipped entirely when ``det_rotation == 0`` (the
-    rotation is the identity there).
+    Every stage here is **per-view** (the defective-pixel interpolation uses within-view neighbors), so
+    the views are split into contiguous shards across ``devices`` and processed concurrently with no
+    cross-device communication; the result is identical regardless of device count (and to the
+    single-device sequential path).  The per-view kernels are also batch-size-independent, so the
+    single ``batch_size`` reproduces the sequential result.  Detector rotation is skipped entirely when
+    ``det_rotation == 0`` (the rotation is the identity there).
 
     Args:
         obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
@@ -362,30 +366,37 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         downsample_factor (tuple[int, int]): detector row/channel downsample; (1, 1) skips downsampling.
         det_rotation (float): detector rotation in radians; 0 skips the rotation.
         batch_size (int): number of views per on-device batch.
+        devices (sequence or None): devices to spread the views over; ``None`` uses ``jax.devices()``.
 
     Returns:
         numpy.ndarray: the sinogram, shape (num_views, num_det_rows, num_det_channels).
     """
+    if devices is None:
+        devices = jax.devices()
+
     obj_flat_indices = new_size1 = new_size2 = block_shape = None
     do_downsample = downsample_factor[0] * downsample_factor[1] > 1
     if do_downsample:
         blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
             _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
 
-    # Transmission constants from the (possibly downsampled) blank/dark; blank_minus_dark does not vary
+    # Transmission constants kept as HOST NumPy so the fused kernel is device-agnostic: each value
+    # auto-promotes to its batch's device, which is what lets the SAME kernel run on every view shard.
+    # mean/abs are the identical IEEE float32 ops whether evaluated here on the host or on a device, so
+    # this matches the single-device (jnp-constant) result bit-for-bit.  blank_minus_dark does not vary
     # across batches, so precompute it once.
-    blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
-    dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
-    blank_minus_dark = jnp.abs(blank_scan_mean - dark_scan_mean)
+    blank_scan_mean = np.mean(blank_scan, axis=0, keepdims=True)
+    dark_scan_mean = np.mean(dark_scan, axis=0, keepdims=True)
+    blank_minus_dark = np.abs(blank_scan_mean - dark_scan_mean)
 
     # Defective-pixel indices for the transmission kernel, raveled against the detector grid the kernel
     # sees (the downsampled grid when downsampling; blank/dark share the object scan's detector dims).
     trans_det_shape = blank_scan.shape[1:]
     if len(defective_pixel_array) > 0:
-        defective_pixel_array_jax = jnp.array(defective_pixel_array)
-        trans_flat_indices = jnp.ravel_multi_index(defective_pixel_array_jax.T, trans_det_shape)
+        defective_pixel_array = np.asarray(defective_pixel_array)
+        trans_flat_indices = np.ravel_multi_index(defective_pixel_array.T, trans_det_shape)
     else:
-        defective_pixel_array_jax = ()
+        defective_pixel_array = ()
         trans_flat_indices = None
 
     do_rotation = det_rotation != 0.0
@@ -394,12 +405,12 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         if do_downsample:
             obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
         sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
-                                          trans_flat_indices, defective_pixel_array_jax)
+                                          trans_flat_indices, defective_pixel_array)
         if do_rotation:
             sino_batch = _rotation_kernel(sino_batch, det_rotation)
         return sino_batch
 
-    sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size)
+    sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size, devices=devices)
     print("Sinogram computation complete.")
     return sino
 
