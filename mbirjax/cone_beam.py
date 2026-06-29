@@ -48,11 +48,11 @@ class ConeBeamModel(TomographyModel):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
-        angles (ndarray or jax array):
+        angles (numpy or jax array):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        helical_z_shifts (ndarray or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
+        helical_z_shifts (numpy or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
         use_curved_detector (bool, optional): Detector geometry type. Either False (default) or True implies each detector row has constant distance from source.
 
     Note:
@@ -966,15 +966,15 @@ class ConeBeamModel(TomographyModel):
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
-            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            filtered_sinogram (numpy or jax array): The sinogram after FDK filtering -- numpy by default,
             view-sharded if output_sharded=True.
         """
         return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
@@ -993,16 +993,16 @@ class ConeBeamModel(TomographyModel):
         view-shard locally.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
                 kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            filtered_sinogram (numpy or jax array): The sinogram after FDK filtering -- numpy by default,
             view-sharded if output_sharded=True.
         """
         # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared
@@ -1098,16 +1098,16 @@ class ConeBeamModel(TomographyModel):
             best used as an initializer for the iterative ``recon()``.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
             view_batch_size (int, optional):  Size of view batches (used to limit memory use)
             view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
-            output_sharded (bool, optional): If False (default), return a plain array.  If
+            output_sharded (bool, optional): If False (default), return a numpy array.  If
                 True, return the slice-sharded device form (on an unsharded model the output
                 is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
+            recon (numpy or jax array): The reconstructed volume after FDK reconstruction -- numpy by
             default, slice-sharded if ``output_sharded=True``.
         """
         # Shard once at entry so the filter receives view-sharded data (a no-op when already
@@ -1160,8 +1160,8 @@ class ConeBeamModel(TomographyModel):
             print_logs (bool, optional): Same as in the TomographyModel.recon() method.
 
         Returns:
-            Tuple[jnp.ndarray, dict]:
-                - Reconstructed volume (jax array).
+            Tuple[np.ndarray, dict]:
+                - Reconstructed volume (numpy array).
                 - Dictionary of metadata containing recon and model parameters for each half.
 
         Raises:
@@ -1338,7 +1338,9 @@ class ConeBeamModel(TomographyModel):
                                                  first_iteration=first_iteration,
                                                  compute_prior_loss=compute_prior_loss,
                                                  logfile_path=logfile_path, print_logs=print_logs)
-            return jax.device_get(recon_half), recon_dict
+            # recon() already returns a host NumPy array (its output_sharded=False gather), so the
+            # half is on the host here -- no device_get needed.
+            return recon_half, recon_dict
 
         # -------- Reconstruct the halves ONE AT A TIME (the top half is built, recon'd, gathered to the
         # host, and freed before the bottom half is built), so only one half's sino/weights/model and one

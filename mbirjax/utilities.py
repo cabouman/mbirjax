@@ -1421,13 +1421,16 @@ def generate_demo_data(
         phantom = phantom_core
 
     # Forward project across the model's devices, then gather the sinogram to the host.  Keep the
-    # sinogram SHARDED out of forward_project (output_sharded=True) and let np.asarray assemble it on the
-    # host shard-by-shard: the default (output_sharded=False) gather instead routes the whole sinogram
-    # through a single device, which OOMs at large sizes (e.g. a 32 GiB 2048^3 sinogram on one GPU).
-    # recon prefers a host sinogram (it shards it itself) and the phantom is already host, so both are
-    # returned as NumPy (the params arrays too); nothing large is left resident on a device.
+    # sinogram SHARDED out of forward_project (output_sharded=True) so the whole sinogram is never
+    # routed through a single device (which OOMs at large sizes -- e.g. a 32 GiB 2048^3 sinogram on one
+    # GPU), then gather it on a separate line.  _gather_sinogram is _gather_to_host (assemble on the
+    # host shard-by-shard) PLUS a crop of any inert view/detector-row padding back to the real shape --
+    # bare _gather_to_host would keep that padding.  recon prefers a host sinogram (it shards it itself)
+    # and the phantom is already host, so both are returned as NumPy (the params arrays too); nothing
+    # large is left resident on a device.
     print('Creating sinogram')
-    sinogram = np.asarray(ct_model_for_generation.forward_project(phantom, output_sharded=True))
+    sinogram_sharded = ct_model_for_generation.forward_project(phantom, output_sharded=True)
+    sinogram = ct_model_for_generation._gather_sinogram(sinogram_sharded)
     params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
 
     del ct_model_for_generation
@@ -1599,7 +1602,7 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
         angles (ndarray of float): 1D vector of projection angles in radians
         source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
         source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
-        helical_z_shifts (ndarray or jax array, optional):
+        helical_z_shifts (numpy or jax array, optional):
             Per-view axial shifts (ALU), same length as angles.
             Required when use_helical=True.
 

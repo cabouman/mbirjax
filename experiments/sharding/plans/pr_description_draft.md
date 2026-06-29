@@ -17,6 +17,11 @@ the production workflow.  Everything runs with no change to existing scripts.
 
 ## More robust memory behavior
 
+- **Default reconstruction and projection results are assembled on the host.**  When you do not explicitly
+  ask for the sharded device form, `recon`, `forward_project`, `back_project`, the FBP/FDK direct
+  reconstructions, and the denoiser now return an ordinary NumPy array gathered directly to host memory.
+  Previously a large result could be re-collected onto a single GPU on the way out and run out of memory;
+  now the full volume is never rebuilt on one device, so these calls are safe at any size.
 - **Utilities that touch the whole volume were reworked to avoid accidental single-GPU blowups.**  Weight
   generation, demo-data generation, the cylindrical-mask / HDF5 export, and the half-volume stitch now
   keep host data on the host and only use the GPU when appropriate.  Previously these could copy an
@@ -34,17 +39,22 @@ the production workflow.  Everything runs with no change to existing scripts.
 ## Simpler data generation
 
 - `generate_demo_data` and the Shepp-Logan phantom generator now take a single `devices` argument, build
-  large phantoms across the available devices automatically, and always return plain NumPy arrays.  This
+  large phantoms across the available devices automatically, and always return NumPy arrays.  This
   removes a confusing pair of arguments and a case where generating large demo data could exceed one
   GPU's memory.  A new "Data Generation" section in the docs describes `generate_demo_data`.
 
 ## Other
 
+- FBP/FDK reconstructions keep intermediate data on-device across all geometries, avoiding an
+  unnecessary host round-trip during the filter step.
 - Dependency pins were tightened so installation always selects compatible jax/jaxlib versions.
 - A deprecated phantom-generation method and obsolete diagnostic tooling were removed.
 
 ## Behavior changes
 
+- Reconstruction and projection calls with the default output now return a NumPy array (previously a
+  single-GPU device array).  Pass `output_sharded=True` to keep the sharded device form for further
+  on-device work.
 - The data-generation functions now always return NumPy arrays (some previously returned device arrays).
 - `TomographyModel.gen_modified_3d_sl_phantom` (deprecated) was removed; use
   `mbirjax.generate_3d_shepp_logan_low_dynamic_range` instead.

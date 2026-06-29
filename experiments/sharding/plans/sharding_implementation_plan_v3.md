@@ -815,10 +815,37 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
     `output_sharded=True` keeps it 4 GB/shard and `np.asarray` of a multi-device array assembles on the
     host.  (`save_preprocessing`/`load_preprocessing` also moved to `preprocess/utilities.py` →
     `mj.preprocess.*`.)
-
----
-
-## 7. Durable principles & facts (pointers, not copies)
+  - **#6 — host-safe `output_sharded=False` gather (the real fix for the single-device-gather footgun) —
+    DONE 2026-06-28 (full suite green, 200 passed).**  Implemented all four sites: `_gather_to_host` →
+    `np.asarray(x)` (host assembly, both shard counts); dropped the `jax.device_put(..., devices[0])`
+    re-uploads at the `recon` and `prox_map` exits; `direct_recon` cylinder → host `np.zeros` + numpy
+    scatter.  `output_sharded=False` (recon/forward/back/fbp/fdk/direct/hessian/prox/denoise) now returns
+    **host NumPy** (docstrings updated; the misleading "single-device array" wording fixed).  Guard test
+    `tests/sharding/test_vcd_sharded.py::TestGatherReturnsHostNumpy`.  One test fixup: removed a now-invalid
+    `recon.block_until_ready()` in `test_vcd.py` (jax-only; the host gather already syncs) — the only place
+    a jax method was called on a gathered output.  **PR note:** `output_sharded=False` returns host numpy
+    (was single-device jax).  Original plan below.
+  - **#6 (plan, now DONE above) — host-safe `output_sharded=False` gather.**  The default gather routes the whole volume through ONE device — the recurring footgun
+    (hit at recon-exit, export, demo-data).  `_gather_to_host` does `jnp.array(np.asarray(x))` (re-upload
+    to gpu0), AND callers materialize the full volume on one device: the `recon` exit (`jax.device_put
+    (_gather_recon(recon), devices[0])`), the `prox_map` exit (same), and `direct_recon`'s cylinder
+    scatter (`jnp.zeros(recon_shape)` + `.at[].set`).  **Plan (its own change + full suite):** (a)
+    `_gather_to_host` → return host numpy (multi-shard `np.asarray(x)`; single-shard
+    `np.asarray(shards[0].data)`); (b) drop the `jax.device_put(..., devices[0])` re-uploads at the recon
+    and prox exits; (c) `direct_recon` cylinder → host `np.zeros` + numpy scatter; (d) verify
+    `_gather_sinogram`/`_gather_recon` (slice-only), the denoiser, hessian, and the compute_prior_loss
+    path; (e) docstrings + a host-residence test + full suite + a GPU memory_report confirm.  **Contract
+    change:** `output_sharded=False` (recon / forward / back / fbp/fdk/direct / hessian / prox / denoise)
+    returns host NumPy instead of a single-device jax array — matches the "plain array" docstrings, frees
+    the device, host-safe at any size; PR-note it.  Risk low–moderate (no test asserts the jax return
+    type; downstream use is numpy-safe).  Removes the need for per-call-site `output_sharded=True`.
+  - **(revisit) `_generate_3d_shepp_logan_sharded` device loop — is it actually parallel?**  The loop
+    DISPATCHES each device's band build inside `with jax.default_device(dev)` and relies on async dispatch
+    to overlap.  Observed 2026-06-28: wall time is the same with or without a `piece.block_until_ready()`
+    before each append — so either the dispatch is already overlapping (the block is a no-op on the
+    critical path) OR the builds are not actually concurrent (and the block just isn't the bottleneck).
+    Low stakes (the build is fast and gathered to host anyway), but worth confirming the loop overlaps as
+    intended (a per-device timing trace) rather than serializing.
 
 - **Cross-cutting principles**, **verified hardware facts** (L40S silently zeros a
   device-resident cross-device copy; H100 d2d ok → the `move_shard` host-bounce fallback),
