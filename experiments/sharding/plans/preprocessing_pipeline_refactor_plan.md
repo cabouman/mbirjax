@@ -171,8 +171,14 @@ per-view (defective interpolation uses within-view neighbors; the `per_view` off
 pass), so there is **no cross-device communication**.  Gates passed (forced 4 CPU devices): scan_to_sino
 **1-device vs 4-device byte-identical** across {ds 1×1 / 2×2} × {rot 0 / ≠0} × {even & uneven shards};
 full-nsi 4-CPU-sharded on the real Lilly data **matches HEAD-on-Mac exactly** (sum/min/max/mean);
-public helpers still byte-identical to HEAD; suite green.  Pending: multi-GPU **speedup** measurement on
-the cluster (correctness is proven; only the wall-clock payoff remains to confirm).
+public helpers still byte-identical to HEAD; suite green.  **Multi-GPU speedup CONFIRMED** (cluster,
+isolated `scan_to_sino` via `time_scan_to_sino.py`, ds1/sv1, 1800 views ~20 GB): 1 GPU 55s -> 4 GPUs
+19.3s = **2.88x**, byte-identical 1-vs-4.  Sub-4x is host-transfer-bandwidth-bound (~20 GB up + ~20 GB
+down shared across the GPUs' PCIe), not a parallelism bug; whole-script `bash time` was misleading
+(dominated by import + 4-GPU init + compile + the script's repeated runs).  Optional follow-ups: trim the
+driver's double host concatenate to one (workers return batch lists; one concat in view order); the
+bigger structural win is the Phase-5 recon fast path (skip the 20 GB host gather, hand recon a sharded
+sinogram).  Phase 3 DONE.
 - Distribute the driver's view loop across all devices via `mjs` `Placement` / `run_per_device`,
   reusing the recon's sharding mechanism. Isolate the two non-per-view operations — the **global**
   background-offset percentile and the **residual-NaN cleanup** in `interpolate_defective_pixels` —
