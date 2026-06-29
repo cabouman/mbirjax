@@ -94,18 +94,29 @@ Three tiers, cheapest first:
    `TestNSIPreprocessing` (40×64×128 phantom-derived obj/blank/dark with injected defective pixels)
    to exercise each kernel and the fused pipeline directly on device arrays. Primary gate for
    Phases 1–2.
-2. **End-to-end nsi golden vs the real dataset.** Source = `/depot/bouman/data/Lilly/
-   Autoinjector_HighRes_Horizontal/` (cluster). Derive a **small committable fixture** by heavy
-   subsample/crop and store the expected `(sino, cone_beam_params, optional_params)` as a reference
-   (.npz / hdf5). Run `compute_sino_and_params` against it and assert bit-for-bit (Phase 2) /
-   value-stable within a documented float-fusion epsilon (Phase 3). Full-resolution run is the heavy
-   gate, run on the cluster.
+2. **End-to-end nsi golden vs the real dataset (EPHEMERAL).** Source = the Lilly Autoinjector dataset
+   (`/depot/bouman/data/Lilly/Autoinjector_HighRes_Horizontal/` on the cluster; Samba-mounted at
+   `/Volumes/bouman/...` locally). Capture the current `(sino, cone_beam_params, optional_params)` once
+   (`experiments/sharding/collect_nsi_golden.py`, `ds4_sv20`) and verify the refactor against it with
+   `--ref`. **The golden is NOT kept/committed** — once the new implementation is verified, the new
+   implementation is the gold standard.
 3. **Multi-GPU speedup (Phase 3).** Full Lilly dataset on the cluster; confirm near-linear scaling
    with device count and bounded per-shard device memory. Greg runs cluster jobs.
 
-**Prerequisite:** generate the small golden fixture once from the Lilly dataset before Phase 2.
-Greg can copy the dataset locally for CPU dev, or generate the fixture on the cluster and commit only
-the small reference. (Large datasets are not committed.)
+**Cross-platform caveat (load-bearing — learned in Phase 1).** Preprocessing is **not** byte-reproducible
+across platforms: borderline pixels (the `ratio > 0` sign threshold in `-log`, `nanmedian` ties,
+`dm_pix.rotate` bilinear interpolation at edges) diverge CPU↔GPU, giving localized ~1.0 sino diffs
+(observed: max abs diff 1.03 between Mac-CPU and the GPU-captured golden — and *pre-refactor* HEAD showed
+the identical 1.03, proving it is platform, not code). Therefore:
+- **Same-platform comparison is the gate.** Verify on the SAME device the golden was captured on
+  (capture + `--ref` both on the cluster GPU → expect PASS; Phase 1 confirmed PASS there).
+- The platform-independent proof of a refactor is **repo-vs-HEAD byte-identical on one platform** (use a
+  `git worktree` at HEAD; the kernels run eagerly so fusion stays byte-identical — no host round-trip
+  changes float32 values). This is the primary local gate; the cross-platform golden is a sanity check,
+  not a bit-exact requirement.
+
+**Env note:** develop with an **editable install** (`pip install -e .`).  A non-editable site-packages
+copy silently shadows the repo for any script run from a non-repo cwd (this bit Phase 1 verification).
 
 ---
 
@@ -119,7 +130,12 @@ the small reference. (Large datasets are not committed.)
 - **Gate:** golden reference captured; kernel tests cover crop/downsample/transmission/rotation/offset
   on synthetic data and pass against current code.
 
-### Phase 1 — Shared kernel/driver foundation (siblings untouched, single device)
+### Phase 1 — Shared kernel/driver foundation (siblings untouched, single device)  **[DONE 2026-06-29]**
+Implemented: `preprocess/pipeline.py::map_view_batches` driver + `_transmission_kernel` /
+`_downsample_obj_kernel` / `_rotation_kernel` extracted; three duplicated loops collapsed.  Also fixed a
+latent bug (`downsample_view_data` indexed `dark_scan[i]` over `blank_scan.shape[0]` — now two loops).
+Gates passed: synthetic repo-vs-HEAD **byte-identical** (worktree); suite green; siblings byte-identical;
+cluster GPU `--ref` **PASS** on the real Lilly golden.
 - Add `preprocess/pipeline.py` with the driver (batched, single-device for now). Recast each
   `utilities.py` function into **(pure per-batch kernel) + (thin host wrapper)**; the wrappers keep
   the exact current public API so zeiss / zeiss_tct / pymbir keep calling them **unchanged**.
@@ -128,7 +144,16 @@ the small reference. (Large datasets are not committed.)
 - **Gate:** every format's public functions byte-identical (siblings still use the wrappers);
   synthetic kernel tests + nsi golden stable.
 
-### Phase 2 — Fuse the nsi path (single upload / single gather, single device)
+### Phase 2 — Fuse the nsi path (single upload / single gather, single device)  **[DONE 2026-06-29, local; cluster --ref pending]**
+Implemented: `utilities.py::scan_to_sino` fuses (downsample) → transmission → (rotation) in one
+on-device pass per view-batch (object scan uploaded once, sinogram gathered once); `_downsample_blank_dark`
+factored out and shared with `downsample_view_data`; `nsi.compute_sino_and_params` rewired to
+crop → `scan_to_sino` → host `correct_background_offset`; `det_rotation != 0` guard falls out of the
+conditional composition.  Offset stays a host pass (per_view, cheap; on-device fusion deferred).
+Gates passed (Mac CPU): synthetic sequential-vs-fused **byte-identical** for transmission→rotation,
+**3.6e-7** (~1 ULP, data-specific) with downsample; full-nsi Phase-2 fingerprint (sum/min/max/mean)
+**matches HEAD-on-Mac exactly** on the real Lilly data (ds4_sv20).  Pending: cluster GPU `--ref` (expect
+PASS — fusion epsilon ≪ 1e-5).
 - Rewire `nsi.compute_sino_and_params` to call the core (`scan_to_sino` + correction chain) through
   the driver, so data stays on-device across crop→downsample→transmission→rotation→offset (no
   per-stage host re-allocation). Free win: guard rotation on `det_rotation != 0` (today it

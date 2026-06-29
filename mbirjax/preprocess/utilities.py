@@ -246,6 +246,61 @@ def _downsample_obj_kernel(obj_batch, flat_indices, new_size1, new_size2, block_
     return jnp.nanmean(obj_batch, axis=(2, 4))
 
 
+def _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array=()):
+    """Host-side part of view-data downsampling: NaN-mask defective pixels, crop to a block-divisible
+    size, and block-average the blank and dark scans.  Returns the downsampled blank/dark, the NEW
+    (downsampled-grid) defective array, and the parameters :func:`_downsample_obj_kernel` needs for the
+    object scan.  (blank/dark share the object scan's detector dimensions, so its block params are
+    computed here.)
+
+    Returns:
+        (blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape)
+    """
+    # Set defective pixels to NaN for use with nanmean.  blank_scan and dark_scan may have different
+    # numbers of views, so loop each over its OWN leading dimension (a single shared loop over
+    # blank_scan.shape[0] would index out of bounds on a singleton dark_scan, or vice versa).
+    if len(defective_pixel_array) > 0:
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
+        for i in range(blank_scan.shape[0]):
+            np.put(blank_scan[i], flat_indices, np.nan)
+        for i in range(dark_scan.shape[0]):
+            np.put(dark_scan[i], flat_indices, np.nan)
+    else:
+        flat_indices = None
+
+    # Crop the scan if the size is not divisible by downsample_factor (blank/dark share the object
+    # scan's detector dimensions).
+    new_size1 = downsample_factor[0] * (blank_scan.shape[1] // downsample_factor[0])
+    new_size2 = downsample_factor[1] * (blank_scan.shape[2] // downsample_factor[1])
+
+    blank_scan = blank_scan[:, 0:new_size1, 0:new_size2]
+    dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
+
+    # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
+    block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
+                   blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
+
+    # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
+    blank_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in blank_scan
+    ], axis=0)
+
+    dark_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in dark_scan
+    ], axis=0)
+
+    # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
+    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
+    defective_pixel_array = np.argwhere(nan_mask)
+    if len(defective_pixel_array) == 0:
+        defective_pixel_array = ()
+
+    obj_flat_indices = None if flat_indices is None else jnp.array(flat_indices)
+    return blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape
+
+
 def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
     """
     Performs down-sampling of the scan images in the detector plane.
@@ -274,55 +329,79 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    # Set defective pixels to NaN for use with nanmean.  blank_scan and dark_scan may have different
-    # numbers of views, so loop each over its OWN leading dimension (a single shared loop over
-    # blank_scan.shape[0] would index out of bounds on a singleton dark_scan, or vice versa).
-    if len(defective_pixel_array) > 0:
-        flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
-        for i in range(blank_scan.shape[0]):
-            np.put(blank_scan[i], flat_indices, np.nan)
-        for i in range(dark_scan.shape[0]):
-            np.put(dark_scan[i], flat_indices, np.nan)
-    else:
-        flat_indices = None
-
-    # crop the scan if the size is not divisible by downsample_factor.
-    new_size1 = downsample_factor[0] * (obj_scan.shape[1] // downsample_factor[0])
-    new_size2 = downsample_factor[1] * (obj_scan.shape[2] // downsample_factor[1])
-
-    blank_scan = blank_scan[:, 0:new_size1, 0:new_size2]
-    dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
-
-    # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
-    block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
-                   blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
-
-    # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
-    blank_scan = np.stack([
-        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
-        for scan in blank_scan
-    ], axis=0)
-
-    dark_scan = np.stack([
-        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
-        for scan in dark_scan
-    ], axis=0)
+    blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
+        _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
 
     # Object scan: batch over views through the shared driver, block-averaging each view-batch.
-    if flat_indices is not None:
-        flat_indices = jnp.array(flat_indices)
     obj_scan = pipeline.map_view_batches(
         obj_scan,
-        lambda b: _downsample_obj_kernel(b, flat_indices, new_size1, new_size2, block_shape),
+        lambda b: _downsample_obj_kernel(b, obj_flat_indices, new_size1, new_size2, block_shape),
         batch_size)
 
-    # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
-    defective_pixel_array = np.argwhere(nan_mask)
-    if len(defective_pixel_array) == 0:
-        defective_pixel_array = ()
-
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
+
+
+def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
+                 downsample_factor=(1, 1), det_rotation=0.0, batch_size=90):
+    """Fused scan -> sinogram for cropped scan data.
+
+    Runs (optional downsample) -> transmission -> (optional detector rotation) as a single on-device
+    pass per view-batch, so the object scan is uploaded once and the sinogram gathered once -- instead
+    of a separate host round-trip for each stage.  Equivalent to calling ``downsample_view_data`` (when
+    ``downsample_factor`` exceeds 1), then ``compute_sino_transmission``, then ``correct_det_rotation``,
+    but without materializing the intermediates on the host.  Background-offset correction is left to
+    the caller (a cheap host pass).
+
+    The per-view kernels are batch-size-independent, so the single ``batch_size`` here reproduces the
+    sequential result exactly.  Detector rotation is skipped entirely when ``det_rotation == 0`` (the
+    rotation is the identity there).
+
+    Args:
+        obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
+        defective_pixel_array (ndarray or tuple): shared defective-pixel (row, col) coords, or ().
+        downsample_factor (tuple[int, int]): detector row/channel downsample; (1, 1) skips downsampling.
+        det_rotation (float): detector rotation in radians; 0 skips the rotation.
+        batch_size (int): number of views per on-device batch.
+
+    Returns:
+        numpy.ndarray: the sinogram, shape (num_views, num_det_rows, num_det_channels).
+    """
+    obj_flat_indices = new_size1 = new_size2 = block_shape = None
+    do_downsample = downsample_factor[0] * downsample_factor[1] > 1
+    if do_downsample:
+        blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
+            _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
+
+    # Transmission constants from the (possibly downsampled) blank/dark; blank_minus_dark does not vary
+    # across batches, so precompute it once.
+    blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
+    dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
+    blank_minus_dark = jnp.abs(blank_scan_mean - dark_scan_mean)
+
+    # Defective-pixel indices for the transmission kernel, raveled against the detector grid the kernel
+    # sees (the downsampled grid when downsampling; blank/dark share the object scan's detector dims).
+    trans_det_shape = blank_scan.shape[1:]
+    if len(defective_pixel_array) > 0:
+        defective_pixel_array_jax = jnp.array(defective_pixel_array)
+        trans_flat_indices = jnp.ravel_multi_index(defective_pixel_array_jax.T, trans_det_shape)
+    else:
+        defective_pixel_array_jax = ()
+        trans_flat_indices = None
+
+    do_rotation = det_rotation != 0.0
+
+    def fused_kernel(obj_batch):
+        if do_downsample:
+            obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
+        sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                          trans_flat_indices, defective_pixel_array_jax)
+        if do_rotation:
+            sino_batch = _rotation_kernel(sino_batch, det_rotation)
+        return sino_batch
+
+    sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size)
+    print("Sinogram computation complete.")
+    return sino
 
 
 
