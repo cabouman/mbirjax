@@ -555,10 +555,9 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function moves the recon to the host (NumPy), optionally applies a cylindrical mask to remove
-    peripheral and top/bottom slices (referred to as `flash`), transposes it to right-hand coordinates
-    (slice, col, row), and writes the volume and optional metadata to an HDF5 file.  All steps run on the
-    host, so the full volume is never copied back onto a single device (which would OOM for large recons).
+    This function works with either numpy or jax arrays or sharded jax arrays.
+    The function also transposes the reconstruction to right-hand coordinates (slice, col, row),
+    and writes the reconstruction and optional metadata to an HDF5 file.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -576,14 +575,9 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-
-    # Keep every step host-side so the full volume is never copied back onto a single device -- a
-    # whole-volume jnp.transpose here OOMed on large recons (f32[1370,1880,1880] ~ 18 GiB at downsampling
-    # 1).  Gather FIRST (deliberate): apply_cylindrical_mask is host-preserving and np.transpose stays on
-    # the host, so both run in host RAM.  Masking a *sharded* recon before the gather would parallelize
-    # it, but masking a *single-device* recon on-device allocates the masked copy on that one device
-    # (~2x its footprint -> OOM); gather-first is safe for every input and the host mask on ~18 GiB is
-    # only seconds.  np.transpose returns a VIEW (no copy) -- the device->host gather is the only copy.
+    # This code is designed to work with either numpy or jax arrays or sharded jax arrays
+    # It does this by first moving the input array to the host (NumPy),
+    # and then performing the operations using numpy before writing to disk.
     recon = jax.device_get(recon)
 
     if remove_flash:
