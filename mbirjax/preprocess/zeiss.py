@@ -96,23 +96,18 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                                                                           alu_unit=alu_unit)
 
     if verbose > 0:
-        print("\n\n########## Cropping and downsampling scans")
+        print("\n\n########## Cropping scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                 crop_pixels_sides=crop_pixels_sides,
                                                                                 crop_pixels_top=crop_pixels_top,
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
-    ### downsample the scans with block-averaging
-    if downsample_factor[0] * downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.downsample_view_data(obj_scan, blank_scan, dark_scan,
-                                                                                          downsample_factor=downsample_factor,
-                                                                                          defective_pixel_array=defective_pixel_array)
-
     if verbose > 0:
-        print("\n\n########## Computing sinogram from object, blank, and dark scans")
-
-    sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
+        print("\n\n########## Computing sinogram (downsample -> transmission, fused and view-sharded)")
+    # Downsample + transmission via the shared, view-sharded core (zeiss has no detector rotation).
+    sino = mjp.scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array,
+                            downsample_factor=downsample_factor, det_rotation=0.0)
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and sino offset")

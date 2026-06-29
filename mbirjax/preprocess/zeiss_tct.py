@@ -85,7 +85,9 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
 
     if verbose > 0:
         print("\n\n########## Computing sinogram from object, blank, and dark scans")
-    sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
+    # Transmission via the shared, view-sharded core (no downsample or rotation for translation CT).
+    sino = mjp.scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array,
+                            downsample_factor=(1, 1), det_rotation=0.0)
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")

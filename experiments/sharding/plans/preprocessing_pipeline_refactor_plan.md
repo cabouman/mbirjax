@@ -187,13 +187,23 @@ sinogram).  Phase 3 DONE.
   care used elsewhere to the global-offset path); near-linear multi-GPU speedup on the full Lilly
   dataset (cluster run).
 
-### Phase 4 — Migrate siblings onto the shared core (the DRY payoff)
-- One at a time: **zeiss → zeiss_tct**. Each keeps its frontend/backend and just declares its
-  correction step list; delete its duplicated orchestration. Add format-specific kernels
-  (`sino_shifts`, `zinger`, `compute_weight`) as steps/driver calls.
-- **pymbir: OPTIONAL.** If done, wire only the correction chain (`[bh, rotation]`) on the preloaded
-  sinogram — validates that the scan→sino front is cleanly optional.
-- **Gate:** each migrated format's golden output stable; net line count drops as duplication is removed.
+### Phase 4 — Migrate siblings onto the shared core (the DRY payoff)  **[zeiss + zeiss_tct DONE 2026-06-29; pymbir still optional/not done]**
+Done: both siblings now call `scan_to_sino` for the shared compute and delete the duplicated
+downsample/transmission orchestration:
+  * **zeiss**: `crop → scan_to_sino(downsample_factor, det_rotation=0) → offset → sino_shifts → zinger`.
+  * **zeiss_tct**: `crop → compute_weight → scan_to_sino(downsample=(1,1), det_rotation=0) → offset`.
+The corrections were left UNCHANGED (the cross-view `global` offset stays a cheap host pass — no
+reduction machinery; `sino_shifts`/`zinger`/`compute_weight` are per-view/cheap).  So the only change is
+the (already-validated) `scan_to_sino` swap; siblings now also shard the transmission across devices.
+Verified by an **ephemeral real-format before/after** (loaders run locally via olefile + Samba):
+zeiss foam512 `.txrm` (ds1/sv1) **PASS, max abs diff 0.0**; zeiss_tct purdue BGA `.xrm` **PASS, max abs
+diff 0.0** (sino + params + metadata/weights all match).  Baselines (`~/Documents/tmp/*.npz`) discarded
+after; collect/verify via `experiments/sharding/collect_sibling_baseline.py`.  Coverage note: foam is
+ds1, so the zeiss *downsample* branch is covered transitively by `scan_to_sino`'s validation (synthetic
+ds2 byte-identical, nsi ds4 exact), not a real-data ds>1 zeiss run.
+- **pymbir: OPTIONAL, not done.** If done, wire only the correction chain (`[bh, rotation]`) on the
+  preloaded sinogram — validates that the scan→sino front is cleanly optional.
+- Optional follow-up: shard `correct_sino_shifts` (currently a per-view Python loop) through the driver.
 
 ### Phase 5 — Cleanup + docs
 - Remove dead per-format scaffolding; document the step contract and how to add a new format/step;
