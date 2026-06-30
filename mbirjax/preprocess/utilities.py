@@ -165,12 +165,59 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
 
 
 def _rotation_kernel(sino_batch, det_rotation):
-    """Per-view-batch detector-rotation kernel (pure device-array op): rotate each view by
-    ``det_rotation`` radians with bilinear interpolation (zero fill outside)."""
-    import dm_pix
-    sino_batch = sino_batch.transpose(1, 2, 0)
-    sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0)
-    return sino_batch.transpose(2, 0, 1)
+    """Per-view-batch detector-rotation kernel (pure device-array op): rotate each view's
+    (row, channel) plane by ``det_rotation`` radians with bilinear interpolation, zero outside.
+
+    This is a direct 2-D bilinear rotation that mirrors ``dm_pix.rotate``'s geometry (same rotation
+    matrix, rotation center, and constant zero-fill boundary) but computes the rotated sampling grid
+    ONCE for the (row, channel) plane and reuses it across all views.  ``dm_pix.rotate`` instead treats
+    the whole (rows, cols, views) block as a single 3-D image: it builds a full 3-D coordinate grid (the
+    2-D grid replicated across every view) and does ``2**3 = 8``-corner linear interpolation, which
+    transiently allocates tens of GB for a large view batch -- the dominant preprocessing GPU peak.
+    Because the view axis is an identity dimension there (each output view samples only its own input
+    view), the per-view result is plain 4-corner 2-D bilinear interpolation, which we compute directly:
+    gather the 4 neighbors for every view in one shot with shared 2-D weights.  ~10x less memory and
+    faster, matching dm_pix to floating-point tolerance (not bit-exact: different op ordering).
+
+    Args:
+        sino_batch (jax array): (num_views, num_det_rows, num_det_channels).
+        det_rotation (float): rotation angle in radians (dm_pix sign convention).
+    """
+    num_views, num_rows, num_cols = sino_batch.shape
+    cos_a = jnp.cos(det_rotation)
+    sin_a = jnp.sin(det_rotation)
+    center_row = (num_rows - 1) / 2.0
+    center_col = (num_cols - 1) / 2.0
+
+    # For each OUTPUT pixel (i, j), find the INPUT location it samples, using the same affine map dm_pix
+    # applies: coord = R @ pixel + offset, with offset = center - R @ center (rotation about the center).
+    grid_i, grid_j = jnp.meshgrid(jnp.arange(num_rows), jnp.arange(num_cols), indexing='ij')  # (rows, cols)
+    offset_row = center_row - (cos_a * center_row + sin_a * center_col)
+    offset_col = center_col - (-sin_a * center_row + cos_a * center_col)
+    src_row = cos_a * grid_i + sin_a * grid_j + offset_row   # (num_rows, num_cols)
+    src_col = -sin_a * grid_i + cos_a * grid_j + offset_col
+
+    # Bilinear neighbors, matching dm_pix: lower = floor, upper = ceil, weight = coord - floor; the
+    # gather indices are clipped into range and out-of-image samples are zeroed afterwards via the mask.
+    lower_row = jnp.floor(src_row)
+    lower_col = jnp.floor(src_col)
+    frac_row = src_row - lower_row     # (num_rows, num_cols)
+    frac_col = src_col - lower_col
+    r0 = jnp.clip(lower_row.astype(jnp.int32), 0, num_rows - 1)
+    r1 = jnp.clip(jnp.ceil(src_row).astype(jnp.int32), 0, num_rows - 1)
+    c0 = jnp.clip(lower_col.astype(jnp.int32), 0, num_cols - 1)
+    c1 = jnp.clip(jnp.ceil(src_col).astype(jnp.int32), 0, num_cols - 1)
+
+    # Gather the 4 neighbors for EVERY view at once; the (num_rows, num_cols) weights broadcast over the
+    # leading view axis.  sino_batch[:, r, c] has shape (num_views, num_rows, num_cols).
+    rotated = (((1.0 - frac_row) * (1.0 - frac_col)) * sino_batch[:, r0, c0]
+               + ((1.0 - frac_row) * frac_col) * sino_batch[:, r0, c1]
+               + (frac_row * (1.0 - frac_col)) * sino_batch[:, r1, c0]
+               + (frac_row * frac_col) * sino_batch[:, r1, c1])
+
+    # Zero any output pixel whose sample fell outside the original image (mode='constant', cval=0).
+    in_bounds = (src_row >= 0) & (src_row <= num_rows - 1) & (src_col >= 0) & (src_col <= num_cols - 1)
+    return rotated * in_bounds
 
 
 def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):

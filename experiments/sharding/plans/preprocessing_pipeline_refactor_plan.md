@@ -294,11 +294,19 @@ B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
    instead of a `(num_nans, 9, 3)` coord array (27×→9×).  This was *not* the GPU culprit, but it
    removes a latent `O(num_nans)` blowup that would bite a high-NaN dataset.  Semantics preserved (all
    medians read from the pre-update sino, single scatter).
-3. **IN PROGRESS — replace the rotation (Option C).**  Implement a true **2-D** rotation: compute the
-   rotated `(rows, cols)` coordinate grid **once** and bilinear-gather all views with shared coords
-   (4 corners, no per-view coordinate replication).  Expected ~4–8× leaner *and* faster than the 3-D
-   `dm_pix.rotate`.  Not byte-identical (different interpolation code path) — gate is a reasonable
-   float tolerance vs the dm_pix result, per Greg.
+3. **DONE (un-jitted) — replaced the rotation (Option C).**  `_rotation_kernel` is now a direct **2-D**
+   bilinear rotation: it computes the rotated `(rows, cols)` sampling grid **once** (mirroring dm_pix's
+   matrix/center/offset) and gathers the **4** neighbors for every view in one shot with shared 2-D
+   weights — no per-view coordinate replication, 4 corners not 8, no 3-D `meshgrid`.  Structurally
+   ~10× less transient memory (the ~46 GB came from `8 × (rows,cols,views)` corner arrays; now it's
+   ~4 corner gathers ≈ a few GB eager) and faster.  **Validation (CPU):** angle=0 is exact; vs
+   `dm_pix.rotate` max abs diff ~5.8e-5 (mean ~1e-6) on random N(0,1), concentrated at a ~1-3% of
+   pixels near interpolation boundaries, no systematic bias; **end-to-end through `scan_to_sino` the
+   diff is ~3.2e-6** (real sinograms are smoother).  No-rotation and interpolate paths stay
+   byte-identical.  `tests/test_preprocessing.py` passes.  **GPU memory drop to be confirmed on the
+   cluster.**  NEXT: `@jax.jit` the rotation (single-variable jit-vs-eager comparison) — expected to
+   fuse the 4 corners + accumulation (lower memory) and run faster, ~1 ULP cost.  Also pending: the
+   1-view probe refinement in `pipeline.py`.
 
 **Verification so far.** Ephemeral pre/post golden on NaN-heavy synthetic data (single + multi CPU
 device): `interpolate` and `scan_to_sino` byte-identical (max abs diff 0.0); multi-chunk interpolate
