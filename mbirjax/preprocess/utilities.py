@@ -79,88 +79,92 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
     return sino
 
 
-def interpolate_defective_pixels(sino, defective_pixel_array=()):
-    """
-    Interpolates defective sinogram entries with the mean of neighboring pixels.
+def _warn_unfilled(num_residual):
+    """Host-side warning hook (invoked via ``jax.debug.callback``) when some pixels could not be filled.
+
+    ``jax.debug.callback`` runs this on the host even from inside a jitted/traced kernel, so the dense
+    NaN-fill below can stay fully jittable while still surfacing the rare "cluster too big" case."""
+    num_residual = int(num_residual)
+    if num_residual > 0:
+        warnings.warn(f"interpolate_defective_pixels: {num_residual} pixel(s) left after the fill passes "
+                      f"(dead-pixel clusters wider than the fill reach); setting them to 0. Increase "
+                      f"num_passes if this is unexpected.")
+
+
+def _box3x3_sum(x):
+    """Sum over each 3x3 (row, channel) window, per view, zero-padded at the detector edges.
+
+    ``x`` has shape (num_views, num_det_rows, num_det_channels); the window spans only the trailing two
+    (detector) axes.  Uses ``reduce_window`` -- a fused sliding-window sum -- so it does NOT materialize
+    nine shifted copies of the array (O(N) memory, unlike stack-the-9-neighbors-and-reduce)."""
+    return jax.lax.reduce_window(x, 0.0, jax.lax.add,
+                                 window_dimensions=(1, 3, 3),
+                                 window_strides=(1, 1, 1),
+                                 padding='SAME')
+
+
+def _interpolate_fill_pass(sino):
+    """One dense pass: replace each NaN pixel with the MEAN of its finite 3x3 in-view neighbors.
+
+    Finite pixels are unchanged.  A NaN with no finite neighbor stays NaN (it gets filled on a later
+    pass, as the surrounding NaN region shrinks inward).  Computed densely with two box sums (values and
+    a validity mask), so it is jittable and memory-light -- no per-NaN gather, no neighbor stack."""
+    is_nan = jnp.isnan(sino)
+    valid = (~is_nan).astype(sino.dtype)
+    filled = jnp.where(is_nan, jnp.zeros((), sino.dtype), sino)        # NaNs contribute 0 to the sum
+    neighbor_sum = _box3x3_sum(filled)
+    neighbor_count = _box3x3_sum(valid)
+    neighbor_mean = neighbor_sum / jnp.maximum(neighbor_count, 1.0)    # avoid 0/0 where no valid neighbor
+    return jnp.where(is_nan & (neighbor_count > 0), neighbor_mean, sino)
+
+
+def interpolate_defective_pixels(sino, defective_pixel_array=(), num_passes=3):
+    """Replace defective / non-finite sinogram pixels with the mean of their finite 3x3 in-view neighbors.
+
+    Invalid pixels are the non-finite entries (NaN / +-inf -- e.g. the transmission's ``obj/blank <= 0``
+    pixels) plus any pixel listed in ``defective_pixel_array`` (the same detector coords in every view).
+    They are marked NaN and then filled by ``num_passes`` dense neighborhood-mean passes: each pass
+    replaces every NaN that has >=1 finite neighbor with the mean of its finite 3x3 in-view neighbors, so
+    a NaN region shrinks inward by one pixel per pass.  ``num_passes`` thus bounds the largest fillable
+    dead-pixel cluster (radius ``num_passes``); any pixel still NaN afterward triggers a warning and is
+    set to 0.
+
+    This is a fully **jittable, fixed-shape** computation (dense ``reduce_window`` passes -- no
+    ``argwhere``, no data-dependent ``while`` loop), so the whole scan->sinogram kernel can be wrapped in
+    a single ``jax.jit``.  The fill uses the neighbor MEAN (not median): for dead pixels surrounded by
+    valid data the two are nearly identical, and they affect <1% of pixels.
 
     Args:
-        sino (jax array, float): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        defective_pixel_array (jax array): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+        sino (jax array, float): (num_views, num_det_rows, num_det_channels).
+        defective_pixel_array (array or tuple): shared (det_row, det_channel) coords of defective pixels,
+            or () for none.  (The transmission caller already NaN-marks these; re-marking here is cheap
+            and keeps this function correct when called on its own.)
+        num_passes (int): number of dense fill passes = max fillable dead-pixel cluster radius.
 
     Returns:
-        2-element tuple containing:
-        - **sino** (*jax array, float*): Corrected sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **defective_pixel_list** (*list(tuple)*): Updated defective_pixel_list with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+        jax array, float: sinogram with invalid pixels interpolated (any unfillable ones set to 0).
     """
+    num_views, num_rows, num_channels = sino.shape
 
-    sino_shape = sino.shape
-    sino = jnp.nan_to_num(sino, copy=False, nan=jnp.nan, posinf=jnp.nan, neginf=jnp.nan)
-
-    # First handle the defective_pixel_array, each of which goes across all views
-    # For each nan entry, we take the 3x3 neighbors in the same view and apply nanmedian.
-    sino = sino.reshape((sino_shape[0], -1))
-    neighbor_radius = 1
-
-    # Generate all i_offset and j_offset combinations.  num_nbrs_1d = 2 * neighbor_radius + 1
-    offsets = jnp.arange(-neighbor_radius, neighbor_radius + 1)
-    i_offsets, j_offsets = jnp.meshgrid(offsets, offsets, indexing='ij')  # Shape (num_nbrs_1d, num_nbrs_1d)
-    i_offsets = i_offsets.ravel()  # (num_nbrs_1d^2,)
-    j_offsets = j_offsets.ravel()  # (num_nbrs_1d^2,)
-    offsets_expanded = jnp.stack((i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 2)
-
+    # Mark every invalid pixel NaN: non-finite values, plus the known shared defective pixels.
+    sino = jnp.where(jnp.isfinite(sino), sino, jnp.nan)
     if len(defective_pixel_array) > 0:
-        # Broadcast defective_pixel_array to match offset shapes
-        defective_pixel_expanded = defective_pixel_array[:, None, :]  # (num_defective_pixels, 1, 2)
+        # mode='clip' (a no-op for these in-bounds coords) keeps ravel_multi_index jittable -- the
+        # default mode='raise' forces a concrete bounds check that fails under jit.
+        defective_flat = jnp.ravel_multi_index(jnp.asarray(defective_pixel_array).T,
+                                               (num_rows, num_channels), mode='clip')  # (num_defective,)
+        sino = sino.reshape(num_views, -1).at[:, defective_flat].set(jnp.nan).reshape(
+            num_views, num_rows, num_channels)
 
-        # Add the indices and offsets to get valid neighbors, then convert to indices.  We use clip mode
-        # for raveling to stay in bounds.  If a neighbor is out of bounds, clipping will yield a neighbor.
-        neighbor_coords = defective_pixel_expanded + offsets_expanded  # (num_defective_pixels, num_nbrs_1d^2, 2)
-        flat_indices = jnp.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
-                                             sino_shape[1:], mode='clip')  # (num_defective_pixels, num_nbrs_1d^2)
+    # Dense neighborhood-mean fill, a fixed number of passes (jittable -- no NaN search, no while loop).
+    for _ in range(num_passes):
+        sino = _interpolate_fill_pass(sino)
 
-        # Gather neighbor values for all views and use nanmedian to replace the values in sino
-        neighbor_values_flat = sino[:, flat_indices]  # (num_views, num_defective_pixels, num_nbrs_1d^2)
-        median_values = jnp.nanmedian(neighbor_values_flat, axis=2)
-        flat_indices = jnp.ravel_multi_index(defective_pixel_array.T, sino_shape[1:])
-        sino = put_in_slice(sino, flat_indices, median_values)
-
-    # Repeat on individual NaNs until there are none left.  Each NaN is replaced by the nanmedian of its
-    # 3x3 in-view neighborhood.  The NaN list is processed in CHUNKS so the (num_nans, 9) neighbor gather
-    # -- which otherwise dominates device memory when a large fraction of a view-batch is NaN (e.g. many
-    # transmission obj/blank <= 0 pixels) -- stays bounded regardless of the NaN count or batch size.
-    # Within a sweep every median is read from the pre-update sinogram and the replacements are written
-    # in a single scatter, so the result is identical to the original single-shot gather/median/scatter
-    # (adjacent NaNs never observe each other's updates).  Neighbors are indexed per axis (view fixed;
-    # row/channel offset by +-1 and clipped to bounds) rather than via a materialized (num_nans, 9, 3)
-    # coordinate array, keeping the largest intermediate at 9x rather than 27x the NaN count.
-    sino = sino.reshape(sino_shape)
-    num_rows, num_channels = sino_shape[1], sino_shape[2]
-    pixels_per_view = num_rows * num_channels
-    nan_chunk_size = 4_000_000
-    nan_indices = jnp.argwhere(jnp.isnan(sino))
-    num_nans = nan_indices.shape[0]
-    while num_nans > 0:
-        sino = sino.reshape(-1)
-        view_idx, row_idx, channel_idx = nan_indices[:, 0], nan_indices[:, 1], nan_indices[:, 2]
-        median_chunks = []
-        for start in range(0, num_nans, nan_chunk_size):
-            stop = min(start + nan_chunk_size, num_nans)
-            nbr_rows = jnp.clip(row_idx[start:stop, None] + i_offsets[None, :], 0, num_rows - 1)
-            nbr_channels = jnp.clip(channel_idx[start:stop, None] + j_offsets[None, :], 0, num_channels - 1)
-            nbr_flat = view_idx[start:stop, None] * pixels_per_view + nbr_rows * num_channels + nbr_channels
-            median_chunks.append(jnp.nanmedian(sino[nbr_flat], axis=1))  # (chunk,)
-        median_values = jnp.concatenate(median_chunks) if len(median_chunks) > 1 else median_chunks[0]
-        nan_flat = view_idx * pixels_per_view + row_idx * num_channels + channel_idx
-        sino = sino.at[nan_flat].set(median_values)
-
-        sino = sino.reshape(sino_shape)
-        nan_indices = jnp.argwhere(jnp.isnan(sino))
-        new_num_nans = nan_indices.shape[0]
-        if new_num_nans >= num_nans:
-            raise ValueError('Unable to remove all defective pixels from sinogram.')
-        num_nans = new_num_nans
-
-    return sino
+    # Any pixels still NaN (dead clusters wider than num_passes): warn on the host (jit-safe) and zero.
+    # ordered=True ties the callback to the data dependency so the warning fires before the result is
+    # consumed (rather than firing asynchronously and possibly being missed).
+    jax.debug.callback(_warn_unfilled, jnp.sum(jnp.isnan(sino)), ordered=True)
+    return jnp.nan_to_num(sino, nan=0.0)
 
 
 
@@ -466,13 +470,21 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
 
     do_rotation = det_rotation != 0.0
 
+    # The whole per-batch kernel -- (downsample) -> transmission -> interpolate -> (rotation) -- is now
+    # jittable (interpolate uses a fixed-iteration dense fill instead of argwhere/while), so we wrap it in
+    # a single jax.jit.  XLA then fuses the stages, reuses buffers, and dispatches one kernel per batch
+    # instead of dozens of eager ops (lower memory + much faster, especially multi-device).  The host
+    # constants (blank_minus_dark, etc.) and the do_downsample/do_rotation flags are captured as compile
+    # constants; det_rotation likewise.  Run under each worker's jax.default_device, the kernel compiles
+    # per device with its constants on that device (one compile per shape per device, reused per batch).
+    @jax.jit
     def fused_kernel(obj_batch):
         if do_downsample:
             obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
         sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
                                           trans_flat_indices, defective_pixel_array)
         if do_rotation:
-            sino_batch = _rotation_kernel_jit(sino_batch, det_rotation)
+            sino_batch = _rotation_kernel(sino_batch, det_rotation)
         return sino_batch
 
     sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size, devices=devices)

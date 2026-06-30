@@ -290,11 +290,17 @@ B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
    per-shard result lists + final `np.concatenate`.  Host footprint ~3× → ~2× (input + output),
    independent of n.  Byte-identical.  (Keeps a full-batch shape probe — see the probe decision under
    item 3.)
-2. **DONE (defensive, byte-identical) — `interpolate_defective_pixels` (`utilities.py`):** process the
-   NaN list in 4M-row chunks and index the 9 neighbors per axis (view fixed; row/channel `clip`ped)
-   instead of a `(num_nans, 9, 3)` coord array (27×→9×).  This was *not* the GPU culprit, but it
-   removes a latent `O(num_nans)` blowup that would bite a high-NaN dataset.  Semantics preserved (all
-   medians read from the pre-update sino, single scatter).
+2. **DONE — `interpolate_defective_pixels` rewritten as a jittable dense fill (`utilities.py`).**
+   (Supersedes the interim chunked-`argwhere` median version.)  Invalid pixels (non-finite + the shared
+   `defective_pixel_array`) are marked NaN and filled by **K=3 dense neighborhood-MEAN passes** computed
+   with `reduce_window` box sums (values + a validity mask) — no `argwhere`, no data-dependent `while`,
+   no 9× neighbor stack, O(N) memory.  Each pass fills the NaN frontier inward one pixel, so K=3 covers
+   dead-pixel clusters up to ~5×5; pixels still NaN afterward are set to 0 with a host-side warning via
+   `jax.debug.callback(..., ordered=True)`.  **MEAN replaces the old median** (Greg-approved): the test
+   showed median is ~0.07 more accurate at the few dead pixels on sinogram gradients (max ~0.21 vs
+   ~0.14 vs the true sino, <1% of pixels), recon-negligible; `tests/test_preprocessing.py` atol/nrmse
+   relaxed accordingly (99th-pct gate unchanged).  Verified: jittable (jit==eager exactly), no NaN
+   escapes, isolated/defective pixels fill correctly, 5×5 fills / 9×9 core warns+zeros.
 3. **DONE (un-jitted) — replaced the rotation (Option C).**  `_rotation_kernel` is now a direct **2-D**
    bilinear rotation: it computes the rotated `(rows, cols)` sampling grid **once** (mirroring dm_pix's
    matrix/center/offset) and gathers the **4** neighbors for every view in one shot with shared 2-D
@@ -318,6 +324,16 @@ B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
      probe).  C removed the gpu0 rotate spike that motivated it, and with the jitted rotation the
      full-batch probe reuses the workers' compiled shape, whereas a 1-view probe would force an extra
      (1, rows, cols) compile for negligible gain.
+4. **DONE — whole `fused_kernel` wrapped in a single `jax.jit` (`scan_to_sino`).**  Now that interpolate
+   is jittable, the entire per-batch kernel — (downsample) → transmission → interpolate → rotation — is
+   one jitted function (it calls the *eager* `_rotation_kernel`, fused by the outer jit; the standalone
+   `_rotation_kernel_jit` stays for `correct_det_rotation`).  Host constants + the do_downsample/
+   do_rotation flags + `det_rotation` are compile constants; it compiles once per shape per device under
+   each worker's `default_device`.  XLA fuses all stages → one dispatch per batch, buffer reuse.
+   **Validation (CPU):** runs single + multi device; **1-dev vs N-dev is now bit-exact (0.0)** for both
+   downsample and plain paths (jit fusion removed the prior ~1-ULP cross-device drift); `tests` pass.
+   One gotcha fixed: interpolate's `ravel_multi_index` needs `mode='clip'` (default `'raise'` forces a
+   concrete bounds check that breaks under jit).  GPU speed/memory to be confirmed on the cluster.
 
 **Verification so far.** Ephemeral pre/post golden on NaN-heavy synthetic data (single + multi CPU
 device): `interpolate` and `scan_to_sino` byte-identical (max abs diff 0.0); multi-chunk interpolate

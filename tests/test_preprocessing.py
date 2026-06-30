@@ -122,8 +122,12 @@ class TestNSIPreprocessing(unittest.TestCase):
             obj_scan[index[0], index[1], index[2]] = np.nan
         self.obj_scan = jnp.array(obj_scan)
 
-        # Set the tolerances for the test
-        self.preprocessing_tolerance = {'atol': 0.14, 'nrmse_tol': 0.0015, 'pct99_tol': 0.0018}
+        # Set the tolerances for the test.  interpolate_defective_pixels now fills invalid pixels with
+        # the neighborhood MEAN (a jittable, fixed-iteration dense fill) rather than the median.  The mean
+        # is a slightly looser estimate at the few dead pixels that fall on sinogram gradients (max abs
+        # diff ~0.21 vs ~0.14 for the median, at <1% of pixels), so atol/nrmse are relaxed accordingly;
+        # the 99th-percentile gate (the bulk of the sinogram) is unchanged.
+        self.preprocessing_tolerance = {'atol': 0.25, 'nrmse_tol': 0.0025, 'pct99_tol': 0.0018}
 
     def test_preprocessing(self):
         """Test if background offset correction is consistent between JAX and GDT implementations."""
