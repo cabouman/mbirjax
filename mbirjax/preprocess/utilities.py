@@ -220,6 +220,15 @@ def _rotation_kernel(sino_batch, det_rotation):
     return rotated * in_bounds
 
 
+# Jitted rotation: XLA fuses the 4-corner gather + weighted sum + boundary mask into a single kernel,
+# reusing buffers (lower peak than eager op-by-op, which materializes every intermediate) and avoiding
+# per-op dispatch (faster, which matters most for multi-device throughput).  ``det_rotation`` flows as a
+# traced scalar, so one compile per (num_views, num_rows, num_cols) shape is reused across angles.  Run
+# under ``jax.default_device(device)`` (as the preprocessing workers are), the computation -- and its
+# arange/meshgrid constants -- lands on that worker's device.
+_rotation_kernel_jit = jax.jit(_rotation_kernel)
+
+
 def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
     """
     Correct sinogram data to account for detector rotation, using JAX for batch processing and GPU acceleration.
@@ -235,7 +244,7 @@ def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
-    return pipeline.map_view_batches(sino, lambda b: _rotation_kernel(b, det_rotation), batch_size)
+    return pipeline.map_view_batches(sino, lambda b: _rotation_kernel_jit(b, det_rotation), batch_size)
 
 
 def correct_background_offset(sino, edge_width=9, option='global'):
@@ -463,7 +472,7 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
                                           trans_flat_indices, defective_pixel_array)
         if do_rotation:
-            sino_batch = _rotation_kernel(sino_batch, det_rotation)
+            sino_batch = _rotation_kernel_jit(sino_batch, det_rotation)
         return sino_batch
 
     sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size, devices=devices)

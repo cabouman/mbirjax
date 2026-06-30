@@ -288,7 +288,8 @@ B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
 1. **DONE — `map_view_batches` (`pipeline.py`):** pre-allocate the host output (shape/dtype probed from
    the first batch) and have each worker write its disjoint view-slice **in place** — eliminating the
    per-shard result lists + final `np.concatenate`.  Host footprint ~3× → ~2× (input + output),
-   independent of n.  Byte-identical.  (TODO: probe on a single view, not a full batch.)
+   independent of n.  Byte-identical.  (Keeps a full-batch shape probe — see the probe decision under
+   item 3.)
 2. **DONE (defensive, byte-identical) — `interpolate_defective_pixels` (`utilities.py`):** process the
    NaN list in 4M-row chunks and index the 9 neighbors per axis (view fixed; row/channel `clip`ped)
    instead of a `(num_nans, 9, 3)` coord array (27×→9×).  This was *not* the GPU culprit, but it
@@ -303,10 +304,20 @@ B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
    `dm_pix.rotate` max abs diff ~5.8e-5 (mean ~1e-6) on random N(0,1), concentrated at a ~1-3% of
    pixels near interpolation boundaries, no systematic bias; **end-to-end through `scan_to_sino` the
    diff is ~3.2e-6** (real sinograms are smoother).  No-rotation and interpolate paths stay
-   byte-identical.  `tests/test_preprocessing.py` passes.  **GPU memory drop to be confirmed on the
-   cluster.**  NEXT: `@jax.jit` the rotation (single-variable jit-vs-eager comparison) — expected to
-   fuse the 4 corners + accumulation (lower memory) and run faster, ~1 ULP cost.  Also pending: the
-   1-view probe refinement in `pipeline.py`.
+   byte-identical.  `tests/test_preprocessing.py` passes.  **Cluster: per-GPU preprocessing peak
+   56.8 GB → 5.73 GB (~10×).**
+   - **DONE — jitted (`_rotation_kernel_jit = jax.jit(_rotation_kernel)`)**, used in `scan_to_sino` and
+     `correct_det_rotation`.  XLA fuses the 4-corner gather + weighted sum + mask into one kernel
+     (buffer reuse + no eager per-op dispatch).  `det_rotation` flows as a traced scalar → one compile
+     per shape, reused across angles; under `default_device(device)` it lands on the worker's device.
+     **Validation (CPU):** jit vs eager ~5.5e-5 (XLA fusion reorder); **jit vs `dm_pix` only ~2.4e-7**
+     (the jitted form is *closer* to dm_pix than eager); end-to-end `scan_to_sino` vs the dm_pix golden
+     **1.2e-7**; rough CPU time/call 13.6 → 3.4 ms (**~4×**, indicative — real win is GPU); tests pass.
+     GPU memory/speed to be confirmed on the cluster.
+   - **Probe decision:** keep the full-batch shape probe in `pipeline.py` (do NOT switch to a 1-view
+     probe).  C removed the gpu0 rotate spike that motivated it, and with the jitted rotation the
+     full-batch probe reuses the workers' compiled shape, whereas a 1-view probe would force an extra
+     (1, rows, cols) compile for negligible gain.
 
 **Verification so far.** Ephemeral pre/post golden on NaN-heavy synthetic data (single + multi CPU
 device): `interpolate` and `scan_to_sino` byte-identical (max abs diff 0.0); multi-chunk interpolate
