@@ -28,6 +28,35 @@ MULTIAXIS_SLICE_BAND_SIZE = 128
 MULTIAXIS_FORWARD_SLICE_BATCH = 128
 
 
+def _vertical_footprint_phys(azimuth, elevation, delta_voxel, delta_voxel_row, delta_voxel_slice,
+                             broaden_elevation_footprint):
+    """Physical vertical footprint of one voxel projected onto the detector v-axis (in cm/units).
+
+    The detector v-axis is ``e_v = (sin az sin el, -cos az sin el, cos el)``; a voxel's extent
+    along it is the projection of its three edges.  Two regimes, selected by the static flag:
+
+    * ``broaden_elevation_footprint=False`` (default): keep only the foreshortened z-edge
+      ``cos(el)*delta_voxel_slice``.  Correct for ``|el| < ~45 deg`` (see below) and for extended
+      objects, where neighbor columns' v-positions tile the in-plane spread.
+    * ``broaden_elevation_footprint=True``: the amplitude-method LARGEST-edge footprint, i.e.
+      ``max`` over the z-edge and the two in-plane edges projected onto v -- the SAME max-of-edges
+      approximation ParallelBeamModel.compute_proj_data uses for ``footprint_xy`` (this vertical
+      pass IS 2-D parallel beam in the ``(t,z)->v`` plane at angle ``el``).  For ``|el| < ~45 deg``
+      the z-edge dominates and this reduces to the default; beyond ``45 deg`` the in-plane
+      ``sin(el)`` edges take over, where the z-edge-only footprint is too small.
+
+    NOTE: this is the ``max`` of edges, NOT their sum -- the sum lays the full trapezoid base down
+    as a flat box and over-widens (the trapezoid's effective width is ~the largest edge).
+    """
+    z_edge = delta_voxel_slice * jnp.abs(jnp.cos(elevation))
+    if not broaden_elevation_footprint:
+        return z_edge
+    sin_el = jnp.abs(jnp.sin(elevation))
+    x_edge = sin_el * jnp.abs(jnp.sin(azimuth)) * delta_voxel
+    y_edge = sin_el * jnp.abs(jnp.cos(azimuth)) * delta_voxel_row
+    return jnp.maximum(z_edge, jnp.maximum(x_edge, y_edge))
+
+
 class MultiAxisParallelModel(TomographyModel):
     """
     Parallel beam geometry allowing for a per-view elevation (tilt) angle.
@@ -70,11 +99,49 @@ class MultiAxisParallelModel(TomographyModel):
 
         view_params_array = angles
 
+        # --- Temporary A/B flags for the elevation-geometry corrections ---
+        # Defaults: pathlength correction ON, footprint correction OFF.  These are read in
+        # get_geometry_parameters and baked into the projector jit cache, so change them via
+        # set_elevation_correction (which rebuilds the projectors) rather than by mutating the
+        # attribute after construction.
+        #   correct_elevation_pathlength: deposit the voxel's full mass (1/cos(el) vertical
+        #       pathlength) so projected mass is independent of elevation; when off, a voxel's
+        #       projected mass falls off as cos(el)  [mass-conservation fix].
+        #   broaden_elevation_footprint: widen the vertical footprint W_p_r by the in-plane
+        #       sin(el) term (v = z cos el - t sin el, so the voxel's t-extent also shadows onto
+        #       v); when off, only the foreshortened z-edge is kept  [footprint-shape fix].
+        self.correct_elevation_pathlength = True
+        self.broaden_elevation_footprint = False
+
         # Slice batching for the split projectors is set by the module-level band/batch
         # constants (the back projector bands the slice axis; the forward vertical fan chunks
         # the input slices), not by a per-instance attribute.
         super().__init__(sinogram_shape, angles=view_params_array, view_params_name='angles', recon_slice_offset=0.0)
         self.set_params(geometry_type=str(type(self)))
+
+    def set_elevation_correction(self, correct_elevation_pathlength=None, broaden_elevation_footprint=None):
+        """Toggle the elevation-geometry corrections and rebuild the projectors.
+
+        Temporary A/B knobs for evaluating the elevation fixes against the original behavior.  The
+        flags are baked into the projector jit cache, so this rebuilds the projectors; passing
+        None leaves a flag unchanged.
+
+        Args:
+            correct_elevation_pathlength (bool or None): if True, the vertical fan deposits the
+                voxel's full mass (amplitude = (delta_voxel_slice/delta_det_row)/W_p_r, i.e. the
+                1/cos(el) pathlength), so a voxel's projected mass is independent of elevation.
+                If False (the original behavior), the amplitude is 1.0 and the projected mass
+                falls off as cos(el).
+            broaden_elevation_footprint (bool or None): if True, the vertical footprint W_p_r
+                includes the in-plane sin(el) contribution (the true shadow of a tilted voxel),
+                widening the row blur; if False (the original behavior), only the foreshortened
+                z-edge cos(el) is used.
+        """
+        if correct_elevation_pathlength is not None:
+            self.correct_elevation_pathlength = bool(correct_elevation_pathlength)
+        if broaden_elevation_footprint is not None:
+            self.broaden_elevation_footprint = bool(broaden_elevation_footprint)
+        self.create_projectors()
 
     def get_psf_radius(self):
         """
@@ -91,8 +158,23 @@ class MultiAxisParallelModel(TomographyModel):
         max_in_plane_pitch = max(delta_voxel, delta_voxel_row)
         psf_radius_u = int(jnp.ceil(jnp.ceil(max_in_plane_pitch / delta_det_channel) / 2))
 
-        # Vertical radius (elevation tilt): the slice pitch projects onto the detector rows.
-        psf_radius_v = int(jnp.ceil(jnp.ceil(delta_voxel_slice / delta_det_row) / 2))
+        # Vertical radius (elevation tilt): the slice pitch projects onto the detector rows.  With
+        # only the foreshortened z-edge (cos(el) <= 1) the footprint never exceeds delta_voxel_slice,
+        # so the elevation-0 bound below covers it.  When broaden_elevation_footprint is on, the
+        # footprint grows by the in-plane sin(el) term, so size the radius from the LARGEST
+        # |elevation| in the view set (worst-case azimuth gives an in-plane extent of
+        # sqrt(delta_voxel**2 + delta_voxel_row**2)).  Low-elevation problems therefore keep the
+        # minimal radius and pay nothing extra; the cost is incurred only where the geometry needs it.
+        vertical_footprint = delta_voxel_slice
+        if getattr(self, 'broaden_elevation_footprint', False):
+            angles = self.get_params('angles')
+            max_abs_el = float(jnp.max(jnp.abs(angles[:, 1]))) if angles is not None else 0.0
+            # amplitude-method max-of-edges at the worst-case azimuth (in-plane edge = max pitch);
+            # matches _vertical_footprint_phys so the kernel never truncates the broadened footprint.
+            z_edge = abs(float(jnp.cos(max_abs_el))) * delta_voxel_slice
+            in_plane_edge = abs(float(jnp.sin(max_abs_el))) * max(delta_voxel, delta_voxel_row)
+            vertical_footprint = max(z_edge, in_plane_edge)
+        psf_radius_v = int(jnp.ceil(jnp.ceil(vertical_footprint / delta_det_row) / 2))
 
         # We use a single radius for the parameter handler, taking the max to be safe (same as ConeBeamModel).
         return max(psf_radius_u, psf_radius_v)
@@ -130,8 +212,12 @@ class MultiAxisParallelModel(TomographyModel):
         geometry_param_values = [float(v) if v is not None else 0.0 for v in geometry_param_values]
 
         # 2. Append additional parameters not in self.params (same pattern as ConeBeamModel).
-        geometry_param_names += ['psf_radius']
+        # The two elevation-correction flags are appended as (hashable) bools so they enter the
+        # projector jit-cache key and select the corrected vs original vertical-fan behavior.
+        geometry_param_names += ['psf_radius', 'correct_elevation_pathlength', 'broaden_elevation_footprint']
         geometry_param_values.append(self.get_psf_radius())
+        geometry_param_values.append(bool(getattr(self, 'correct_elevation_pathlength', True)))
+        geometry_param_values.append(bool(getattr(self, 'broaden_elevation_footprint', False)))
 
         # The class is shared across instances (make_geometry_params) so the projectors' jit cache
         # is shared rather than re-traced per instance.
@@ -275,11 +361,25 @@ class MultiAxisParallelModel(TomographyModel):
         v_0 = z_0 * jnp.cos(elevation) - t * jnp.sin(elevation)
         m_p_0 = (v_0 + gp.det_row_offset) / gp.delta_det_row + (num_det_rows - 1) / 2.0
 
-        # W_p_r: projected footprint width of one voxel on rows
-        W_p_r = jnp.abs(delta_voxel_slice * jnp.cos(elevation) / gp.delta_det_row)
+        # W_p_r: projected footprint of one voxel on the detector rows, in row units.  The
+        # foreshortened z-edge contributes cos(el)*delta_voxel_slice; with broaden_elevation_
+        # footprint the in-plane edges add sin(el)*(in-plane extent) -- v = z cos(el) - t sin(el),
+        # so the voxel's t-extent also shadows onto v (the tilted-voxel shadow grows with el).
+        W_p_r_phys = _vertical_footprint_phys(azimuth, elevation, gp.delta_voxel,
+                                              delta_voxel_row, delta_voxel_slice,
+                                              gp.broaden_elevation_footprint)
+        W_p_r = W_p_r_phys / gp.delta_det_row
         W_p_r = jnp.maximum(W_p_r, 0.5)
 
-        scaling = 1.0
+        # Amplitude.  correct_elevation_pathlength deposits the voxel's full mass: the kernel sums
+        # to ~W_p_r rows, so amplitude = (delta_voxel_slice/delta_det_row)/W_p_r makes the total
+        # vertical weight = delta_voxel_slice/delta_det_row, INDEPENDENT of elevation (mass
+        # conservation; reduces to 1/cos(el) for the narrow z-edge-only footprint).  When off,
+        # the amplitude is 1.0, so a voxel's projected mass falls off as cos(el).
+        if gp.correct_elevation_pathlength:
+            scaling = (delta_voxel_slice / gp.delta_det_row) / W_p_r
+        else:
+            scaling = 1.0
 
         # --- Scatter Logic (Iterate slices, write to rows) ---
         # Chunk the input slices into batches of MULTIAXIS_FORWARD_SLICE_BATCH to bound the
@@ -560,9 +660,17 @@ class MultiAxisParallelModel(TomographyModel):
 
         slope_k_to_m = (delta_voxel_slice * jnp.cos(elevation)) / gp.delta_det_row
 
-        W_p_r = jnp.abs(delta_voxel_slice * jnp.cos(elevation) / gp.delta_det_row)
+        # Footprint and amplitude -- must match the forward vertical fan exactly for adjointness.
+        W_p_r_phys = _vertical_footprint_phys(azimuth, elevation, gp.delta_voxel,
+                                              delta_voxel_row, delta_voxel_slice,
+                                              gp.broaden_elevation_footprint)
+        W_p_r = W_p_r_phys / gp.delta_det_row
         W_p_r = jnp.maximum(W_p_r, 0.5)
         L_max = jnp.minimum(1.0, W_p_r)
+        if gp.correct_elevation_pathlength:
+            scaling = (delta_voxel_slice / gp.delta_det_row) / W_p_r
+        else:
+            scaling = 1.0
 
         slice_indices = g0 + jnp.arange(num_band_slices)        # GLOBAL band indices
         m_p_k = m_p_0 + slice_indices * slope_k_to_m
@@ -574,7 +682,9 @@ class MultiAxisParallelModel(TomographyModel):
             dist = jnp.abs(m_p_k - m_idx)
             weight = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)
             valid = (m_idx >= 0) & (m_idx < num_det_rows)
-            w_total = weight ** coeff_power
+            # (weight * scaling) mirrors the forward entry A_ij; the back projector applies
+            # (A_ij ** coeff_power), so adjointness holds at coeff_power=1.
+            w_total = (weight * scaling) ** coeff_power
             val = detector_col[jnp.clip(m_idx, 0, num_det_rows - 1)]
             new_cylinder += val * w_total * valid
 
