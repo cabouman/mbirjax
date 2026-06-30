@@ -4,6 +4,17 @@ This PR builds on the multi-GPU reconstruction support merged previously.  It fo
 large cone-beam volumes, removing memory pitfalls in the utilities around reconstruction, and improving
 the production workflow.  Everything runs with no change to existing scripts.
 
+## Import mbirjax before jax
+
+mbirjax configures JAX at import time -- it sets the XLA host-device-count flag (so multi-CPU runs see
+all cores) and raises the C++ log level (`TF_CPP_MIN_LOG_LEVEL`) to silence the benign multi-GPU
+allocator warnings (`cuda_vmm_allocator ... FABRIC+POSIX_FD ... NOT_PERMITTED`).  Both are read once when
+jaxlib first initializes, so they only take effect if set first.  **Therefore `import mbirjax` (or
+`import mbirjax.preprocess`) should come before any `import jax` / `import jax.numpy` in a script or
+module.**  If jax is imported first, mbirjax still works correctly, but those allocator warnings reappear
+and, on CPU-only systems, JAX may expose fewer (virtual) devices.  To make this independent of import
+order, set the variables in the environment before launching Python, e.g. `export TF_CPP_MIN_LOG_LEVEL=2`.
+
 ## Larger reconstructions
 
 - **Large cone-beam reconstructions now fit across multiple GPUs.**  A full 2048³ cone-beam volume
