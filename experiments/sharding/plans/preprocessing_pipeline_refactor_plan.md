@@ -255,6 +255,62 @@ devices well.  The preprocessing path's `run_per_device` (thread pool) DID paral
 (user+sys ~2.6x with lower wall on the collect-golden `time`).  So the generator should likely switch
 to `run_per_device` too — separate revisit.
 
+## 6b. Preprocessing memory diagnosis + fix (2026-06-30)
+
+**Symptom (Greg, cluster).** `Lilly_recon.py` reported `peak_bytes_in_use ≈ 56.875 GB` **per GPU**
+right after `scan_to_sino`'s "Sinogram computation complete." print — identical for n=2 and n=4
+(GPU 0+1 used at n=2; all 4 at n=4), i.e. ~3× the full object array on **each** device, with **zero**
+reduction from sharding.  `bytes_limit ≈ 77.6 GB` (the `XLA_PYTHON_CLIENT_MEM_FRACTION=0.98` pool set
+in `tomography_model.py`), so `peak < limit` → genuine in-use, not a pre-allocation artifact.
+
+**Sharding is fine.** `num_allocs` halved 4175 (n=2) → 2130 (n=4): each device runs its 1/n share of
+batches.  But the per-device PEAK is fixed at ~56.8 GB regardless of n, because it is **one batch's**
+working set (`batch_size=90` is the same on every device) — sharding splits views across devices but
+never splits a batch.  `batch_size=10` ablation → ~6.45 GB (linear in `batch_size`), confirming it is
+per-batch.
+
+**Root cause (confirmed by Greg, stepping through `get_memory_stats`): `dm_pix.rotate`, NOT
+interpolate.**  `interpolate_defective_pixels` tops out <5 GB (with ~8000 all-view dead pixels the NaN
+count is ~720K/batch — the <5 GB is batch-sized reshape/copies, not the neighbor gather).  The blowup
+is the detector-rotation kernel: a `(1496,1880,90)` block enters at ~1 GB and `dm_pix.rotate` spikes
+gpu0 from 10.4 → **56.8 GB**.  Source dive (`dm_pix/_src/augment.py:731` `rotate` →
+`affine_transform:707`; `interpolation.py:97`): `rotate` uses a **3×3** matrix (identity 3rd row), so
+`affine_transform` builds a `meshgrid` over **all three** axes and `flat_nd_linear_interpolate` does
+`2^3 = 8`-corner interpolation.  Each corner array is the full block (~1 GB): `point_indices` (8 GB)
++ `point_weights` (8 GB) + gather `volume[indices]` (8 GB) + `weights*gather` (8 GB) = ~32 GB, plus
+~10 GB of meshgrid/coordinate/lower/upper arrays.  Three multiplicative wastes: (1) 8 corners not 4
+(the view axis is a redundant identity interpolation dim), (2) every intermediate carries the full
+90-view depth with the 2-D rotation grid replicated across all views, (3) **eager** execution (the
+kernel is not jitted) → no XLA fusion/buffer-reuse, so all the 8 GB arrays coexist.  `= 8,116,719,616`
+B `largest_alloc_size` is exactly one `(8,1496,1880,90)`-class corner array.
+
+**Fixes.**
+1. **DONE — `map_view_batches` (`pipeline.py`):** pre-allocate the host output (shape/dtype probed from
+   the first batch) and have each worker write its disjoint view-slice **in place** — eliminating the
+   per-shard result lists + final `np.concatenate`.  Host footprint ~3× → ~2× (input + output),
+   independent of n.  Byte-identical.  (TODO: probe on a single view, not a full batch.)
+2. **DONE (defensive, byte-identical) — `interpolate_defective_pixels` (`utilities.py`):** process the
+   NaN list in 4M-row chunks and index the 9 neighbors per axis (view fixed; row/channel `clip`ped)
+   instead of a `(num_nans, 9, 3)` coord array (27×→9×).  This was *not* the GPU culprit, but it
+   removes a latent `O(num_nans)` blowup that would bite a high-NaN dataset.  Semantics preserved (all
+   medians read from the pre-update sino, single scatter).
+3. **IN PROGRESS — replace the rotation (Option C).**  Implement a true **2-D** rotation: compute the
+   rotated `(rows, cols)` coordinate grid **once** and bilinear-gather all views with shared coords
+   (4 corners, no per-view coordinate replication).  Expected ~4–8× leaner *and* faster than the 3-D
+   `dm_pix.rotate`.  Not byte-identical (different interpolation code path) — gate is a reasonable
+   float tolerance vs the dm_pix result, per Greg.
+
+**Verification so far.** Ephemeral pre/post golden on NaN-heavy synthetic data (single + multi CPU
+device): `interpolate` and `scan_to_sino` byte-identical (max abs diff 0.0); multi-chunk interpolate
+checked at chunk=3/7/50; `tests/test_preprocessing.py` passes.  Cross-device 1-ULP diffs in the
+downsample variant are the known pre-existing XLA op-fusion artifact.
+
+**Broader thread (your prompt):** the whole fused kernel is eager; `interpolate`'s `argwhere` (dynamic
+shapes) blocks jitting it wholesale, but the rotation/transmission/downsample are jittable — worth
+revisiting for the multi-device throughput, separate from this memory fix.
+
+**Data note (Greg to check, not a code issue):** ~8000 detector pixels are dead in all views.
+
 ## 7. Open decisions
 - Small-fixture format/location (committed .npz vs opt-in cluster path test).
 - Whether `compute_weight` (zeiss_tct) becomes a driver kernel now or stays a separate host call until

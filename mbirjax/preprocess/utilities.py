@@ -124,32 +124,41 @@ def interpolate_defective_pixels(sino, defective_pixel_array=()):
         flat_indices = jnp.ravel_multi_index(defective_pixel_array.T, sino_shape[1:])
         sino = put_in_slice(sino, flat_indices, median_values)
 
-    # Repeat on individual nans until there are no more.  Each index now has 3 components.
+    # Repeat on individual NaNs until there are none left.  Each NaN is replaced by the nanmedian of its
+    # 3x3 in-view neighborhood.  The NaN list is processed in CHUNKS so the (num_nans, 9) neighbor gather
+    # -- which otherwise dominates device memory when a large fraction of a view-batch is NaN (e.g. many
+    # transmission obj/blank <= 0 pixels) -- stays bounded regardless of the NaN count or batch size.
+    # Within a sweep every median is read from the pre-update sinogram and the replacements are written
+    # in a single scatter, so the result is identical to the original single-shot gather/median/scatter
+    # (adjacent NaNs never observe each other's updates).  Neighbors are indexed per axis (view fixed;
+    # row/channel offset by +-1 and clipped to bounds) rather than via a materialized (num_nans, 9, 3)
+    # coordinate array, keeping the largest intermediate at 9x rather than 27x the NaN count.
     sino = sino.reshape(sino_shape)
+    num_rows, num_channels = sino_shape[1], sino_shape[2]
+    pixels_per_view = num_rows * num_channels
+    nan_chunk_size = 4_000_000
     nan_indices = jnp.argwhere(jnp.isnan(sino))
-    offsets_expanded = jnp.stack((0*i_offsets, i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 3)
     num_nans = nan_indices.shape[0]
     while num_nans > 0:
-        sino = sino.flatten()
-
-        nan_inds_expanded = nan_indices[:, None, :]  # (num_nans, 1, 3)
-        neighbor_coords = nan_inds_expanded + offsets_expanded  # (num_nans, num_nbrs_1d^2, 2)
-        flat_indices = jnp.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
-                                             sino_shape, mode='clip')  # (num_nans, num_nbrs_1d^2)
-
-        # Gather neighbor values for all views and replace the values, ignoring any nan values
-        neighbor_values_flat = sino[flat_indices]  # (num_nans, num_nbrs_1d^2)
-        median_values = jnp.nanmedian(neighbor_values_flat, axis=1)
-        flat_indices = jnp.ravel_multi_index(nan_indices.T, sino_shape)
-        sino = sino.at[flat_indices].set(median_values)
+        sino = sino.reshape(-1)
+        view_idx, row_idx, channel_idx = nan_indices[:, 0], nan_indices[:, 1], nan_indices[:, 2]
+        median_chunks = []
+        for start in range(0, num_nans, nan_chunk_size):
+            stop = min(start + nan_chunk_size, num_nans)
+            nbr_rows = jnp.clip(row_idx[start:stop, None] + i_offsets[None, :], 0, num_rows - 1)
+            nbr_channels = jnp.clip(channel_idx[start:stop, None] + j_offsets[None, :], 0, num_channels - 1)
+            nbr_flat = view_idx[start:stop, None] * pixels_per_view + nbr_rows * num_channels + nbr_channels
+            median_chunks.append(jnp.nanmedian(sino[nbr_flat], axis=1))  # (chunk,)
+        median_values = jnp.concatenate(median_chunks) if len(median_chunks) > 1 else median_chunks[0]
+        nan_flat = view_idx * pixels_per_view + row_idx * num_channels + channel_idx
+        sino = sino.at[nan_flat].set(median_values)
 
         sino = sino.reshape(sino_shape)
-        nan_indices = jnp.argwhere(np.isnan(sino))
+        nan_indices = jnp.argwhere(jnp.isnan(sino))
         new_num_nans = nan_indices.shape[0]
         if new_num_nans >= num_nans:
             raise ValueError('Unable to remove all defective pixels from sinogram.')
-        else:
-            num_nans = new_num_nans
+        num_nans = new_num_nans
 
     return sino
 
