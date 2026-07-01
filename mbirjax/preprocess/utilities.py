@@ -752,10 +752,7 @@ def project_vector_to_vector(u1, u2):
     return u1_proj
 
 
-# NOT jitted: this runs eagerly so it is host-preserving (a NumPy recon stays on the host, a jax recon
-# stays on-device -- see the body).  jit would force a device array and trace the input, shipping the
-# whole volume to one GPU (the export-time OOM on large recons).  It's a one-shot post-recon mask (export
-# + MAR segmentation), not a hot path, so eager costs nothing meaningful.
+# Not jitted, so a numpy recon stays on the host (jit would force the whole volume onto one GPU).
 def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
@@ -767,9 +764,8 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
     Note:
-        Operates on the input's array module: a host (NumPy) recon stays on the host (no copy to a
-        device) and a jax recon stays on-device.  So a large host volume is masked without being shipped
-        onto a single device -- which would otherwise OOM for big recons.
+        A numpy recon is masked on the host and a jax recon on-device, so a large host volume is
+        never shipped onto a single device (which would OOM for big recons).
 
     Args:
         recon (np.ndarray or jax.Array): 3D volume with shape (num_rows, num_cols, num_slices).
@@ -787,10 +783,7 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         >>> masked_vol.shape
         (128, 128, 64)
     """
-    # Operate on the input's OWN array module so a host (NumPy) recon stays on the host and a device/jax
-    # recon stays on-device.  The masks are tiny; the expensive op is the full-volume multiply, which
-    # follows recon's residence.  export_recon_hdf5 passes a host recon, so for large volumes nothing is
-    # shipped back onto a single device (jnp here previously forced the whole volume onto gpu0 -> OOM).
+    # Use recon's own array module so a numpy recon stays on the host and a jax recon stays on-device.
     xp = jnp if isinstance(recon, jax.Array) else np
 
     num_recon_rows, num_recon_cols, num_slices = recon.shape
@@ -805,17 +798,21 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     dist_sq = (row_coords - row_center) ** 2 + (col_coords - col_center) ** 2
     circular_mask = (dist_sq <= radius ** 2).astype(recon.dtype)
 
-    # Apply cylindrical mask to all slices
+    # Circular mask: this multiply allocates the one new array we return; input is untouched.
     recon = recon * circular_mask[:, :, None]
 
-    # Apply a mask to the top and bottom margins.  Built with NumPy (tiny 1-D) to sidestep jax's
-    # functional index-update; the multiply promotes it to recon's module if needed.
-    slice_mask = np.ones((num_slices,), dtype=recon.dtype)
-    if top_margin > 0:
-        slice_mask[:top_margin] = 0
-    if bottom_margin > 0:
-        slice_mask[-bottom_margin:] = 0
-    recon = recon * slice_mask[None, None, :]
+    # Zero top/bottom margins in place on that new array (no second full-volume copy -> 2x not 3x).
+    # numpy is truly in place; jax is immutable so use .at[].set (on-device, not the big path).
+    if xp is np:
+        if top_margin > 0:
+            recon[:, :, :top_margin] = 0
+        if bottom_margin > 0:
+            recon[:, :, -bottom_margin:] = 0
+    else:
+        if top_margin > 0:
+            recon = recon.at[:, :, :top_margin].set(0)
+        if bottom_margin > 0:
+            recon = recon.at[:, :, -bottom_margin:].set(0)
 
     return recon
 
