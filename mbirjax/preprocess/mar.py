@@ -155,7 +155,7 @@ def _generate_metal_exponent_list(num_metal, max_order):
     return combinations
 
 
-def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
+def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
     """
     Segment plastic and metal regions from a reconstruction, project them,
     and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
@@ -164,7 +164,6 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
         recon (jnp.ndarray): Reconstructed image.
         num_metal (int): Number of metal types to segment.
         ct_model: Forward projection model with a `.forward_project()` method.
-        device: JAX device to put the masks on for projection.
 
     Returns:
         plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
@@ -178,12 +177,16 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device):
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
 
     # --- Forward project, scale and vectorize plastic ---
-    plastic_sino_est = plastic_scale * ct_model.forward_project(jax.device_put(plastic_mask, device)).reshape(-1)
+    # forward_project shards its input internally (_shard_recon), so hand it the mask/masked-recon
+    # directly -- do NOT jax.device_put the recon-sized array onto one device first (that would gather
+    # the whole volume onto a single GPU, spiking memory and defeating the projector's sharding).
+    # plastic_mask / mask*recon inherit recon's layout (sharded stays sharded; host stays host).
+    plastic_sino_est = plastic_scale * ct_model.forward_project(plastic_mask).reshape(-1)
 
     # --- Forward project the masked out metal regions ---
     metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
-        m = ct_model.forward_project(jax.device_put(mask * recon, device)).reshape(-1)
+        m = ct_model.forward_project(mask * recon).reshape(-1)
         metal_sino_est.append(m)
 
     return plastic_sino_est, metal_sino_est
@@ -551,12 +554,12 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
             [(1, *t) for t in cross_exponent_list] +
             [(0, *t) for t in metal_exponent_list])
 
-    device = ct_model.recon_placement.devices[0]
     sino_shape = measured_sino.shape
     measured_sino = measured_sino.reshape(-1)
 
-    # Get normalized sinogram p and [m_0, m_1, ...]
-    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model, device)
+    # Get normalized sinogram p and [m_0, m_1, ...].  forward_project inside handles device placement
+    # (sharding internally); nothing is gathered onto a single device here.
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     plastic_sino_est = plastic_sino_est / plastic_sino_scale
