@@ -130,9 +130,16 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
 
     # Open HDF5 file for writing
     with h5py.File(file_path, 'w') as f:
-        # Save reconstruction array
-        arr = np.array(array)
-        volume_data = f.create_dataset(array_name, data=arr)
+        # Write slab-by-slab along axis 0 so a large or strided (e.g. transposed) array is never
+        # copied to a full contiguous buffer at once -- only one slab is materialized.
+        volume_data = f.create_dataset(array_name, shape=array.shape, dtype=array.dtype)
+        if array.ndim == 0:
+            volume_data[...] = np.asarray(array)
+        else:
+            row_bytes = array.dtype.itemsize * int(np.prod(array.shape[1:], dtype=np.int64))
+            slab = max(1, (1 << 30) // max(row_bytes, 1))   # ~1 GiB per write
+            for i in range(0, array.shape[0], slab):
+                volume_data[i:i + slab] = np.ascontiguousarray(array[i:i + slab])
 
         # Save reconstruction parameters as attributes
         if isinstance(attributes_dict, dict):
