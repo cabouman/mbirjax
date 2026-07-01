@@ -460,8 +460,9 @@ class MultiAxisParallelModel(TomographyModel):
                 m = m_center + m_offset
                 dist = jnp.abs(m_p - m)
 
-                weight = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)
+                A_row_k = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)  # vertical interpolation weight
                 valid_m = (m >= 0) & (m < num_det_rows)
+                A_row_k = A_row_k * valid_m  # fold the validity mask in (cf. ConeBeamModel: A_row_k *= valid)
 
                 # Scatter add
                 # We want to add (vals * weight) to indices (m)
@@ -470,7 +471,7 @@ class MultiAxisParallelModel(TomographyModel):
 
                 # We must mask invalid_m to a safe index for the scatter, then add 0
                 safe_m = jnp.clip(m, 0, num_det_rows - 1)
-                add_val = vals * weight * scaling * valid_m
+                add_val = vals * A_row_k * scaling
 
                 batch_det = batch_det.at[safe_m].add(add_val)
 
@@ -531,12 +532,15 @@ class MultiAxisParallelModel(TomographyModel):
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
             dist = jnp.abs(n_p - n)
-            weight = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
 
             valid = (n >= 0) & (n < num_det_channels)
 
-            # Scatter each pixel's detector column (rows_data[p, :]) into channel n[p].
-            sinogram_view_T = sinogram_view_T.at[n, :].add(rows_data * (weight * scale * valid)[:, None])
+            # A_chan_n: projection coefficient for this channel tap (matches ParallelBeamModel /
+            # ConeBeamModel: A_chan_n = scale * L_p_c_n * valid).  Scatter each pixel's detector
+            # column (rows_data[p, :]) into channel n[p].
+            A_chan_n = L_p_c_n * scale * valid
+            sinogram_view_T = sinogram_view_T.at[n, :].add(rows_data * A_chan_n[:, None])
 
         return sinogram_view_T.T
 
@@ -637,16 +641,18 @@ class MultiAxisParallelModel(TomographyModel):
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             n = n_p_center + n_offset
             dist = jnp.abs(n_p - n)
-            weight = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
 
             valid = (n >= 0) & (n < num_det_channels)
 
-            w_total = (weight * scale * valid) ** coeff_power
+            # A_chan_n: projection coefficient for this channel tap, raised to coeff_power for the
+            # Hessian diagonal (matches ParallelBeamModel / ConeBeamModel).
+            A_chan_n = (L_p_c_n * scale * valid) ** coeff_power
 
             # Gather each pixel's channel row: (num_pixels, num_det_rows).
             rows = sinogram_view_T[jnp.clip(n, 0, num_det_channels - 1), :]
 
-            det_rows_values += rows * w_total[:, None]
+            det_rows_values += rows * A_chan_n[:, None]
 
         return det_rows_values
 
@@ -737,13 +743,14 @@ class MultiAxisParallelModel(TomographyModel):
         for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
             m_idx = m_center + m_offset
             dist = jnp.abs(m_p_k - m_idx)
-            weight = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)
+            A_row_k = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)  # vertical interpolation weight
             valid = (m_idx >= 0) & (m_idx < num_det_rows)
-            # (weight * scaling) mirrors the forward entry A_ij; the back projector applies
+            A_row_k = A_row_k * valid  # fold the validity mask in (cf. ConeBeamModel: A_row_k *= valid)
+            # (A_row_k * scaling) is the forward matrix entry A_ij; the back projector applies
             # (A_ij ** coeff_power), so adjointness holds at coeff_power=1.
-            w_total = (weight * scaling) ** coeff_power
+            w_total = (A_row_k * scaling) ** coeff_power
             val = detector_col[jnp.clip(m_idx, 0, num_det_rows - 1)]
-            new_cylinder += val * w_total * valid
+            new_cylinder += val * w_total
 
         # Padded global slices (index >= the real slice count) are inert.  No-op when
         # g0 + L <= num_recon_slices.
