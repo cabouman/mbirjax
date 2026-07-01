@@ -96,8 +96,7 @@ def multiplicative_update(W, H, T):
 
     return W * W_mult, H * H_mult
 
-@jax.jit(static_argnames=['num_materials', 'max_steps', 'rel_tol'])
-def optimize_newt(T, num_materials, max_steps, rel_tol):
+def optimize_newt_body(T, num_materials, max_steps, rel_tol):
     """Optimize W, H using Newton updates."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
@@ -130,9 +129,9 @@ def optimize_newt(T, num_materials, max_steps, rel_tol):
     W_newt, H_newt, _, i, _ = state_newt
 
     return W_newt, H_newt, i
+optimize_newt = jax.jit(optimize_newt_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
 
-@jax.jit(static_argnames=['num_materials', 'max_steps', 'rel_tol'])
-def optimize_mu(T, num_materials, max_steps, rel_tol):
+def optimize_mu_body(T, num_materials, max_steps, rel_tol):
     """Optimize W, H using multiplicative updates."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
@@ -165,6 +164,7 @@ def optimize_mu(T, num_materials, max_steps, rel_tol):
     W_mu, H_mu, _, i, _ = state_mu
 
     return W_mu, H_mu, i
+optimize_mu = jax.jit(optimize_mu_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
 
 
 def main():
