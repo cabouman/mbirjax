@@ -346,6 +346,58 @@ revisiting for the multi-device throughput, separate from this memory fix.
 
 **Data note (Greg to check, not a code issue):** ~8000 detector pixels are dead in all views.
 
+## 6c. Zinger correction — jittable + shared fill + folded into scan_to_sino (2026-06-30)
+
+`interpolate_zinger_pixels` was the twin of the old `interpolate_defective_pixels` (argwhere + while +
+nanmedian; not jittable, per-zinger gather).  Rewritten the same way and **folded into `scan_to_sino`**
+because large zeiss data is a live target and the path is transfer-bound (folding avoids a whole-sino
+host↔device round-trip).
+
+**Shared code.** Factored `_fill_nan_pixels(sino, num_passes=3)` (the K-pass dense nanmean fill + warn +
+zero) out of `interpolate_defective_pixels`; both it and zinger now call it.  Added
+`_zinger_fill(sino, threshold, num_passes)` (flag non-finite + `value < threshold` → NaN, then
+`_fill_nan_pixels`) and `_zinger_threshold(sino_sub, ratio)` (= `-ratio·RMS` over support).  Defective
+vs zinger differ ONLY in how pixels are flagged NaN.
+
+**Fold.** `scan_to_sino(..., zinger_pixel_ratio=None)`: when set, a cheap pre-pass runs the kernel
+(no zinger) on a ~20-view subsample → threshold; the main fused kernel then appends
+`_zinger_fill(threshold)` after rotation — one jitted pass, no extra round-trip.  `zeiss.py` passes
+`zinger_pixel_ratio=0.1 if zinger_correction else None` and drops the separate `interpolate_zinger_pixels`
+call.  Zinger now runs **before** offset/shifts (Greg: fine, arguably better — removes a zinger before a
+sub-pixel shift could smear it).
+
+**Thin wrappers kept (Greg):** `interpolate_zinger_pixels` is now a standalone `map_view_batches`-driven
+wrapper (threshold from a subsample → per-batch `_zinger_fill`, memory-bounded + shardable, returns a
+NumPy sinogram); `detect_zinger_pixels` keeps its indices API via `_zinger_threshold`.
+
+**Behavior changes (Greg-approved):** median→mean; fixed K=3 + warn/zero instead of raise; ordering
+(zinger before offset/shifts).  Detection condition (`value < -ratio·RMS`) unchanged.
+
+**Verification (CPU):** defective path **unchanged** (byte-identical via the refactor); no-zinger
+`scan_to_sino` **unchanged** (cross-device 0.0; scan_1dev 1.49e-7 / scan_plain 0.73 vs the old golden,
+same as before); zinger standalone + fold: zingers corrected, no NaN escapes, **1-dev vs 4-dev
+bit-exact (0.0)**; `detect_zinger_pixels` finds all injected zingers; `tests/test_preprocessing.py`
+passes.  **zeiss before/after on a `demo_zeiss.py` recon to be confirmed on the cluster** (same-platform;
+the ordering + median→mean shifts are expected and recon-negligible).
+
+**Subsampling DRY'd (Greg).** Factored the view-subsample-before-`_get_sino_indicator` pattern into
+`TomographyModel.subsample_views(array, max_views_to_use=20, num_real_views=None)` (host, evenly-spaced),
+sitting next to `_get_sino_indicator` (which now carries a note that a subsample should typically be
+passed, not the full sinogram).  `_zinger_threshold` now subsamples **internally** (callers pass the full
+sino); `detect_zinger_pixels`, `interpolate_zinger_pixels`, `scan_to_sino`'s threshold pre-pass,
+`est_crop_width`, and `auto_set_regularization_params` all route through it.
+
+`num_real_views` samples only `array[:num_real_views]` -- for a device-form input whose view axis is
+zero-padded (`prepare_sino_for_devices`), it samples the REAL views directly instead of sampling the
+padded array and dropping padded slots afterward (which left fewer real views).  `auto_set_reg` uses this
+and **drops its old `keep` filter**.  Identical when there's no padding (all tests, verified: `test_qggmrf`
++ `geometries/test_vcd` recons pass); a slightly better estimate only in the padded recon path.
+
+**Preprocessing does NOT pad views** (checked): `map_view_batches` uses `np.array_split` (uneven-but-real
+shards, no zero-padding) into a `(num_views,...)` output, so the zinger/crop estimates see only real
+views.  View-padding is recon-side (`prepare_sino_for_devices`), which is why only `auto_set_reg` needs
+padding-awareness.
+
 ## 7. Open decisions
 - Small-fixture format/location (committed .npz vs opt-in cluster path test).
 - Whether `compute_weight` (zeiss_tct) becomes a driver kernel now or stays a separate host call until

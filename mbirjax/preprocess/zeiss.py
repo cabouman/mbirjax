@@ -104,10 +104,14 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
     if verbose > 0:
-        print("\n\n########## Computing sinogram (downsample -> transmission, fused and view-sharded)")
-    # Downsample + transmission via the shared, view-sharded core (zeiss has no detector rotation).
+        print("\n\n########## Computing sinogram (downsample -> transmission -> zinger, fused and view-sharded)")
+    # Downsample + transmission (+ zinger) via the shared, view-sharded core (zeiss has no detector
+    # rotation).  Zinger correction is folded into this single pass when enabled -- no extra host
+    # round-trip -- and runs before the offset/shift passes below, so a zinger is removed before a
+    # sub-pixel detector shift could interpolate it into its neighbors.
     sino = mjp.scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array,
-                            downsample_factor=downsample_factor, det_rotation=0.0)
+                            downsample_factor=downsample_factor, det_rotation=0.0,
+                            zinger_pixel_ratio=0.1 if zinger_correction else None)
 
     if verbose > 0:
         print("\n\n########## Correcting sinogram data to account for background offset and sino offset")
@@ -115,10 +119,6 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
 
     # Correct sino offset
     sino = correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_factor)
-
-    # Correct zinger pixels
-    if zinger_correction is True:
-        sino = mjp.interpolate_zinger_pixels(sino)
 
     if verbose > 0:
         print('obj_scan shape = ', obj_scan.shape)

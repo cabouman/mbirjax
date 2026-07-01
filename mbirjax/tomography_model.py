@@ -2108,25 +2108,15 @@ class TomographyModel(ParameterHandler):
         """
         if self.get_params('auto_regularize_flag'):
             # Make sure sinogram and weights are on the cpu to avoid duplication of large sinos on the GPU.
-            max_views_to_use = np.minimum(20, sinogram.shape[0])
-            step_size = sinogram.shape[0] // max_views_to_use
-
-            small_sinogram = np.array(sinogram[::step_size])
-            if weights is None:
-                small_weights = 1
-            else:
-                small_weights = np.array(weights[::step_size])
-
-            # Use only the REAL views.  A device-form input (prepare_sino_for_devices) may carry a
-            # zero-padded view axis; the padded views are inert in the recon and must not bias the
-            # regularization statistics (e.g. the all-ones indicator fallback would average them in).
-            # Crop the host-side subsample by global view index -- no device-side work.
+            # Estimate the regularization stats from a view subsample (see subsample_views) -- both cheap
+            # and avoids reducing the whole (possibly huge) sinogram on the GPU.  Sample only the REAL
+            # views: a device-form input (prepare_sino_for_devices) may zero-pad the view axis, and those
+            # inert views must not bias the statistics (e.g. the all-ones indicator fallback would average
+            # them in).  subsample_views(num_real_views=...) samples array[:num_real_views] directly.
             num_real_views = self.get_params('sinogram_shape')[0]
-            if sinogram.shape[0] != num_real_views:
-                keep = np.arange(0, sinogram.shape[0], step_size) < num_real_views
-                small_sinogram = small_sinogram[keep]
-                if weights is not None:
-                    small_weights = small_weights[keep]
+            small_sinogram = self.subsample_views(sinogram, num_real_views=num_real_views)
+            small_weights = 1 if weights is None else self.subsample_views(weights, num_real_views=num_real_views)
+
             # Likewise crop padded detector ROWS (a device-form input whose row axis pads
             # with the recon slices) -- the zero rows would bias the indicator/sigma stats.
             num_real_rows = self.get_params('sinogram_shape')[1]
@@ -2262,9 +2252,43 @@ class TomographyModel(ParameterHandler):
         return voxel_values
 
     @staticmethod
+    def subsample_views(array, max_views_to_use=20, num_real_views=None):
+        """Return an evenly-spaced subsample of at most ``max_views_to_use`` views (axis 0) as a host
+        NumPy array.
+
+        Statistical sinogram estimates -- the support indicator (:meth:`_get_sino_indicator`), the RMS /
+        typical value, the auto-crop width, the auto-regularization stats -- do not need every view, so
+        they are computed on such a subsample.  This both keeps the host reductions cheap and, crucially,
+        avoids materializing / reducing the whole (possibly ~20 GB) sinogram on the GPU.  Callers that
+        need to subsample a companion array (e.g. weights) the same way just call this again with the
+        same ``max_views_to_use``/``num_real_views`` (the stride depends only on the view count).
+
+        If ``num_real_views`` is given, only the first ``num_real_views`` views are sampled: a device-form
+        input (see ``prepare_sino_for_devices``) may zero-pad the view axis, and those padded views must
+        not enter statistical estimates -- so we sample the REAL views directly rather than sampling the
+        padded array and dropping padded slots afterward (which would leave fewer real views).
+
+        Args:
+            array (ndarray or jax array): array batched along axis 0 (views).
+            max_views_to_use (int, optional): cap on the number of views retained. Defaults to 20.
+            num_real_views (int or None, optional): if set, sample only ``array[:num_real_views]``.
+
+        Returns:
+            numpy.ndarray: the view-subsampled array on the host.
+        """
+        num_views = array.shape[0] if num_real_views is None else num_real_views
+        max_views_to_use = min(max_views_to_use, num_views)
+        step_size = max(num_views // max_views_to_use, 1)
+        return np.array(array[:num_views][::step_size])
+
+    @staticmethod
     def _get_sino_indicator(sinogram, verbose=1):
         """
         Compute a binary mask that indicates the region of sinogram support.
+
+        Typically called on a view SUBSAMPLE (see :meth:`subsample_views`), not the full sinogram: this
+        runs several host-side reductions, so callers estimating a statistical quantity should subsample
+        the views first rather than pass the whole (possibly ~20 GB) sinogram.
 
         Args:
             sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
