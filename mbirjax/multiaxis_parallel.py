@@ -272,6 +272,53 @@ class MultiAxisParallelModel(TomographyModel):
                         no_compile=no_compile, no_warning=no_warning)
 
     # =========================================================================
+    # Coordinate-stage helpers (mirror ParallelBeamModel / ConeBeamModel)
+    # =========================================================================
+    # These name the same three coordinate stages the other geometries use, so intuition
+    # transfers directly.  The ONLY functional difference from parallel/cone is the elevation
+    # term in geometry_xyz_to_uv; everything else is the shared convention (object rotates into
+    # the detector frame at recon_ijk_to_xyz; x is the detector-channel direction u).
+
+    @staticmethod
+    def recon_ijk_to_xyz(i, j, k, delta_voxel, voxel_row_aspect, voxel_slice_aspect,
+                         recon_shape, recon_slice_offset, azimuth):
+        """Map recon indices (i=row, j=col, k=slice) to continuous xyz, rotating the in-plane
+        coordinates by the azimuth -- identical convention to ParallelBeamModel.recon_ij_to_x /
+        ConeBeamModel.recon_ijk_to_xyz (the object rotates into the detector frame, so the rotated
+        x is the detector channel coordinate u)."""
+        num_recon_rows, num_recon_cols, num_recon_slices = recon_shape
+        delta_voxel_row = voxel_row_aspect * delta_voxel
+        delta_voxel_slice = voxel_slice_aspect * delta_voxel
+        y_tilde = delta_voxel_row * (i - (num_recon_rows - 1) / 2.0)
+        x_tilde = delta_voxel * (j - (num_recon_cols - 1) / 2.0)
+        cosine = jnp.cos(azimuth)
+        sine = jnp.sin(azimuth)
+        x = cosine * x_tilde - sine * y_tilde
+        y = sine * x_tilde + cosine * y_tilde
+        z = delta_voxel_slice * (k - (num_recon_slices - 1) / 2.0) + recon_slice_offset
+        return x, y, z
+
+    @staticmethod
+    def geometry_xyz_to_uv(x, y, z, elevation):
+        """Map continuous xyz (in the azimuth-rotated frame) to detector uv.  This is the ONE
+        place multi-axis differs from parallel/cone: a nonzero elevation tilts the ray out of the
+        plane, so the detector row coordinate v picks up the in-plane depth y --
+        ``v = z*cos(el) + y*sin(el)``.  (ParallelBeamModel has v = z; ConeBeamModel has v = mag*z;
+        the parallel-beam magnification here is 1.  At el=0 this reduces to v = z.)"""
+        u = x
+        v = z * jnp.cos(elevation) + y * jnp.sin(elevation)
+        return u, v
+
+    @staticmethod
+    def detector_uv_to_mn(u, v, delta_det_channel, delta_det_row, det_channel_offset,
+                          det_row_offset, num_det_rows, num_det_channels):
+        """Map continuous detector uv to fractional detector indices (m=row, n=channel).  The
+        offset signs match ParallelBeamModel/ConeBeamModel (detector_uv_to_mn)."""
+        n = (u + det_channel_offset) / delta_det_channel + (num_det_channels - 1) / 2.0
+        m = (v + det_row_offset) / delta_det_row + (num_det_rows - 1) / 2.0
+        return m, n
+
+    # =========================================================================
     # Split Projectors (Vertical then Horizontal)
     # =========================================================================
     # This split mirrors the vertical/horizontal fan approach in ConeBeamModel
@@ -343,23 +390,20 @@ class MultiAxisParallelModel(TomographyModel):
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
         delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
 
-        # 1. Calculate geometry for this pixel column
+        # 1. Geometry for this pixel column via the shared coordinate stages.  Anchor the slice-0
+        #    row m_p_0 (recon_ijk_to_xyz uses recon_shape[2] == num_slices for the z center).
         row_idx, col_idx = jnp.unravel_index(pixel_index, recon_shape[:2])
-        y = ((recon_shape[0] - 1) / 2.0 - row_idx) * delta_voxel_row
-        x = (col_idx - (recon_shape[1] - 1) / 2.0) * gp.delta_voxel
+        x, y, z_0 = MultiAxisParallelModel.recon_ijk_to_xyz(
+            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
+            recon_shape, gp.recon_slice_offset, azimuth)
+        _, v_0 = MultiAxisParallelModel.geometry_xyz_to_uv(x, y, z_0, elevation)
+        m_p_0, _ = MultiAxisParallelModel.detector_uv_to_mn(
+            x, v_0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
+            gp.det_row_offset, num_det_rows, num_det_channels)
 
-        # t is the coordinate along the ray projection in XY plane
-        t = -x * jnp.sin(azimuth) + y * jnp.cos(azimuth)
-
-        # Slope: How many detector rows does one voxel step in z cover?
-        # v = z * cos(el) - t * sin(el)
+        # Slope: detector rows per one-slice step in z.  v = z*cos(el) + y*sin(el) and z steps by
+        # delta_voxel_slice, so dm/dk = delta_voxel_slice*cos(el)/delta_det_row.
         slope_k_to_m = (delta_voxel_slice * jnp.cos(elevation)) / gp.delta_det_row
-
-        # We define m_p (projected row) for the center of the 0-th slice (k=0):
-        # z_0 = -(num_slices - 1)/2 * delta_voxel_slice + recon_offset
-        z_0 = (0 - (num_slices - 1) / 2.0) * delta_voxel_slice + gp.recon_slice_offset
-        v_0 = z_0 * jnp.cos(elevation) - t * jnp.sin(elevation)
-        m_p_0 = (v_0 + gp.det_row_offset) / gp.delta_det_row + (num_det_rows - 1) / 2.0
 
         # W_p_r: projected footprint of one voxel on the detector rows, in row units.  The
         # foreshortened z-edge contributes cos(el)*delta_voxel_slice; with broaden_elevation_
@@ -446,15 +490,15 @@ class MultiAxisParallelModel(TomographyModel):
         # axis uses delta_voxel.
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Map pixels to u coordinates
+        # Map pixels to channel coordinates via the shared coordinate stages (u = rotated x).
         row_idx, col_idx = jnp.unravel_index(pixel_indices, projector_params.recon_shape[:2])
-        y = ((projector_params.recon_shape[0] - 1) / 2.0 - row_idx) * delta_voxel_row
-        x = (col_idx - (projector_params.recon_shape[1] - 1) / 2.0) * gp.delta_voxel
-
-        u_p = x * jnp.cos(azimuth) + y * jnp.sin(azimuth)
-        # +det_channel_offset matches ParallelBeamModel/ConeBeamModel (detector_uv_to_mn), so a
-        # nonzero det_channel_offset shifts the detector the same way across all geometries.
-        n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
+        x, _, _ = MultiAxisParallelModel.recon_ijk_to_xyz(
+            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
+            projector_params.recon_shape, gp.recon_slice_offset, azimuth)
+        u_p = x  # geometry_xyz_to_uv: the channel coordinate u is the azimuth-rotated x
+        _, n_p = MultiAxisParallelModel.detector_uv_to_mn(
+            u_p, 0.0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
+            gp.det_row_offset, num_det_rows, num_det_channels)
         n_p_center = jnp.round(n_p).astype(int)
 
         # In-plane footprint of the voxel on the channels: the larger of the two in-plane pitches
@@ -560,15 +604,15 @@ class MultiAxisParallelModel(TomographyModel):
         # Anisotropic in-plane pitches (must match the forward horizontal fan for adjointness).
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Geometry U
+        # Geometry U via the shared coordinate stages (must match the forward horizontal fan).
         row_idx, col_idx = jnp.unravel_index(pixel_indices, projector_params.recon_shape[:2])
-        y = ((projector_params.recon_shape[0] - 1) / 2.0 - row_idx) * delta_voxel_row
-        x = (col_idx - (projector_params.recon_shape[1] - 1) / 2.0) * gp.delta_voxel
-
-        u_p = x * jnp.cos(azimuth) + y * jnp.sin(azimuth)
-        # +det_channel_offset matches ParallelBeamModel/ConeBeamModel (detector_uv_to_mn), so a
-        # nonzero det_channel_offset shifts the detector the same way across all geometries.
-        n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
+        x, _, _ = MultiAxisParallelModel.recon_ijk_to_xyz(
+            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
+            projector_params.recon_shape, gp.recon_slice_offset, azimuth)
+        u_p = x  # geometry_xyz_to_uv: the channel coordinate u is the azimuth-rotated x
+        _, n_p = MultiAxisParallelModel.detector_uv_to_mn(
+            u_p, 0.0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
+            gp.det_row_offset, num_det_rows, num_det_channels)
         n_p_center = jnp.round(n_p).astype(int)
 
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(azimuth)) * gp.delta_voxel,
@@ -651,16 +695,16 @@ class MultiAxisParallelModel(TomographyModel):
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
         delta_voxel_slice = gp.voxel_slice_aspect * gp.delta_voxel
 
-        # Geometry
+        # Geometry via the shared coordinate stages (must match the forward vertical fan).  z is
+        # anchored on the REAL slice count (recon_ijk_to_xyz uses recon_shape[2]); slice-0 -> row.
         row_idx, col_idx = jnp.unravel_index(pixel_index, recon_shape[:2])
-        y = ((recon_shape[0] - 1) / 2.0 - row_idx) * delta_voxel_row
-        x = (col_idx - (recon_shape[1] - 1) / 2.0) * gp.delta_voxel
-        t = -x * jnp.sin(azimuth) + y * jnp.cos(azimuth)
-
-        # Map global slice 0 (z anchored on the REAL slice count) to detector row m.
-        z_0 = (0 - (num_recon_slices - 1) / 2.0) * delta_voxel_slice + gp.recon_slice_offset
-        v_0 = z_0 * jnp.cos(elevation) - t * jnp.sin(elevation)
-        m_p_0 = (v_0 + gp.det_row_offset) / gp.delta_det_row + (num_det_rows - 1) / 2.0
+        x, y, z_0 = MultiAxisParallelModel.recon_ijk_to_xyz(
+            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
+            recon_shape, gp.recon_slice_offset, azimuth)
+        _, v_0 = MultiAxisParallelModel.geometry_xyz_to_uv(x, y, z_0, elevation)
+        m_p_0, _ = MultiAxisParallelModel.detector_uv_to_mn(
+            x, v_0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
+            gp.det_row_offset, num_det_rows, num_det_channels)
 
         slope_k_to_m = (delta_voxel_slice * jnp.cos(elevation)) / gp.delta_det_row
 
