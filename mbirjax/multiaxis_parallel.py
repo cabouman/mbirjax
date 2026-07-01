@@ -413,7 +413,14 @@ class MultiAxisParallelModel(TomographyModel):
                                               delta_voxel_row, delta_voxel_slice,
                                               gp.broaden_elevation_footprint)
         W_p_r = W_p_r_phys / gp.delta_det_row
-        W_p_r = jnp.maximum(W_p_r, 0.5)
+        # Floor DISABLED: `W_p_r = jnp.maximum(W_p_r, 0.5)`.  It guarded the NARROW (z-edge-only)
+        # footprint, which shrinks as cos(el) and hits 0 at el=90 -- zeroing the deposit and making
+        # the mass-conserving amplitude (delta_voxel_slice/delta_det_row)/W_p_r divide by zero.  The
+        # max-of-edges footprint (broaden_elevation_footprint) never collapses -- the in-plane
+        # sin(el) edge keeps it strictly positive -- so the clamp is vestigial; parallel/cone
+        # likewise do NOT clamp (a sub-pixel footprint is valid and carries a compensating scale).
+        # Re-enable it only if reverting to the narrow footprint near grazing elevation
+        # (|el| -> 90, already past the >45deg approximation warning).
 
         # Amplitude.  correct_elevation_pathlength deposits the voxel's full mass: the kernel sums
         # to ~W_p_r rows, so amplitude = (delta_voxel_slice/delta_det_row)/W_p_r makes the total
@@ -713,7 +720,9 @@ class MultiAxisParallelModel(TomographyModel):
                                               delta_voxel_row, delta_voxel_slice,
                                               gp.broaden_elevation_footprint)
         W_p_r = W_p_r_phys / gp.delta_det_row
-        W_p_r = jnp.maximum(W_p_r, 0.5)
+        # Floor DISABLED to match the forward vertical fan (adjointness); see
+        # forward_vertical_fan_one_pixel_to_one_view for why `jnp.maximum(W_p_r, 0.5)` is vestigial
+        # under the max-of-edges footprint.
         L_max = jnp.minimum(1.0, W_p_r)
         if gp.correct_elevation_pathlength:
             scaling = (delta_voxel_slice / gp.delta_det_row) / W_p_r
