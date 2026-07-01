@@ -452,7 +452,9 @@ class MultiAxisParallelModel(TomographyModel):
         x = (col_idx - (projector_params.recon_shape[1] - 1) / 2.0) * gp.delta_voxel
 
         u_p = x * jnp.cos(azimuth) + y * jnp.sin(azimuth)
-        n_p = (u_p - gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
+        # +det_channel_offset matches ParallelBeamModel/ConeBeamModel (detector_uv_to_mn), so a
+        # nonzero det_channel_offset shifts the detector the same way across all geometries.
+        n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
         n_p_center = jnp.round(n_p).astype(int)
 
         # In-plane footprint of the voxel on the channels: the larger of the two in-plane pitches
@@ -564,7 +566,9 @@ class MultiAxisParallelModel(TomographyModel):
         x = (col_idx - (projector_params.recon_shape[1] - 1) / 2.0) * gp.delta_voxel
 
         u_p = x * jnp.cos(azimuth) + y * jnp.sin(azimuth)
-        n_p = (u_p - gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
+        # +det_channel_offset matches ParallelBeamModel/ConeBeamModel (detector_uv_to_mn), so a
+        # nonzero det_channel_offset shifts the detector the same way across all geometries.
+        n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + (num_det_channels - 1) / 2.0
         n_p_center = jnp.round(n_p).astype(int)
 
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(azimuth)) * gp.delta_voxel,
