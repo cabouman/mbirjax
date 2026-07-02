@@ -219,10 +219,19 @@ def _get_column_H(col_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     exponents = H_exponent_list[col_index]
     assert len(exponents) == 1 + len(metal_sino_est), "Mismatch between exponent tuple and number of sinograms."
 
-    col = plastic_sino_est ** exponents[0]
-    for metal, exp in zip(metal_sino_est, exponents[1:]):
-        col *= metal ** exp
-
+    # Most exponents are 0 or 1 (the exponent tuples are sparse), so skip the no-op factors instead of
+    # materializing full-sinogram-sized ones/copies: x**0 == 1 exactly (skip the factor) and x**1 == x
+    # exactly (use the array directly, no power op).  Byte-identical to the dense product.
+    col = None
+    for arr, exp in zip([plastic_sino_est] + list(metal_sino_est), exponents):
+        if exp == 0:
+            continue
+        term = arr if exp == 1 else arr ** exp
+        col = term if col is None else col * term
+    if col is None:
+        # All-zero exponent tuple (the constant column) -- excluded by construction from H, but handle
+        # it correctly if a caller ever asks.
+        col = jnp.ones_like(plastic_sino_est)
     return col
 
 def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
