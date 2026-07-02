@@ -450,8 +450,11 @@ class MultiAxisParallelModel(TomographyModel):
             m_p = m_p_0 + k_indices * slope_k_to_m
             m_center = jnp.round(m_p).astype(int)
 
-            # Get values (masked)
+            # Get values (masked), then fold the mass-conserving amplitude into the VALUES -- as
+            # ConeBeamModel scales voxel_cylinder by 1/cos(phi) -- so A_row_k stays a pure
+            # interpolation weight (no scale in the coefficient, hence no L_p_r intermediary).
             vals = jnp.where(valid_k, voxel_cylinder[jnp.clip(k_indices, 0, num_slices - 1)], 0.0)
+            scaled_vals = vals * scaling
 
             # Accumulator for this batch
             batch_det = jnp.zeros(num_det_rows)
@@ -471,7 +474,7 @@ class MultiAxisParallelModel(TomographyModel):
 
                 # We must mask invalid_m to a safe index for the scatter, then add 0
                 safe_m = jnp.clip(m, 0, num_det_rows - 1)
-                add_val = vals * A_row_k * scaling
+                add_val = scaled_vals * A_row_k
 
                 batch_det = batch_det.at[safe_m].add(add_val)
 
@@ -746,11 +749,14 @@ class MultiAxisParallelModel(TomographyModel):
             A_row_k = jnp.clip((W_p_r + 1.0) / 2.0 - dist, 0.0, L_max)  # vertical interpolation weight
             valid = (m_idx >= 0) & (m_idx < num_det_rows)
             A_row_k = A_row_k * valid  # fold the validity mask in (cf. ConeBeamModel: A_row_k *= valid)
-            # (A_row_k * scaling) is the forward matrix entry A_ij; the back projector applies
-            # (A_ij ** coeff_power), so adjointness holds at coeff_power=1.
-            w_total = (A_row_k * scaling) ** coeff_power
             val = detector_col[jnp.clip(m_idx, 0, num_det_rows - 1)]
-            new_cylinder += val * w_total
+            new_cylinder += val * (A_row_k ** coeff_power)
+
+        # Apply the mass-conserving amplitude to the back-projected cylinder -- the adjoint of the
+        # forward fan folding `scaling` into the voxel values -- so A_row_k stays a pure
+        # interpolation weight (mirrors ConeBeamModel).  scaling is per-view (a scalar), so it
+        # factors out of the row sum; raised to coeff_power for the Hessian-diagonal path.
+        new_cylinder = new_cylinder * (scaling ** coeff_power)
 
         # Padded global slices (index >= the real slice count) are inert.  No-op when
         # g0 + L <= num_recon_slices.
