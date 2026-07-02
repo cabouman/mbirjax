@@ -106,6 +106,29 @@ Greg's cluster trace: the recon bounced host↔device each BH iteration, and `np
   <sharded>)`); `tests/test_preprocessing.py` + `tests/test_utilities.py` pass (incl. the existing
   cylindrical-mask tests).
 
+### Phase 2c — Otsu threshold search: recursion → vectorized DP  **[DONE 2026-07-02]**
+`_recursive_otsu` + `_binary_threshold_otsu` (per-bin Python loops; ~267 ms at B=1024, k=2; another
+factor of B for k=3) replaced by `_otsu_thresholds_dp`: the within-class-variance objective is
+separable over classes, so the optimum solves the classic 1-D segmentation DP — O(1) interval costs
+from centered moment prefix sums (float64; second moment ~1e15 for 1e9 voxels), one vectorized
+(B+1)² min-reduction per class, argmin backtrack.  **7.8 ms (34×)**, no recursion, host NumPy only
+(jit deliberately NOT used: 1024-bin host problem, float64 safest; a jnp variant is mechanical if
+segmentation is ever fused on-device).
+- **Verification (pre-swap, parallel implementations):** 90 random-histogram trials + a MAR-like
+  phantom hist, refereed by the old scoring function: DP never worse; ALL divergences explained by an
+  off-by-one **in the old code** (`_binary_threshold_otsu` reported inclusive indices, but the scorer
+  and the recursive outer split used half-open boundaries — inner thresholds were optimized under one
+  convention and scored under the other).  DP uses the boundary convention coherently.
+- **Threshold values now `bin_edges[t]`** (was `bin_centers[t]`): under the boundary convention the
+  left edge is the exact cut (values below it fall precisely in the lower classes).  Half-bin-scale
+  value change.
+- Old functions + the scorer **deleted** (Greg); docs/build HTML still shows them until the next docs
+  build (generated artifacts).
+- **Gate:** MAR phantom — thresholds bit-identical host-vs-sharded (n=1, n=3); corrected sino
+  **byte-identical** to the pre-swap output (the threshold move landed inside an empty inter-mode
+  valley — a tie plateau with zero downstream effect); tests pass.  On real data expect ~bin-scale
+  threshold shifts with negligible segmentation change (cluster before/after covers it).
+
 ### Phase 3 — (DEFERRED — revisit after Phases 1–2) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the

@@ -56,7 +56,7 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024, valid_mask=None):
         classes (int, optional):
             Number of classes to divide the image into. Must be ≥ 2. Defaults to 2.
         num_bins (int, optional):
-            Number of bins to use when constructing the image histogram. Defaults to 256.
+            Number of bins to use when constructing the image histogram. Defaults to 1024.
         valid_mask (array or None, optional):
             Broadcastable boolean mask, True on the entries to include (applied uniformly for numpy and
             jax inputs).  Used e.g. to exclude the zero-padded entries of a device-form (sharded) volume
@@ -90,145 +90,97 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024, valid_mask=None):
     else:
         hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
 
-    # Find the optimal thresholds using a recursive approach
-    thresholds = _recursive_otsu(hist, classes - 1)
+    # Find the optimal thresholds (half-open class-boundary bin indices) by dynamic programming
+    thresholds = _otsu_thresholds_dp(hist, classes - 1)
 
-    # Convert histogram bin indices to original image values
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    scaled_thresholds = [bin_centers[t] for t in thresholds]
-    # print(scaled_thresholds)
+    # Convert boundary indices to image values.  bin_edges[t] is the exact cut for boundary t: values
+    # below it fall precisely in bins < t (the lower classes), matching the histogram split.
+    scaled_thresholds = [bin_edges[t] for t in thresholds]
 
-    # import matplotlib.pyplot as plt
-    # plt.bar(bin_edges[:-1], hist, width=np.diff(bin_edges), edgecolor="black", align="edge")
-    # plt.show(block=True)
     return scaled_thresholds
 
 
-def _recursive_otsu(hist, num_thresholds):
+def _otsu_thresholds_dp(hist, num_thresholds):
     """
-    Recursively applies Otsu's method to find the best thresholds for multiple classes.
+    Multi-threshold Otsu via dynamic programming.
 
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    num_thresholds : int
-        Number of thresholds to find.
+    Otsu's criterion minimizes the total within-class variance: for thresholds t_1 < ... < t_k, class
+    ``c`` spans the bin interval ``[t_c, t_{c+1})`` (with t_0 = 0 and t_{k+1} = num_bins) and the
+    objective is
 
-    Returns
-    -------
-    list
-        List of thresholds that divide the histogram into the specified number of classes.
+        sum over classes of   sum_{i in class} (i - class mean)^2 * hist[i].
+
+    The objective is separable over the classes, so the optimal thresholds solve the classic 1-D
+    segmentation DP
+
+        D[c][b] = min over s < b of  D[c-1][s] + cost(s, b),
+
+    where ``cost(a, b)`` is the within-class term of a single class spanning bins ``[a, b)``.  The cost
+    is O(1) from prefix sums of the histogram's zeroth/first/second moments, each DP stage is one
+    vectorized (B+1)^2 min-reduction, and the thresholds come from an argmin backtrack: O(k B^2)
+    float64 NumPy with no recursion and no per-bin Python loops, exact for every ``num_thresholds``.
+
+    Threshold convention: returned values are half-open class boundaries -- threshold ``t`` means bin
+    ``t`` starts the next class.  The consistent threshold VALUE is therefore the left bin edge
+    ``bin_edges[t]``: values below it fall exactly in bins < t (the lower classes).
+
+    Args:
+        hist (ndarray): Histogram of the image (counts; any nonnegative dtype).
+        num_thresholds (int): Number of thresholds to find (k = classes - 1).
+
+    Returns:
+        list of int: strictly increasing boundary indices in ``[1, len(hist) - 1]``.
     """
-    # Base case: no thresholds needed
     if num_thresholds == 0:
         return []
 
-    # Base case: single threshold needed
-    if num_thresholds == 1:
-        return [_binary_threshold_otsu(hist)]
+    hist = np.asarray(hist, dtype=np.float64)
+    num_bins = len(hist)
+    # Bin coordinates centered at the histogram midpoint: the within-class variance is shift-invariant,
+    # and centering shrinks the moment magnitudes (~4x on the second moment), reducing cancellation in
+    # the prefix-difference arithmetic below.  float64 is required regardless: the raw second moment
+    # reaches ~bin^2 * count ~ 1e15 for a 1e9-voxel volume, far beyond float32/int32.
+    bin_coord = np.arange(num_bins, dtype=np.float64) - (num_bins - 1) / 2.0
 
-    best_thresholds = []
-    best_variance = float('inf')
+    # Moment prefix sums, each with a leading 0 so that P[j] = (sum over bins i < j) and the moment of
+    # any bin interval [a, b) is P[b] - P[a].  m0 = counts, m1 = first moment, m2 = second moment.
+    m0 = np.concatenate(([0.0], np.cumsum(hist)))
+    m1 = np.concatenate(([0.0], np.cumsum(bin_coord * hist)))
+    m2 = np.concatenate(([0.0], np.cumsum(bin_coord * bin_coord * hist)))
 
-    # Iterate through possible thresholds
-    for t in range(1, len(hist) - 1):
-        # Split histogram at the threshold
-        left_hist = hist[:t]
-        right_hist = hist[t:]
+    # Moments of every candidate class interval at once: outer differences, entry [a, b] = P[b] - P[a]
+    # = the moment of bins [a, b).
+    int_m0 = m0[None, :] - m0[:, None]
+    int_m1 = m1[None, :] - m1[:, None]
+    int_m2 = m2[None, :] - m2[:, None]
 
-        # Recursively find thresholds for left and right segments
-        left_thresholds = _recursive_otsu(left_hist, num_thresholds // 2)
-        right_thresholds = _recursive_otsu(right_hist, num_thresholds - len(left_thresholds) - 1)
+    # Within-class cost of the interval [a, b): expanding sum (i - mean)^2 h_i with mean = M1/M0 gives
+    # M2 - M1^2/M0.  Empty (zero-count) intervals cost 0 (an empty class contributes no variance);
+    # structurally invalid entries (a >= b) are +inf so the argmin can never produce non-increasing
+    # boundaries.
+    mean_sq_term = np.divide(int_m1 ** 2, int_m0, out=np.zeros_like(int_m0), where=int_m0 > 0)
+    cost = np.maximum(int_m2 - mean_sq_term, 0.0)      # clip tiny negative rounding residue
+    invalid = ~np.triu(np.ones((num_bins + 1, num_bins + 1), dtype=bool), k=1)   # a >= b
+    cost[invalid] = np.inf
 
-        # Combine thresholds
-        thresholds = left_thresholds + [t] + [x + t for x in right_thresholds]
+    # DP stages: best[b] = minimal cost of covering bins [0, b) with the current number of classes.
+    # Each stage adds one class: total[s, b] = (best cover of [0, s) so far) + (one new class [s, b));
+    # the argmin over s is recorded per b for the backtrack.
+    best = cost[0, :].copy()                           # one class: [0, b)
+    split_of = np.zeros((num_thresholds, num_bins + 1), dtype=np.int64)
+    for stage in range(num_thresholds):
+        total = best[:, None] + cost                   # total[s, b]
+        split_of[stage] = np.argmin(total, axis=0)
+        best = np.min(total, axis=0)
 
-        # Compute the total within-class variance
-        total_variance = _compute_within_class_variance(hist, thresholds)
-
-        # Update the best thresholds if the current variance is lower
-        if total_variance < best_variance:
-            best_variance = total_variance
-            best_thresholds = thresholds
-
-    return best_thresholds
-
-
-def _binary_threshold_otsu(hist):
-    """
-    Finds the best threshold for binary segmentation using Otsu's method.
-
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-
-    Returns
-    -------
-    int
-        Best threshold for binary segmentation.
-    """
-    total = np.sum(hist)
-    current_max, threshold = 0, 0
-    sum_total, sum_foreground, weight_foreground, weight_background = 0, 0, 0, 0
-
-    # Compute the sum of pixel values
-    for i in range(len(hist)):
-        sum_total += i * hist[i]
-
-    # Iterate through possible thresholds
-    for i in range(len(hist)):
-        weight_foreground += hist[i]
-        if weight_foreground == 0:
-            continue
-        weight_background = total - weight_foreground
-        if weight_background == 0:
-            break
-
-        sum_foreground += i * hist[i]
-        mean_foreground = sum_foreground / weight_foreground
-        mean_background = (sum_total - sum_foreground) / weight_background
-
-        # Compute between-class variance
-        between_class_variance = weight_foreground * weight_background * (mean_foreground - mean_background) ** 2
-        if between_class_variance > current_max:
-            current_max = between_class_variance
-            threshold = i
-
-    return threshold
-
-
-def _compute_within_class_variance(hist, thresholds):
-    """
-    Computes the total within-class variance given a set of thresholds.
-
-    Parameters
-    ----------
-    hist : ndarray
-        Histogram of the image.
-    thresholds : list
-        List of thresholds that divide the histogram into multiple classes.
-
-    Returns
-    -------
-    float
-        Total within-class variance.
-    """
-    total_variance = 0
-    thresholds = [0] + thresholds + [len(hist)]
-
-    # Iterate through each segment defined by the thresholds
-    for i in range(len(thresholds) - 1):
-        class_hist = hist[thresholds[i]:thresholds[i+1]]
-        class_prob = np.sum(class_hist)
-        if class_prob == 0:
-            continue
-        class_mean = np.sum(class_hist * np.arange(thresholds[i], thresholds[i+1])) / class_prob
-        class_variance = np.sum(((np.arange(thresholds[i], thresholds[i+1]) - class_mean) ** 2) * class_hist) / class_prob
-        total_variance += class_variance * class_prob
-
-    return total_variance
+    # Backtrack from the full range [0, num_bins): the last stage's argmin at b = num_bins is the last
+    # threshold; each recovered threshold then indexes the previous stage's argmin row.
+    boundaries = []
+    b = num_bins
+    for stage in range(num_thresholds - 1, -1, -1):
+        b = int(split_of[stage][b])
+        boundaries.append(b)
+    return boundaries[::-1]
 
 
 def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10,
