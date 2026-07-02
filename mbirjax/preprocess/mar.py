@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import functools
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 from . import pipeline
@@ -161,19 +162,31 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
         plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
         metal_sino_est (list of jnp.ndarray): List of unnormalized metal sino estimation.
     """
+    # Shard the recon once at entry (a no-op if it is already sharded, e.g. from a recon with
+    # output_sharded=True).  The segmentation then runs on-device across the shards -- including the
+    # Otsu histogram, which reduces per-shard partial histograms without gathering the volume -- and the
+    # 1+num_metal forward projections below consume the SAME sharded recon instead of re-uploading a
+    # recon-sized array per mask.
+    recon = ct_model._shard_recon(recon)
+
+    # Slice-padding info: the sharded recon may be zero-padded on the slice axis (to divide evenly
+    # across devices).  valid_mask (True on real slices; broadcastable, tiny; None when unpadded) and
+    # num_real_slices let the segmentation exclude the padded slices from its statistics and masks.
+    pl = ct_model.recon_placement
+    valid_mask = pl.real_mask(recon.ndim)
+
     # --- Segment plastic and metal regions in the reconstruction ---
     # plastic_mask: Mask for plastic regions.
     # metal_masks: List of masks for each metal.
     # plastic_scale: Scaling factor for the plastic region.
     # metal_scales: List of scaling factors for each metal region.
-    plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
+    plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(
+        recon, num_metal=num_metal, valid_mask=valid_mask, num_real_slices=pl.real_size)
 
     # --- Forward project and scale plastic ---
-    # forward_project shards its input internally (_shard_recon), so hand it the mask/masked-recon
-    # directly -- do NOT jax.device_put the recon-sized array onto one device first.  Keep the OUTPUT
-    # view-sharded (output_sharded=True) and do NOT flatten: the whole correction below runs on these
-    # sharded 3-D sinograms so no full-length sino vector ever lands on a single device.  (plastic_mask /
-    # mask*recon inherit recon's layout; the sino outputs are view-sharded per sino_placement.)
+    # The masks/recon are already sharded, so forward_project consumes them with no further movement.
+    # Keep the OUTPUT view-sharded (output_sharded=True) and do NOT flatten: the whole correction below
+    # runs on these sharded 3-D sinograms so no full-length sino vector ever lands on a single device.
     plastic_sino_est = plastic_scale * ct_model.forward_project(plastic_mask, output_sharded=True)
 
     # --- Forward project the masked out metal regions ---
@@ -273,8 +286,8 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     # Lower-bound violator: minimize Sp and y-Sm over the REAL views (padded views set to +inf so they
     # can't win the argmin).  argmin over the N-D sinogram returns a FLAT index; read the values back via
     # the flattened view (reshape(-1) preserves the sharding).
-    Sp_masked = Sp if view_mask is None else jnp.where(view_mask > 0, Sp, jnp.inf)
-    ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask > 0, y_minus_Sm, jnp.inf)
+    Sp_masked = Sp if view_mask is None else jnp.where(view_mask, Sp, jnp.inf)
+    ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask, y_minus_Sm, jnp.inf)
     i_min_Sp = int(jnp.argmin(Sp_masked))
     i_min_residual = int(jnp.argmin(ymSm_masked))
 
@@ -579,14 +592,13 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     # (output_sharded=True), so every step is a per-shard elementwise op or a cross-device reduction.
     measured_sino = ct_model.prepare_sino_for_devices(measured_sino)
 
-    # Real-view mask (1 on real views, 0 on padded) broadcasting over the shard axis, plus the real pixel
-    # count -- used to exclude padded views from the statistical reductions (the Sp mean floor and the
-    # constraint argmins).  A negligible padded_size-length vector, not a full-sino mask.
+    # Real-view mask (True on real views, False on padded; None when unpadded) broadcasting over the
+    # shard axis, plus the real pixel count -- used to exclude padded views from the statistical
+    # reductions (the Sp mean floor and the constraint argmins).  A negligible padded_size-length
+    # vector, not a full-sino mask.
     pl = ct_model.sino_placement
-    ax = ct_model.sinogram_shard_axis()
-    mask_shape = [1] * measured_sino.ndim
-    mask_shape[ax] = pl.padded_size
-    view_mask = (jnp.arange(pl.padded_size) < pl.real_size).reshape(mask_shape).astype(measured_sino.dtype)
+    view_mask = pl.real_mask(measured_sino.ndim)
+    ax = ct_model.sinogram_shard_axis() % measured_sino.ndim
     num_real_pixels = pl.real_size * (measured_sino.size // measured_sino.shape[ax])
 
     # Get normalized sinogram p and [m_0, m_1, ...] (view-sharded; forward_project handles placement).
@@ -616,7 +628,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
 
 
 def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
-                        num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0):
+                        num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
     then this performs a standard MBIR recon.
@@ -640,9 +652,13 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
             to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.1.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
+        output_sharded (bool, optional): Choose the form of the returned reconstruction.  If False
+            (default), return an ordinary host NumPy array.  If True, leave it distributed
+            (slice-sharded) across the model's devices for a following on-device step.
 
     Returns:
-         jnp.ndarray: The final corrected reconstruction after iterative beam hardening correction.
+         numpy or jax array: The final corrected reconstruction after iterative beam hardening
+         correction -- a host NumPy array by default, or slice-sharded if ``output_sharded=True``.
 
     Example:
         >>> recon = recon_plastic_metal(
@@ -661,20 +677,30 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
     if num_metal < 0:
         raise ValueError("num_metal must be >= 0")
 
-    # Use split sino recon by default for cone beam
-    recon_function = ct_model.recon
+    # Use split sino recon by default for cone beam.  recon() keeps its output SHARDED (the next
+    # correction consumes it on-device with no gather/re-upload); split_sino_recon returns a host recon
+    # BY DESIGN (it splits on the host so the full sinogram is never device-resident) -- the next
+    # correction re-shards it at entry (one upload; device-side stitching is a possible follow-up).
+    # Either form converges at correct_sino_plastic_metal / the exit adapter below.
     if 'ConeBeamModel' in ct_model.get_params('geometry_type'):
         recon_function = ct_model.split_sino_recon
+    else:
+        recon_function = functools.partial(ct_model.recon, output_sharded=True)
+
+    # Deliver the user-requested output form: _shard_recon / _gather_recon are each a no-op when the
+    # loop's final recon is already in that form.
+    def to_output_form(r):
+        return ct_model._shard_recon(r) if output_sharded else ct_model._gather_recon(r)
 
     # Do a regular recon if num_metal == 0
     if num_metal == 0:
         recon, _ = recon_function(sino, weights=weights, stop_threshold_change_pct=stop_threshold_change_pct)
-        return recon
+        return to_output_form(recon)
 
     # Continue with beam hardening and segmentation
     if verbose >= 1:
         print("\n************ Perform initial FDK reconstruction  **************")
-    recon = ct_model.direct_recon(sino)
+    recon = ct_model.direct_recon(sino, output_sharded=True)
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
@@ -693,4 +719,4 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
                             slice_label=labels,
                             title=f'Iteration {i + 1}: Comparison of Plastic and Metal Masks')
 
-    return recon
+    return to_output_form(recon)

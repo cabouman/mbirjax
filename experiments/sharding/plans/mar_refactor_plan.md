@@ -70,6 +70,42 @@ sino the un-sharded correction is ~(5+m)×S on one device → OOM; sharded it is
   final gather is host).  **Behavior change:** median→mean floor (approved).  **GPU per-device memory +
   a real MAR before/after to be confirmed on the cluster.**
 
+### Phase 2b — Keep the recon on the devices through the loop (sharded segmentation)  **[DONE 2026-07-02]**
+Greg's cluster trace: the recon bounced host↔device each BH iteration, and `np.histogram`
+(`segmentation.py`, inside `multi_threshold_otsu`) was the op pinning the recon to the host.
+- **Sharded histogram:** a histogram is sum-decomposable (integer counts; min/max order-insensitive), so
+  `jnp.histogram` on a sharded volume compiles to per-shard partials + all-reduce — verified **0
+  all-gathers** (3 all-reduces for counting; the bin determination = a separate masked min/max pass with
+  its own all-reduces, NOT part of those 3).  `_sharded_histogram` (new, `segmentation.py`) uses masked
+  min/max for the bin range and pushes padded entries to a finite sentinel ABOVE the range (dropped by
+  `histogram` range semantics) → bin edges AND counts **bit-identical** to the unpadded host computation
+  (no post-hoc count correction; Greg's bin-boundary concern resolved by construction).  Memory: temps
+  are shard-bounded (CPU-measured ~2×shard for min/max, ~7×shard worst-case for the histogram; if the
+  cluster fingerprint shows the 7× hurting, swap in a manual bucketize+scatter-add at ~1.3×shard).
+- **`multi_threshold_otsu(valid_mask=None)`:** module-aware — numpy input → host `np.histogram` as
+  before; jax input → `_sharded_histogram` on its own device(s); only the (num_bins,) histogram comes to
+  the host for the threshold search.
+- **`segment_plastic_metal(valid_mask, num_real_slices)`:** class masks are ANDed with `valid_mask` (a
+  threshold interval spanning 0 would otherwise mark the padded zeros and bias
+  `compute_scaling_factor`'s denominator); `apply_cylindrical_mask(num_real_slices=...)` applies the
+  bottom margin at the REAL bottom slices (`[-b:]` would have zeroed the padding instead — latent bug
+  under slice padding, fixed).
+- **`_est_plastic_metal_sinos_from_recon`:** `recon = ct_model._shard_recon(recon)` at entry (no-op if
+  already sharded) + builds the tiny per-slice `valid_mask` from `recon_placement` — segmentation runs
+  on-device and the 1+m projections consume ONE sharded recon instead of re-uploading per mask.
+- **`recon_plastic_metal(..., output_sharded=False)`:** user-facing sharding contract.  Loop internals:
+  `direct_recon(..., output_sharded=True)`; non-cone `recon_function = partial(recon,
+  output_sharded=True)`; **`split_sino_recon` stays host-output by design** (host-split memory halving;
+  device-side stitching noted as a follow-up) — both forms converge at the correction's `_shard_recon`
+  entry and the exit adapter (`_shard_recon`/`_gather_recon` per the kwarg, each a no-op when already in
+  form).
+- **Verified (CPU, n=1 vs n=3 with BOTH view and slice padding):** Otsu thresholds **bit-identical**
+  (host numpy vs sharded+padded); corrected sino consistent (max 9.9e-4 = argmin-ULP scale, NRMSE
+  1.1e-5); `recon_plastic_metal` default returns host ndarray, `output_sharded=True` returns the
+  sharded form, gathered == host **exactly (0.0)** (also implicitly verifies `recon(init_recon=
+  <sharded>)`); `tests/test_preprocessing.py` + `tests/test_utilities.py` pass (incl. the existing
+  cylindrical-mask tests).
+
 ### Phase 3 — (DEFERRED — revisit after Phases 1–2) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the

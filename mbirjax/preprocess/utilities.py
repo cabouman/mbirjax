@@ -753,7 +753,7 @@ def project_vector_to_vector(u1, u2):
 
 
 # Not jitted, so a numpy recon stays on the host (jit would force the whole volume onto one GPU).
-def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
+def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0, num_real_slices=None):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
 
@@ -772,6 +772,9 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
         top_margin (int): Number of top slices to set to zero along the Z-axis.
         bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
+        num_real_slices (int or None): Number of REAL slices when ``recon`` is a device-form volume whose
+            slice axis is zero-padded (see the recon placement).  The bottom margin is applied at the end
+            of the real slices, not the padded end.  None (default) means all slices are real.
 
     Returns:
         np.ndarray or jax.Array: Masked 3D volume of the same shape and array module as `recon`.
@@ -803,16 +806,19 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     # Zero top/bottom margins in place on that new array (no second full-volume copy -> 2x not 3x).
     # numpy is truly in place; jax is immutable so use .at[].set (on-device, not the big path).
+    # The bottom margin ends at the REAL slice count: on a slice-padded device-form volume, [-b:] would
+    # zero the (already-zero) padding instead of the real bottom slices.
+    num_real_slices = recon.shape[2] if num_real_slices is None else num_real_slices
     if xp is np:
         if top_margin > 0:
             recon[:, :, :top_margin] = 0
         if bottom_margin > 0:
-            recon[:, :, -bottom_margin:] = 0
+            recon[:, :, num_real_slices - bottom_margin:num_real_slices] = 0
     else:
         if top_margin > 0:
             recon = recon.at[:, :, :top_margin].set(0)
         if bottom_margin > 0:
-            recon = recon.at[:, :, -bottom_margin:].set(0)
+            recon = recon.at[:, :, num_real_slices - bottom_margin:num_real_slices].set(0)
 
     return recon
 
