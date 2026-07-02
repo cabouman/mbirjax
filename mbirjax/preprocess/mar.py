@@ -605,6 +605,19 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))   # max over padded 0s is unaffected
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
+    # JAX division does not raise on 0/0 -- an empty (all-zero) plastic or metal estimate would silently
+    # fill the normalized sinogram with NaNs and fail far downstream.  Check the scales explicitly (a
+    # scalar sync each, once per correction) and fail fast with an actionable message.  ``not > 0`` also
+    # catches a NaN scale (e.g. a NaN in the recon).
+    if not float(plastic_sino_scale) > 0:
+        raise ValueError(
+            "The estimated plastic sinogram is empty (the plastic segmentation class contains no "
+            "voxels).  Check the input reconstruction, num_metal, and the cylindrical-mask margins.")
+    for metal_index, scale in enumerate(metal_sino_scale):
+        if not float(scale) > 0:
+            raise ValueError(
+                f"The estimated sinogram for metal {metal_index} is empty (its segmentation class "
+                f"contains no voxels).  num_metal={num_metal} may be too large for this object.")
     plastic_sino_est = plastic_sino_est / plastic_sino_scale
     metal_sino_est = [arr / norm for arr, norm in zip(metal_sino_est, metal_sino_scale)]
 
