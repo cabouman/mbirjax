@@ -542,6 +542,34 @@ contaminates, or NaNs.**
   the SAME model under test (`self._make_model()`, `model.get_params('recon_shape')`), and don't
   hardcode a real slice count (helical ≠ num_det_rows) — read it from params.
 
+## Out-of-pool GPU allocations vs a near-total BFC reservation (2026-07-02)
+
+With `XLA_PYTHON_CLIENT_MEM_FRACTION=0.98`, everything that allocates OUTSIDE XLA's BFC pool has
+~1.5 GB to live in — and the pool RETAINS its high-water mark (`pool_bytes` stays at the process peak
+even when `bytes_in_use` returns to ~0), so late-in-the-run out-of-pool allocations starve even on an
+"idle" GPU.  Two distinct sub-classes, one diagnostic, one policy:
+
+1. **cuSolver-family** (`jnp.linalg.solve/svd/eig/cholesky/inv`): the library's handle/workspace is
+   allocated outside the pool and fails (`gpusolverDnCreate ... cuSolver internal error`) even with the
+   pool mostly free — and the dispatch is ASYNC, so the error surfaces only when the result is first
+   read, far from the call.  Policy: for small systems (e.g. the MAR 15×15 QP), gather to host and use
+   `np.linalg` (done in `_estimate_BH_model_params_using_OSQP`); for large ones, budget pool headroom.
+2. **NCCL/collective buffers** (`cuda_vmm allocator ... RESOURCE_EXHAUSTED`): any eager op on a SHARDED
+   array that reduces cross-device (even `jnp.linalg.norm`, which is pure XLA — no cuSolver) allocates
+   collective buffers via the vmm allocator, outside the pool.  Each SEPARATE eager op/executable can
+   carry its own collective allocation, so per-iteration eager stats (loss, norm, L1) multiply the
+   exposure.  Policy: jit the recon-loop statistics into ONE function (one executable, one set of
+   collective buffers, and the fusion also removes the full-size eager temps) — see
+   `_vcd_iteration_stats` / the jitted `get_forward_model_loss` / `_gen_huber_weights_kernel`.
+
+Diagnostics: `bytes_in_use` is the WRONG ruler for this class — check `pool_bytes`/`peak_pool_bytes`
+(the retained reservation) at the failure point; the confirming ablation is lowering the mem fraction.
+CONFIRMED on the cluster 2026-07-02: at the norm-OOM point `bytes_in_use` = 0.64 GB while `pool_bytes`
+= 83.3 GB (the full reservation), and fraction 0.94 eliminated the OOM.  FIXED: `tomography_model.py`
+now uses `os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')` — a conservative default
+with out-of-pool headroom, overridable per-run via the environment (it was a hard-set '0.98' that the
+env var could not override).
+
 ## Tooling / harness
 
 - **A modern `pip install -e` overrides `PYTHONPATH` — prepending a checkout to `PYTHONPATH` does NOT

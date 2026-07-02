@@ -52,9 +52,19 @@ def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     if not (0.0 <= delta <= 1.0):
         raise ValueError("delta must be between 0 and 1.")
 
-    weights = jnp.asarray(weights)
-    sino_error = jnp.asarray(sino_error)
+    return _gen_huber_weights_kernel(jnp.asarray(weights), jnp.asarray(sino_error), T, delta, epsilon)
 
+
+@jax.jit
+def _gen_huber_weights_kernel(weights, sino_error, T, delta, epsilon):
+    """Jitted body of :func:`gen_huber_weights`.
+
+    Eagerly this chain materialized ~5 full-sinogram temporaries (std, the two norms' squares,
+    normalized_error, abs, where) and the two ``jnp.linalg.norm`` reductions each ran as separate
+    dispatches (with their own cross-device collectives on sharded inputs).  Jitted, XLA fuses the
+    elementwise chain into the reductions and the final ``where`` -- no full-size temporaries, one
+    executable.  (``jnp.linalg.norm`` with default ord is a pure XLA sum-of-squares reduction; it does
+    not call cuSolver.)"""
     # Compute std and global alpha
     std = 1.0 / jnp.maximum(jnp.sqrt(weights), epsilon)
     alpha = jnp.linalg.norm(sino_error) / (jnp.linalg.norm(std) + epsilon)
@@ -337,7 +347,7 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
         # No constraints - solve unconstrained QP directly.  The system is tiny (num_cols x num_cols),
         # so solve on the HOST with numpy, like the OSQP branch below: jnp.linalg.solve dispatches to
         # cuSolver on GPU, whose handle/workspace allocation lives OUTSIDE XLA's memory pool and fails
-        # when XLA has preallocated nearly all device memory (XLA_PYTHON_CLIENT_MEM_FRACTION=0.98) --
+        # when the pool has reserved nearly all device memory (XLA_PYTHON_CLIENT_MEM_FRACTION) --
         # an async failure that only surfaces when theta is first read.
         theta = np.linalg.solve(P_numpy, -q_numpy)
         return jnp.asarray(theta, dtype=jnp.float32)
