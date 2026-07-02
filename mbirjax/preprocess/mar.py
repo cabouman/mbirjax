@@ -469,7 +469,10 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
             row_m = _get_row_H(i_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             A_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
-            u_m = jnp.array([measured_sino[i_min_residual]])
+            # i_min_residual is a FLAT pixel index; the sinogram is 3-D (view-sharded), so read the one
+            # pixel through the flattened view (reshape preserves the sharding) -- integer-indexing the
+            # 3-D array would silently grab a whole VIEW along axis 0 instead.
+            u_m = jnp.array([measured_sino.reshape(-1)[i_min_residual]])
             A = jnp.vstack([A, A_m[None, :]])
             u = jnp.concatenate([u, u_m])
             C_m.append(i_min_residual)
