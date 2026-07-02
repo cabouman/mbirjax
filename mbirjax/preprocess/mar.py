@@ -281,10 +281,13 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
         v_min_residual (float): Value of (y − Sm) at that entry.
     """
     num_cols = len(H_exponent_list)
+    # The coefficient of p in column i is the column with its p factor removed, so zero the p exponent
+    # (the sparse _get_column_H then SKIPS that factor) rather than passing a dummy full-sinogram ones
+    # array -- eagerly, the ones would be reallocated (and multiplied) on every loop iteration.
+    p_coeff_exponents = [(0,) + exps[1:] for exps in H_exponent_list]
     Sp = jnp.zeros_like(measured_sino)
     for i in range(0, 1 + num_cross_terms):
-        # Use a dummy input of ones to extract the structure of the i-th column (i.e., coefficient of p)
-        Sp = Sp + theta[i] * _get_column_H(i, jnp.ones_like(plastic_sino_est), metal_sino_est, H_exponent_list)
+        Sp = Sp + theta[i] * _get_column_H(i, plastic_sino_est, metal_sino_est, p_coeff_exponents)
 
     # y_minus_Sm = y - metal-only
     y_minus_Sm = measured_sino
@@ -443,7 +446,10 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
 
         # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
-            row_p = _get_row_H(i_min_Sp, jnp.ones_like(measured_sino), metal_sino_est, H_exponent_list)
+            # Coefficient-of-p row: zero the p exponent (pi**0 == 1 exactly) instead of allocating a
+            # full-sinogram dummy ones array just to read its one pixel.
+            p_coeff_exponents = [(0,) + exps[1:] for exps in H_exponent_list]
+            row_p = _get_row_H(i_min_Sp, plastic_sino_est, metal_sino_est, p_coeff_exponents)
             # Negative row_p[:dp] to ensure Hpθp >= 0
             A_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             u_p = jnp.array([0.0])
@@ -503,11 +509,14 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
         corrected_plastic_sino (jnp.ndarray): Beam-hardening-corrected plastic sinogram.
     """
 
-    # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns of H
+    # Compute the denominator (linear plastic + cross terms) from the first (1 + num_cross_terms) columns
+    # of H.  The coefficient of p in column i is the column with its p factor removed, so zero the p
+    # exponent (the sparse _get_column_H then SKIPS that factor) rather than passing a dummy
+    # full-sinogram ones array -- eagerly, the ones would be reallocated on every loop iteration.
+    p_coeff_exponents = [(0,) + exps[1:] for exps in H_exponent_list]
     Sp = jnp.zeros_like(measured_sino)
     for i in range(0, 1 + num_cross_terms):
-        # Use a dummy input of ones to extract the structure of the i-th column (i.e., coefficient of p)
-        Sp += theta[i] * _get_column_H(i, jnp.ones_like(measured_sino), metal_sino_est, H_exponent_list)
+        Sp += theta[i] * _get_column_H(i, plastic_sino_est, metal_sino_est, p_coeff_exponents)
 
     y_minus_Sm = measured_sino
     # Subtract metal-only terms (from H columns after the cross terms)
