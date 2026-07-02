@@ -329,18 +329,20 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
     Returns:
         jnp.ndarray: Solution vector θ.
     """
+    # Convert to numpy for linalg.solve and OSQP
+    P_numpy = np.asarray(P)
+    q_numpy = np.asarray(q)
+
     if A is None or u is None:
         # No constraints - solve unconstrained QP directly.  The system is tiny (num_cols x num_cols),
         # so solve on the HOST with numpy, like the OSQP branch below: jnp.linalg.solve dispatches to
         # cuSolver on GPU, whose handle/workspace allocation lives OUTSIDE XLA's memory pool and fails
         # when XLA has preallocated nearly all device memory (XLA_PYTHON_CLIENT_MEM_FRACTION=0.98) --
         # an async failure that only surfaces when theta is first read.
-        theta = np.linalg.solve(np.asarray(P), -np.asarray(q))
+        theta = np.linalg.solve(P_numpy, -q_numpy)
         return jnp.asarray(theta, dtype=jnp.float32)
 
     # Convert arrays as required by OSQP. These matrices are small.
-    P_numpy = np.asarray(P)
-    q_numpy = np.asarray(q)
     A_numpy = np.asarray(A)
     u_numpy = np.asarray(u)
 
