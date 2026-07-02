@@ -39,25 +39,36 @@ The recon steps in the loop (`split_sino_recon` / `recon`) are already sharded �
 
 ## Staged plan
 
-### Phase 1 — Retire the single-device gather (memory; byte-identical)  **[IN PROGRESS]**
-- Drop the `device` param from `_est_plastic_metal_sinos_from_recon` and the
-  `device = ct_model.recon_placement.devices[0]` in `correct_sino_plastic_metal`.  Hand `forward_project`
-  the `plastic_mask` / `mask * recon` directly (host or sharded, as they arrive) and let it shard
-  internally — the host-safe pattern used everywhere else.  Nothing is gathered to one GPU.
-- **Byte-identical (expected):** `forward_project` shards its input the same way whether or not it was
-  first gathered to one device (float32 — same projection, just no gather spike).  If the sharded
-  reduction reorders vs a single-device one, expect ≤ ~1 ULP; document if so.
-- **Gate:** ephemeral before/after on a MAR recon (`num_metal>0`) — corrected sino + recon match
-  (byte-identical or ~ULP); `memory_report` shows no full-volume single-GPU spike on a large run.
+### Phase 1 — Retire the single-device gather (memory; byte-identical)  **[DONE 2026-07-01]**
+- Dropped the `device` param from `_est_plastic_metal_sinos_from_recon` and the
+  `device = ct_model.recon_placement.devices[0]` in `correct_sino_plastic_metal`; `forward_project` now
+  shards `plastic_mask` / `mask*recon` internally (`_shard_recon`, a no-op if already sharded) — no
+  full-volume gather onto one GPU.
+- **Verified byte-identical:** `forward_project(device_put(x, dev0))` == `forward_project(x)` on a
+  4-device model (max_abs_diff 0.0) — the old `device_put` was a pure gather; and an end-to-end MAR smoke
+  (`correct_sino_plastic_metal` on a plastic+metal phantom) produced a finite corrected sino.
 
-### Phase 2 — Correction application through `map_view_batches` with jitted operators (memory + multi-GPU)
-- Run `_correct_plastic_sinogram` / `BH_correction` per view-batch through the shared driver, with the
-  per-batch polynomial evaluation wrapped in `jax.jit` (as `scan_to_sino`'s fused kernel is): fuses the
-  monomial / `H`-column evaluation, reuses buffers, bounds memory, and shards across devices.  Per-pixel
-  (no cross-view coupling) → byte-identical modulo jit-fusion ~ULP.  `theta` (a handful of coefficients)
-  and the exponent lists are closed-over compile constants.  Based on the preprocessing work, jitting the
-  per-batch operator is what keeps the peak bounded (buffer reuse) — Greg's call.
-- **Gate:** before/after ~byte-identical; 1-vs-N device consistent; `memory_report` bounded.
+### Phase 2 — Shard the correction across devices (memory + parallelism)  **[DONE 2026-07-01]**
+Pivoted from `map_view_batches` to **JAX-native view-sharding + SPMD** (Greg): the correction has global
+reductions (`Sp` mean floor, scaling inner products, `HtH`/`Hty`, argmins) that `map_view_batches` (a
+map, not a reduce) can't express, whereas sharded arrays give those reductions as cross-device
+all-reduces *and* run the elementwise steps per-shard in parallel.  Motivation is memory: on a 20+ GB
+sino the un-sharded correction is ~(5+m)×S on one device → OOM; sharded it is ~(5+m)×S/n per device.
+(Speed is a minor bonus — the correction is a few % of the MAR recon.)
+- Projections use `output_sharded=True`; the sinos stay **3-D view-sharded** (no flatten to one device).
+- `_compute_entry_for_OSQP`: `jnp.dot` → `jnp.sum(a*b)` (all-reduces on N-D sharded; padded `h_i`=0 → no
+  mask needed).  `_correct_plastic_sinogram`: `median(Sp)` → **masked mean** (median needs a global sort
+  → would gather; mean all-reduces).  `_estimate_plastic_scaling`: boolean-select → `where`-masked sums.
+  `_find_most_violated_constraints`: masked argmin over real views + flat-index reads.  `_get_row_H`:
+  index the flattened view.  A tiny per-view `view_mask` (1 on real, 0 on the zero-padded views from
+  `prepare_sino_for_devices`) excludes padding from the reductions.  The return `_gather_sinogram`s to a
+  host sino cropped to real views (feeds the recon as before).
+- **Verified (CPU):** `correct_sino_plastic_metal` on a plastic+metal phantom, **n=1 (unpadded) vs n=4
+  (padded/sharded): max_abs 2.2e-4, NRMSE 2.9e-6** — i.e. consistent; the tiny max is the argmin
+  constraint-pixel sensitivity to all-reduce ULP (no padding leak: NRMSE ~ULP, no bias).  Both finite,
+  padding cropped.  Structurally nothing full-length lands on one device (all view-sharded; only the
+  final gather is host).  **Behavior change:** median→mean floor (approved).  **GPU per-device memory +
+  a real MAR before/after to be confirmed on the cluster.**
 
 ### Phase 3 — (DEFERRED — revisit after Phases 1–2) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of

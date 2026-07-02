@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import mbirjax as mj
 import mbirjax.preprocess as mjp
+from . import pipeline
 import random
 import warnings
 from scipy.sparse import csc_matrix
@@ -68,7 +69,7 @@ def gen_huber_weights(weights, sino_error, T=1.0, delta=1.0, epsilon=1e-6):
     return huber_weights
 
 
-def BH_correction(sino, alpha, batch_size=64):
+def BH_correction(sino, alpha, batch_size=64, devices=None):
     """
     Apply a polynomial beam hardening correction to a sinogram.
 
@@ -99,28 +100,19 @@ def BH_correction(sino, alpha, batch_size=64):
         >>> alpha = [1.0, 0.2, 0.1]  # Correction: sino + 0.2 * sino^2 + 0.1 * sino^3
         >>> corrected_sino = mjp.BH_correction(sino, alpha)
     """
-    # Ensure inputs are JAX arrays
-    sino = jnp.asarray(sino)
     alpha = jnp.asarray(alpha)
 
-    views, rows, cols = sino.shape
-    corrected = []
-
-    for i in range(0, views, batch_size):
-        sino_batch = sino[i:i+batch_size]
-
-        # Initialize corrected batch to the linear term (sino_batch)
-        corrected_batch = jnp.zeros_like(sino_batch)
-
-        # Apply polynomial terms
+    # Per-view-batch polynomial evaluation, driven through the shared pipeline driver: jitted so XLA
+    # fuses the powers + weighted sum (buffer reuse, bounded memory), and memory-bounded / optionally
+    # multi-device via map_view_batches.  The correction is per-pixel, so batching is exact.
+    @jax.jit
+    def kernel(sino_batch):
+        corrected = jnp.zeros_like(sino_batch)
         for k in range(len(alpha)):
-            corrected_batch += alpha[k] * jnp.power(sino_batch, k + 1)
+            corrected = corrected + alpha[k] * jnp.power(sino_batch, k + 1)
+        return corrected
 
-        corrected.append(corrected_batch)
-
-    corrected_sino = jnp.concatenate(corrected, axis=0)
-
-    return corrected_sino
+    return pipeline.map_view_batches(sino, kernel, batch_size, devices=devices)
 
 
 def _generate_metal_exponent_list(num_metal, max_order):
@@ -176,17 +168,18 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
     # metal_scales: List of scaling factors for each metal region.
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal=num_metal)
 
-    # --- Forward project, scale and vectorize plastic ---
+    # --- Forward project and scale plastic ---
     # forward_project shards its input internally (_shard_recon), so hand it the mask/masked-recon
-    # directly -- do NOT jax.device_put the recon-sized array onto one device first (that would gather
-    # the whole volume onto a single GPU, spiking memory and defeating the projector's sharding).
-    # plastic_mask / mask*recon inherit recon's layout (sharded stays sharded; host stays host).
-    plastic_sino_est = plastic_scale * ct_model.forward_project(plastic_mask).reshape(-1)
+    # directly -- do NOT jax.device_put the recon-sized array onto one device first.  Keep the OUTPUT
+    # view-sharded (output_sharded=True) and do NOT flatten: the whole correction below runs on these
+    # sharded 3-D sinograms so no full-length sino vector ever lands on a single device.  (plastic_mask /
+    # mask*recon inherit recon's layout; the sino outputs are view-sharded per sino_placement.)
+    plastic_sino_est = plastic_scale * ct_model.forward_project(plastic_mask, output_sharded=True)
 
     # --- Forward project the masked out metal regions ---
     metal_sino_est = []
     for mask, scale in zip(metal_masks, metal_scales):
-        m = ct_model.forward_project(mask * recon).reshape(-1)
+        m = ct_model.forward_project(mask * recon, output_sharded=True)
         metal_sino_est.append(m)
 
     return plastic_sino_est, metal_sino_est
@@ -232,8 +225,11 @@ def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     Returns:
         jnp.ndarray: The computed row of H.
     """
-    pi = plastic_sino_est[row_index]
-    mi = [m[row_index] for m in metal_sino_est]
+    # row_index is a FLAT pixel index (from argmin over the flattened sinogram); the sinos are now 3-D
+    # (view-sharded), so index the flattened view (reshape(-1) preserves the sharding; this is a
+    # single-element gather).
+    pi = plastic_sino_est.reshape(-1)[row_index]
+    mi = [m.reshape(-1)[row_index] for m in metal_sino_est]
     row_vals = []
     for exps in H_exponent_list:
         val = (pi ** exps[0])
@@ -243,7 +239,7 @@ def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     return jnp.asarray(row_vals)
 
 
-def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms):
+def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=None):
     """
     Compute the most violated constraints for the beam hardening model.
 
@@ -252,13 +248,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
         2. Residual positivity:       y[i] − H_m[i,:] θ_m ≥ 0
 
     This function evaluates the indices and values of the entries that most violate
-    the constraints.
+    the constraints.  When the sinograms are device-form (view-sharded, possibly zero-padded on the view
+    axis), ``view_mask`` (1 on real views, 0 on padded, broadcasting over the sinogram) excludes the
+    padded views from the argmin so a padded entry is never selected as a constraint.
 
     Returns:
-        i_min_Sp (int): Index of smallest Sp entry.
-        v_min_Sp (float): Value of Sp[i_min_Sp].
-        i_min_residual (int): Index of smallest (y − Sm) entry.
-        v_min_residual (float): Value of (y − Sm)[i_min_residual].
+        i_min_Sp (int): FLAT index of smallest Sp entry (into the flattened sinogram).
+        v_min_Sp (float): Value of Sp at that entry.
+        i_min_residual (int): FLAT index of smallest (y − Sm) entry.
+        v_min_residual (float): Value of (y − Sm) at that entry.
     """
     num_cols = len(H_exponent_list)
     Sp = jnp.zeros_like(measured_sino)
@@ -272,12 +270,16 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     for j in range(1 + num_cross_terms, num_cols):
         y_minus_Sm = y_minus_Sm - theta[j] * _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
 
-    # Lower-bound violator: minimize Sp and y-Sm
-    i_min_Sp = int(jnp.argmin(Sp))
-    i_min_residual = int(jnp.argmin(y_minus_Sm))
+    # Lower-bound violator: minimize Sp and y-Sm over the REAL views (padded views set to +inf so they
+    # can't win the argmin).  argmin over the N-D sinogram returns a FLAT index; read the values back via
+    # the flattened view (reshape(-1) preserves the sharding).
+    Sp_masked = Sp if view_mask is None else jnp.where(view_mask > 0, Sp, jnp.inf)
+    ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask > 0, y_minus_Sm, jnp.inf)
+    i_min_Sp = int(jnp.argmin(Sp_masked))
+    i_min_residual = int(jnp.argmin(ymSm_masked))
 
-    v_min_Sp = Sp[i_min_Sp]
-    v_min_residual = y_minus_Sm[i_min_residual]
+    v_min_Sp = Sp.reshape(-1)[i_min_Sp]
+    v_min_residual = y_minus_Sm.reshape(-1)[i_min_residual]
 
     return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual
 
@@ -329,13 +331,16 @@ def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_e
     HtH = jnp.zeros((num_cols, num_cols))
     Hty = jnp.zeros(num_cols)
 
-    # Compute the upper triangle of HtH and mirror it.
+    # Compute the upper triangle of HtH and mirror it.  Use jnp.sum(a*b) rather than jnp.dot so the
+    # inner products work on the N-D view-sharded sinograms (a cross-device all-reduce).  Padded views
+    # contribute 0 (their h_i are built from plastic/metal, which are 0 on padded views), so no mask is
+    # needed here.
     for i in range(num_cols):
         h_i = _get_column_H(i, plastic_sino_est, metal_sino_est, H_exponent_list)
-        Hty = Hty.at[i].set(jnp.dot(h_i, measured_sino))
+        Hty = Hty.at[i].set(jnp.sum(h_i * measured_sino))
         for j in range(i, num_cols):
             h_j = _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
-            dot_ij = jnp.dot(h_i, h_j)
+            dot_ij = jnp.sum(h_i * h_j)
             HtH = HtH.at[i, j].set(dot_ij)
             if i != j:
                 HtH = HtH.at[j, i].set(dot_ij)
@@ -359,7 +364,7 @@ def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_e
 
     return P, q
 
-def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter=10, tolerance=-1e-5):
+def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter=10, tolerance=-1e-5, view_mask=None):
     """
     Estimate polynomial beam hardening model parameters with iterative constraints search.
 
@@ -412,7 +417,7 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
 
     for iter in range(num_constraint_update_iter):
         # Find the indices and values of the points that most violate each constraint
-        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms)
+        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=view_mask)
 
         # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
         if v_min_Sp < tolerance and (i_min_Sp not in C_p):
@@ -441,7 +446,7 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
     return theta
 
 
-def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma):
+def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, num_metal_terms, p_normalization, gamma, view_mask=None, num_real_pixels=None):
     """
     Perform beam hardening correction on the plastic sinogram.
 
@@ -456,9 +461,10 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
 
     The H matrix looks like: [p, p*m, p*m^2, m, m^2, m^3]
     The correction is applied as:
-        corrected_plastic = p_normalization * max(y - H_metal·θ_m, 0) / (max(H_plastic·θ_p, γ * median(H_plastic·θ_p))
+        corrected_plastic = p_normalization * max(y - H_metal·θ_m, 0) / (max(H_plastic·θ_p, γ * mean(H_plastic·θ_p))
     The stabilization term involving γ prevents division by near-zero or negative values, reducing streaks
-    and numerical instability.
+    and numerical instability.  (``view_mask`` / ``num_real_pixels`` restrict the mean to the real views
+    when the sinogram is device-form and zero-padded.)
 
     Args:
         measured_sino (jnp.ndarray): Measured sinogram.
@@ -489,14 +495,21 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
     # Enforce non-negativity on the residual sinogram (plastic + cross terms)
     y_minus_Sm = jnp.maximum(y_minus_Sm, 0)
 
-    # Compute median of plastic coefficients (used to define a stabilization floor)
-    median_plastic_coef = jnp.median(Sp)
-    Sp_floor = gamma * median_plastic_coef
+    # Central plastic coefficient, used to define a stabilization floor.  We use the MEAN rather than the
+    # median so it is a cross-device all-reduce (median needs a global sort, which would gather the
+    # sharded sinogram back to one device); over the sinogram support the two are close, and this only
+    # sets a floor.  When the sinogram is view-sharded and zero-padded, exclude the padded views via
+    # view_mask so they don't drag the mean toward 0.
+    if view_mask is None:
+        mean_plastic_coef = jnp.mean(Sp)
+    else:
+        mean_plastic_coef = jnp.sum(Sp * view_mask) / num_real_pixels
+    Sp_floor = gamma * mean_plastic_coef
 
-    # A negative median would be non-physical and may indicate instability in the algorithm
+    # A negative mean would be non-physical and may indicate instability in the algorithm
     # In that case, issue a runtime warning to flag the potential problem
-    if float(median_plastic_coef) <= 0:
-        warnings.warn("Median of Sp is negative", RuntimeWarning)
+    if float(mean_plastic_coef) <= 0:
+        warnings.warn("Mean of Sp is negative", RuntimeWarning)
 
     # Clamp Sp at Sp_floor to prevent division by very small or negative values
     clamped_plastic_coef = jnp.maximum(Sp, Sp_floor)
@@ -511,10 +524,15 @@ def _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, p
     for metal in metal_sino_est:
         metal_absent = metal_absent & (metal == 0)
 
-    # Find the metal-absent indices
+    # Plastic-only locations.  Instead of boolean-index selection (measured[condition]) -- which has a
+    # data-dependent shape and would gather the view-sharded sinogram to one device -- zero out the other
+    # locations and let compute_scaling_factor's inner products (sum(a*b)/sum(b*b)) all-reduce over the
+    # shards.  This also drops padded views (plastic==0 there, so condition is False), so no separate
+    # real-view mask is needed here.
     condition = (plastic_sino_est != 0) & metal_absent
 
-    plastic_sino_scale = mjp.compute_scaling_factor(measured_sino[condition], plastic_sino_corrected[condition])
+    plastic_sino_scale = mjp.compute_scaling_factor(jnp.where(condition, measured_sino, 0.0),
+                                                    jnp.where(condition, plastic_sino_corrected, 0.0))
     return plastic_sino_scale
 
 def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
@@ -554,34 +572,47 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
             [(1, *t) for t in cross_exponent_list] +
             [(0, *t) for t in metal_exponent_list])
 
-    sino_shape = measured_sino.shape
-    measured_sino = measured_sino.reshape(-1)
+    # Shard the measured sinogram to the model's devices (view-sharded, zero-padded on the view axis to
+    # divide evenly).  Keep it as a 3-D view-sharded array -- do NOT flatten to one device -- so the whole
+    # correction runs on view-sharded sinograms and no full-length sino vector lands on a single device
+    # (critical for large, e.g. 20+ GB, sinograms).  The estimates below stay view-sharded too
+    # (output_sharded=True), so every step is a per-shard elementwise op or a cross-device reduction.
+    measured_sino = ct_model.prepare_sino_for_devices(measured_sino)
 
-    # Get normalized sinogram p and [m_0, m_1, ...].  forward_project inside handles device placement
-    # (sharding internally); nothing is gathered onto a single device here.
+    # Real-view mask (1 on real views, 0 on padded) broadcasting over the shard axis, plus the real pixel
+    # count -- used to exclude padded views from the statistical reductions (the Sp mean floor and the
+    # constraint argmins).  A negligible padded_size-length vector, not a full-sino mask.
+    pl = ct_model.sino_placement
+    ax = ct_model.sinogram_shard_axis()
+    mask_shape = [1] * measured_sino.ndim
+    mask_shape[ax] = pl.padded_size
+    view_mask = (jnp.arange(pl.padded_size) < pl.real_size).reshape(mask_shape).astype(measured_sino.dtype)
+    num_real_pixels = pl.real_size * (measured_sino.size // measured_sino.shape[ax])
+
+    # Get normalized sinogram p and [m_0, m_1, ...] (view-sharded; forward_project handles placement).
     plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model)
-    plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))
+    plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))   # max over padded 0s is unaffected
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     plastic_sino_est = plastic_sino_est / plastic_sino_scale
     metal_sino_est = [arr / norm for arr, norm in zip(metal_sino_est, metal_sino_scale)]
 
     # Estimate beam hardening model parameters theta
-    theta = _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter)
+    theta = _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter, view_mask=view_mask)
     # print(f'theta = {theta}')
 
     # Compute the corrected plastic sinogram
     plastic_sino_corrected = _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list,
-                                                       num_cross_terms, num_metal_terms, plastic_sino_scale, gamma)
+                                                       num_cross_terms, num_metal_terms, plastic_sino_scale, gamma,
+                                                       view_mask=view_mask, num_real_pixels=num_real_pixels)
 
     # Compute and apply the scaling of the corrected plastic sino
     plastic_sino_corrected_scale = _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, plastic_sino_corrected)
     scaled_corrected_plastic_sino = plastic_sino_corrected_scale * plastic_sino_corrected
 
-    # Combine the scaled corrected plastic sino and the metal sinos
-    corrected_sino_flat = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_sino_est, metal_sino_scale))
-    corrected_sino = corrected_sino_flat.reshape(sino_shape)
-
-    return corrected_sino
+    # Combine the scaled corrected plastic sino and the metal sinos (all view-sharded), then gather to a
+    # host sinogram cropped to the real views (dropping padding) for the downstream recon.
+    corrected_sino = scaled_corrected_plastic_sino + sum(arr * norm for arr, norm in zip(metal_sino_est, metal_sino_scale))
+    return ct_model._gather_sinogram(corrected_sino)
 
 
 def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
