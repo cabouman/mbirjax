@@ -562,6 +562,29 @@ even when `bytes_in_use` returns to ~0), so late-in-the-run out-of-pool allocati
    collective buffers, and the fusion also removes the full-size eager temps) — see
    `_vcd_iteration_stats` / the jitted `get_forward_model_loss` / `_gen_huber_weights_kernel`.
 
+Related (2026-07-02, the full-size Otsu histogram OOM — 47 GiB alloc in `jit__sharded_histogram` on an
+~18 GiB sharded recon): **GSPMD does NOT partition scatter.**  Both `jnp.histogram` (searchsorted
+composition) and an explicit `zeros(nbins).at[idx].add(contrib)` lower with **all-gathers of the
+IMAGE-SIZED index/update arrays onto every device** (verified in HLO: `s32[full-shape] all-gather`).
+For sum-decomposable reductions with a small output (histograms, bincounts), enforce the decomposition
+EXPLICITLY.  Two workable constructions; we chose (b):
+(a) `shard_map` + local scatter + `lax.psum` — verified 0 all-gathers / temps = 2× shard on CPU HLO,
+    but rejected: shard_map's SPMD partitioner has produced pathological lowerings here before
+    (`experiments/sharding/parallel_performance/fbp_parallel_options.md`: 3–5× slower fbp filter,
+    1-dev ≈ 2-dev inside shard_map), and GPU behavior could not be verified locally.
+(b) **Per-device local blocks** (`image.addressable_shards` — dedupe by `shard.index`, since a
+    replicated array yields one identical shard per device) histogrammed on their own devices in
+    **≤2^28-element slabs** (int32 exact within a slab by construction; bounds the bucketize temps),
+    partials combined **on the host in int64** — exact at any scale WITHOUT jax x64, and zero
+    cross-device collectives (min/max combine on host too; dispatch all slabs before reading any so
+    devices overlap without threads).  Matches the codebase's thread/dispatch-per-device pattern.
+Related traps hit on the way: **f32 scatter-adds of unit counts SATURATE at 2^24** (ulp > 1 → +1 rounds
+to +0), so float histogram accumulation silently undercounts, and int32 wraps above 2^31 — a 4.8e9-voxel
+volume's zero-bin exceeds both; **`np.histogram`'s bin edges depend on the dtype of `range`** (f32
+scalars → f32-computed linspace; python floats → f64-computed then cast, differing by a few ULP) — pass
+python floats everywhere for cross-path edge consistency; and subsampling the volume (the statistical
+shortcut) was REJECTED here because the metal class can be sparse (Greg) — exact counts were affordable.
+
 Diagnostics: `bytes_in_use` is the WRONG ruler for this class — check `pool_bytes`/`peak_pool_bytes`
 (the retained reservation) at the failure point; the confirming ablation is lowering the mem fraction.
 CONFIRMED on the cluster 2026-07-02: at the norm-OOM point `bytes_in_use` = 0.64 GB while `pool_bytes`

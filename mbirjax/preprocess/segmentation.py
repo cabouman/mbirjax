@@ -20,21 +20,121 @@ def _masked_histogram(image, valid_mask, num_bins, xp):
     lo = xp.min(xp.where(valid_mask, image, inf))
     hi = xp.max(xp.where(valid_mask, image, -inf))
     sentinel = hi + xp.maximum(xp.abs(hi), xp.asarray(1.0, dtype=image.dtype))  # finite, strictly > hi
-    return xp.histogram(xp.where(valid_mask, image, sentinel), bins=num_bins, range=(lo, hi))
+    # Python-float range endpoints: numpy computes the bin edges in the RANGE's dtype, so float
+    # endpoints give the f64-computed, image-dtype-cast edges -- the same edges the sharded path
+    # computes -- whereas f32 endpoints would shift some edges by a few ULP.
+    return xp.histogram(xp.where(valid_mask, image, sentinel), bins=num_bins, range=(float(lo), float(hi)))
 
 
-@functools.partial(jax.jit, static_argnums=2)   # num_bins sets the output shape -> compile constant
+@jax.jit
+def _masked_min_max(image, valid_mask):
+    """Masked min/max of a (possibly sharded) volume -- pure reductions (cross-device all-reduce,
+    no gathers).  Constants typed to the image dtype so the where cannot upcast."""
+    inf = jnp.asarray(jnp.inf, dtype=image.dtype)
+    lo = jnp.min(jnp.where(valid_mask, image, inf))
+    hi = jnp.max(jnp.where(valid_mask, image, -inf))
+    return lo, hi
+
+
+@functools.partial(jax.jit, static_argnums=4)
+def _local_bucketize_histogram(image, valid_mask, lo, hi, num_bins):
+    """Single-device masked histogram by explicit bucketize + scatter-add (see _sharded_histogram).
+
+    In-range values map to bin ``floor(num_bins * (x - lo) / span)``; ``hi`` itself maps to
+    ``num_bins`` and is clipped into the last bin, matching ``np.histogram``'s closed last edge.
+    Invalid / out-of-range entries get an arbitrary in-range index but contribute 0 via the mask.
+    Counts accumulate in int32 -- exact because callers pass SLABS below 2^31 elements (see
+    ``_HISTOGRAM_SLAB_ELEMENTS``); the exact int64 total is accumulated on the host."""
+    span = jnp.maximum(hi - lo, jnp.asarray(jnp.finfo(image.dtype).tiny, dtype=image.dtype))
+    idx = jnp.clip((num_bins * (image - lo) / span).astype(jnp.int32), 0, num_bins - 1)
+    contrib = (valid_mask & (image >= lo) & (image <= hi)).astype(jnp.int32)
+    return jnp.zeros(num_bins, dtype=jnp.int32).at[idx.reshape(-1)].add(contrib.reshape(-1))
+
+
+# Per-slab element budget for the on-device histogram: bounds the bucketize's int32 index/contribution
+# temporaries (~2 GB at 2^28) and, more importantly, guarantees every slab's int32 counts are EXACT
+# (a slab bin cannot exceed the slab size < 2^31).
+_HISTOGRAM_SLAB_ELEMENTS = 2 ** 28
+
+
+def _iter_local_blocks(image, valid_mask):
+    """Yield ``(block, mask_block)``: each device's LOCAL shard of ``image`` (device-resident jax
+    array; no cross-device movement) with the matching broadcastable piece of ``valid_mask``.
+
+    Shards are deduplicated by their global index so a replicated (or single-device) array yields its
+    data exactly once -- nothing is double counted."""
+    mask = np.asarray(valid_mask)
+    seen = set()
+    for shard in image.addressable_shards:
+        key = tuple((s.start, s.stop, s.step) for s in shard.index)
+        if key in seen:
+            continue
+        seen.add(key)
+        # The mask follows the shard's global slice only on axes where it has real extent; its size-1
+        # (broadcast) axes are kept whole.
+        sel = tuple(idx if mask.shape[i] != 1 else slice(None) for i, idx in enumerate(shard.index))
+        yield shard.data, mask[sel]
+
+
+def _iter_slabs(block, mask_block):
+    """Split a local block into leading-axis slabs of at most ``_HISTOGRAM_SLAB_ELEMENTS`` elements
+    (the mask slabs along too, unless broadcast on that axis)."""
+    per_row = max(1, int(np.prod(block.shape[1:])))
+    rows_per_slab = max(1, _HISTOGRAM_SLAB_ELEMENTS // per_row)
+    for j in range(0, block.shape[0], rows_per_slab):
+        mask_slab = mask_block if mask_block.shape[0] == 1 else mask_block[j:j + rows_per_slab]
+        yield block[j:j + rows_per_slab], mask_slab
+
+
 def _sharded_histogram(image, valid_mask, num_bins=1024):
-    """Jitted :func:`_masked_histogram` for a (possibly view/slice-sharded) jax volume.
+    """Masked histogram of a (possibly view/slice-sharded) jax volume, matching
+    ``np.histogram(valid entries, num_bins, range=(min, max))``, with EXACT int64 counts.
 
-    A histogram is sum-decomposable (``hist(x) = sum over shards of hist(x_shard)``, integer counts), so
-    on a sharded array XLA compiles this to per-shard partial histograms + an all-reduce of the tiny
-    ``(num_bins,)`` output -- verified 0 all-gathers.  min/max are likewise exact all-reduces (order
-    insensitive), so the result is bit-identical to the host computation on the valid entries.
+    A histogram is sum-decomposable (``hist(x) = sum over pieces of hist(piece)``, integer counts), and
+    the decomposition is enforced explicitly: each device's LOCAL shard block is histogrammed on its own
+    device in slabs (int32, exact within a slab), and the tiny ``(num_bins,)`` partials are combined on
+    the HOST in int64 -- exact at any volume size, with no cross-device collectives at all (the masked
+    min/max combine on the host too; min/max are order-free).  All slabs are dispatched asynchronously
+    before any result is read, so the devices overlap without threads.
 
-    Returns (hist, bin_edges) as device arrays (tiny; callers convert to host).
+    Two approaches are deliberately NOT used: (1) ``jnp.histogram`` or a global ``.at[idx].add`` scatter
+    on the sharded array -- GSPMD does not partition scatter and lowers both with all-gathers of the
+    IMAGE-SIZED index/update arrays onto every device (observed as a 47 GiB allocation on an ~18 GiB
+    sharded recon); (2) ``shard_map`` -- it invokes XLA's SPMD partitioner, whose lowering has bitten
+    this codebase before (see ``experiments/sharding/parallel_performance/fbp_parallel_options.md``);
+    the per-device local pattern used here matches the fbp filter and the preprocessing driver.
+
+    Semantics vs ``np.histogram``: range = masked min/max; invalid/out-of-range entries dropped; ``hi``
+    lands in the last (closed) bin.  A value exactly on an interior bin edge can differ from numpy's
+    edge arithmetic by one bin (float rounding of the scaled index) -- irrelevant at Otsu's bin
+    granularity.
+
+    Returns:
+        (hist, bin_edges): host numpy arrays -- int64 counts and float64 edges (as ``np.histogram``).
     """
-    return _masked_histogram(image, valid_mask, num_bins, jnp)
+    blocks = list(_iter_local_blocks(image, valid_mask))
+
+    # Pass 1: masked min/max per slab; dispatch everything, then read; combine exactly on the host.
+    pending = [_masked_min_max(slab, mask_slab)
+               for block, mask_block in blocks for slab, mask_slab in _iter_slabs(block, mask_block)]
+    lo = min(float(lo_hi[0]) for lo_hi in pending)
+    hi = max(float(lo_hi[1]) for lo_hi in pending)
+
+    # Pass 2: bucketize + scatter per slab (int32, exact within a slab); accumulate on the host in
+    # int64.  lo/hi are passed as image-dtype scalars so the kernel's arithmetic stays in that dtype.
+    lo_dev = np.asarray(lo, dtype=image.dtype)
+    hi_dev = np.asarray(hi, dtype=image.dtype)
+    pending = [_local_bucketize_histogram(slab, mask_slab, lo_dev, hi_dev, num_bins)
+               for block, mask_block in blocks for slab, mask_slab in _iter_slabs(block, mask_block)]
+    hist = np.zeros(num_bins, dtype=np.int64)
+    for partial in pending:
+        hist += np.asarray(partial, dtype=np.int64)
+
+    # Edges computed on the host exactly as np.histogram does -- a linspace in the image's dtype
+    # (np.histogram's bin_type is result_type(range, data)) -- so the np and jax paths of
+    # multi_threshold_otsu produce identical edges for identical data.
+    bin_edges = np.linspace(lo, hi, num_bins + 1, dtype=image.dtype)
+    return hist, bin_edges
 
 
 def multi_threshold_otsu(image, classes=2, num_bins=1024, valid_mask=None):
@@ -78,17 +178,18 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024, valid_mask=None):
     if num_bins < classes:
         raise ValueError("Number of bins must be at least equal to number of classes")
 
-    # Compute the histogram of the valid entries: on-device (sharded-safe) for a jax image, host for
-    # numpy -- the same masked semantics either way.
+    # Compute the histogram of the valid entries: on-device (sharded-safe, exact int64 counts) for a
+    # jax image, host for numpy -- the same masked semantics either way.
     if isinstance(image, jax.Array):
         if valid_mask is None:
-            valid_mask = jnp.ones((1,) * image.ndim, dtype=bool)
-        hist, bin_edges = _sharded_histogram(image, valid_mask, num_bins)
-        hist, bin_edges = np.array(hist), np.array(bin_edges)   # tiny (num_bins,) transfers
+            valid_mask = np.ones((1,) * image.ndim, dtype=bool)
+        hist, bin_edges = _sharded_histogram(image, valid_mask, num_bins)   # host numpy results
     elif valid_mask is not None:
         hist, bin_edges = _masked_histogram(image, np.asarray(valid_mask), num_bins, np)
     else:
-        hist, bin_edges = np.histogram(image, bins=num_bins, range=(np.min(image), np.max(image)))
+        # Python-float range endpoints for the same reason as in _masked_histogram (edge consistency
+        # across the numpy and sharded paths).
+        hist, bin_edges = np.histogram(image, bins=num_bins, range=(float(np.min(image)), float(np.max(image))))
 
     # Find the optimal thresholds (half-open class-boundary bin indices) by dynamic programming
     thresholds = _otsu_thresholds_dp(hist, classes - 1)

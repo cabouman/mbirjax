@@ -129,6 +129,36 @@ segmentation is ever fused on-device).
   valley — a tie plateau with zero downstream effect); tests pass.  On real data expect ~bin-scale
   threshold shifts with negligible segmentation change (cluster before/after covers it).
 
+### Phase 2d — Full-scale trace fixes (2026-07-02, from Greg's cluster trace)
+Found and fixed while tracing the full-size (1800, 1365, 1880) MAR recon:
+- **`u_m` flat-index bug** (`_estimate_BH_model_params`): a flat pixel index applied to the now-3-D
+  sinogram grabbed a whole VIEW (TypeError at the constraint concatenate); fixed via
+  `reshape(-1)[i]`; the constraint branches are now exercised by a forced-`tolerance` check (the
+  original gate never entered them).
+- **`split_sino_recon` sharded `init_recon`**: slicing a slice-sharded volume along its sharded axis
+  REPLICATES the half onto every device, and on a padded volume the bottom-half slice picked up
+  padding zeros (correctness).  Fixed by gathering `init_recon` to host at entry (`_gather_recon`,
+  same treatment as sino/weights; preserves the memory-halving design).  Verified byte-identical
+  host-vs-sharded init with the VCD partition RNG seeded.
+- **cuSolver `jnp.linalg.solve` → host `np.linalg.solve`** (tiny QP); **`jnp.linalg.norm` OOM** →
+  per-iteration VCD stats fused into one jitted `_vcd_iteration_stats`; `gen_huber_weights` body
+  jitted.  Root cause class: out-of-pool allocations (cuSolver workspaces, NCCL collective buffers)
+  starved by the retained BFC pool; default mem fraction now `setdefault('0.94')` (was hard-set 0.98).
+  Confirmed on cluster: `pool_bytes` 83.3 GB at `bytes_in_use` 0.64 GB; 0.94 clears the OOM.
+- **Otsu histogram at full scale (47 GiB OOM)**: GSPMD does not partition scatter — `jnp.histogram`
+  AND a global `.at[idx].add` both all-gather image-sized arrays.  Final design (after Greg review;
+  the interim `shard_map` version was dropped per the fbp SPMD-lowering precedent, and the interim
+  volume-subsampling was dropped because the metal class can be sparse): `_sharded_histogram` runs a
+  **per-device local** bucketize+scatter on each device's own shard block (`addressable_shards`,
+  deduped by index), in **≤2^28-element slabs** (int32 exact within a slab; bounds temps), with the
+  tiny partials combined **on the host in int64** — exact counts at any scale, no jax x64, and zero
+  cross-device collectives (min/max also host-combined; slabs all dispatched before any read so
+  devices overlap).  Also fixed on the way: `np.histogram` edges depend on the `range` dtype — all
+  paths now pass python-float endpoints, so the numpy-plain, numpy-masked, and sharded paths produce
+  IDENTICAL thresholds on identical data (verified).  Gate: counts+edges == `np.histogram` (int64),
+  padded==unpadded exact, replicated arrays not double-counted, multi-slab == single-slab, MAR gate
+  byte-unchanged.
+
 ### Phase 3 — (DEFERRED — revisit after Phases 1–2) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the
