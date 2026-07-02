@@ -136,11 +136,14 @@ def _otsu_thresholds_dp(hist, num_thresholds):
 
     hist = np.asarray(hist, dtype=np.float64)
     num_bins = len(hist)
-    # Bin coordinates centered at the histogram midpoint: the within-class variance is shift-invariant,
-    # and centering shrinks the moment magnitudes (~4x on the second moment), reducing cancellation in
-    # the prefix-difference arithmetic below.  float64 is required regardless: the raw second moment
-    # reaches ~bin^2 * count ~ 1e15 for a 1e9-voxel volume, far beyond float32/int32.
-    bin_coord = np.arange(num_bins, dtype=np.float64) - (num_bins - 1) / 2.0
+    # Bin coordinates centered and scaled to [-1, 1].  The within-class variance is shift-invariant,
+    # and a uniform scale multiplies EVERY interval cost by the same factor, so the DP's argmin -- and
+    # hence the returned thresholds -- is unchanged in exact arithmetic.  Centering removes the
+    # mean-offset cancellation in the prefix-difference arithmetic below; scaling keeps the moment
+    # prefix sums O(total count) instead of O(count * bins^2) (~1e15 for a 1e9-voxel volume), so all
+    # magnitudes stay comfortably conditioned in float64.
+    half_span = max((num_bins - 1) / 2.0, 1.0)     # max() guards the degenerate 1-bin histogram
+    bin_coord = (np.arange(num_bins, dtype=np.float64) - (num_bins - 1) / 2.0) / half_span
 
     # Moment prefix sums, each with a leading 0 so that P[j] = (sum over bins i < j) and the moment of
     # any bin interval [a, b) is P[b] - P[a].  m0 = counts, m1 = first moment, m2 = second moment.
