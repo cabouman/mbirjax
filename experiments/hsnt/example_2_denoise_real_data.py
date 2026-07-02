@@ -10,14 +10,164 @@ import os
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+plt.style.use('tableau-colorblind10')
 
-from mbirjax.hsnt import hyper_denoise, dehydrate, rehydrate, import_hsnt_data_hdf5, export_hsnt_data_hdf5
+import jax
+import jax.numpy as jnp
+import jax.lax as lax
+
+from mbirjax.hsnt import import_hsnt_data_hdf5, export_hsnt_data_hdf5
 from plot_utils import plot_images, plot_spectra
 
 
-def main():
-    start_time = time.time()
+@jax.jit
+def newton_update(W, H, T):
+    """JAX-optimized Newton update with automatic differentiation and line search.
 
+    Args:
+        W: Feature matrix (spatial pixels × num_materials), JAX array
+        H: Spectral basis matrix (num_materials × spectral channels), JAX array
+        T: Data term matrix (spatial pixels × spectral channels), JAX array
+
+    Returns:
+        Updated (W, H) pair as JAX arrays
+    """
+    def loss_fn(W_h_pair):
+        W_, H_ = W_h_pair
+        X = W_ @ H_
+        return (jnp.exp(-X) + T * X).sum()
+
+    # Use JAX's automatic differentiation
+    loss_grad_fn = jax.grad(loss_fn)
+
+    X = W @ H
+    Z = jnp.exp(-X)
+    init_loss = (Z + T * X).sum()
+
+    # Compute gradients via automatic differentiation
+    grad_W, grad_H = loss_grad_fn((W, H))
+
+    # Compute Hessian diagonal approximation manually (kept explicit for numerical stability)
+    d2L_dW2 = Z @ (H.T**2)
+    d2L_dH2 = (W.T**2) @ Z
+
+    dW = grad_W / (d2L_dW2 + 1e-10)
+    dH = grad_H / (d2L_dH2 + 1e-10)
+
+    # Line search over learning rates (vectorized)
+    learning_rates = jnp.logspace(0.5, -3, 15)
+
+    def line_search_step(carry, lr):
+        W_best, H_best, loss_best, found = carry
+        W_temp = jnp.maximum(W - lr * dW, 1e-10)
+        H_temp = jnp.maximum(H - lr * dH, 1e-10)
+        X_temp = W_temp @ H_temp
+        temp_loss = (jnp.exp(-X_temp) + T * X_temp).sum()
+
+        # Update if loss improved
+        improved = temp_loss < loss_best
+        W_best = jnp.where(improved, W_temp, W_best)
+        H_best = jnp.where(improved, H_temp, H_best)
+        loss_best = jnp.where(improved, temp_loss, loss_best)
+        found = found | improved
+
+        return (W_best, H_best, loss_best, found), None
+
+    (W_new, H_new, _, _), _ = lax.scan(line_search_step, (W, H, init_loss, False), learning_rates)
+
+    return W_new, H_new
+
+@jax.jit
+def multiplicative_update(W, H, T):
+    """JAX-optimized multiplicative update for non-negative factorization.
+
+    Args:
+        W: Feature matrix (spatial pixels × num_materials), JAX array
+        H: Spectral basis matrix (num_materials × spectral channels), JAX array
+        T: Data term matrix (spatial pixels × spectral channels), JAX array
+
+    Returns:
+        Updated (W, H) pair as JAX arrays
+    """
+    Z = jnp.exp(-W @ H)
+
+    W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+    H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+
+    return W * W_mult, H * H_mult
+
+def optimize_newt_body(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using Newton updates."""
+    num_pixels = T.shape[0]
+    num_wavelengths = T.shape[1]
+
+    # Fixed seed for reproducibility
+    key = jax.random.PRNGKey(jnp.array(129, dtype=int))
+
+    # ===== Newton Optimization =====
+    def newton_cond(state):
+        _, _, _, i, converged = state
+        return (i < max_steps) & (~converged)
+
+    def newton_body(state):
+        W, H, prev_loss, i, converged = state
+        W_new, H_new = newton_update(W, H, T)
+        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
+        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
+        W_out = jnp.where(converged, W, W_new)
+        H_out = jnp.where(converged, H, H_new)
+        loss_out = jnp.where(converged, prev_loss, loss_new)
+        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
+
+    key1, key2 = jax.random.split(key)
+    W_newt_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
+    H_newt_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+
+    prev_loss_newt = (jnp.exp(-W_newt_init @ H_newt_init) + T * (W_newt_init @ H_newt_init)).sum()
+    state_newt = (W_newt_init, H_newt_init, prev_loss_newt, 0, False)
+    state_newt = lax.while_loop(newton_cond, newton_body, state_newt)
+    W_newt, H_newt, _, i, _ = state_newt
+
+    return W_newt, H_newt, i
+optimize_newt = jax.jit(optimize_newt_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
+
+def optimize_mu_body(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using multiplicative updates."""
+    num_pixels = T.shape[0]
+    num_wavelengths = T.shape[1]
+
+    # Fixed seed for reproducibility
+    key = jax.random.PRNGKey(129)
+
+    # ===== Multiplicative Optimization =====
+    def mu_cond(state):
+        _, _, _, i, converged = state
+        return (i < max_steps) & (~converged)
+
+    def mu_body(state):
+        W, H, prev_loss, i, converged = state
+        W_new, H_new = multiplicative_update(W, H, T)
+        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
+        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
+        W_out = jnp.where(converged, W, W_new)
+        H_out = jnp.where(converged, H, H_new)
+        loss_out = jnp.where(converged, prev_loss, loss_new)
+        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
+
+    key3, key4 = jax.random.split(key)
+    W_mu_init = jax.random.uniform(key3, shape=(num_pixels, num_materials), dtype=jnp.float32)
+    H_mu_init = jax.random.uniform(key4, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+
+    prev_loss_mu = (jnp.exp(-W_mu_init @ H_mu_init) + T * (W_mu_init @ H_mu_init)).sum()
+    state_mu = (W_mu_init, H_mu_init, prev_loss_mu, 0, False)
+    state_mu = lax.while_loop(mu_cond, mu_body, state_mu)
+    W_mu, H_mu, _, i, _ = state_mu
+
+    return W_mu, H_mu, i
+optimize_mu = jax.jit(optimize_mu_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
+
+
+def main():
     # Choose dataset from '0.8C_Ni_cylinder', '1.6C_Ni_cylinder', '2.4C_Ni_cylinder', '4.8C_Ni_cylinder', '9.6C_Ni_cylinder'
     dataset_name = '0_8c_Ni_cylinder_dataset'
     input_path = './input_data/processed_data_0_8c_Ni_cylinder.h5'  # path to import input noisy data
@@ -25,9 +175,8 @@ def main():
     os.makedirs(output_path, exist_ok=True)  # Make output directory if it does not exist
 
     # Denoiser parameters
-    num_materials = None  # Number of materials
+    num_materials = 3  # Number of materials
     verbose = 2  # Verbosity level
-    test_denoise = False  # If True, test hyper_denoise; if False, test dehydrate + rehydrate sequence
 
     # Display parameters
     display_wave_idx = 100  # Wavelength index of displayed images
@@ -37,65 +186,78 @@ def main():
     y_lim_attenuation = (0, 3)  # (y_min, y_max) to set y-axis range for attenuation spectra
     y_lim_transmission = (0, 0.75)  # (y_min, y_max) to set y-axis range for transmission spectra
 
-    # Fix seed for random number generation
-    np.random.seed(129)
-
     # Import real hyperspectral data
     hsnt_data, metadata = import_hsnt_data_hdf5(input_path, dataset_name)
-    dataset_type = metadata['dataset_type']
-    wavelengths = metadata['wavelengths']
 
     if verbose >= 1:
         print("Hyperspectral data shape: ", hsnt_data.shape)
 
-    if test_denoise:
-        if verbose >= 1:
-            print("Running hyperspectral denoising (i.e., dehydrate + rehydrate)")
-        hsnt_denoised = hyper_denoise(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
-    else:
-        if verbose >= 1:
-            print("Running hyperspectral dehydrate followed by rehydrate (i.e., denoising)")
-        hsnt_dehydrated = dehydrate(hsnt_data, dataset_type=dataset_type, num_materials=num_materials, verbose=verbose)
-        hsnt_denoised = rehydrate(hsnt_dehydrated)
+    T = np.exp(-hsnt_data).reshape(-1, hsnt_data.shape[-1])
 
-        # Write out dehydrated data
-        filename_dehydrated = os.path.join(output_path, dataset_name+'_dataset_dehydrated.h5')
-        export_hsnt_data_hdf5(filename_dehydrated, hsnt_dehydrated, metadata)
+    # Convert to JAX array
+    T_jax = jnp.asarray(T, dtype=jnp.float32)
+
+    # Perform hyperspectral denoising
+    start_time = time.time()
+    W_newt, H_newt, i_newt = optimize_newt(
+        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    )
+    print('Newton reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_newt, ' iterations')
+    start_time = time.time()
+    W_mu, H_mu, i_mu = optimize_mu(
+        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    )
+    print('Multiplicative reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_mu, ' iterations')
+
+    # Convert results to NumPy arrays and reshape to original data shape
+    hsnt_denoised_newt = np.array(W_newt @ H_newt).reshape(hsnt_data.shape)
+    hsnt_denoised_mu = np.array(W_mu @ H_mu).reshape(hsnt_data.shape)
 
     # Write out denoised/rehydrated data
-    filename_denoised = os.path.join(output_path, dataset_name+'_dataset_denoised.h5')
-    export_hsnt_data_hdf5(filename_denoised, hsnt_denoised, metadata)
+    export_hsnt_data_hdf5(os.path.join(output_path, dataset_name+'_dataset_denoised_newt.h5'), hsnt_denoised_newt, metadata)
+    export_hsnt_data_hdf5(os.path.join(output_path, dataset_name+'_dataset_denoised_mu.h5'), hsnt_denoised_mu, metadata)
 
     # Plot hyperspectral projections and spectra
     if verbose > 1:
-        plot_images(images=[hsnt_data[0, :, :, display_wave_idx],
-                            hsnt_denoised[0, :, :, display_wave_idx]],
-                    titles=['Fig (a): Noisy hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx),
-                            'Fig (b): Denoised hyperspectral projection \n\nWavelength index: ' + str(display_wave_idx)],
-                    vmax=vmax, vmin=vmin,
-                    filename="cylinder.png")
+        num_images=3
+        images=[hsnt_data[0, :, :, display_wave_idx],
+                hsnt_denoised_newt[0, :, :, display_wave_idx],
+                hsnt_denoised_mu[0, :, :, display_wave_idx]]
+        titles=['Original', 'Quasi-Newton', 'Mann-Multiplicative']
+        filename="cylinder_nnal.png"
+        plt.rcParams['figure.constrained_layout.use'] = True
+        plt.rc('font', size=40)
+        fig = plt.figure(figsize=(10, 10 * num_images), dpi=160 / num_images)
+        fig.suptitle(f'Material Projections\nWavelength index: {display_wave_idx}')
+        for idx in range(num_images):
+            ax = fig.add_subplot(num_images, 1, idx + 1)
+            ax.set_title(titles[idx])
+            ax.imshow(images[idx], vmin=vmin, vmax=vmax, cmap='gray')
+            if idx != num_images - 1:
+                ax.set_xticklabels([])
+        plt.savefig(filename, dpi=100)
 
-        plot_spectra(spectra=[hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :],
-                              hsnt_denoised[0, display_pix_idx[0], display_pix_idx[1], :]],
-                     labels=['Noisy', 'Denoised'],
-                     title='Single pixel spectra (attenuation) for noisy and denoised data',
-                     x_label='wavelength (Angstrom)',
-                     y_label='attenuation',
-                     y_lim=y_lim_attenuation,
-                     wavelengths=wavelengths,
-                     filename="cylinder_attenuation.png")
+        plt.figure(figsize=(30, 15))
+        plt.plot(hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :], label='Original')
+        plt.plot(hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :], label='Quasi-Newton Denoised')
+        plt.plot(hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :], label='Mann-Multiplicative Denoised')
+        plt.title('Single pixel spectra')
+        plt.xlabel('wavelength index')
+        plt.ylabel('attenuation')
+        plt.ylim(y_lim_attenuation)
+        plt.legend()
+        plt.savefig("cylinder_attenuation_nnal.png")
 
-        plot_spectra(spectra=[np.exp(-hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :]),
-                              np.exp(-hsnt_denoised[0, display_pix_idx[0], display_pix_idx[1], :])],
-                     labels=['Noisy', 'Denoised'],
-                     title='Single pixel spectra (transmission) for noisy and denoised data',
-                     x_label='wavelength (Angstrom)',
-                     y_label='transmission',
-                     y_lim=y_lim_transmission,
-                     wavelengths=wavelengths,
-                     filename="cylinder_transmission.png")
-
-    print('Total time elapsed: ', time.time() - start_time, ' seconds')
+        plt.figure(figsize=(30, 15))
+        plt.plot(np.exp(-hsnt_data[0, display_pix_idx[0], display_pix_idx[1], :]), label='Original')
+        plt.plot(np.exp(-hsnt_denoised_newt[0, display_pix_idx[0], display_pix_idx[1], :]), label='Quasi-Newton Denoised')
+        plt.plot(np.exp(-hsnt_denoised_mu[0, display_pix_idx[0], display_pix_idx[1], :]), label='Mann-Multiplicative Denoised')
+        plt.title('Single pixel spectra (transmission)')
+        plt.xlabel('wavelength index')
+        plt.ylabel('transmission')
+        plt.ylim(y_lim_transmission)
+        plt.legend()
+        plt.savefig("cylinder_transmission_nnal.png")
 
     plt.show()
 
