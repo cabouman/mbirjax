@@ -166,6 +166,20 @@ Found and fixed while tracing the full-size (1800, 1365, 1880) MAR recon:
   padded==unpadded exact, replicated arrays not double-counted, multi-slab == single-slab, MAR gate
   byte-unchanged.
 
+### Phase 2e — Flat-index >2^31 hazard in the constraint machinery (2026-07-03)
+The "int64 ... truncated to int32" UserWarning in `correct_sino_plastic_metal` flagged a REAL silent
+bug at full scale, introduced by the sharding refactor's flat-index reads: (1) `lax.argmin` computes
+its index labels in int32 (x64 off), so a flat argmin over a >2^31-element sinogram WRAPS — verified:
+a minimum planted at flat 2.3e9 returned −1,994,967,296 (exactly 2^32 off) with NO warning; (2) any
+scalar read on a >2^31-long flat axis requests int64 indices (`int_dtype_for_dim`), truncated with the
+observed warning.  A 4.62e9-pixel sino puts ~53% of positions past 2^31.  Fix: **no flat indices** —
+`_argmin_3d` stages the argmin per axis (per-view argmin over the R*C plane, then argmin over the
+per-view minima; identical row-major tie-breaking; also returns the min value, eliminating the flat
+read) and `_find_most_violated_constraints` now returns **(view, row, col) tuples**; `_get_row_H`,
+`u_m`, and `C_p`/`C_m` use the tuples via basic per-axis indexing (every axis << 2^31 → int32-safe).
+Gates: `_argmin_3d` == flat argmin over 200 trials incl. crafted ties; phantom corrected sino AND
+forced-constraint theta byte-identical; repo audit — these were the only `jnp.argmin/argmax` sites.
+
 ### Phase 3 — (DEFERRED → moved to `post_shard_plans.md`) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the

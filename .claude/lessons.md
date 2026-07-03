@@ -593,6 +593,34 @@ now uses `os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')` — a
 with out-of-pool headroom, overridable per-run via the environment (it was a hard-set '0.98' that the
 env var could not override).
 
+## The 2^31 scale boundary: silent int32 traps at full-size volumes (2026-07-03)
+
+A full-size sinogram/recon (~4.6–4.8e9 elements) crosses int32's 2^31 ≈ 2.1e9 limit, and with jax x64
+disabled, several independent mechanisms fail there — mostly SILENTLY.  Found one by one while tracing
+the full-size MAR recon; treat any element COUNT or FLAT INDEX at this scale as suspect.
+
+1. **`jnp/lax.argmin` over a >2^31-element array WRAPS, with no warning.**  Its index labels are
+   int32 (x64 off) regardless of axis length; a minimum planted at flat position 2.3e9 returned
+   −1,994,967,296 — off by exactly 2^32 — and the subsequent read silently fetched a wrong pixel.
+   The only visible symptom, sometimes, is downstream: a scalar read on a >2^31-long flat axis makes
+   jax request int64 indices (`int_dtype_for_dim`: int64 iff dim > int32_max), truncated with the
+   "Explicitly requested dtype int64 ... truncated to int32" UserWarning.  **The warning is smoke from
+   the read; the fire is the argmin.**  Small phantoms can NEVER reproduce it (int32 suffices) — the
+   failure is size-dependent, not path-dependent.  Fix: never form flat indices on full-size arrays —
+   stage the argmin per axis (per-view argmin over the R*C plane, then argmin over per-view minima;
+   identical row-major tie-breaking) and carry (view, row, col) tuples with basic per-axis indexing
+   (every axis << 2^31).  See `mar._argmin_3d`.
+2. **A Python int operand > 2^31 in a traced computation raises OverflowError at the jit boundary**
+   (weak int → int32): `error_sinogram.size` and `num_real_elements` in the fm-loss did this.  Fix:
+   counts enter traced arithmetic as FLOATS (`float(n)` — same ~1e-7 rounding jnp.mean had anyway),
+   and per-run int counts passed to jitted functions are STATIC args (a big static int used in traced
+   arithmetic must also be float()ed in the body).
+3. **`np.prod` of a shape accumulates in the platform default int** — int64 on Linux/macOS but int32
+   on Windows/numpy<2, where a full-size product silently wraps.  Use `math.prod` (exact Python ints)
+   for element counts.
+4. (From the histogram work, above:) int32 histogram counts wrap; **f32 scatter-adds of unit counts
+   SATURATE at 2^24** (+1 rounds to +0).  Count in slabs < 2^31 and accumulate in int64 on the host.
+
 ## Tooling / harness
 
 - **A modern `pip install -e` overrides `PYTHONPATH` — prepending a checkout to `PYTHONPATH` does NOT

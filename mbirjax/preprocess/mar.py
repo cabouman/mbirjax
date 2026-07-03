@@ -244,12 +244,18 @@ def _get_column_H(col_index, plastic_sino_est, metal_sino_est, H_exponent_list):
         col = jnp.ones_like(plastic_sino_est)
     return col
 
-def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
+def _get_row_H(pixel_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     """
-    Compute the row_index-th row of the matrix H.
+    Compute the row of the matrix H for one sinogram pixel.
+
+    H is conceptually (num_pixels x num_cols) -- one row per sinogram pixel -- so ``pixel_index``
+    specifies a ROW of H.  It is named for the pixel rather than the matrix row because it is a
+    (view, row, col) tuple whose middle entry is the DETECTOR row, a different axis.
 
     Args:
-        row_index (int): Index of the row to compute.
+        pixel_index (tuple of int): (view, row, col) of the pixel, identifying the row of H to compute
+            (per-axis Python ints -- flat indices are never used on the full sinogram: a flat axis
+            longer than 2^31 forces truncated int64 index arithmetic; see _argmin_3d).
         plastic_sino_est (jnp.ndarray): Normalized plastic sinogram estimation.
         metal_sino_est (list of jnp.ndarray): Normalized metal sinogram estimation [m_0, m_1, ..., m_{n-1}].
         H_exponent_list (list of tuple): List of exponent tuples defining each column of H.
@@ -257,11 +263,8 @@ def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
     Returns:
         jnp.ndarray: The computed row of H.
     """
-    # row_index is a FLAT pixel index (from argmin over the flattened sinogram); the sinos are now 3-D
-    # (view-sharded), so index the flattened view (reshape(-1) preserves the sharding; this is a
-    # single-element gather).
-    pi = plastic_sino_est.reshape(-1)[row_index]
-    mi = [m.reshape(-1)[row_index] for m in metal_sino_est]
+    pi = plastic_sino_est[pixel_index]
+    mi = [m[pixel_index] for m in metal_sino_est]
     row_vals = []
     for exps in H_exponent_list:
         val = (pi ** exps[0])
@@ -269,6 +272,28 @@ def _get_row_H(row_index, plastic_sino_est, metal_sino_est, H_exponent_list):
             val = val * (mk ** ek)
         row_vals.append(val)
     return jnp.asarray(row_vals)
+
+
+def _argmin_3d(x):
+    """Index of the minimum of a 3-D sinogram-shaped array as PER-AXIS Python ints (view, row, col),
+    plus the minimum value (a device scalar).
+
+    Equivalent to unraveling ``jnp.argmin(x)``, but safe for arrays with more than 2^31 elements:
+    ``lax.argmin`` computes its index labels in int32 (with x64 disabled), so a FLAT argmin over a
+    full-size sinogram silently WRAPS for minima beyond flat position 2^31 -- verified: a minimum
+    planted at 2.3e9 returns -1,994,967,296 (off by exactly 2^32) with no warning -- and flat reads on
+    such an axis need int64 indices that are truncated (the "int64 ... truncated to int32" UserWarning).
+    Staging the argmin per axis keeps every index within its own small axis length (detector plane
+    positions < rows*cols, view index < num_views), all safely int32.  Tie-breaking matches the flat
+    row-major argmin: the first view attaining the minimum, and the first plane position within it.
+    """
+    num_views, num_rows, num_channels = x.shape
+    per_view = x.reshape(num_views, -1)              # (V, R*C); preserves view-sharding
+    per_view_min = jnp.min(per_view, axis=1)         # (V,) per-shard local reduce
+    plane_argmin = jnp.argmin(per_view, axis=1)      # (V,) int32; every value < R*C << 2^31
+    view = int(jnp.argmin(per_view_min))             # V << 2^31
+    row, col = divmod(int(plane_argmin[view]), num_channels)
+    return (view, row, col), per_view_min[view]
 
 
 def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=None):
@@ -285,10 +310,11 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     padded views from the argmin so a padded entry is never selected as a constraint.
 
     Returns:
-        i_min_Sp (int): FLAT index of smallest Sp entry (into the flattened sinogram).
-        v_min_Sp (float): Value of Sp at that entry.
-        i_min_residual (int): FLAT index of smallest (y − Sm) entry.
-        v_min_residual (float): Value of (y − Sm) at that entry.
+        idx_min_Sp (tuple of int): (view, row, col) of the smallest Sp entry (per-axis ints; see
+            ``_argmin_3d`` for why flat indices are unsafe on full-size sinograms).
+        v_min_Sp (scalar): Value of Sp at that entry.
+        idx_min_residual (tuple of int): (view, row, col) of the smallest (y − Sm) entry.
+        v_min_residual (scalar): Value of (y − Sm) at that entry.
     """
     num_cols = len(H_exponent_list)
     # The coefficient of p in column i is the column with its p factor removed, so zero the p exponent
@@ -306,17 +332,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
         y_minus_Sm = y_minus_Sm - theta[j] * _get_column_H(j, plastic_sino_est, metal_sino_est, H_exponent_list)
 
     # Lower-bound violator: minimize Sp and y-Sm over the REAL views (padded views set to +inf so they
-    # can't win the argmin).  argmin over the N-D sinogram returns a FLAT index; read the values back via
-    # the flattened view (reshape(-1) preserves the sharding).
+    # can't win the argmin).  _argmin_3d returns per-axis (view, row, col) ints plus the value -- the
+    # value at a real position is the same in the masked and unmasked arrays (the mask only alters
+    # padded entries), so no separate read is needed.
     Sp_masked = Sp if view_mask is None else jnp.where(view_mask, Sp, jnp.inf)
     ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask, y_minus_Sm, jnp.inf)
-    i_min_Sp = int(jnp.argmin(Sp_masked))
-    i_min_residual = int(jnp.argmin(ymSm_masked))
+    idx_min_Sp, v_min_Sp = _argmin_3d(Sp_masked)
+    idx_min_residual, v_min_residual = _argmin_3d(ymSm_masked)
 
-    v_min_Sp = Sp.reshape(-1)[i_min_Sp]
-    v_min_residual = y_minus_Sm.reshape(-1)[i_min_residual]
-
-    return i_min_Sp, v_min_Sp, i_min_residual, v_min_residual
+    return idx_min_Sp, v_min_Sp, idx_min_residual, v_min_residual
 
 
 
@@ -458,34 +482,31 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
     theta = _estimate_BH_model_params_using_OSQP(P, q, A=None, u=None)
 
     for iter in range(num_constraint_update_iter):
-        # Find the indices and values of the points that most violate each constraint
-        i_min_Sp, v_min_Sp, i_min_residual, v_min_residual = _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=view_mask)
+        # Find the (view, row, col) indices and values of the points that most violate each constraint
+        idx_min_Sp, v_min_Sp, idx_min_residual, v_min_residual = _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=view_mask)
 
         # (1) Hp θp ≥ 0  ->  (-Hp) θ ≤ 0
-        if v_min_Sp < tolerance and (i_min_Sp not in C_p):
+        if v_min_Sp < tolerance and (idx_min_Sp not in C_p):
             # Coefficient-of-p row: zero the p exponent (pi**0 == 1 exactly) instead of allocating a
             # full-sinogram dummy ones array just to read its one pixel.
             p_coeff_exponents = [(0,) + exps[1:] for exps in H_exponent_list]
-            row_p = _get_row_H(i_min_Sp, plastic_sino_est, metal_sino_est, p_coeff_exponents)
+            row_p = _get_row_H(idx_min_Sp, plastic_sino_est, metal_sino_est, p_coeff_exponents)
             # Negative row_p[:dp] to ensure Hpθp >= 0
             A_p = jnp.concatenate([-row_p[:dp], jnp.zeros((num_cols - dp,))])
             u_p = jnp.array([0.0])
             A = jnp.vstack([A, A_p[None, :]])
             u = jnp.concatenate([u, u_p])
-            C_p.append(i_min_Sp)
+            C_p.append(idx_min_Sp)
 
         # (2) y − Hm θm ≥ 0  ->  (Hm) θ ≤ y
-        if v_min_residual < tolerance and (i_min_residual not in C_m):
-            row_m = _get_row_H(i_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
+        if v_min_residual < tolerance and (idx_min_residual not in C_m):
+            row_m = _get_row_H(idx_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             A_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
-            # i_min_residual is a FLAT pixel index; the sinogram is 3-D (view-sharded), so read the one
-            # pixel through the flattened view (reshape preserves the sharding) -- integer-indexing the
-            # 3-D array would silently grab a whole VIEW along axis 0 instead.
-            u_m = jnp.array([measured_sino.reshape(-1)[i_min_residual]])
+            u_m = jnp.array([measured_sino[idx_min_residual]])
             A = jnp.vstack([A, A_m[None, :]])
             u = jnp.concatenate([u, u_m])
-            C_m.append(i_min_residual)
+            C_m.append(idx_min_residual)
 
         # Early exit if both constraints are satisfied (within tolerances)
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
