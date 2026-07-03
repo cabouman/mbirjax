@@ -8,6 +8,17 @@ Roughly ordered by likely value; none is blocking.
 
 ---
 
+## 0. Done during PR prep (2026-07-03)
+
+- **MAR test coverage** (`tests/sharding/test_mar.py` — was zero): `_argmin_3d` vs flat argmin incl.
+  tie cases; corrected-sino 1-vs-3-device consistency with view AND slice padding (tol 1e-3 — the BH
+  constraint SELECTION is discretely sensitive to reduce-order noise); the forced-constraint path
+  (`tolerance=1e10` — where the flat-index bugs lived); the empty-plastic `ValueError` guard; the
+  `recon_plastic_metal` `output_sharded` contract (seeded partitions).
+- **`vcls.py` eager norms** (the last `jnp.linalg` survey stragglers): per-view normalize +
+  projection folded into jitted helpers (`_normalize_by_norm` / `_normalize_and_project`); also
+  collapsed a historical double-eps on the `recon_i` path (~1e-12).
+
 ## 1. Size-adaptive memory knobs (biggest near-term win)
 
 The recon's peak on large multi-GPU problems is now set by a couple of hardwired batch/granularity
@@ -49,9 +60,12 @@ the 'flash' associated with objects partially outside the FoV.
 
 ## 4. MAR Phase 3 — subsample / speed up the BH model fit
 
-From `mar_refactor_plan.md` Phase 3.  The OSQP beam-hardening fit is statistical, so it *could* run on a
-subsample — but a **uniform** view/stride subsample is wrong: the model is only identifiable from pixels
-spanning diverse **metal path length**, which are sparse in a mostly-plastic object.
+From `mar_refactor_plan.md` Phase 3.  **This is now a SPEED-only item**: the fit's memory was solved by
+Phase 2 (the `HtH`/`Hty` inner products and constraint argmins run on the view-sharded sinograms), so
+the fit cannot OOM — subsampling would only reduce its time.  The OSQP beam-hardening fit is
+statistical, so it *could* run on a subsample — but a **uniform** view/stride subsample is wrong: the
+model is only identifiable from pixels spanning diverse **metal path length**, which are sparse in a
+mostly-plastic object.
 - Needs **metal-thresholded targeted subsampling** (stratify by estimated metal magnitude; keep high-metal
   pixels + a plastic sample).
 - Cheap independent win to fold in: **cache each `H` column once** instead of the O(num_cols²) recompute.
@@ -99,3 +113,6 @@ spanning diverse **metal path length**, which are sparse in a mostly-plastic obj
   wrapped in `<a>`; fix per case (qualify / correct target / document the target / downgrade to literal).
 - **Suite tidiness** (§6): seed the remaining unseeded-`np.random` tests; a pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
+- **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size arrays
+  (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`), applying `lessons.md` §4 (the
+  `argmin`/`np.prod`/histogram-count instances are fixed; this closes the class).

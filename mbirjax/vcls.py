@@ -6,8 +6,24 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import mbirjax as mj
+import jax
 import jax.numpy as jnp
 import tqdm
+
+
+@jax.jit
+def _normalize_by_norm(x, eps):
+    """``x / (||x|| + eps)``, jitted so the norm's square/sum and the divide fuse into one executable
+    (eagerly, each op dispatches separately and materializes its own full-size temporary)."""
+    return x / (jnp.linalg.norm(x) + eps)
+
+
+@jax.jit
+def _normalize_and_project(x, ref, eps):
+    """Normalized ``x`` and its full contraction with ``ref``, in one fused executable -- used once
+    per view in :func:`compute_view_basis_functions` (see :func:`_normalize_by_norm`)."""
+    x_normalized = x / (jnp.linalg.norm(x) + eps)
+    return x_normalized, jnp.tensordot(x_normalized, ref)
 
 
 def _make_single_view_sibling(ct_model):
@@ -214,9 +230,7 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
     sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
     ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
-    sparse_ref_object = jnp.asarray(ref_object_flat[sparse_indices, :])
-    norm_sparse_ref = jnp.linalg.norm(sparse_ref_object)
-    sparse_ref_object /= (norm_sparse_ref + eps)
+    sparse_ref_object = _normalize_by_norm(jnp.asarray(ref_object_flat[sparse_indices, :]), eps)
 
     # Get number of views and angles
     num_views = ct_model.get_params('sinogram_shape')[0]
@@ -241,14 +255,15 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
         single_view_model.set_view_parameters(jnp.asarray(full_view_params[i:i + 1]))
         recon_i = single_view_model.sparse_back_project(view_sino, sparse_indices)
 
-        norm_i = jnp.linalg.norm(recon_i) + eps
-        recon_i /= (norm_i + eps)
+        # One fused normalize + contraction per view.  (This also collapses a historical double-eps:
+        # the eager code added eps to the norm and again in the divide -- a ~1e-12 difference.)
+        recon_i, gamma_i = _normalize_and_project(recon_i, sparse_ref_object, eps)
 
         # Save view basis function
         with open(os.path.join(data_store_dir, f'view_basis_function{i}.npy'), 'wb') as f:
             np.save(f, recon_i)
 
-        gamma[i, 0] = jnp.tensordot(recon_i, sparse_ref_object)
+        gamma[i, 0] = gamma_i
     return gamma
 
 
