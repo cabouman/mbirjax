@@ -135,43 +135,40 @@ class TestBandMovement(unittest.TestCase):
 
 
 class TestShardedSheppLogan(unittest.TestCase):
-    """generate_3d_shepp_logan_low_dynamic_range(devices=...) builds the same phantom as the
-    single-device path, slice-sharded across devices with inert zero padding."""
+    """generate_3d_shepp_logan_low_dynamic_range builds the same phantom regardless of how many devices
+    it is distributed across, and ALWAYS returns a host NumPy array of the real shape (the multi-device
+    build is gathered to the host and any device-form slice padding is cropped off)."""
 
     def setUp(self):
         self.devs = preferred_devices(2)
         if self.devs is None:
             self.skipTest("need >= 2 devices")
 
-    def test_sharded_matches_single_device_dividing(self):
-        # slices divisible by the device count -> no padding, device-form == real shape.
+    def test_multidevice_matches_single_device_dividing(self):
+        # slices divisible by the device count -> no internal padding.
         shape = (16, 12, 8)
-        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
-        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
-        self.assertEqual(len(sharded.addressable_shards), len(self.devs))
-        self.assertEqual(tuple(sharded.shape), shape)
-        # Independent per-device build (no reduction) -> bit-identical to single-device.
-        np.testing.assert_array_equal(np.asarray(sharded), single)
+        single = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs[:1])
+        multi = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
+        self.assertIsInstance(multi, np.ndarray)             # always host numpy
+        self.assertEqual(multi.shape, shape)                 # real shape (no device-form padding exposed)
+        np.testing.assert_array_equal(multi, single)         # independent per-device build -> identical
 
-    def test_sharded_matches_single_device_padded(self):
-        # slices NOT divisible by the device count -> padded to the next multiple, tail is zero.
+    def test_multidevice_matches_single_device_nondividing(self):
+        # slices NOT divisible by the device count -> internally padded, but cropped to the real shape.
         n = len(self.devs)
-        real_slices = 2 * n + 1                 # not a multiple of n
-        padded_slices = ((real_slices + n - 1) // n) * n
+        real_slices = 2 * n + 1
         shape = (16, 12, real_slices)
-        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape))
-        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
-        arr = np.asarray(sharded)
-        self.assertEqual(arr.shape, (16, 12, padded_slices))     # device form on the slice axis
-        np.testing.assert_array_equal(arr[:, :, :real_slices], single)   # real region matches
-        np.testing.assert_array_equal(arr[:, :, real_slices:], 0)        # padding is exactly inert
+        single = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs[:1])
+        multi = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
+        self.assertEqual(multi.shape, shape)                 # device-form padding dropped on gather
+        np.testing.assert_array_equal(multi, single)
 
-    def test_sharded_target_attenuation_matches_single(self):
-        # The opt-in attenuation scale is applied identically in the sharded and single-device builds.
+    def test_multidevice_target_attenuation_matches_single(self):
+        # The opt-in attenuation scale is applied identically regardless of the device count.
         shape = (16, 12, 8)
-        single = np.asarray(mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, target_max_attenuation=6.0))
-        sharded = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs, target_max_attenuation=6.0)
-        np.testing.assert_array_equal(np.asarray(sharded), single)
+        single = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs[:1], target_max_attenuation=6.0)
+        multi = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs, target_max_attenuation=6.0)
+        np.testing.assert_array_equal(multi, single)
 
 
 class TestSheppLoganAttenuationScale(unittest.TestCase):
@@ -264,38 +261,21 @@ class TestGenerateDemoDataSharding(unittest.TestCase):
         self.assertIsInstance(phantom, np.ndarray)
         self.assertIsInstance(params['angles'], np.ndarray)
 
-    def test_output_sharded_true_without_devices_is_jax(self):
-        # output_sharded=True overrides the default and returns device-form jax arrays even with no
-        # devices (single-device / trivial 1-shard).
-        phantom, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=12,
-                                                       num_det_rows=10, num_det_channels=14,
-                                                       output_sharded=True)
-        self.assertIsInstance(sino, jax.Array)
-        self.assertIsInstance(phantom, jax.Array)
-
-    def test_devices_returns_sharded(self):
-        devs = preferred_devices(2)
-        if devs is None:
-            self.skipTest("need >= 2 devices")
-        phantom, sino, _ = mbirjax.generate_demo_data(model_type='parallel', num_views=20,
-                                                      num_det_rows=16, num_det_channels=24, devices=devs)
-        self.assertEqual(tuple(sino.shape), (20, 16, 24))
-        self.assertEqual(len(sino.addressable_shards), len(devs))      # view-sharded sinogram
-        self.assertEqual(len(phantom.addressable_shards), len(devs))   # slice-sharded phantom
-
-    def test_devices_with_output_sharded_false_gathers_to_numpy(self):
-        # devices given but output_sharded=False: compute sharded, then gather to numpy and free the
-        # device arrays.  Values match the sharded path.
+    def test_devices_returns_numpy(self):
+        # devices= controls only WHERE the work runs (parallel build/projection); the result is still
+        # host numpy and matches a single-device build -- the phantom bit-for-bit (deterministic
+        # per-voxel build) and the sinogram within float tolerance (forward projection per shard).
         devs = preferred_devices(2)
         if devs is None:
             self.skipTest("need >= 2 devices")
         kw = dict(model_type='parallel', num_views=20, num_det_rows=16, num_det_channels=24)
-        ph_s, sino_s, _ = mbirjax.generate_demo_data(devices=devs, **kw)
-        ph_h, sino_h, _ = mbirjax.generate_demo_data(devices=devs, output_sharded=False, **kw)
-        self.assertIsInstance(sino_h, np.ndarray)
-        self.assertIsInstance(ph_h, np.ndarray)
-        np.testing.assert_allclose(sino_h, np.asarray(sino_s), rtol=1e-5, atol=1e-6)
-        np.testing.assert_allclose(ph_h, np.asarray(ph_s), rtol=1e-5, atol=1e-6)
+        ph1, sino1, _ = mbirjax.generate_demo_data(devices=devs[:1], **kw)   # one device (reference)
+        phN, sinoN, _ = mbirjax.generate_demo_data(devices=devs, **kw)       # the full device set
+        for a in (ph1, sino1, phN, sinoN):
+            self.assertIsInstance(a, np.ndarray)                            # always host numpy
+        self.assertEqual(sinoN.shape, (20, 16, 24))
+        np.testing.assert_array_equal(phN, ph1)                             # deterministic phantom build
+        np.testing.assert_allclose(sinoN, sino1, rtol=1e-4, atol=1e-4)      # forward projection
 
 
 if __name__ == "__main__":

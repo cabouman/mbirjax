@@ -1,4 +1,3 @@
-import warnings
 from functools import partial
 from collections import namedtuple
 from typing import Literal, Union, overload, Any
@@ -11,23 +10,6 @@ import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
-
-
-def _warn_view_batch_size_deprecated(view_batch_size):
-    """Warn (only on explicit use) that view_batch_size is deprecated/ignored.
-
-    The row filter kernel (tomography_utils.apply_row_filter) chooses its own
-    batch (tomography_utils.ROW_FILTER_BATCH), so view_batch_size no longer
-    affects parallel-beam FBP filtering.  Kept on the user-facing methods for
-    back-compat; this fires only when a caller passes a non-None value.
-    """
-    if view_batch_size is not None:
-        warnings.warn(
-            "view_batch_size is deprecated and ignored for ParallelBeamModel FBP "
-            "filtering; the row filter kernel "
-            "(mbirjax.tomography_utils.apply_row_filter) sets its own batch "
-            "(tomography_utils.ROW_FILTER_BATCH).",
-            DeprecationWarning, stacklevel=3)
 
 
 class ParallelBeamModel(TomographyModel):
@@ -62,8 +44,6 @@ class ParallelBeamModel(TomographyModel):
     --------
     TomographyModel : The base class from which this class inherits.
     """
-
-    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles):
 
@@ -406,41 +386,38 @@ class ParallelBeamModel(TomographyModel):
 
         return x
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
-        _warn_view_batch_size_deprecated(view_batch_size)
+    def direct_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         return self.fbp_recon(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def direct_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         This is a thin alias for :meth:`fbp_filter` and shares its contract: the
         input may be plain or view-sharded (a plain input is sharded at entry
         when sharding is on), and the OUTPUT form is chosen by ``output_sharded``
-        — plain by default, the view-sharded device form when True.
+        — numpy by default, the view-sharded device form when True.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
-            output_sharded (bool, optional): If False (default), return a plain
+            output_sharded (bool, optional): If False (default), return a numpy
                 array.  If True, return the view-sharded device form (on an
                 unsharded model the output is the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering --
-            plain by default, view-sharded if ``output_sharded=True``.
+            filtered_sinogram (numpy or jax array): The sinogram after FBP filtering --
+            numpy by default, view-sharded if ``output_sharded=True``.
         """
-        _warn_view_batch_size_deprecated(view_batch_size)
         return self.fbp_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fbp_filter(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def fbp_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FBP filtering on the given sinogram.
 
         This is a **user-facing** method.  The input may be plain or view-sharded
         (a plain input is sharded on the view axis at entry when sharding is on);
-        the OUTPUT form is chosen by ``output_sharded``: plain by default, the
+        the OUTPUT form is chosen by ``output_sharded``: numpy by default, the
         view-sharded device form when True.  Pipelined internal callers
         (``fbp_recon`` / ``direct_recon`` followed by back projection) pass
         ``output_sharded=True`` so the data stays on-device with zero host
@@ -449,21 +426,16 @@ class ParallelBeamModel(TomographyModel):
         (a single device is the trivial 1-shard case).
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored — the row
-                filter kernel (tomography_utils.apply_row_filter) sets its own
-                batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): If False (default), return a plain
+            output_sharded (bool, optional): If False (default), return a numpy
                 array.  If True, return the view-sharded device form (on an
                 unsharded model the output is the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering --
-            plain by default, view-sharded if ``output_sharded=True``.
+            filtered_sinogram (numpy or jax array): The sinogram after FBP filtering --
+            numpy by default, view-sharded if ``output_sharded=True``.
         """
-        _warn_view_batch_size_deprecated(view_batch_size)
-
         # Voxel-size scaling factor: adjusts the filter to account for voxel size.  For
         # the theoretical derivation see the zip linked at
         # https://mbirjax.readthedocs.io/en/latest/theory.html
@@ -478,7 +450,7 @@ class ParallelBeamModel(TomographyModel):
             sinogram, filter_name, filter_scale=scaling_factor,
             output_sharded=output_sharded, row_weight=None)
 
-    def fbp_recon(self, sinogram, filter_name="ramp", view_batch_size=None, output_sharded=False):
+    def fbp_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform filtered back-projection (FBP) reconstruction on the given sinogram.
 
@@ -498,26 +470,23 @@ class ParallelBeamModel(TomographyModel):
         is on); the OUTPUT form is chosen by ``output_sharded``.  Internally the
         pipeline stays on-device throughout — ``fbp_filter`` then
         ``back_project``, both called with ``output_sharded=True`` (zero
-        intermediate host transfer).  By default the recon is gathered to a plain
+        intermediate host transfer).  By default the recon is gathered to a numpy
         array at exit; with ``output_sharded=True`` it is returned slice-sharded
         (no host round-trip), so a sharded FBP result can feed a sharded consumer
         (e.g. the VCD init).  On a single device the shard/gather are trivial 1-shard
         operations.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored (see fbp_filter).
-            output_sharded (bool, optional): If False (default), return a plain
+            output_sharded (bool, optional): If False (default), return a numpy
                 array.  If True, return the slice-sharded device form (on a single
                 device the output is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume — plain by default,
+            recon (numpy or jax array): The reconstructed volume — numpy by default,
             slice-sharded if ``output_sharded=True``.
         """
-        _warn_view_batch_size_deprecated(view_batch_size)
-
         # Shard once at entry so the filter receives view-sharded data (a no-op
         # when already view-sharded; a single device is the trivial 1-shard case).
         sinogram = self._shard_sinogram(sinogram)

@@ -81,7 +81,6 @@ class TomographyModel(ParameterHandler):
     Sets up the reconstruction size and parameters.
     """
 
-    DIRECT_RECON_VIEW_BATCH_SIZE = 100  # This is set here due to a bug in jax.vmap when the batch size is too large.
 
     def __init__(self, sinogram_shape, **kwargs):
 
@@ -463,30 +462,23 @@ class TomographyModel(ParameterHandler):
         return mjs.move_shard(x, sharding, dev2dev_safe=self.dev2dev_safe)
 
     def _gather_to_host(self, x):
-        """Gather a sharded array to a single uncommitted JAX array.
+        """Gather a (possibly sharded) array to a HOST NumPy array.
 
-        Reads all shards to a contiguous host buffer with ``np.asarray`` (the read path is
-        always safe, even on hardware where device-to-device writes are not) and wraps it as an
-        uncommitted JAX array, leaving JAX free to place it for downstream ops.
+        ``np.asarray`` reads each addressable shard to the host and assembles one contiguous host
+        buffer -- it never materializes the whole array on a single device.  This is what makes the
+        ``output_sharded=False`` exit safe at any size: a large volume sharded across N devices is
+        never re-gathered onto one device (which would OOM, e.g. a 32 GiB 2048^3 volume on one GPU).
 
         Args:
             x: a (possibly sharded) JAX array.
 
         Returns:
-            An uncommitted single-device JAX array with the same values.
+            A host ``numpy.ndarray`` with the same values.
         """
-        # Single shard (e.g. the trivial 1-device mesh, or any 1-GPU recon): the array
-        # already lives on one device, so there is nothing to gather -- return its
-        # on-device data directly and skip the device->host->device round trip below.
-        # Without this a single-GPU gather-at-exit (the fbp_recon/direct_recon/direct_filter
-        # default) would pay a full host round trip for an array that is already on one device.
-        shards = x.addressable_shards
-        if len(shards) == 1:
-            return shards[0].data
-        # Multi-device: read all shards to a contiguous host buffer (the d2d-safe path,
-        # safe even where device-to-device writes are not) and re-wrap as an uncommitted
-        # array, leaving JAX free to place it for downstream ops.
-        return jnp.array(np.asarray(x))
+        # np.asarray of a multi-device sharded array assembles on the host shard-by-shard (the read
+        # path is always safe, even where device-to-device writes are not); for a single-shard array
+        # it copies that one device's data to the host.  Either way nothing large lands on one device.
+        return np.asarray(x)
 
     def _shard_sinogram(self, sinogram):
         """Distribute a sinogram-like array in its native (per-geometry) sharding.
@@ -672,8 +664,8 @@ class TomographyModel(ParameterHandler):
         placement raises with instructions to re-run this method.
 
         Args:
-            sinogram (ndarray or jax array): sinogram in the model's sinogram_shape.
-            weights (ndarray or jax array, optional): weights of the same shape;
+            sinogram (numpy or jax array): sinogram in the model's sinogram_shape.
+            weights (numpy or jax array, optional): weights of the same shape;
                 the zero-filled padding makes padded views weightless as well.
 
         Returns:
@@ -1039,16 +1031,16 @@ class TomographyModel(ParameterHandler):
             reconstruction, use :meth:`recon`.
 
         Args:
-            recon (jnp array): The 3D reconstruction array, either ordinary or
+            recon (numpy or jax array): The 3D reconstruction array, either ordinary or
                 already distributed across the model's devices.
             output_sharded (bool, optional): Choose the form of the returned
-                sinogram.  If False (default), return an ordinary single-device
-                array.  If True, leave it distributed (view-sharded) across the
-                model's devices, so a following on-device step can use it without
-                gathering it back; on a single device the two forms are identical.
+                sinogram.  If False (default), return an ordinary host NumPy array
+                (assembled on the host -- safe at any size).  If True, leave it
+                distributed (view-sharded) across the model's devices, so a following
+                on-device step can use it without gathering it back.
 
         Returns:
-            jnp array: The 3D sinogram -- an ordinary single-device JAX array by
+            numpy or jax array: The 3D sinogram -- an ordinary host NumPy array by
             default, or view-sharded across the devices if ``output_sharded=True``.
         """
         # Implementation notes (not user-facing):
@@ -1070,7 +1062,7 @@ class TomographyModel(ParameterHandler):
         sinogram = self.sparse_forward_project(voxel_values, full_indices)
         if output_sharded:
             return sinogram                          # keep the device form
-        return self._gather_sinogram(sinogram)       # default: plain output
+        return self._gather_sinogram(sinogram)       # default: numpy output
 
     def back_project(self, sinogram, output_sharded=False):
         """
@@ -1088,17 +1080,18 @@ class TomographyModel(ParameterHandler):
             reconstruction, use :meth:`recon`.
 
         Args:
-            sinogram (jnp array): The 3D sinogram, either ordinary or already
+            sinogram (numpy or jax array): The 3D sinogram, either ordinary or already
                 distributed across the model's devices.
             output_sharded (bool, optional): Choose the form of the returned recon.
-                If False (default), return an ordinary single-device array.  If
-                True, leave it distributed (slice-sharded) across the model's
+                If False (default), return an ordinary host NumPy array (assembled
+                on the host -- safe at any size).  If True, leave it distributed
+                (slice-sharded) across the model's
                 devices, so a following on-device step (such as a sharded
                 initialization for :meth:`recon`) can use it without gathering it
                 back; on a single device the two forms are identical.
 
         Returns:
-            jnp array: The reconstructed 3D volume -- an ordinary single-device JAX
+            numpy or jax array: The reconstructed 3D volume -- an ordinary host NumPy
             array by default, or slice-sharded across the devices if
             ``output_sharded=True``.
         """
@@ -1115,22 +1108,24 @@ class TomographyModel(ParameterHandler):
 
         sinogram = self._shard_sinogram(sinogram)   # no-op if already sharded
         # Reduce-scatter back projection -> slice-sharded cylinder.
-        recon_cylinder = self.sparse_back_project(sinogram, full_indices)
+        recon_cylinders = self.sparse_back_project(sinogram, full_indices)
         if output_sharded:
             # Keep the recon sharded (no host round-trip).
             return self._assemble_recon_volume_sharded(
-                recon_cylinder, recon_shape, row_index, col_index)
-        # Default: gather the cylinder and scatter into a plain volume.
-        recon_cylinder = self._gather_recon(recon_cylinder)
-        recon = jnp.zeros(recon_shape)
-        recon = recon.at[row_index, col_index].set(recon_cylinder)
+                recon_cylinders, recon_shape, row_index, col_index)
+        # Default: gather the cylinder to the host and scatter into a plain HOST volume.  Building the
+        # full volume with np.zeros (not jnp.zeros) keeps it off-device -- a jnp.zeros(recon_shape) here
+        # would put the whole recon (e.g. 32 GiB at 2048^3) on one device.
+        recon_cylinders = self._gather_recon(recon_cylinders)
+        recon = np.zeros(recon_shape, dtype=recon_cylinders.dtype)
+        recon[row_index, col_index] = recon_cylinders
         return recon
 
-    def _assemble_recon_volume_sharded(self, recon_cylinder, recon_shape,
+    def _assemble_recon_volume_sharded(self, recon_cylinders, recon_shape,
                                        row_index, col_index):
         """Scatter a slice-sharded cylinder into a slice-sharded 3-D recon volume.
 
-        ``recon_cylinder`` is ``(num_pixels, num_slices)`` sharded along the slice
+        ``recon_cylinders`` is ``(num_pixels, num_slices)`` sharded along the slice
         axis (each device owns a contiguous band of slices).  The scatter
         ``recon[row_index, col_index, :] = cylinder`` is identical across slices,
         so each device scatters its own band locally into a
@@ -1142,7 +1137,7 @@ class TomographyModel(ParameterHandler):
         this.
 
         Args:
-            recon_cylinder (jax.Array): slice-sharded ``(num_pixels, num_slices)``.
+            recon_cylinders (jax.Array): slice-sharded ``(num_pixels, num_slices)``.
             recon_shape (tuple): the global recon shape ``(rows, cols, num_slices)``.
             row_index, col_index (jax arrays): FOV pixel row/col indices (length
                 num_pixels), the same on every device.
@@ -1152,7 +1147,7 @@ class TomographyModel(ParameterHandler):
         """
         rows, cols = int(recon_shape[0]), int(recon_shape[1])
         # Map each device to its local cylinder shard (already resident on it).
-        dev_to_shard = {s.device: s.data for s in recon_cylinder.addressable_shards}
+        dev_to_shard = {s.device: s.data for s in recon_cylinders.addressable_shards}
 
         def worker(i, device):
             cyl = dev_to_shard[device]                  # (num_pixels, local_slices)
@@ -1168,7 +1163,7 @@ class TomographyModel(ParameterHandler):
         # Global slice count from the cylinder (the DEVICE form -- padded when the
         # slice axis pads); rows/cols from the params (never padded).
         return mjs.assemble_sharded(
-            results, (rows, cols, recon_cylinder.shape[-1]), recon_sharding)
+            results, (rows, cols, recon_cylinders.shape[-1]), recon_sharding)
 
     def sparse_forward_project(self, voxel_values, pixel_indices):
         """
@@ -1516,14 +1511,21 @@ class TomographyModel(ParameterHandler):
     def _sparse_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """
-        Single-device back projection: project ALL views (transfer-batched) to voxel cylinders.
+        Single-device back projection: project ALL views (view-batched) to voxel cylinders.
 
         No longer a dispatch target of :meth:`sparse_back_project` (which always takes the
         placement path); it is kept LIVE because the GPU n=1 back short-circuit in
         :meth:`_sparse_back_project_sharded` routes a single-GPU recon here -- the monolithic
         pixel kernel is ~2.25x faster than the band kernel on a single GPU.
+
+        Contract: ``sinogram`` may be plain or view-sharded; it is sharded at entry
+        (:meth:`_shard_sinogram`, a no-op when already sharded) so the whole body operates on
+        the model's single device (``sino_placement.devices[0]``).
         """
-        # Batch the views and pixels for possible transfer to the gpu
+        # Shard at entry so every sinogram slice below is already on the model's single device.
+        sinogram = self._shard_sinogram(sinogram)
+
+        # Batch the views and pixels to bound vmap memory.
         transfer_view_batch_size = self.view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
@@ -1531,6 +1533,10 @@ class TomographyModel(ParameterHandler):
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
         view_indices_batched = jnp.array_split(all_view_indices, num_view_batches)
 
+        # Pin the indices to the MODEL's device -- not necessarily JAX's default device, since a
+        # single-GPU recon can run on a non-default GPU of a multi-GPU host.  jnp.array_split below
+        # would otherwise place its batches on the default device, mismatching the sharded
+        # sinogram's device in the projector call.
         pixel_indices = jax.device_put(pixel_indices, self.sino_placement.devices[0])
         num_pixel_batches = jnp.ceil(pixel_indices.shape[0] / transfer_pixel_batch_size).astype(int)
         pixel_indices_batched = jnp.array_split(pixel_indices, num_pixel_batches)
@@ -1542,8 +1548,8 @@ class TomographyModel(ParameterHandler):
         # Get the final recon as a jax array
         recon_at_indices = jnp.zeros((num_pixels, num_slices), device=output_device)
         for view_indices_batch in view_indices_batched:
+            # sinogram was sharded at entry, so this slice is already on the model's device.
             view_batch = sinogram[view_indices_batch]
-            view_batch = jax.device_put(view_batch, self.sino_placement.devices[0])
 
             # Loop over pixel batches
             voxel_batch_list = []
@@ -1970,14 +1976,14 @@ class TomographyModel(ParameterHandler):
         If weights is None, then constant weights 1 will be used
 
         Args:
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
-            output_sharded (bool, optional): If False (default), return a plain array in the
+            weights (numpy or jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to all 1s.
+            output_sharded (bool, optional): If False (default), return a numpy array in the
                 problem's REAL shape (any padded slices are cropped).  If True, return the
                 internal device form (slice-sharded, slice axis possibly padded with
                 exactly-zero entries).
 
         Returns:
-            jnp array: Diagonal of the Hessian matrix with same shape as recon.
+            numpy or jax array: Diagonal of the Hessian matrix with same shape as recon.
         """
         sinogram_shape, recon_shape = self.get_params(['sinogram_shape', 'recon_shape'])
         num_views = sinogram_shape[0]
@@ -2005,7 +2011,7 @@ class TomographyModel(ParameterHandler):
                                                      hessian_diagonal.shape[-1]))
         if output_sharded:
             return hessian_diagonal
-        # Default exit: plain array in the problem's REAL shape.
+        # Default exit: numpy array in the problem's REAL shape.
         return self._gather_recon(hessian_diagonal)
 
     def set_view_parameters(self, view_params):
@@ -2102,25 +2108,15 @@ class TomographyModel(ParameterHandler):
         """
         if self.get_params('auto_regularize_flag'):
             # Make sure sinogram and weights are on the cpu to avoid duplication of large sinos on the GPU.
-            max_views_to_use = np.minimum(20, sinogram.shape[0])
-            step_size = sinogram.shape[0] // max_views_to_use
-
-            small_sinogram = np.array(sinogram[::step_size])
-            if weights is None:
-                small_weights = 1
-            else:
-                small_weights = np.array(weights[::step_size])
-
-            # Use only the REAL views.  A device-form input (prepare_sino_for_devices) may carry a
-            # zero-padded view axis; the padded views are inert in the recon and must not bias the
-            # regularization statistics (e.g. the all-ones indicator fallback would average them in).
-            # Crop the host-side subsample by global view index -- no device-side work.
+            # Estimate the regularization stats from a view subsample (see subsample_views) -- both cheap
+            # and avoids reducing the whole (possibly huge) sinogram on the GPU.  Sample only the REAL
+            # views: a device-form input (prepare_sino_for_devices) may zero-pad the view axis, and those
+            # inert views must not bias the statistics (e.g. the all-ones indicator fallback would average
+            # them in).  subsample_views(num_real_views=...) samples array[:num_real_views] directly.
             num_real_views = self.get_params('sinogram_shape')[0]
-            if sinogram.shape[0] != num_real_views:
-                keep = np.arange(0, sinogram.shape[0], step_size) < num_real_views
-                small_sinogram = small_sinogram[keep]
-                if weights is not None:
-                    small_weights = small_weights[keep]
+            small_sinogram = self.subsample_views(sinogram, num_real_views=num_real_views)
+            small_weights = 1 if weights is None else self.subsample_views(weights, num_real_views=num_real_views)
+
             # Likewise crop padded detector ROWS (a device-form input whose row axis pads
             # with the recon slices) -- the zero rows would bias the indicator/sigma stats.
             num_real_rows = self.get_params('sinogram_shape')[1]
@@ -2256,9 +2252,43 @@ class TomographyModel(ParameterHandler):
         return voxel_values
 
     @staticmethod
+    def subsample_views(array, max_views_to_use=20, num_real_views=None):
+        """Return an evenly-spaced subsample of at most ``max_views_to_use`` views (axis 0) as a host
+        NumPy array.
+
+        Statistical sinogram estimates -- the support indicator (:meth:`_get_sino_indicator`), the RMS /
+        typical value, the auto-crop width, the auto-regularization stats -- do not need every view, so
+        they are computed on such a subsample.  This both keeps the host reductions cheap and, crucially,
+        avoids materializing / reducing the whole (possibly ~20 GB) sinogram on the GPU.  Callers that
+        need to subsample a companion array (e.g. weights) the same way just call this again with the
+        same ``max_views_to_use``/``num_real_views`` (the stride depends only on the view count).
+
+        If ``num_real_views`` is given, only the first ``num_real_views`` views are sampled: a device-form
+        input (see ``prepare_sino_for_devices``) may zero-pad the view axis, and those padded views must
+        not enter statistical estimates -- so we sample the REAL views directly rather than sampling the
+        padded array and dropping padded slots afterward (which would leave fewer real views).
+
+        Args:
+            array (ndarray or jax array): array batched along axis 0 (views).
+            max_views_to_use (int, optional): cap on the number of views retained. Defaults to 20.
+            num_real_views (int or None, optional): if set, sample only ``array[:num_real_views]``.
+
+        Returns:
+            numpy.ndarray: the view-subsampled array on the host.
+        """
+        num_views = array.shape[0] if num_real_views is None else num_real_views
+        max_views_to_use = min(max_views_to_use, num_views)
+        step_size = max(num_views // max_views_to_use, 1)
+        return np.array(array[:num_views][::step_size])
+
+    @staticmethod
     def _get_sino_indicator(sinogram, verbose=1):
         """
         Compute a binary mask that indicates the region of sinogram support.
+
+        Typically called on a view SUBSAMPLE (see :meth:`subsample_views`), not the full sinogram: this
+        runs several host-side reductions, so callers estimating a statistical quantity should subsample
+        the views first rather than pass the whole (possibly ~20 GB) sinogram.
 
         Args:
             sinogram (ndarray): 3D jax array containing sinogram with shape (num_views, num_det_rows, num_det_channels).
@@ -2338,55 +2368,55 @@ class TomographyModel(ParameterHandler):
 
         return recon_std
 
-    def direct_recon(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
+    def direct_recon(self, sinogram, filter_name=None, output_sharded=False):
         """
         Do a direct (non-iterative) reconstruction, typically using a form of filtered backprojection.  The
         implementation details are geometry specific, and direct_recon may not be available for all geometries.
 
         Args:
-            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            sinogram (numpy or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             filter_name (string or None, optional): The name of the filter to use, defaults to None, in which case the geometry specific method chooses a default, typically 'ramp'.
-            view_batch_size (int, optional): An integer specifying the size of a view batch to limit memory use.  Defaults to 100.
-            output_sharded (bool, optional): If False (default), return a plain array.  If True, return
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True, return
                 the internal device form (slice-sharded on a sharded model; on an unsharded model the
                 output is the same single-device array either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after direct reconstruction.
+            recon (numpy or jax array): The reconstructed volume after direct reconstruction.
         """
         warnings.warn('direct_recon not implemented for TomographyModel.')
         recon_shape = self.get_params('recon_shape')
         # Honor the output_sharded contract: device form (slice-sharded zeros, built per-shard)
-        # vs a plain array.
+        # vs a plain host array.  There is no sharded array to gather here, so build the host
+        # zeros directly with np.zeros rather than routing a full-volume jnp.zeros through
+        # _gather_to_host (which would materialize the whole volume on one device first).
         if output_sharded:
             return mjs.sharded_full(self.recon_placement, tuple(recon_shape), 0.0)
-        return jnp.zeros(recon_shape)
+        return np.zeros(recon_shape, dtype=np.float32)
 
-    def direct_filter(self, sinogram, filter_name=None, view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                      output_sharded=False):
+    def direct_filter(self, sinogram, filter_name=None, output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): If False (default), return a plain array.  If True, return
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True, return
                 the internal device form (view-sharded on a sharded model; on an unsharded model the
                 output is the same single-device array either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (numpy or jax array): The sinogram after FBP filtering.
         """
         warnings.warn('direct_filter not implemented for TomographyModel.')
         sinogram_shape = self.get_params('sinogram_shape')
         # Honor the output_sharded contract: device form (view-sharded zeros, built per-shard)
-        # vs a plain array.
+        # vs a plain host array.  There is no sharded array to gather here, so build the host
+        # zeros directly with np.zeros rather than routing a full-volume jnp.zeros through
+        # _gather_to_host (which would materialize the whole sinogram on one device first).
         if output_sharded:
             return mjs.sharded_full(self.sino_placement, tuple(sinogram_shape), 0.0,
                                     row_pad=self._sino_row_padding())
-        return jnp.zeros(sinogram_shape)
+        return np.zeros(sinogram_shape, dtype=np.float32)
 
     def _apply_direct_recon_filter(self, sinogram, filter_name, filter_scale, output_sharded,
                                    row_weight=None):
@@ -2426,7 +2456,7 @@ class TomographyModel(ParameterHandler):
             row_weight (jax array or None): optional (rows, channels) FDK cosine pre-weight.
 
         Returns:
-            filtered_sinogram: plain by default, view-sharded device form if output_sharded.
+            filtered_sinogram: numpy by default, view-sharded device form if output_sharded.
         """
         num_channels = sinogram.shape[2]
         # Real view count from params (the array's view axis may be zero-padded for
@@ -2459,7 +2489,7 @@ class TomographyModel(ParameterHandler):
 
         if output_sharded:
             return filtered_sinogram                     # keep the device form
-        return self._gather_sinogram(filtered_sinogram)  # default: plain output
+        return self._gather_sinogram(filtered_sinogram)  # default: numpy output
 
     def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
                          compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
@@ -2565,9 +2595,9 @@ class TomographyModel(ParameterHandler):
         call ``np.random.seed(seed)`` before calling this method.
 
         Args:
-            sinogram (ndarray or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-            weights (ndarray or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
-            init_recon (jax array or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
+            sinogram (numpy or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            weights (numpy or jax array, optional): 3D positive weights with same shape as error_sinogram.  Defaults to None, in which case the weights are implicitly all 1.
+            init_recon (numpy or jax array, or None or 0, optional): Initial reconstruction to use in reconstruction. If None, then direct_recon is called with default arguments.  Defaults to None.
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
@@ -2576,13 +2606,13 @@ class TomographyModel(ParameterHandler):
                 home directory).  Defaults to '~/.mbirjax/logs/recon.log'.  Set to None or '' to
                 skip file logging.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
-            output_sharded (bool, optional): If False (default), return a plain reconstruction array.
+            output_sharded (bool, optional): If False (default), return a numpy reconstruction array.
                 If True, return the internal device form (slice-sharded across the model's devices,
                 no exit gather); on an unsharded model the output is the same either way.
 
         Returns:
             (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
-                - recon (jax array): the reconstruction volume
+                - recon (numpy or jax array): the reconstruction volume
                 - recon_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
@@ -2629,10 +2659,10 @@ class TomographyModel(ParameterHandler):
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         if not output_sharded:
-            # Default exit: gather to a plain single-device array in the problem's REAL
-            # shape (_gather_recon crops any padded slices; both are no-ops on an
-            # unsharded model).
-            recon = jax.device_put(self._gather_recon(recon), device=self.recon_placement.devices[0])
+            # Default exit: gather to a HOST NumPy array in the problem's REAL shape
+            # (_gather_recon assembles on the host and crops any padded slices) -- never re-materialized
+            # on a single device, so this is safe at any size.
+            recon = self._gather_recon(recon)
         return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
@@ -3199,11 +3229,11 @@ class TomographyModel(ParameterHandler):
         ``np.random.seed(seed)`` before calling this method.
 
         Args:
-            prox_input (jax array): proximal map input with same shape as reconstruction.
-            sinogram (jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
+            prox_input (numpy or jax array): proximal map input with same shape as reconstruction.
+            sinogram (numpy or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
             sigma_prox (None or float, optional): The standard deviation of the proximal map prior term.  If None, then set automatically from the sinogram.  Defaults to None.
-            weights (jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
-            init_recon (jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
+            weights (numpy or jax array, optional): 3D positive weights with same shape as sinogram.  Defaults to None, in which case the weights are implicitly all 1s.
+            init_recon (numpy or jax array, optional): optional reconstruction to be used for initialization.  Defaults to None, in which case the initial recon is determined by vcd_recon.
             do_initialization (bool, optional):  If True, then initialize parameters and place arrays on appropriate devices.  Defaults to True.
                 Set to False if initialization (partitions and regularization parameters) has already been performed
                 on this sinogram by a previous prox_map call on this model.
@@ -3214,13 +3244,13 @@ class TomographyModel(ParameterHandler):
                 home directory).  Defaults to '~/.mbirjax/logs/prox.log'.  Set to None or '' to
                 skip file logging.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
-            output_sharded (bool, optional): If False (default), return a plain reconstruction array.
+            output_sharded (bool, optional): If False (default), return a numpy reconstruction array.
                 If True, return the internal device form (no exit gather); on an unsharded model the
                 output is the same either way.
 
         Returns:
             (recon, recon_dict): reconstruction array and a dict containing the recon parameters.
-                - recon (jax array): the reconstruction volume
+                - recon (numpy or jax array): the reconstruction volume
                 - recon_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
@@ -3279,9 +3309,10 @@ class TomographyModel(ParameterHandler):
         notes = 'Prox completed: {}\n\n'.format(datetime.datetime.now())
         recon_dict = self.get_recon_dict(recon_params, notes=notes)
         if not output_sharded:
-            # Default exit: gather to a plain single-device array in the problem's REAL
-            # shape (_gather_recon crops any padded slices; a no-op on a trivial 1-device layout).
-            recon = jax.device_put(self._gather_recon(recon), device=self.recon_placement.devices[0])
+            # Default exit: gather to a HOST NumPy array in the problem's REAL shape
+            # (_gather_recon assembles on the host and crops any padded slices) -- never re-materialized
+            # on a single device.
+            recon = self._gather_recon(recon)
         return recon, recon_dict
 
     @staticmethod
@@ -3308,27 +3339,12 @@ class TomographyModel(ParameterHandler):
         warnings.warn('TomographyModel.gen_weights() is deprecated and will be removed in a future release.  Use mbirjax.gen_weights() instead.')
         return mj.gen_weights(sinogram, weight_type)
 
-    def gen_modified_3d_sl_phantom(self):
-        """
-        DEPRECATED:  This method has been deprecated and will be removed in a future release.
-        Instead, use :func:`mbirjax.generate_3d_shepp_logan_low_dynamic_range`
-
-        Generates a simplified, low-dynamic range version of the 3D Shepp-Logan phantom.
-
-        Returns:
-            ndarray: A 3D numpy array of shape specified by TomographyModel class parameters.
-        """
-        warnings.warn('This method has been deprecated and will be removed in a future release.  Instead, use mbirjax.generate_3d_shepp_logan_low_dynamic_range()')
-        recon_shape = self.get_params('recon_shape')
-        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(recon_shape, device=self.recon_placement.devices[0])
-        return phantom
-
     def reshape_recon(self, recon):
         """
         Reshape recon into its 3D form.
 
         Args:
-            recon (ndarray or jax array): A 3D array of shape specified by (num_recon_rows, num_recon_cols, num_recon_slices)
+            recon (numpy or jax array): A 3D array of shape specified by (num_recon_rows, num_recon_cols, num_recon_slices)
         """
         recon_shape = self.get_params('recon_shape')
         return recon.reshape(recon_shape)

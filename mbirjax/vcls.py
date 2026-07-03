@@ -224,7 +224,7 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     print('Creating recon bases')
 
     # Filter the sinogram in a single call
-    filtered_sinogram = ct_model.direct_filter(ref_sino, view_batch_size=None)
+    filtered_sinogram = ct_model.direct_filter(ref_sino)
     del ref_sino  # Free up space in case the sino is large
 
     # Compute recon bases individually for each view, on a ONE-view sibling model:

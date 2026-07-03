@@ -49,11 +49,13 @@ The functions here are for direct interactions with files.
 .. autofunction:: mbirjax.utilities.import_recon_hdf5
 
 
+.. _synthetic-data-generation:
+
 Synthetic Data Generation
 -------------------------
 
+.. autofunction:: mbirjax.utilities.generate_demo_data
 .. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_reference
 .. autofunction:: mbirjax.utilities.generate_3d_shepp_logan_low_dynamic_range
 .. autofunction:: mbirjax.utilities.gen_translation_phantom
-.. autofunction:: mbirjax.utilities.generate_demo_data
 

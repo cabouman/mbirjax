@@ -385,7 +385,11 @@ def _sparse_back_project(view_params_array, sinogram, pixel_indices,
             bp_vmap = jax.vmap(back_kernel, in_axes=(0, None, 0, None, None))
             per_view_voxel_values_batch = bp_vmap(local_view_batch, pixel_indices_batch,
                                                   local_view_params_batch, projector_params, coeff_power)
-            return jnp.sum(per_view_voxel_values_batch, axis=0)
+            # Driver-level reduce (shared across geometries, not the geometry kernel) -- give it its
+            # own named_scope so profilers attribute it as a distinct region instead of leaving it
+            # unscoped/unmapped.
+            with jax.named_scope("projector/back/view_reduce"):
+                return jnp.sum(per_view_voxel_values_batch, axis=0)
 
         return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
                                                pixel_batch_size)
@@ -424,7 +428,8 @@ def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, nu
             bp_vmap = jax.vmap(back_band_kernel, in_axes=(0, None, 0, None, None, None, None))
             per_view_band = bp_vmap(local_view_batch, pixel_indices_batch, local_view_params_batch,
                                     projector_params, g0, num_band_slices, coeff_power)
-            return jnp.sum(per_view_band, axis=0)
+            with jax.named_scope("projector/back/view_reduce"):   # driver reduce; see _sparse_back_project
+                return jnp.sum(per_view_band, axis=0)
 
         return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
                                                pixel_batch_size)

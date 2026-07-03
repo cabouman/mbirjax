@@ -48,11 +48,11 @@ class ConeBeamModel(TomographyModel):
             Shape of the sinogram as a tuple in the form `(views, rows, channels)`, where 'views' is the number of
             different projection angles, 'rows' correspond to the number of detector rows, and 'channels' index columns of
             the detector that are assumed to be aligned with the rotation axis.
-        angles (ndarray or jax array):
+        angles (numpy or jax array):
             A 1D array of projection angles, in radians, specifying the angle of each projection relative to the origin.
         source_detector_dist (float): Distance between the X-ray source and the detector in units of ALU.
         source_iso_dist (float): Distance between the X-ray source and the center of rotation in units of ALU.
-        helical_z_shifts (ndarray or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
+        helical_z_shifts (numpy or jax array, optional): Per-view axial shifts (ALU; same length as angles) for helical mode.
         use_curved_detector (bool, optional): Detector geometry type. Either False (default) or True implies each detector row has constant distance from source.
 
     Note:
@@ -65,8 +65,6 @@ class ConeBeamModel(TomographyModel):
     --------
     TomographyModel : The base class from which this class inherits.
     """
-
-    DIRECT_RECON_VIEW_BATCH_SIZE = TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None,
                  use_curved_detector=False):
@@ -295,8 +293,12 @@ class ConeBeamModel(TomographyModel):
         vertical_fan_projector = ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
-        new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
+        # named_scope tags the HLO/trace with a stable, code-localized region name (profiling
+        # attribution that survives recompiles + jax-version renames; see experiments/profiling).
+        with jax.named_scope("cone/forward/vertical_fan"):
+            new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
+        with jax.named_scope("cone/forward/horizontal_fan"):
+            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
 
         return sinogram_view
 
@@ -507,8 +509,10 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Horizontal fan once per view -> detector-based voxel cylinder (num_pixels, num_det_rows).
-        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+        # named_scope: stable, code-localized profiling regions (see experiments/profiling).
+        with jax.named_scope("cone/back/pixel/horizontal_fan"):
+            det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -523,11 +527,15 @@ class ConeBeamModel(TomographyModel):
                 det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
                 g0, band_size, coeff_power=coeff_power)
 
-        bands = jax.lax.map(back_one_band, band_starts)        # (num_bands, num_pixels, band_size)
+        with jax.named_scope("cone/back/pixel/vertical_fan"):
+            bands = jax.lax.map(back_one_band, band_starts)    # (num_bands, num_pixels, band_size)
         # Reassemble into (num_pixels, num_bands * band_size): for pixel p and band b, slice
-        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.
-        back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
-        back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
+        # b*band_size + l is bands[b, p, l].  Then crop the padded tail back to the real count.  This
+        # transpose-reassembly is UNIQUE to the pixel kernel (the band kernel returns one band) -> its
+        # own region so its cost (vs the band kernel) is visible.
+        with jax.named_scope("cone/back/pixel/assemble"):
+            back_projection = jnp.transpose(bands, (1, 0, 2)).reshape(num_pixels, num_bands * band_size)
+            back_projection = jax.lax.slice_in_dim(back_projection, 0, num_recon_slices, axis=1)
 
         return back_projection
 
@@ -675,11 +683,15 @@ class ConeBeamModel(TomographyModel):
         Horizontal fan once (full det rows) -> banded vertical fan.  Returns
         (num_pixels, num_band_slices).  ``g0`` is traced; ``num_band_slices`` (= L)
         is static."""
-        det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
-        return ConeBeamModel.back_vertical_fan_band_pixel_batch(
-            det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
-            g0, num_band_slices, coeff_power=coeff_power)
+        # named_scope tags the HLO/trace with a stable, code-localized region name (the vertical fan
+        # is where the L1-bound transpose lives; see experiments/profiling/key_findings.md).
+        with jax.named_scope("cone/back/band/horizontal_fan"):
+            det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
+                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+        with jax.named_scope("cone/back/band/vertical_fan"):
+            return ConeBeamModel.back_vertical_fan_band_pixel_batch(
+                det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
+                g0, num_band_slices, coeff_power=coeff_power)
 
     @staticmethod
     def compute_vertical_data_single_pixel(pixel_index, slice_indices, single_view_params, projector_params):
@@ -941,33 +953,27 @@ class ConeBeamModel(TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
-        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                              output_sharded=output_sharded)
+    def direct_recon(self, sinogram, filter_name="ramp", output_sharded=False):
+        return self.fdk_recon(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                      output_sharded=False):
+    def direct_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
-            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            filtered_sinogram (numpy or jax array): The sinogram after FDK filtering -- numpy by default,
             view-sharded if output_sharded=True.
         """
-        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                               output_sharded=output_sharded)
+        return self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                   output_sharded=False):
+    def fdk_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK filtering on the given sinogram.
 
@@ -979,16 +985,14 @@ class ConeBeamModel(TomographyModel):
         view-shard locally.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
-                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): If False (default), return a plain array.  If True,
+            output_sharded (bool, optional): If False (default), return a numpy array.  If True,
                 return the view-sharded device form (on an unsharded model the output is the same
                 either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering -- plain by default,
+            filtered_sinogram (numpy or jax array): The sinogram after FDK filtering -- numpy by default,
             view-sharded if output_sharded=True.
         """
         # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared
@@ -1066,8 +1070,7 @@ class ConeBeamModel(TomographyModel):
 
         return recon
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                  output_sharded=False):
+    def fdk_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -1084,16 +1087,14 @@ class ConeBeamModel(TomographyModel):
             best used as an initializer for the iterative ``recon()``.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            view_batch_size (int, optional): DEPRECATED and ignored (see fdk_filter).
-            output_sharded (bool, optional): If False (default), return a plain array.  If
+            output_sharded (bool, optional): If False (default), return a numpy array.  If
                 True, return the slice-sharded device form (on an unsharded model the output
                 is the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction -- plain by
+            recon (numpy or jax array): The reconstructed volume after FDK reconstruction -- numpy by
             default, slice-sharded if ``output_sharded=True``.
         """
         # Shard once at entry so the filter receives view-sharded data (a no-op when already
@@ -1146,8 +1147,8 @@ class ConeBeamModel(TomographyModel):
             print_logs (bool, optional): Same as in the TomographyModel.recon() method.
 
         Returns:
-            Tuple[jnp.ndarray, dict]:
-                - Reconstructed volume (jax array).
+            Tuple[np.ndarray, dict]:
+                - Reconstructed volume (numpy array).
                 - Dictionary of metadata containing recon and model parameters for each half.
 
         Raises:
@@ -1324,7 +1325,9 @@ class ConeBeamModel(TomographyModel):
                                                  first_iteration=first_iteration,
                                                  compute_prior_loss=compute_prior_loss,
                                                  logfile_path=logfile_path, print_logs=print_logs)
-            return jax.device_get(recon_half), recon_dict
+            # recon() already returns a host NumPy array (its output_sharded=False gather), so the
+            # half is on the host here -- no device_get needed.
+            return recon_half, recon_dict
 
         # -------- Reconstruct the halves ONE AT A TIME (the top half is built, recon'd, gathered to the
         # host, and freed before the bottom half is built), so only one half's sino/weights/model and one

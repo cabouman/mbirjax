@@ -462,11 +462,17 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
 - **Suite tidiness** — seed the remaining unseeded-`np.random` tests; pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Minor opens** — `configure_devices` / `use_gpu` unification; forward pixel-batch default.
+- **Cone-beam 8-GPU 2048³ recon hang — ✅ RESOLVED 2026-06-28.**  `partition_sequence=[4,6,7]` (skip the
+  granularity-1 first partition) + the memory work (P2 init-sino free + host-transparency) let the **plain
+  sharded `recon()`** run cone 2048³/8 at **peak 45.3 GB/shard of 77.6**, 3 iterations, healthy convergence
+  (loss 1.73→0.86→0.56), completes + saves.  Better than the ~62–69 GB estimate (the per-subset transient
+  scales sub-linearly with the full per-shard volume at fine granularity, so the cone-default OOM's ≥2.15×
+  scaling overstated the [4,6,7] case).  Diagnosis history below.
 - **Cone-beam 8-GPU 2048³ recon hang — DIAGNOSED 2026-06-24 as OUT OF MEMORY** (the NCCL "Acquire
   clique" timeout was a downstream symptom, not the cause; see the DIAGNOSED bullet below).
   A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
   Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
-  config worked.  Repro tooling: `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
+  config worked.  Repro tooling (REMOVED 2026-06-28 once the cone OOM was resolved): `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
   size × device-count sweep, each config `timeout`-isolated, HLO dumped, build-ID printed).
   - **Mechanism:** no explicit collectives in mbirjax — projection is collective-free (thread pool
     + `make_array_from_single_device_arrays`).  The only multi-device collectives are XLA-GSPMD
@@ -698,9 +704,148 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
   - **Gate:** `tests/geometries/test_vcd.py::...test_split_sino` (split-vs-full nrmse) + the
     `stitch_arrays` doctest; values must be unchanged (S1 is a placement change, not a math change).
 
----
-
-## 7. Durable principles & facts (pointers, not copies)
+- **NSI production workflow (Lilly_recon.py; num_metal=0, cone) — observations + plan (2026-06-26).**
+  Traced for memory/transients + sharding.  The recon is already the hardened path (num_metal=0 cone →
+  `recon_plastic_metal` → `split_sino_recon`), so the work is in the script + preprocessing.
+  **IMPLEMENTATION ORDER (2026-06-28):** (1) export host-side fix (#4) + its guard test — production
+  blocker, small, host-residence proxy not an 18 GiB run; (2) two-stage split (#2) — debugging +
+  clean-process recon, depends on (1) to finish end-to-end; (3) #18 preprocessing/MAR sharding — the
+  time win, biggest, last (4a `gen_weights_mar`, then 4b view-shard the sino pipeline).  (1)+(2) are
+  CPU-developable and independent of the 8-GPU cone gating run (which stays top overall priority).
+  - **#1 — clip on the host — DONE 2026-06-26.**  `sino = jnp.maximum(sino, 0.0)` pushed the FULL
+    sinogram onto gpu0, and `gen_weights` then added a second full-sino gpu0 array, only for
+    `split_sino_recon` to gather both back to the host — a wasteful round-trip that can OOM one GPU
+    before the recon starts.  Fixed to `np.maximum` (host); `gen_weights` (host-preserving) then yields
+    host weights and each half-recon shards its own half from the host.  (`jnp` import now unused in that
+    script — optional cleanup.)
+  - **#2 — two-stage preprocess/recon split (PLANNED; Greg wants it regardless, for debugging).**
+    **IMPLEMENTED 2026-06-28:** `mj.preprocess.save_preprocessing`/`load_preprocessing` added to
+    `preprocess/utilities.py` (moved there from `utilities.py` — it is preprocessing-output I/O, co-located
+    with the preprocessing pipeline; HDF5: sinogram + array params as datasets, scalars as one JSON attr;
+    round-trip test in `tests/test_preprocessing.py` — exact sino/float32, tuple-restored `sinogram_shape`,
+    numpy-scalar coercion, optional custom weights).  Two scripts in `mbirjax_applications/nsi/`:
+    `Lilly_preprocess_to_disk.py`, `Lilly_recon_from_disk.py`, plus `Lilly_two_stage.sh` (runs stage 2 in a
+    SEPARATE process for the clean allocator).  (Scripts live in the separate `mbirjax_applications` repo;
+    only the `preprocess/utilities.py` helpers are the mbirjax change.)
+    **TWO SEPARATE SCRIPTS (Greg's call 2026-06-28), not a `--stage` flag** — separation of concerns +
+    honest naming (Lilly_recon currently does preprocessing too) AND it *guarantees* the fresh-process
+    benefit (a `--stage both` one-shot runs in one process and loses the clean allocator):
+    - **`Lilly_preprocess_to_disk.py`** — `compute_sino_and_params` → `auto_crop_sino_conebeam` →
+      `np.maximum` → `mjp.save_preprocessing(out, sino, cone_beam_params, optional_params)`.
+    - **`Lilly_recon_from_disk.py`** — `mjp.load_preprocessing(path)` → build `ConeBeamModel` + set_params
+      → recompute weights (`gen_weights`, one cheap pass — NOT saved) → `recon_plastic_metal` →
+      `export_recon_hdf5`.  (sino + the two param dicts is everything the recon needs; voxel pitch for the
+      filename comes from the rebuilt model.)
+    - **`mj.preprocess.save_preprocessing`/`load_preprocessing`** (the ONLY mbirjax core add) — HDF5 (matches
+      `save_data_hdf5`): sino as a float32 dataset + the two param dicts (scalars as attrs, `angles` as a
+      dataset).  Reusable by other NSI scripts.
+    - **Orchestrator:** a shell script (two `python` invocations) and/or a Python orchestrator — but it
+      MUST launch the recon as a SEPARATE process (shell sequence / `subprocess`), NOT import-and-call,
+      or the clean-allocator benefit is lost.
+    Rationale: (i) inspect/reuse the preprocessed sino while iterating on recon params (debugging — the
+    primary motive); (ii) a FRESH recon process starts with a clean GPU BFC allocator + no leftover jit
+    caches from preprocessing's batched gpu0 work — matters for memory-tight large recons.  **Fate of
+    `Lilly_recon.py`:** the two split scripts become primary; retire the combined script eventually (it
+    has the preprocessing-in-recon smell), keep it short-term until `test_script_no_metal.sh` is
+    repointed.  **Confirm-first:** a `memory_report` at recon start, single-process (post-#1) vs a fresh
+    process, quantifies the clean-allocator gain.  Composes with #18-4b: a view-sharded preprocessing just
+    gathers at the disk boundary, so the on-disk contract stays host numpy (what recon-from-disk wants).
+  - **#3 — shard the sino preprocessing (part of #18; benefit = TIME).**  The pipeline
+    (`compute_sino_transmission`, `correct_det_rotation`, `correct_background_offset`, defective-pixel
+    interpolation) batches over views on ONE device and gathers each batch to host — serialized.  It is
+    per-view **independent** (no cross-view coupling), so view-sharding it is **embarrassingly parallel →
+    near-linear time speedup** across devices (cleaner than the recon's band-coupled sharding).  Mechanism:
+    distribute the raw `obj_scan` by view across devices (blank/dark means are small/replicated), run the
+    per-view ops per shard (existing per-device pool / a NamedSharding over views), and EITHER gather to
+    host (for the disk split) OR keep view-sharded to feed the recon's view-sharding with no gather.
+    Caveat: `multi_threshold_otsu` (MAR, num_metal>0) is global and would gather — out of scope for the
+    num_metal=0 path.  Real work; fold into #18.  Plan reference: this block.
+  - **#4 — `export_recon_hdf5` OOMs on large recons (Charlie, 2026-06-28) — CODE DONE 2026-06-28
+    (validation pending an env fix; see below).**  `export_recon_hdf5` `device_get`s to host (utilities.py:581) but then ships
+    the FULL volume back to ONE GPU twice: `apply_cylindrical_mask` (remove_flash=True) is `jnp`
+    throughout (`recon * circular_mask` is a full-volume jnp multiply), and `jnp.transpose` (utilities.py:586)
+    needs another full-volume buffer → `RESOURCE_EXHAUSTED` at downsampling 1 (`f32[1370,1880,1880]` ≈ 18
+    GiB; the transpose is the dying line, but the mask is also on-GPU).  Same pattern as the host-preserving
+    campaign (gen_weights / stitch_arrays / generate_demo_data / split_sino stitch): post-recon
+    whole-volume ops on one device don't scale.  **Fix (keep the whole export host-side):** (a)
+    `apply_cylindrical_mask` → host-preserving (`xp = jnp if jax else np`; the 2D circular + 1D slice masks
+    are small, so a host recon's multiplies stay on host), (b) `jnp.transpose` → `np.transpose` in
+    `export_recon_hdf5`, (c) fix the stale "processes ... in batches to avoid GPU memory issues" docstring
+    (it does whole-volume ops).  The report's minimal `np.transpose`-only fix is INCOMPLETE — the mask step
+    still puts ~18 GiB on one GPU and can OOM there first.  Gate: a downsampling-1-scale export (or a check
+    that no GPU array is created post-device_get).  (Reporter's install was non-editable — needs reinstall.)
+    **DONE 2026-06-28 (validated, env now jax 0.10.1):** the REAL blocker for the mask was that
+    `apply_cylindrical_mask` is **`@jax.jit`-decorated** — jit forces a device array and traces the input,
+    so the `xp` host-preserving logic was INERT and the mask still shipped the whole volume to one GPU
+    (the first `np.transpose`-only attempt would still have OOM'd at the mask).  Fix: **removed the jit
+    decorator** (it's a one-shot post-recon mask, not a hot path; both callers — export + MAR
+    segmentation — are non-hot) so the eager `xp` logic is genuinely host-preserving.  Plus `np.transpose`
+    (host view) and docstrings.  Guard test `tests/test_utilities.py::TestExportReconHostResidence`
+    (host-residence proxy: numpy-in→numpy-out for the mask, jax-in→jax-out, small export→import
+    round-trip).  **Syntax-checked (py_compile); FULL validation PENDING an env fix** — the `mbirjax`
+    conda env is broken (jax 0.4.21 vs jaxlib 0.10.1: the `pip install -e .` resolved an old jax against
+    the loose `jax!=0.10.2` pin).  Fix = `pip install "jax==0.10.1"` (match jaxlib; ≠ 0.10.2 per the
+    deliberate exclusion), then run the guard test + suite.  Consider tightening the pin (e.g.
+    `jax>=0.10,!=0.10.2`) so `-e` can't pull a stale jax again.
+  - **Problem 2 — benign `cuda_vmm` FABRIC warnings on ≥2 GPUs (Charlie) — no real plan change.**  XLA probes
+    an NVLink-fabric memory handle the cluster disallows, prints `W… will retry with simpler handle types`,
+    falls back to the standard peer path → no correctness/perf impact; ≥2 GPUs only; already in lessons.md
+    (cuda_vmm_allocator).  Suppress with `TF_CPP_MIN_LOG_LEVEL=2` BEFORE `import jax` (already in
+    tests/conftest.py); optionally set it in the NSI app scripts (caveat: hides ALL XLA warnings — unset
+    when debugging).  Low priority, app-env-var level.
+  - **#5 — `generate_demo_data` / shepp-logan generator: single `devices`, always host NumPy — DONE
+    2026-06-28 (Greg's design).**  Was: `generate_demo_data` without `devices` built the phantom on
+    `recon_placement.devices[0]` (ONE GPU) even though the model spanned 8 → the full 2048³ phantom
+    (32 GB) materialized on gpu0 (+ a full-volume `* scale` ~64 GB transient + the reshard/gather) →
+    OOM.  And the generator took a confusing `device`-vs-`devices` pair.  Now: (a)
+    `generate_3d_shepp_logan_low_dynamic_range(phantom_shape, devices=None, ...)` — single `devices`
+    (None → all available: GPUs else CPU); builds slice-sharded across them in parallel (or row-blocked
+    on a single device), **gathers to host, frees the device arrays, returns NumPy** cropped to the real
+    shape; `scale` folded per block/shard (no full-volume scale transient).  (b) `generate_demo_data`
+    builds the phantom on the **model's** devices, forward-projects, and gathers **both phantom and
+    sinogram to host NumPy** — `output_sharded` DROPPED (the phantom is a reference; recon prefers a host
+    sinogram it shards itself).  So 2048³ generate_demo_data shards the phantom across all 8 GPUs (≈4
+    GB/shard) instead of 32 GB on gpu0.  Tests updated (`TestShardedSheppLogan`/`TestGenerateDemoDataSharding`
+    → host-numpy + value-match, 1-device vs N-device; the phantom is bit-identical 1-vs-N but only
+    ~1e-5-close across two different shard counts — XLA float32 fusion varies by shard shape).  Also
+    de-`device`-d the deprecated `gen_modified_3d_sl_phantom`.  **Follow-up fix 2026-06-28:** the sinogram
+    must be gathered with `forward_project(..., output_sharded=True)` + `np.asarray` (shard-by-shard to the
+    host).  The first version used `forward_project`'s default gather, which routes the whole sinogram
+    through ONE device (`jnp.array(np.asarray(...))`) and OOM'd on the real 2048³/8 run (32 GiB on gpu0);
+    `output_sharded=True` keeps it 4 GB/shard and `np.asarray` of a multi-device array assembles on the
+    host.  (`save_preprocessing`/`load_preprocessing` also moved to `preprocess/utilities.py` →
+    `mj.preprocess.*`.)
+  - **#6 — host-safe `output_sharded=False` gather (the real fix for the single-device-gather footgun) —
+    DONE 2026-06-28 (full suite green, 200 passed).**  Implemented all four sites: `_gather_to_host` →
+    `np.asarray(x)` (host assembly, both shard counts); dropped the `jax.device_put(..., devices[0])`
+    re-uploads at the `recon` and `prox_map` exits; `direct_recon` cylinder → host `np.zeros` + numpy
+    scatter.  `output_sharded=False` (recon/forward/back/fbp/fdk/direct/hessian/prox/denoise) now returns
+    **host NumPy** (docstrings updated; the misleading "single-device array" wording fixed).  Guard test
+    `tests/sharding/test_vcd_sharded.py::TestGatherReturnsHostNumpy`.  One test fixup: removed a now-invalid
+    `recon.block_until_ready()` in `test_vcd.py` (jax-only; the host gather already syncs) — the only place
+    a jax method was called on a gathered output.  **PR note:** `output_sharded=False` returns host numpy
+    (was single-device jax).  Original plan below.
+  - **#6 (plan, now DONE above) — host-safe `output_sharded=False` gather.**  The default gather routes the whole volume through ONE device — the recurring footgun
+    (hit at recon-exit, export, demo-data).  `_gather_to_host` does `jnp.array(np.asarray(x))` (re-upload
+    to gpu0), AND callers materialize the full volume on one device: the `recon` exit (`jax.device_put
+    (_gather_recon(recon), devices[0])`), the `prox_map` exit (same), and `direct_recon`'s cylinder
+    scatter (`jnp.zeros(recon_shape)` + `.at[].set`).  **Plan (its own change + full suite):** (a)
+    `_gather_to_host` → return host numpy (multi-shard `np.asarray(x)`; single-shard
+    `np.asarray(shards[0].data)`); (b) drop the `jax.device_put(..., devices[0])` re-uploads at the recon
+    and prox exits; (c) `direct_recon` cylinder → host `np.zeros` + numpy scatter; (d) verify
+    `_gather_sinogram`/`_gather_recon` (slice-only), the denoiser, hessian, and the compute_prior_loss
+    path; (e) docstrings + a host-residence test + full suite + a GPU memory_report confirm.  **Contract
+    change:** `output_sharded=False` (recon / forward / back / fbp/fdk/direct / hessian / prox / denoise)
+    returns host NumPy instead of a single-device jax array — matches the "plain array" docstrings, frees
+    the device, host-safe at any size; PR-note it.  Risk low–moderate (no test asserts the jax return
+    type; downstream use is numpy-safe).  Removes the need for per-call-site `output_sharded=True`.
+  - **(revisit) `_generate_3d_shepp_logan_sharded` device loop — is it actually parallel?**  The loop
+    DISPATCHES each device's band build inside `with jax.default_device(dev)` and relies on async dispatch
+    to overlap.  Observed 2026-06-28: wall time is the same with or without a `piece.block_until_ready()`
+    before each append — so either the dispatch is already overlapping (the block is a no-op on the
+    critical path) OR the builds are not actually concurrent (and the block just isn't the bottleneck).
+    Low stakes (the build is fast and gathered to host anyway), but worth confirming the loop overlaps as
+    intended (a per-device timing trace) rather than serializing.
 
 - **Cross-cutting principles**, **verified hardware facts** (L40S silently zeros a
   device-resident cross-device copy; H100 d2d ok → the `move_shard` host-bounce fallback),

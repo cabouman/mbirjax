@@ -197,8 +197,9 @@ class TestVCD(unittest.TestCase):
                                                stop_threshold_change_pct=0.0)
         else:
             recon, recon_dict = ct_model.recon(sinogram)
-        recon.block_until_ready()
-        
+        # recon is a host NumPy array (output_sharded defaults to False, which gathers to the host),
+        # so there is nothing to block on -- the gather already forced and synced the computation.
+
         # if anisotropic, rescale the recon to the phantom shape
         if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel') | (geometry_type == 'anisotropic_translation'):
             phantom_temp = scipy.ndimage.zoom(phantom, zoom=(np.shape(recon)[0] / np.shape(phantom)[0],

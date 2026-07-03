@@ -387,6 +387,16 @@ async run-ahead — it was object lifecycle.
   devices)`).  An input already resident on (any of) the placement devices may alias → do NOT
   delete.  General rule: before deleting an array derived from a caller-supplied one, prove you
   allocated its buffers (a cross-device/host transfer), not just that you hold a distinct handle.
+- **`@jax.jit` defeats the host-preserving `xp` pattern (2026-06-28, export OOM fix).**  The
+  host-transparency trick `xp = jnp if isinstance(x, jax.Array) else np` (used in `gen_weights`,
+  `stitch_arrays`, `generate_demo_data`) only works EAGERLY.  If the function is `@jax.jit`-decorated,
+  jit always returns a device array AND traces the input (the arg is a Tracer, not a host ndarray), so
+  the `xp` branch is INERT and the whole input is shipped to one device.  `apply_cylindrical_mask` was
+  jitted; the `xp` edit looked right but a host recon still went to gpu0 (the export-time OOM persisted)
+  until the **jit decorator was removed** (it's a one-shot post-recon mask, not a hot path).  Rule: to
+  make a function host-preserving, it must run eagerly — a jitted function can't be; either de-jit it
+  (fine for non-hot ops) or branch BEFORE the jit boundary.  Tell: `inspect.getsourcefile(fn)` raises
+  "got PjitFunction" and the output is a jax array for a numpy input.
 - **Diagnostic method that cracked it.**  A per-subset/per-iteration `peak_bytes_in_use`
   "memjump" trace showed the view-sharded-sino count climbing 1/op; `gc.get_referrers`
   named the holder (`ArrayImpl.__dict__`); an explicit `gc.collect()` dropped `live_end`

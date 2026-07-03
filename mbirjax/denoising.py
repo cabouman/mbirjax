@@ -185,14 +185,14 @@ class QGGMRFDenoiser(TomographyModel):
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
             logfile_path (str, optional): Path to the output log file.  Defaults to '~/.mbirjax/logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
-            output_sharded (bool, optional): If False (default), return a plain array in the
+            output_sharded (bool, optional): If False (default), return a numpy array in the
                 problem's real shape.  If True, return the internal device form (slice-sharded on a
                 multi-device denoiser, with a possibly padded slice axis; on a single device the
                 same array either way).  Defaults to False.
 
         Returns:
             tuple: (denoised_image, denoiser_dict)
-                - denoised_image (jax array): A denoised image of the same shape as image
+                - denoised_image (numpy or jax array): A denoised image of the same shape as image
                 - denoiser_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
@@ -286,7 +286,7 @@ class QGGMRFDenoiser(TomographyModel):
             # Keep the internal device form (slice-sharded; the slice axis may be padded).
             denoised_image = flat_image.reshape(self._recon_device_shape())
         else:
-            # Default: gather to a plain real-shape array (a no-op on one device; crops any padded
+            # Default: gather to a numpy real-shape array (a no-op on one device; crops any padded
             # slices on multiple devices), then restore the 3-D image shape.
             denoised_image = self.reshape_recon(self._gather_recon(flat_image))
 

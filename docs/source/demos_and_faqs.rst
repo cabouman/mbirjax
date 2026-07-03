@@ -22,6 +22,41 @@ There are more demos here: `MBIRJAX demos <https://github.com/cabouman/mbirjax/b
 The separate repo `mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ provides a wider variety of examples using real data.
 
 
+Data Generation
+---------------
+
+Most demos start from synthetic data created with :func:`~mbirjax.utilities.generate_demo_data`.  It builds a 3D
+phantom (a simplified Shepp-Logan head or a cube) and the corresponding simulated sinogram for a chosen
+geometry, so you can try MBIRJAX without a real dataset:
+
+.. code-block:: python
+
+    import mbirjax as mj
+    phantom, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='cone',
+                                                      num_views=64, num_det_rows=128, num_det_channels=128)
+    angles = params['angles']
+    ct_model = mj.ConeBeamModel(sinogram.shape, angles,
+                                source_detector_dist=params['source_detector_dist'],
+                                source_iso_dist=params['source_iso_dist'])
+    recon, recon_dict = ct_model.recon(sinogram)
+
+Key options:
+
+* ``object_type`` -- ``'shepp-logan'`` or ``'cube'``.
+* ``model_type`` -- ``'parallel'``, ``'cone'``, or ``'translation'``; ``params`` returns the matching
+  geometry parameters (always the view ``angles``, plus the source distances for cone beam).
+* ``num_views``, ``num_det_rows``, ``num_det_channels`` -- the sinogram size; increase these (with a GPU)
+  to make a larger problem.
+* ``target_max_attenuation`` -- scales the phantom so its sinogram has a realistic peak attenuation
+  regardless of the array size (without it, the sinogram values grow with the volume size).
+
+The phantom and sinogram are always returned as host NumPy arrays, ready to pass to a reconstruction.
+On a multi-GPU machine the generation is automatically distributed across the available devices, so even
+large phantoms are built without exceeding the memory of a single GPU.  The phantom is a reference object;
+the sinogram is the input you would normally reconstruct.  See :ref:`synthetic-data-generation` for the
+full list of options and the related phantom generators.
+
+
 FAQs
 ----
 

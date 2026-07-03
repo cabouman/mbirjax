@@ -66,7 +66,6 @@ class TranslationModel(mj.TomographyModel):
             )
             model.auto_set_recon_geometry()
     """
-    DIRECT_RECON_VIEW_BATCH_SIZE = mj.TomographyModel.DIRECT_RECON_VIEW_BATCH_SIZE
 
     def __init__(self, sinogram_shape, translation_vectors, source_detector_dist, source_iso_dist):
 
@@ -784,31 +783,25 @@ class TranslationModel(mj.TomographyModel):
         pixel_mag = 1 / (1 / gp.magnification - y / gp.source_detector_dist)
         return y, pixel_mag
 
-    def direct_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                     output_sharded=False):
-        return self.fdk_recon(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                              output_sharded=output_sharded)
+    def direct_recon(self, sinogram, filter_name="ramp", output_sharded=False):
+        return self.fdk_recon(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def direct_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                      output_sharded=False):
+    def direct_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform filtering on the given sinogram as needed for an FBP/FDK or other direct recon.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): If False (default), return a plain array; if True,
+            output_sharded (bool, optional): If False (default), return a numpy array; if True,
                 return the view-sharded device form (on a single device the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FBP filtering.
+            filtered_sinogram (numpy or jax array): The sinogram after FBP filtering.
         """
-        return self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size,
-                               output_sharded=output_sharded)
+        return self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=output_sharded)
 
-    def fdk_filter(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                   output_sharded=False):
+    def fdk_filter(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK filtering on the given sinogram.
 
@@ -822,15 +815,13 @@ class TranslationModel(mj.TomographyModel):
         view-sharded device form (on a single device the result is the same either way).
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional): DEPRECATED and ignored -- the shared row-filter
-                kernel sets its own batch (tomography_utils.ROW_FILTER_BATCH).  Kept for back-compat.
-            output_sharded (bool, optional): If False (default), return a plain array; if True,
+            output_sharded (bool, optional): If False (default), return a numpy array; if True,
                 return the view-sharded device form (on a single device the same either way).
 
         Returns:
-            filtered_sinogram (jax array): The sinogram after FDK filtering.
+            filtered_sinogram (numpy or jax array): The sinogram after FDK filtering.
         """
         # Detector geometry + voxel scaling -- the only FDK-specific pieces; the shared row
         # filter does the rest (bounded peak, jitted, sharded per view-shard once ported).
@@ -863,8 +854,7 @@ class TranslationModel(mj.TomographyModel):
             sinogram, filter_name, filter_scale=alpha,
             output_sharded=output_sharded, row_weight=weight_map)
 
-    def fdk_recon(self, sinogram, filter_name="ramp", view_batch_size=DIRECT_RECON_VIEW_BATCH_SIZE,
-                  output_sharded=False):
+    def fdk_recon(self, sinogram, filter_name="ramp", output_sharded=False):
         """
         Perform FDK reconstruction on the given sinogram.
 
@@ -881,19 +871,19 @@ class TranslationModel(mj.TomographyModel):
             iterative ``recon()``, which absorbs a global angular mis-weighting in a few iterations.
 
         Args:
-            sinogram (jax array): The input sinogram with shape (num_views, num_rows, num_channels).
+            sinogram (numpy or jax array): The input sinogram with shape (num_views, num_rows, num_channels).
             filter_name (string, optional): Name of the filter to be used. Defaults to "ramp"
-            view_batch_size (int, optional):  Size of view batches (used to limit memory use)
-            output_sharded (bool, optional): If False (default), return a plain array; if True,
+            output_sharded (bool, optional): If False (default), return a numpy array; if True,
                 return the view-sharded device form (on a single device the same either way).
 
         Returns:
-            recon (jax array): The reconstructed volume after FDK reconstruction.
+            recon (numpy or jax array): The reconstructed volume after FDK reconstruction.
         """
 
-        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, view_batch_size=view_batch_size)
-
-        # Apply backprojection
+        # Keep the pipeline on-device (matches ParallelBeamModel.fbp_recon): fdk_filter returns the
+        # view-sharded form (no host round-trip), back_project consumes it directly and decides the
+        # output form.  fdk_filter shards a plain input itself, so no explicit entry shard is needed.
+        filtered_sinogram = self.fdk_filter(sinogram, filter_name=filter_name, output_sharded=True)
         recon = self.back_project(filtered_sinogram, output_sharded=output_sharded)
 
         return recon

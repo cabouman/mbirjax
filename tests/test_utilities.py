@@ -115,5 +115,43 @@ class TestUtilities(unittest.TestCase):
             assert (jnp.allclose(output[1], target[1]))
 
 
+class TestExportReconHostResidence(unittest.TestCase):
+    """The HDF5 export path must stay on the HOST for a host recon, so a large volume is never copied
+    back onto a single device (the OOM Charlie hit at downsampling 1, f32[1370,1880,1880] ~ 18 GiB).
+
+    This is a host-RESIDENCE guard (the real failure is placement, deterministic at any size), not an
+    actual large run: feed a small host recon and assert nothing is promoted to a jax device, plus a
+    small export -> import round-trip.
+    """
+
+    def test_apply_cylindrical_mask_host_in_host_out(self):
+        import mbirjax.preprocess as mjp
+        recon = np.random.RandomState(0).rand(16, 16, 8).astype(np.float32)
+        out = mjp.apply_cylindrical_mask(recon, radial_margin=2, top_margin=1, bottom_margin=1)
+        self.assertIsInstance(out, np.ndarray)             # host in -> host out (no device promotion)
+        self.assertEqual(out.dtype, np.float32)
+        np.testing.assert_array_equal(out[:, :, 0], 0)     # top margin zeroed
+        np.testing.assert_array_equal(out[:, :, -1], 0)    # bottom margin zeroed
+        self.assertEqual(float(out[0, 0, 4]), 0.0)         # a corner outside the cylinder is zeroed
+
+    def test_apply_cylindrical_mask_jax_in_jax_out(self):
+        import jax
+        import mbirjax.preprocess as mjp
+        recon = jnp.asarray(np.random.RandomState(1).rand(16, 16, 8).astype(np.float32))
+        out = mjp.apply_cylindrical_mask(recon)
+        self.assertIsInstance(out, jax.Array)              # jax in -> jax out (on-device preserved)
+
+    def test_export_import_roundtrip_host(self):
+        import os, tempfile
+        recon = np.random.RandomState(2).rand(12, 10, 6).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'recon.h5')
+            mj.export_recon_hdf5(path, recon, recon_dict=None, remove_flash=True)
+            self.assertTrue(os.path.exists(path))
+            loaded, _ = mj.import_recon_hdf5(path)
+            self.assertIsInstance(loaded, np.ndarray)      # host array back
+            self.assertEqual(loaded.shape, recon.shape)    # round-trips to (row, col, slice)
+
+
 if __name__ == '__main__':
     unittest.main()

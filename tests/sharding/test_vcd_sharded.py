@@ -445,5 +445,34 @@ class TestShardedProx(unittest.TestCase):
             self.skipTest("no usable device count > 1")
 
 
+class TestGatherReturnsHostNumpy(unittest.TestCase):
+    """output_sharded=False (the default) assembles the result on the HOST and returns a NumPy array,
+    never re-materializing the full volume on a single device; output_sharded=True still returns a jax
+    array, and the two agree in value."""
+
+    def test_recon_and_projectors_default_to_host_numpy(self):
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        model = _make_model()
+        model.configure_devices(devs)
+        sino = np.asarray(model.forward_project(
+            mbirjax.generate_3d_shepp_logan_low_dynamic_range(model.get_params('recon_shape')),
+            output_sharded=True))
+
+        # Default (output_sharded=False) -> host numpy
+        fp = model.forward_project(np.zeros(model.get_params('recon_shape'), dtype=np.float32))
+        dr = model.direct_recon(sino)
+        np.random.seed(0)
+        rec, _ = model.recon(sino, max_iterations=2, stop_threshold_change_pct=0.0)
+        for name, a in (('forward_project', fp), ('direct_recon', dr), ('recon', rec)):
+            self.assertIsInstance(a, np.ndarray, f"{name} should return host numpy with output_sharded=False")
+
+        # output_sharded=True still returns a (sharded) jax array, matching the gathered numpy in value.
+        dr_sharded = model.direct_recon(sino, output_sharded=True)
+        self.assertIsInstance(dr_sharded, jax.Array)
+        assert_sharded_allclose(np.asarray(dr_sharded), dr, msg="direct_recon sharded vs gathered", tol=1e-4)
+
+
 if __name__ == "__main__":
     unittest.main()

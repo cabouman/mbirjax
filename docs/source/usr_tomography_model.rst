@@ -76,12 +76,6 @@ Saving and Loading
 .. automethod:: mbirjax.TomographyModel.load_recon_hdf5
 
 
-Data Generation
----------------
-
-.. automethod:: mbirjax.TomographyModel.gen_modified_3d_sl_phantom
-
-
 .. _detailed-parameter-docs:
 
 Parameter Documentation
