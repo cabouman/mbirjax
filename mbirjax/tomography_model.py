@@ -128,7 +128,13 @@ class TomographyModel(ParameterHandler):
         self._qggmrf_interface_masks_cache = None
 
         # The following may be adjusted based on memory in set_devices()
-        self.view_batch_size_for_vmap = 512
+        # 128, not 512: sparse_forward_project's transient scales with view_batch (several coexisting
+        # [view_batch x pixel_batch x det_rows] buffers), and at 1024^3 the old 512 pushed the peak past a
+        # single-GPU pool (~18.8 GiB just for that intermediate -> OOM).  128 cuts it ~4x for a small
+        # (~2%) time cost since the projection is compute-bound.  TODO revisit: scale this with recon size
+        # (large recons want it smaller; small recons are unaffected) and pick a DIVISOR of the per-view-
+        # shard view count so there is no ragged tail batch.
+        self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
@@ -3091,6 +3097,17 @@ class TomographyModel(ParameterHandler):
             prior_overrelaxation_factor = 1.0
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
+
+            # Free the (now-dead) gradient/Hessian buffers BEFORE the memory-heavy forward projection.
+            # forward_grad/forward_hess were last read by delta_recon_at_indices; prior_grad/prior_hess by
+            # prior_linear/prior_quadratic_approx just above.  In eager mode a queued op pins its inputs, so
+            # blocking on those two scalars (which transitively force delta_recon_at_indices, hence the
+            # forward_* reads) guarantees all four are consumed; the del then releases them -- ~4 subset-
+            # sized arrays (~11.6 GB at the coarse 1024^3 subset) -- so sparse_forward_project's ~5x-volume
+            # transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
+            # and the projection depends on delta_recon_at_indices regardless.  (A no-op if ever jitted.)
+            jax.block_until_ready((prior_linear, prior_quadratic_approx))
+            del forward_grad, prior_grad, forward_hess, prior_hess
 
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
