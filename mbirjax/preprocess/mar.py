@@ -201,7 +201,7 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
 
     # --- Forward project the masked out metal regions ---
     metal_sino_est = []
-    for mask, scale in zip(metal_masks, metal_scales):
+    for mask in metal_masks:
         m = ct_model.forward_project(mask * recon, output_sharded=True)
         metal_sino_est.append(m)
 
