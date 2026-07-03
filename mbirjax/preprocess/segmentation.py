@@ -1,4 +1,5 @@
 import functools
+import math
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -79,7 +80,7 @@ def _iter_local_blocks(image, valid_mask):
 def _iter_slabs(block, mask_block):
     """Split a local block into leading-axis slabs of at most ``_HISTOGRAM_SLAB_ELEMENTS`` elements
     (the mask slabs along too, unless broadcast on that axis)."""
-    per_row = max(1, int(np.prod(block.shape[1:])))
+    per_row = max(1, math.prod(block.shape[1:]))   # exact Python ints (np.prod can wrap on Windows)
     rows_per_slab = max(1, _HISTOGRAM_SLAB_ELEMENTS // per_row)
     for j in range(0, block.shape[0], rows_per_slab):
         mask_slab = mask_block if mask_block.shape[0] == 1 else mask_block[j:j + rows_per_slab]

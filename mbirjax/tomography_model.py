@@ -1,5 +1,6 @@
 import functools
 import io
+import math
 import types
 import warnings
 import inspect
@@ -2820,7 +2821,10 @@ class TomographyModel(ParameterHandler):
         # shapes).  Equals the device arrays' size except when the view axis and/or the
         # detector-row axis is padded for sharding; normalizing by the real count keeps the
         # reported losses independent of the (inert, identically-zero) padding.
-        real_sino_size = int(np.prod(self.get_params('sinogram_shape')))
+        # math.prod (exact Python ints), NOT np.prod: numpy's product accumulates in the platform
+        # default integer -- int32 on Windows/numpy<2 -- and a full-size sinogram (>2^31 elements)
+        # would silently wrap.
+        real_sino_size = math.prod(self.get_params('sinogram_shape'))
         pad_active = (self.sino_placement.is_padded
                       or self._sino_row_padding() is not None)
         loss_num_real = real_sino_size if pad_active else None
@@ -2897,7 +2901,7 @@ class TomographyModel(ParameterHandler):
                     # Evaluate the prior loss on the REAL volume: _gather_recon crops any
                     # padded slices (whose zero values would otherwise add spurious
                     # boundary-difference terms to the loss).  Debug/verbose path only.
-                    real_recon_size = int(np.prod(recon_shape))
+                    real_recon_size = math.prod(recon_shape)   # exact Python ints (see real_sino_size)
                     loss_recon = self._gather_recon(flat_recon).reshape(recon_shape)
                     pm_loss[i] = mj.qggmrf_loss(loss_recon, qggmrf_params)
                     pm_loss[i] /= real_recon_size
@@ -3189,7 +3193,7 @@ class TomographyModel(ParameterHandler):
         return forward_linear, forward_quadratic
 
     @staticmethod
-    @functools.partial(jax.jit, static_argnums=(3,), static_argnames=('normalize',))
+    @functools.partial(jax.jit, static_argnums=(3, 4), static_argnames=('normalize', 'num_real_elements'))
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True,
                                num_real_elements=None):
         """
@@ -3216,23 +3220,27 @@ class TomographyModel(ParameterHandler):
         Returns:
             float loss.
         """
+        # Element counts enter the computation as FLOATS: a Python int operand is converted to int32
+        # by jax (x64 disabled), which overflows for sinograms above 2^31 elements (~2.1e9 -- a
+        # full-size half sino exceeds this).  float conversion carries the same ~1e-7 rounding that
+        # jnp.mean's internal count already had.
         if weights is None:
             weights = 1
             avg_weight = 1
         elif num_real_elements is None:
             avg_weight = jnp.average(weights)
         else:
-            avg_weight = jnp.sum(weights) / num_real_elements
+            avg_weight = jnp.sum(weights) / float(num_real_elements)
         if normalize:
             weighted_sq_sum = jnp.sum(error_sinogram * error_sinogram * weights)
-            denom = error_sinogram.size if num_real_elements is None else num_real_elements
+            denom = float(error_sinogram.size) if num_real_elements is None else float(num_real_elements)
             loss = jnp.sqrt(weighted_sq_sum / (avg_weight * denom)) / sigma_y
         else:
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
 
     @staticmethod
-    @jax.jit
+    @functools.partial(jax.jit, static_argnames=('num_real_elements',))
     def _vcd_iteration_stats(error_sinogram, flat_recon, sigma_y, weights=None, num_real_elements=None,
                              real_sino_size=None):
         """Per-iteration VCD logging stats in ONE fused, jitted pass.
