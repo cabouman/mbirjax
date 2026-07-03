@@ -1,10 +1,17 @@
 # MAR (`preprocess/mar.py`) refactor — device management, sharding, memory
 
-**Status:** PLAN (created 2026-06-29; revised 2026-07-01 — phases reordered: the correction-application
-sharding is promoted and done with jitted operators; the BH-fit subsampling is deferred to the end,
-because it needs metal-exposure-diverse sampling, not a uniform subsample).  Scope =
-`mbirjax/preprocess/mar.py` (metal-artifact reduction + beam-hardening correction).  Other half of status
-task #18 (the scan→sino preprocessing half is done).
+**Status:** ✅ **COMPLETE / shipped** (2026-07-03).  Phases 1, 2, 2b, 2c, 2d are all done and committed on
+`greg/shard_profiling`, and validated at full scale on the cluster (the (1800,1365,1880) and 1024³ MAR
+traces that drove the Phase-2d fixes).  Net result: the correction path is view-sharded end-to-end (no
+single-device gather), the recon stays on-device through the BH loop (sharded histogram + Otsu), and the
+memory footguns found in the full-scale trace are fixed.  **Phase 3 (subsample / speed up the BH model fit)
+is DEFERRED and now tracked in `post_shard_plans.md`**, along with the residual open questions below.
+Scope = `mbirjax/preprocess/mar.py` (+ `segmentation.py`, `utilities.py`); the scan→sino preprocessing half
+of status task #18 was already done.
+
+_(History: created 2026-06-29; revised 2026-07-01, phases reordered so the correction-application sharding
+led and the BH-fit subsampling deferred; phases completed through 2026-07-02.  Phase records retained below
+as the implementation log.)_
 
 **Context.** The MAR loop `recon_plastic_metal` alternates `correct_sino_plastic_metal` (beam-hardening
 correction driven by a segmented recon) with `recon`/`split_sino_recon` (already sharded — leave alone).
@@ -159,7 +166,7 @@ Found and fixed while tracing the full-size (1800, 1365, 1880) MAR recon:
   padded==unpadded exact, replicated arrays not double-counted, multi-slab == single-slab, MAR gate
   byte-unchanged.
 
-### Phase 3 — (DEFERRED — revisit after Phases 1–2) Subsample / speed up the BH model fit
+### Phase 3 — (DEFERRED → moved to `post_shard_plans.md`) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the
   BH model is identifiable only from sinogram pixels spanning MULTIPLE levels of metal exposure (varying
@@ -188,9 +195,10 @@ Found and fixed while tracing the full-size (1800, 1365, 1880) MAR recon:
 - Phase 3's estimation A/B is a standalone experiment (`theta` full-vs-subsample), not a recon gate until
   the sampling strategy is dialed in.
 
-## Open questions
-- Does `forward_project` shard a single-device-committed input the same as a host/sharded one (Phase 1
-  byte-identicality)?  Confirm on the before/after.
-- `segment_plastic_metal` (in `segmentation.py`): does it return host or device masks? — affects where
-  `mask * recon` lives in Phase 1 (want it sharded/host, not gathered to one device).
-- `gen_huber_weights` / `BH_correction` standalone callers — confirm contracts before touching (Phase 2).
+## Open questions (all resolved during Phases 1–2d)
+- `forward_project` sharding of a single-device-committed input — **resolved:** verified byte-identical to a
+  host/sharded input on a 4-device model (Phase 1); the old `device_put` was a pure gather.
+- `segment_plastic_metal` host-vs-device masks — **resolved:** segmentation now runs on-device (Phase 2b),
+  masks stay sharded, `mask * recon` never gathers to one device.
+- `gen_huber_weights` / `BH_correction` standalone-caller contracts — **resolved** during the Phase-2/2d
+  work (kernels jitted; `gen_huber_weights` body jitted).
