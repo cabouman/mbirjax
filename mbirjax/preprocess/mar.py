@@ -755,6 +755,8 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
 
     for i in range(num_BH_iterations):
         # Estimate Corrected Sinogram
+        if verbose >= 1:
+            print(f"\n************ Correct sino plastic metal {i + 1}  **************")
         corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
 
         # Reconstruct Corrected Sinogram
