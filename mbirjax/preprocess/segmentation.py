@@ -39,17 +39,40 @@ def _masked_min_max(image, valid_mask):
 
 @functools.partial(jax.jit, static_argnums=4)
 def _local_bucketize_histogram(image, valid_mask, lo, hi, num_bins):
-    """Single-device masked histogram by explicit bucketize + scatter-add (see _sharded_histogram).
+    """Histogram of one single-device slab by explicit bucketize + scatter-add (see _sharded_histogram).
 
-    In-range values map to bin ``floor(num_bins * (x - lo) / span)``; ``hi`` itself maps to
-    ``num_bins`` and is clipped into the last bin, matching ``np.histogram``'s closed last edge.
-    Invalid / out-of-range entries get an arbitrary in-range index but contribute 0 via the mask.
-    Counts accumulate in int32 -- exact because callers pass SLABS below 2^31 elements (see
-    ``_HISTOGRAM_SLAB_ELEMENTS``); the exact int64 total is accumulated on the host."""
+    Semantics match ``np.histogram`` over the valid entries with ``range=(lo, hi)``: in-range values
+    map to bin ``floor(num_bins * (x - lo) / span)``, ``hi`` itself lands in the last bin (numpy's
+    closed last edge), and invalid or out-of-range entries are dropped.
+
+    Sizes are bounded by construction: callers pass slabs of at most ``_HISTOGRAM_SLAB_ELEMENTS``
+    elements, so the int32 counts cannot wrap (a bin cannot exceed the slab size < 2^31) and the
+    flattened index below is a short, single-device axis -- the >2^31 flat-index hazards do not apply.
+    The exact int64 total across slabs is accumulated on the host by the caller.
+
+    Args:
+        image (jax array): one slab of the volume, resident on a single device.
+        valid_mask (array): boolean mask, broadcastable against ``image``; True on entries to count.
+        lo, hi (scalars): histogram range, typed to ``image.dtype`` by the caller.
+        num_bins (int): number of bins (static -- it sets the output shape).
+
+    Returns:
+        jax array: (num_bins,) int32 counts, on the slab's device.
+    """
+    # Bin index for every entry: map [lo, hi] linearly onto [0, num_bins], then clip so that x == hi
+    # falls in the last bin.  Out-of-range values also clip into [0, num_bins - 1]; their (arbitrary)
+    # index is harmless because they contribute 0 below.  The tiny floor on span guards lo == hi
+    # (a constant slab).
     span = jnp.maximum(hi - lo, jnp.asarray(jnp.finfo(image.dtype).tiny, dtype=image.dtype))
-    idx = jnp.clip((num_bins * (image - lo) / span).astype(jnp.int32), 0, num_bins - 1)
-    contrib = (valid_mask & (image >= lo) & (image <= hi)).astype(jnp.int32)
-    return jnp.zeros(num_bins, dtype=jnp.int32).at[idx.reshape(-1)].add(contrib.reshape(-1))
+    bin_index = jnp.clip((num_bins * (image - lo) / span).astype(jnp.int32), 0, num_bins - 1)
+
+    # Each entry contributes 1 if it is valid and inside [lo, hi], else 0.
+    in_range = (image >= lo) & (image <= hi)
+    contribution = (valid_mask & in_range).astype(jnp.int32)
+
+    # Scatter-add the contributions into the per-bin counts.
+    counts = jnp.zeros(num_bins, dtype=jnp.int32)
+    return counts.at[bin_index.reshape(-1)].add(contribution.reshape(-1))
 
 
 # Per-slab element budget for the on-device histogram: bounds the bucketize's int32 index/contribution
