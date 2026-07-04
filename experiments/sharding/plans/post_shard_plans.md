@@ -34,9 +34,10 @@ break the cross-device correctness gating).
   §5 P1-design).  The granularity-1 first VCD iteration updates the whole recon in one subset → the biggest
   subset-domain arrays.  Deriving the coarsest starting granularity from voxel count (skip granularity 1 for
   large problems) shrinks those.  **Size-only, never memory/hardware-adaptive** (reproducibility), and
-  **gated on convergence-quality data** from an 8-GPU run (does skipping granularity 1 hurt the final
-  image?).  Until verified: keep the `[0,2,4,6,7]` default + the documented "use a finer sequence for large
-  multi-device problems" guidance.
+  **gated on convergence-quality data**.  **IN PROGRESS 2026-07-04:** empirical partition-sequence
+  study on real subsampled data (NSI Lilly + Zeiss sets, /4 space /8 views, converged baselines,
+  NRMSE-vs-reference metric); plan in `experiments/partition_sequence/partition_sequence_plan.md`.
+  Theory (Greg): monotone NON-DECREASING granularity sequences (repeats fine, no dips).
 - These two are the same class of policy (problem-size → memory knob); worth unifying under one place.
 
 ## 2. Sinogram weight edge tapering to speed convergence and reduce flash
@@ -53,15 +54,15 @@ the 'flash' associated with objects partially outside the FoV.
 
 - **Profile the existing projector performance**: Use jax/perfetto/tensorboard/nvidia tools to identify
   memory and computational bottlenecks and make a plan to improve performance.
-- ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the machinery
-  UNCHANGED**: the batching-refactor investigation (census + balanced-batching v2 + windowed-read
-  patch, all measured and retired; full record in
-  `experiments/projector_batching/batching_refactor_design.md`) established that every piece of the
-  scan/map/vmap nest is load-bearing and the `lax.map` use is the safe no-`batch_size` form.  One
-  shipped outcome: **back/band pixel batch = 2016** (the band kernel is width-sensitive: stay
-  32-aligned, avoid power-of-2 row strides; exactly-2048 cost 1.4–1.5× on CPU band back).  Measured
-  constants for the adaptive-knob work: flat GPU vmap-width knee; isolated-driver k ≈ 1.0
-  forward / 1.9 back.
+- ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the code
+  UNCHANGED**: the full investigation (census, balanced-batching v2, windowed-read patch, band
+  pixel-width tuning — each measured and retired; record in
+  `experiments/projector_batching/batching_refactor_design.md`) established the scan/map/vmap nest
+  is load-bearing piece-by-piece and the batch constants are effectively optimal.  Repeated hard
+  lesson: driver-level wins (band −10% at width 2016 on H100; 1.4–1.5× on CPU) did NOT survive the
+  full recon path on either platform — micro benchmarks of shape-dependent kernel effects don't
+  compose; the full path is the arbiter.  Durable constants for the adaptive-knob work: flat GPU
+  vmap-width knee; isolated-driver k ≈ 1.0 forward / 1.9 back.
 - **Forward-kernel internals (future project, noted 2026-07-04):** forward projection is ~2× back's
   time on GPU and 3–4× on CPU — the dominant projector cost.  Improving the forward kernel itself
   would also re-open the batch-width trade-offs above.

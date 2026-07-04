@@ -136,18 +136,6 @@ class TomographyModel(ParameterHandler):
         # shard view count so there is no ragged tail batch.
         self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
-        # The BACK/BAND projectors use a different pixel batch width than forward.  A width
-        # sweep (experiments/projector_batching/pixel_width_sweep.py; H100 + CPU, 2026-07-04)
-        # found the BAND kernel -- memory-access-pattern-bound -- strongly width-sensitive,
-        # with two empirical rules: stay 32-ALIGNED (unaligned widths cost up to ~25% at
-        # short band lengths), and avoid widths whose row stride is a large POWER OF TWO
-        # (exactly 2048 costs ~10% on H100 at band length 256, and 1.4-1.5x on CPU at band
-        # lengths 26-64 -- cache-set conflicts).  2016 = 32*63 satisfies both rules and was
-        # never worse than 2048 in any measured cell; the forward and monolithic-back
-        # kernels are width-insensitive.  Forward keeps 2048 so its pixel-axis SUMS are not
-        # regrouped; the back/band pixel axis only CONCATENATES (per-pixel results are
-        # independent), so this width changes results at recompile noise only (~1e-7 rel).
-        self.pixel_batch_size_for_vmap_back = 2016
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
         self.create_projectors()

@@ -172,6 +172,16 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
   at a time; `tooling/scaling_tests/measure_one_cell.py` reproduces one cell in ~30 s and prints
   `toolchain_info()`; the `toolchain` field in each regression YAML makes the next drift a one-line
   diff.  Re-baseline deliberately on any jax bump.
+- **A driver-level win on a shape-dependent kernel effect must be re-validated END-TO-END
+  before shipping — micro benchmarks don't compose.**  Twice in the batching episode
+  (2026-07-04) a clean, reproducible 10% driver-level band win (balanced batching; then the
+  pixel-width tuning it was re-attributed to) coexisted with a CONSISTENT full-recon LOSS at
+  1024³: the real path samples many (pixel-count, band-length) shapes whose width optima
+  point in different directions, plus per-shape compile costs the warm micro-benchmark never
+  pays.  Tell: the isolated probe and the full-path A/B disagree in SIGN.  Corollary from the
+  same episode: XLA lowers scan-over-reshaped-input and scan-of-dynamic-slice to the SAME GPU
+  program (byte-identical temps/outputs) — don't hand-optimize between forms XLA canonicalizes;
+  full record in `experiments/projector_batching/batching_refactor_design.md`.
 - **When GPU behavior contradicts local tests, verify the BUILD first.**  Editable installs can serve
   stale compiled state (a "33 GB leak" was a stale binary); and a modern `pip install -e` registers a
   `sys.meta_path` finder that beats `PYTHONPATH` — to select code under test, install it into a

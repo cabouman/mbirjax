@@ -41,11 +41,11 @@ PARTITION_SEQUENCE = None   # None = model default [0,2,4,6,7].  Pin to a single
 # Every case after the first is compared against the first.  A single case is the normal
 # cross-code-state mode (compare via COMPARE_TO).  Two cases with different view batches is
 # the NULL CALIBRATION of the fp gate (a pure sum-REGROUPING perturbation with the code
-# fixed), e.g. [('vb128', None, None), ('vb121', 121, None)].  The default pair below A/Bs
-# the back/band pixel width (2048 = the historical value vs the model default 2016).
+# fixed), e.g. [('vb128', None, None), ('vb121', 121, None)].  Two cases with different
+# back pixel widths A/Bs the band-kernel width sensitivity (2026-07-04 verdict: driver-level
+# width wins did NOT survive the full path on either platform; 2048 stays).
 CASES = [
-    ('pixel_back_2048', None, 2048),
-    ('pixel_back_2016', None, None),
+    ('recon', None, None),
 ]
 COMPARE_TO = None           # path to a baseline recon .npy from a run at another code
                             # state; the FIRST case is compared against it
@@ -86,6 +86,10 @@ def worker():
 
     phantom = mbirjax.gen_cube_phantom(recon_shape)
     sinogram = np.asarray(model.forward_project(phantom))
+    # Move the phantom to HOST before the recon: keeping the jax array alive parks a full
+    # recon-sized buffer on device 0 for the whole run (+4 GiB at 1024^3, observed as an
+    # inflated device-0 peak in the 2026-07-04 pixel-width A/B).
+    phantom = np.asarray(phantom, dtype=np.float32)
 
     np.random.seed(SEED)                              # reproducible partitions
     t0 = time.perf_counter()
