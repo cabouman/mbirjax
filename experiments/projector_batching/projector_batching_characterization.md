@@ -170,9 +170,13 @@ Open (measure before/during the refactor):
 - ~~GPU vmap-width knee~~ / ~~GPU k coefficient~~ / ~~hidden-copy check~~ — **ANSWERED
   2026-07-04** (H100 run, results in §4/§5): no knee, k ≈ 1.3/1.9, and one real hidden copy
   found (v1 back's input reshape on GPU) that v2 removes.
-- Whether collapsing scan/map/vmap changes XLA's buffer reuse (the §4 constants are properties
-  of the current lowering; re-probe after any structural change) — now includes verifying the
-  back driver's sino-sized temp actually disappears under v2.
-- **1024³ real-path memory A/B** (part of the rollout gates): reconciles the derived
-  full-path k ≈ 4.4 (see §4 — an inference from the L131 comment, not a measurement) vs the
-  isolated-driver ≈1.3, and anchors the adaptive-knob budget.
+- ~~Whether collapsing scan/map/vmap changes XLA's buffer reuse~~ — **MEASURED 2026-07-04**,
+  and it cut both ways: the windowed scan removed the back driver's sino-sized GPU temp
+  (H100 v1-vs-v2: const 1.00× → 0.00× sino, ~3% faster) but was 1.5–1.6× SLOWER on CPU for
+  the concatenate axes, where v1's map+inline-peel mechanics were kept (the v2 hybrid; full
+  numbers in `batching_refactor_design.md` §1 and §4-gates).
+- **1024³ real-path memory A/B** (part of the rollout gates; `full_path_ab.py` in this
+  directory, cluster): reconciles the derived full-path k ≈ 4.4 (see §4 — an inference from
+  the L131 comment, not a measurement) vs the isolated-driver ≈1.3, anchors the
+  adaptive-knob budget, and is the fp-equivalence + memory gate for flipping the default to
+  v2.

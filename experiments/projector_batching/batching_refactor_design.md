@@ -117,9 +117,12 @@ so the blast radius of the new code is exactly these six functions.
   (H100 run, characterization §5): no knee down to B/2 (vb=64 costs ≤1.04×, typically ≤2%),
   so `balanced_batch` ships with NO floor logic.  B\* ≥ B_max/2 by construction also clears
   the CPU vb=16 cliff.  CPU timing sanity locally remains a gate (cheap).
-- **v2 must remove the back driver's sino-sized GPU temp** (characterization §4: v1's input
-  reshape materializes a full view-shard copy on GPU).  The post-refactor memory re-probe
-  checks this specifically — it is the one quantified memory win the refactor now owes us.
+- ~~v2 must remove the back driver's sino-sized GPU temp~~ — **CONFIRMED 2026-07-04**
+  (Greg's H100 v1-vs-v2 run): back v2 temp const = **0.00× sino** at N ∈ {256, 512} (v1:
+  1.00×) — at N=512/vb=128 that is 1077 MB vs 4969 MB of transient — AND back v2 is ~3%
+  faster across all vb (the copy's bandwidth).  Forward v1 ≡ v2 on GPU to 0.1 MB / timing
+  noise, confirming the hybrid's concat-axis mechanics are untouched.  Slope k: back 2.01
+  v2 vs 1.76 v1 (minor, dwarfed by the const win); forward identical (1.04/1.27).
 
 ## 5. Risks / open points
 
