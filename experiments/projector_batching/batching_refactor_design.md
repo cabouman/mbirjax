@@ -119,7 +119,7 @@ so the blast radius of the new code is exactly these six functions.
   the CPU vb=16 cliff.  CPU timing sanity locally remains a gate (cheap).
 - ~~v2 must remove the back driver's sino-sized GPU temp~~ — **CONFIRMED 2026-07-04**
   (Greg's H100 v1-vs-v2 run): back v2 temp const = **0.00× sino** at N ∈ {256, 512} (v1:
-  1.00×) — at N=512/vb=128 that is 1077 MB vs 4969 MB of transient — AND back v2 is ~3%
+  1.00×) — at N=512/vb=128 that is 1077 MB vs 4969 MB of compiled temp reservation (memory_analysis, not a runtime peak) — AND back v2 is ~3%
   faster across all vb (the copy's bandwidth).  Forward v1 ≡ v2 on GPU to 0.1 MB / timing
   noise, confirming the hybrid's concat-axis mechanics are untouched.  Slope k: back 2.01
   v2 vs 1.76 v1 (minor, dwarfed by the const win); forward identical (1.04/1.27).
@@ -144,9 +144,23 @@ so the blast radius of the new code is exactly these six functions.
   `tests/sharding/test_batching_v2.py` — 56 equivalence tests over every batching branch ×
   both geometries × coeff_power; full suite green under v1 default AND with v2 forced at 4
   CPU devices; CPU memory probe: v2 slope 5.86 vs 7.21 forward, 1.12 vs 1.48 back, back
-  const → ~0).  Next: cluster validation (updated `gpu_knee_probe.py` runs v1-vs-v2
-  directly + the 1024³ recon A/B) → flip default to 2 → remove v1 after a deprecation
-  interval (Greg's call on timing).
+  const → ~0).  **Cluster validation COMPLETE and DEFAULT FLIPPED to 2, 2026-07-04.**  The three
+  cluster gates (all run by Greg, H100):
+  - `gpu_knee_probe.py` v1-vs-v2: back v2 loses the 1.00×-sino temp (const → 0.00×), ~3%
+    faster; forward identical to 0.1 MB.
+  - `full_path_ab.py` (cone 1024³, 1024 views, 5 iters, 2 GPUs): rel-max **4.4e-05**
+    (gate 1e-4, PASS); peak/device identical 21.0 GiB both versions (the whole-path peak
+    is set above the back transient at this config, so the driver win is latent there).
+    Wall time showed +3.3% for v2 on a single sample — reclassified as noise by the
+    driver-level probe below.
+  - `driver_ab_probe.py` (N=1024, 51.4k pixels — the map helper's first multi-batch GPU
+    timing — views 512/471, all three drivers): forward 1.001/0.996; back 1.001/**1.010**
+    (the ragged +1% is the KNOWN vb-width curve at balanced width 118 vs 128, bounded ≤~4%
+    worst-case by the vb sweep, not a mechanics regression); band **0.901/0.971** — the
+    multi-GPU back driver is up to 10% FASTER, and the 44 ms gap matches the bandwidth of
+    the eliminated 2 GiB sino-shard reshape copy.
+  Remaining: remove v1 (drivers, helpers, dispatch, env var) after a deprecation interval —
+  Greg's call on timing.
 
 ## 6. Follow-ons unlocked (not in this phase)
 

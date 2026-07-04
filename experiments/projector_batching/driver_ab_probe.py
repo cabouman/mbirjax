@@ -42,11 +42,18 @@ from mbirjax.projectors import (
 # ----------------------------------------------------------------------------------
 N = 1024                     # detector N x N, recon slices N (cone)
 VIEW_COUNTS = [512, 471]     # views owned per device: divisible by 128 / ragged
-NUM_PIXELS = 51400           # ~ a granularity-16 subset of the 1024^2 RoR (26 pixel batches)
-BAND_SLICES = 256            # _slice_band_length at these shapes (reduce bound, n_dev=2)
+# (num_pixels, band_L) cells.  num_pixels spans the VCD granularity levels of a 1024^2 RoR
+# (823k=coarse ... 6.4k=finest); band_L follows _slice_band_length at n_dev=2 (reduce bound
+# 256, compute bound 100e6/num_pixels balanced over 512 slices -> ~103 at the coarse level).
+PIXEL_CELLS = [
+    (823000, 103),           # granularity 1 (+ the Hessian's pixel count)
+    (51400, 256),            # granularity 16 (the original probe cell)
+    (6430, 256),             # granularity 128
+]
 BAND_G0 = 128                # a non-edge band start (traced, like the real band loop)
 VIEW_BATCH = 128
 PIXEL_BATCH = 2048
+COEFF_POWER = 1              # 2 = the Hessian-diagonal path (back/band only)
 TIMED_REPS = 3
 
 BYTES_F32 = 4
@@ -88,8 +95,9 @@ def time_call(fn, reps, label):
 def main():
     dev = jax.devices()[0]
     print(f'device: {dev.device_kind} ({dev.platform}), jax {jax.__version__}')
-    print(f'N={N}, pixels={NUM_PIXELS}, view_batch={VIEW_BATCH}, pixel_batch={PIXEL_BATCH}, '
-          f'band L={BAND_SLICES} g0={BAND_G0}, reps={TIMED_REPS}\n')
+    print(f'N={N}, pixel cells={PIXEL_CELLS}, view_batch={VIEW_BATCH}, '
+          f'pixel_batch={PIXEL_BATCH}, g0={BAND_G0}, coeff_power={COEFF_POWER}, '
+          f'reps={TIMED_REPS}\n')
 
     max_views = max(VIEW_COUNTS)
     angles = jnp.linspace(0, np.pi, max_views, endpoint=False)
@@ -101,58 +109,74 @@ def main():
     view_params = model.projector_functions.view_params_array
 
     rng = np.random.default_rng(0)
-    pixel_indices = jnp.array(rng.choice(recon_shape[0] * recon_shape[1], size=NUM_PIXELS,
-                                         replace=False), dtype=jnp.int32)
-    voxel_values = jnp.array(rng.standard_normal((NUM_PIXELS, recon_shape[2])),
-                             dtype=jnp.float32)
     full_sino = jnp.array(rng.standard_normal(tuple(sinogram_shape)), dtype=jnp.float32)
 
-    for num_views in VIEW_COUNTS:
-        owned = jnp.arange(num_views)
-        local_sino = full_sino[owned]
-        tag = 'divisible' if num_views % VIEW_BATCH == 0 else 'ragged'
-        print(f'=== views={num_views} ({tag}) ===')
+    # Forward is structurally identical between versions at production shapes (single host
+    # pixel batch, divisible views -> same code path), so it runs only at the small cells
+    # as a control; the big-pixel forward would cost ~minutes/call for no discrimination.
+    FORWARD_PIXEL_LIMIT = 60000
 
-        def fwd(driver):
-            return lambda: driver(
-                view_params, voxel_values, pixel_indices,
-                fwd_kernel=model.forward_project_pixel_batch_to_one_view,
-                projector_params=pp, pixel_batch_size=PIXEL_BATCH,
-                view_batch_size=VIEW_BATCH, owned_view_indices=owned)
+    cell_num, total = 0, sum((2 if npix > FORWARD_PIXEL_LIMIT else 3) * len(VIEW_COUNTS)
+                             for npix, _ in PIXEL_CELLS)
+    for num_pixels, band_slices in PIXEL_CELLS:
+        pixel_indices = jnp.array(rng.choice(recon_shape[0] * recon_shape[1],
+                                             size=num_pixels, replace=False), dtype=jnp.int32)
+        voxel_values = jnp.array(rng.standard_normal((num_pixels, recon_shape[2])),
+                                 dtype=jnp.float32)
 
-        def back(driver):
-            return lambda: driver(
-                view_params, local_sino, pixel_indices,
-                back_kernel=model.back_project_one_view_to_pixel_batch,
-                projector_params=pp, pixel_batch_size=PIXEL_BATCH,
-                view_batch_size=VIEW_BATCH, coeff_power=1, owned_view_indices=owned)
+        for num_views in VIEW_COUNTS:
+            owned = jnp.arange(num_views)
+            local_sino = full_sino[owned]
+            tag = 'divisible' if num_views % VIEW_BATCH == 0 else 'ragged'
+            print(f'=== pixels={num_pixels}, band L={band_slices}, views={num_views} ({tag}), '
+                  f'coeff_power={COEFF_POWER} ===', flush=True)
 
-        def band(driver):
-            return lambda: driver(
-                view_params, local_sino, pixel_indices, BAND_G0, BAND_SLICES,
-                back_band_kernel=model.back_project_one_view_to_band,
-                projector_params=pp, pixel_batch_size=PIXEL_BATCH,
-                view_batch_size=VIEW_BATCH, coeff_power=1, owned_view_indices=owned)
+            def fwd(driver):
+                return lambda: driver(
+                    view_params, voxel_values, pixel_indices,
+                    fwd_kernel=model.forward_project_pixel_batch_to_one_view,
+                    projector_params=pp, pixel_batch_size=PIXEL_BATCH,
+                    view_batch_size=VIEW_BATCH, owned_view_indices=owned)
 
-        for name, make in [('forward', fwd), ('back', back), ('band', band)]:
-            cell = VIEW_COUNTS.index(num_views) * 3 + ['forward', 'back', 'band'].index(name) + 1
-            total = 3 * len(VIEW_COUNTS)
-            log(f'cell {cell}/{total}: {name}, views={num_views}')
-            v1_call = make({'forward': _jit_sparse_forward_project,
-                            'back': _jit_sparse_back_project,
-                            'band': _jit_sparse_back_project_band}[name])
-            v2_call = make({'forward': _jit_sparse_forward_project_v2,
-                            'back': _jit_sparse_back_project_v2,
-                            'band': _jit_sparse_back_project_band_v2}[name])
-            t1 = time_call(v1_call, TIMED_REPS, f'{name} v1')
-            t2 = time_call(v2_call, TIMED_REPS, f'{name} v2')
-            # Correctness cross-check on the same inputs (sum-order noise only).
-            log(f'  {name}: correctness cross-check (one more call per version) ...')
-            err = rel_max_err(v2_call(), v1_call())
-            print(f'RESULT {name:8s} views={num_views:4d}  v1 {t1 * 1e3:8.1f} ms   '
-                  f'v2 {t2 * 1e3:8.1f} ms   v2/v1 {t2 / t1:5.3f}   rel_max {err:.1e}',
-                  flush=True)
-        print(flush=True)
+            def back(driver):
+                return lambda: driver(
+                    view_params, local_sino, pixel_indices,
+                    back_kernel=model.back_project_one_view_to_pixel_batch,
+                    projector_params=pp, pixel_batch_size=PIXEL_BATCH,
+                    view_batch_size=VIEW_BATCH, coeff_power=COEFF_POWER,
+                    owned_view_indices=owned)
+
+            def band(driver):
+                return lambda: driver(
+                    view_params, local_sino, pixel_indices, BAND_G0, band_slices,
+                    back_band_kernel=model.back_project_one_view_to_band,
+                    projector_params=pp, pixel_batch_size=PIXEL_BATCH,
+                    view_batch_size=VIEW_BATCH, coeff_power=COEFF_POWER,
+                    owned_view_indices=owned)
+
+            cases = [('back', back), ('band', band)]
+            if num_pixels <= FORWARD_PIXEL_LIMIT:
+                cases.insert(0, ('forward', fwd))
+            for name, make in cases:
+                cell_num += 1
+                log(f'cell {cell_num}/{total}: {name}, pixels={num_pixels}, views={num_views}')
+                v1_call = make({'forward': _jit_sparse_forward_project,
+                                'back': _jit_sparse_back_project,
+                                'band': _jit_sparse_back_project_band}[name])
+                v2_call = make({'forward': _jit_sparse_forward_project_v2,
+                                'back': _jit_sparse_back_project_v2,
+                                'band': _jit_sparse_back_project_band_v2}[name])
+                t1 = time_call(v1_call, TIMED_REPS, f'{name} v1')
+                t2 = time_call(v2_call, TIMED_REPS, f'{name} v2')
+                # Correctness cross-check on the same inputs (sum-order noise only).
+                log(f'  {name}: correctness cross-check (one more call per version) ...')
+                err = rel_max_err(v2_call(), v1_call())
+                print(f'RESULT {name:8s} pixels={num_pixels:7d} L={band_slices:4d} '
+                      f'views={num_views:4d}  v1 {t1 * 1e3:8.1f} ms   v2 {t2 * 1e3:8.1f} ms   '
+                      f'v2/v1 {t2 / t1:5.3f}   rel_max {err:.1e}', flush=True)
+            print(flush=True)
+
+        del pixel_indices, voxel_values     # free before the next (possibly larger) cell
 
 
 if __name__ == '__main__':

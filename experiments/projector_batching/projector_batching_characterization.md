@@ -113,7 +113,7 @@ run by Greg): cone N ∈ {256, 512}, 3840 views, vb ∈ {16..256}.
   output concatenate are aliased away by buffer assignment).  GPU: back's `sum_function_in_
   batches` input reshape **materializes a full view-shard-sized copy** (the only sino-scale
   object in that driver besides the input arg; slope terms accounted for).  v1 back on GPU
-  therefore carries ~1 extra owned-sino-shard of transient that the v2 windowed-`dynamic_slice`
+  therefore carries ~1 extra owned-sino-shard of compiled temp reservation that the v2 windowed-`dynamic_slice`
   mechanic eliminates — a concrete memory win to verify in the post-refactor re-probe.
 - **The isolated-driver k is far below the full-path history — provenance matters here.**
   The only prior GPU datum is the code comment "~18.8 GiB just for that intermediate" at
